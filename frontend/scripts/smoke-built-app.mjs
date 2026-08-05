@@ -28,6 +28,9 @@ const source = await readFile(bundlePath, "utf8");
 if (source.includes("http://localhost:8001")) {
   throw new Error("Production bundle must not use the local development API URL.");
 }
+if (!source.includes("eu-north-1_vfU0v0s9f") || !source.includes("4k9pm7unsniiokmqdc8qtjms7n")) {
+  throw new Error("Production bundle must include the Cognito authentication configuration.");
+}
 
 try {
   new vm.Script(source, { filename: bundlePath }).runInContext(dom.getInternalVMContext());
