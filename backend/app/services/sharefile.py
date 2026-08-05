@@ -1680,18 +1680,22 @@ class ShareFileService:
         return marked
 
     async def _get_item(self, client: httpx.AsyncClient, token: ShareFileOAuthToken, item_id: str) -> dict:
-        response = await client.get(
+        response = await self._authorized_request(
+            client,
+            "GET",
             f"https://{token.subdomain}.{token.apicp}/sf/v3/Items({item_id})",
-            headers=self._auth_headers(token),
+            token,
             follow_redirects=True,
         )
         response.raise_for_status()
         return response.json()
 
     async def _list_webhook_subscriptions(self, client: httpx.AsyncClient, token: ShareFileOAuthToken) -> list[dict]:
-        response = await client.get(
+        response = await self._authorized_request(
+            client,
+            "GET",
             f"https://{token.subdomain}.{token.apicp}/sf/v3/WebhookSubscriptions",
-            headers=self._auth_headers(token),
+            token,
             follow_redirects=True,
         )
         response.raise_for_status()
@@ -1949,9 +1953,12 @@ class ShareFileService:
                 {"ResourceType": "Folder", "OperationName": "Delete"},
             ],
         }
-        response = await client.post(
+        response = await self._authorized_request(
+            client,
+            "POST",
             f"https://{token.subdomain}.{token.apicp}/sf/v3/WebhookSubscriptions",
-            headers={**self._auth_headers(token), "Content-Type": "application/json"},
+            token,
+            headers={"Content-Type": "application/json"},
             json=body,
             follow_redirects=True,
         )
@@ -2626,6 +2633,12 @@ class ShareFileService:
         if not token.refresh_token:
             return token
 
+        return await self._refresh_access_token(client, token)
+
+    async def _refresh_access_token(self, client: httpx.AsyncClient, token: ShareFileOAuthToken) -> ShareFileOAuthToken:
+        if not token.refresh_token:
+            return token
+
         token_response = await client.post(
             f"https://{token.subdomain}.{token.appcp}/oauth/token",
             data={
@@ -2638,17 +2651,54 @@ class ShareFileService:
         )
         token_response.raise_for_status()
         refreshed = self._token_from_payload(token_response.json(), token.subdomain, token.apicp, token.appcp)
-        return await get_repository().upsert_sharefile_token(refreshed)
+        refreshed = await get_repository().upsert_sharefile_token(refreshed)
+
+        # Keep the caller's token object current. Several ShareFile operations reuse
+        # the same model after a request, and ShareFile may revoke an access token
+        # before its advertised expiry time.
+        token.access_token = refreshed.access_token
+        token.refresh_token = refreshed.refresh_token
+        token.token_type = refreshed.token_type
+        token.expires_at = refreshed.expires_at
+        token.updated_at = refreshed.updated_at
+        return token
+
+    async def _authorized_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        token: ShareFileOAuthToken,
+        **kwargs,
+    ) -> httpx.Response:
+        extra_headers = kwargs.pop("headers", {})
+
+        async def send() -> httpx.Response:
+            return await client.request(
+                method,
+                url,
+                headers={**self._auth_headers(token), **extra_headers},
+                **kwargs,
+            )
+
+        response = await send()
+        if response.status_code == 401 and token.refresh_token:
+            await self._refresh_access_token(client, token)
+            response = await send()
+        return response
 
     async def _list_folder(self, client: httpx.AsyncClient, token: ShareFileOAuthToken, folder_id: str) -> list[dict]:
         folder_url = f"https://{token.subdomain}.{token.apicp}/sf/v3/Items({folder_id})/Children"
         items: list[dict] = []
         next_url: str | None = folder_url
         while next_url:
-            response = await client.get(next_url, headers=self._auth_headers(token), follow_redirects=True)
-            if response.status_code == 401:
-                await asyncio.sleep(1)
-                response = await client.get(next_url, headers=self._auth_headers(token), follow_redirects=True)
+            response = await self._authorized_request(
+                client,
+                "GET",
+                next_url,
+                token,
+                follow_redirects=True,
+            )
             response.raise_for_status()
             payload = response.json()
             items.extend(self._extract_items(payload))
@@ -2690,7 +2740,13 @@ class ShareFileService:
 
     async def _download_item(self, client: httpx.AsyncClient, token: ShareFileOAuthToken, item_id: str) -> bytes:
         download_url = f"https://{token.subdomain}.{token.apicp}/sf/v3/Items({item_id})/Download"
-        response = await client.get(download_url, headers=self._auth_headers(token), follow_redirects=False)
+        response = await self._authorized_request(
+            client,
+            "GET",
+            download_url,
+            token,
+            follow_redirects=False,
+        )
         redirect_url = response.headers.get("Location")
         if response.is_redirect and redirect_url:
             download_response = await client.get(redirect_url, follow_redirects=True)
