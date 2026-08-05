@@ -1,0 +1,571 @@
+from datetime import datetime
+from enum import Enum
+from pydantic import BaseModel, Field
+
+
+class FilingStatus(str, Enum):
+    QUEUED = "QUEUED"
+    UPLOADED = "UPLOADED"
+    EXTRACTING = "EXTRACTING"
+    EXTRACTED = "EXTRACTED"
+    MAPPED = "MAPPED"
+    QUERYING_FTW_CURRENT = "QUERYING_FTW_CURRENT"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+    READY_FOR_APPROVAL = "READY_FOR_APPROVAL"
+    WAITING_FOR_WORKSHEET = "WAITING_FOR_WORKSHEET"
+    WAITING_FOR_SCHEDULE_A = "WAITING_FOR_SCHEDULE_A"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    SUPERSEDED = "SUPERSEDED"
+    DELETED = "DELETED"
+
+
+class ExtractionJobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    SENT_TO_GROUNDX = "SENT_TO_GROUNDX"
+    EXTRACTING = "EXTRACTING"
+    RAW_EXTRACTION_SAVED = "RAW_EXTRACTION_SAVED"
+    MAPPING = "MAPPING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class FieldPriority(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    IGNORE = "IGNORE"
+
+
+class DocumentType(str, Enum):
+    SCHEDULE_A = "SCHEDULE_A"
+    PLAN_WORKSHEET = "PLAN_WORKSHEET"
+    UNKNOWN = "UNKNOWN"
+
+
+class FormType(str, Enum):
+    SCHEDULE_A = "SCHEDULE_A"
+    FORM_5500 = "FORM_5500"
+
+
+class ExtractedFieldStatus(str, Enum):
+    MATCHED = "MATCHED"
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+    MISSING = "MISSING"
+    UNMAPPED = "UNMAPPED"
+    IGNORED = "IGNORED"
+    EDITED = "EDITED"
+
+
+class FTWilliamsReviewStatus(str, Enum):
+    PREVIEW_READY = "PREVIEW_READY"
+    CURRENT_QUERIED = "CURRENT_QUERIED"
+    UPDATE_READY = "UPDATE_READY"
+    UPDATE_SENT = "UPDATE_SENT"
+    UPDATE_FAILED = "UPDATE_FAILED"
+
+
+class ScheduleAContractType(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    EXPERIENCE_RATED = "EXPERIENCE_RATED"
+    NONEXPERIENCE_RATED = "NONEXPERIENCE_RATED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class FTWilliamsPlanLookupStatus(str, Enum):
+    NOT_RUN = "NOT_RUN"
+    MISSING_IDENTIFIERS = "MISSING_IDENTIFIERS"
+    REQUEST_READY = "REQUEST_READY"
+    MATCHED = "MATCHED"
+    FOUND_NO_FTW_IDS = "FOUND_NO_FTW_IDS"
+    MULTIPLE_MATCHES = "MULTIPLE_MATCHES"
+    NOT_FOUND = "NOT_FOUND"
+    FAILED = "FAILED"
+
+
+class FieldRule(BaseModel):
+    key: str
+    label: str
+    ftw_field: str
+    xml_tag: str | None = None
+    priority: FieldPriority
+    source: str
+    form_section: str | None = None
+    field_type: str
+    existing_or_new: str = "BOTH"
+    existing_behavior: str | None = None
+    new_behavior: str | None = None
+    notes: str | None = None
+    client_notes: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    required: bool = False
+    order: int = 0
+
+
+class NormalizedExtractionField(BaseModel):
+    field_name: str
+    value: str = ""
+    confidence: float = 0
+    page: int | None = None
+    source_text: str | None = None
+
+
+class ScheduleABrokerMoneyRow(BaseModel):
+    coverage: str | None = None
+    amount: str = ""
+    purpose: str | None = None
+
+
+class ScheduleABrokerRow(BaseModel):
+    name: str = ""
+    address_line_1: str | None = None
+    address_line_2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    organization_code: str | None = None
+    commission_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
+    fee_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
+    commission_total: str | None = None
+    fee_total: str | None = None
+    source_page: int | None = None
+    confidence: float = 0.9
+
+
+class ScheduleAWorksheetValue(BaseModel):
+    label: str
+    value: str
+    source: str | None = None
+    coverage: str | None = None
+
+
+class ScheduleABenefitBreakdownRow(BaseModel):
+    benefit_type: str
+    persons_covered: str | None = None
+    premium: str | None = None
+    source_page: int | None = None
+
+
+class ScheduleAWorksheetSummary(BaseModel):
+    source: str = ""
+    carrier_name: str | None = None
+    account_name: str | None = None
+    account_number: str | None = None
+    period_begin: str | None = None
+    period_end: str | None = None
+    ein: str | None = None
+    naic_code: str | None = None
+    coverage: str | None = None
+    values: list[ScheduleAWorksheetValue] = Field(default_factory=list)
+    benefit_rows: list[ScheduleABenefitBreakdownRow] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class NormalizedExtractionResult(BaseModel):
+    provider: str
+    fields: list[NormalizedExtractionField]
+    raw: dict | list | str | None = None
+    schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
+
+
+class ExtractedField(BaseModel):
+    id: str | None = None
+    filing_id: str
+    source_field_name: str
+    normalized_field_name: str
+    mapped_rule_key: str | None = None
+    mapped_label: str | None = None
+    ftw_field: str | None = None
+    xml_tag: str | None = None
+    priority: FieldPriority = FieldPriority.LOW
+    value: str = ""
+    proposed_value: str = ""
+    confidence: float = 0
+    page: int | None = None
+    source_text: str | None = None
+    source_document_type: DocumentType | None = None
+    form_type: FormType | None = None
+    ftw_current_value: str | None = None
+    ftw_resolved_tag: str | None = None
+    status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED
+    status_reason: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Filing(BaseModel):
+    id: str | None = None
+    file_name: str
+    content_type: str
+    file_size: int
+    document_type: DocumentType = DocumentType.SCHEDULE_A
+    package_document_count: int = 1
+    status: FilingStatus = FilingStatus.UPLOADED
+    s3_key: str
+    s3_bucket: str | None = None
+    storage_path: str | None = None
+    package_documents: list[dict] = Field(default_factory=list)
+    intake_source: str = "MANUAL"
+    sharefile_item_id: str | None = None
+    sharefile_parent_id: str | None = None
+    sharefile_downloaded_at: datetime | None = None
+    extraction_provider: str | None = None
+    overall_confidence: float = 0
+    missing_high_priority_count: int = 0
+    missing_medium_priority_count: int = 0
+    missing_low_priority_count: int = 0
+    low_confidence_count: int = 0
+    unmapped_count: int = 0
+    schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
+    schedule_a_contract_type_reason: str | None = None
+    schedule_a_contract_type_confirmed: bool = False
+    ftw_schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
+    ftw_schedule_a_contract_type_reason: str | None = None
+    schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
+    proposed_xml: str | None = None
+    error_message: str | None = None
+    rejection_reason: str | None = None
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FilingDetail(Filing):
+    fields: list[ExtractedField] = Field(default_factory=list)
+    events: list["ReviewEvent"] = Field(default_factory=list)
+    jobs: list["ExtractionJob"] = Field(default_factory=list)
+    audit_logs: list["AuditLog"] = Field(default_factory=list)
+    ftw_review: "FTWilliamsReview | None" = None
+
+
+class ExtractionJob(BaseModel):
+    id: str | None = None
+    filing_id: str
+    status: ExtractionJobStatus = ExtractionJobStatus.QUEUED
+    provider: str = "GroundX"
+    attempts: int = 0
+    max_attempts: int = 3
+    last_error: str | None = None
+    next_retry_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RawExtraction(BaseModel):
+    id: str | None = None
+    filing_id: str
+    job_id: str | None = None
+    provider: str
+    raw: dict | list | str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ReviewEvent(BaseModel):
+    id: str | None = None
+    filing_id: str
+    type: str
+    field_id: str | None = None
+    before: str | None = None
+    after: str | None = None
+    reason: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AuditLog(BaseModel):
+    id: str | None = None
+    filing_id: str | None = None
+    event: str
+    message: str
+    details: dict | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FieldEditRequest(BaseModel):
+    proposed_value: str
+
+
+class RejectRequest(BaseModel):
+    reason: str = ""
+
+
+class ApproveRequest(BaseModel):
+    reason: str = ""
+    send_to_ftw: bool = False
+    refresh_current_before_update: bool = True
+    run_edit_checks: bool = False
+    override_blockers: bool = False
+
+
+class ShareFileStatus(BaseModel):
+    configured: bool
+    message: str
+    subdomain: str | None = None
+    intake_folder_id: str | None = None
+    configured_folder_ids: list[str] = Field(default_factory=list)
+    discover_shared_folders: bool = False
+    shared_root_folder_id: str | None = None
+    scan_scope: str | None = None
+    connected: bool = False
+
+
+class ShareFileOAuthToken(BaseModel):
+    id: str | None = None
+    provider: str = "sharefile"
+    subdomain: str
+    apicp: str = "sf-api.com"
+    appcp: str = "sharefile.com"
+    token_type: str = "Bearer"
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWilliamsQueryRequest(BaseModel):
+    operation: str
+    customer_id: str | None = None
+    plan_id: str | None = None
+    year: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    year_end: str | None = None
+    ftw_seq_no: str | None = None
+    company_employer_id: str | None = None
+    plan_number: str | None = None
+    company_name: str | None = None
+    company_state: str | None = None
+    send: bool = False
+
+
+class FTWilliamsStatusItem(BaseModel):
+    type: str | None = None
+    error_code: str | None = None
+    error_desc: str | None = None
+    customer_id: str | None = None
+    plan_id: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    ftw_seq_no: str | None = None
+    plan_name: str | None = None
+    plan_year: str | None = None
+    status_success: str | None = None
+    successful_fields: list[str] = Field(default_factory=list)
+    query_results: dict[str, str] = Field(default_factory=dict)
+
+
+class FTWilliamsQueryResponse(BaseModel):
+    operation: str
+    configured: bool
+    sent: bool
+    request_xml: str
+    http_status: int | None = None
+    success: bool = False
+    statuses: list[FTWilliamsStatusItem] = Field(default_factory=list)
+    raw_response: str | None = None
+    error: str | None = None
+
+
+class FTWilliamsHistoryItem(BaseModel):
+    id: str | None = None
+    filing_id: str
+    filing_name: str
+    filing_status: FilingStatus | None = None
+    action: str
+    action_label: str
+    status: str
+    message: str
+    company_employer_id: str | None = None
+    plan_number: str | None = None
+    plan_name: str | None = None
+    sponsor_name: str | None = None
+    customer_id: str | None = None
+    plan_id: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    year: str | None = None
+    updated_field_count: int | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class FTWilliamsHistoryResponse(BaseModel):
+    range: str
+    days: int
+    items: list[FTWilliamsHistoryItem] = Field(default_factory=list)
+
+
+class FTWilliamsFailureQueueItem(BaseModel):
+    filing_id: str
+    filing_name: str
+    filing_status: FilingStatus
+    review_status: FTWilliamsReviewStatus
+    failure_reason: str
+    next_action: str | None = None
+    plan_name: str | None = None
+    sponsor_name: str | None = None
+    company_employer_id: str | None = None
+    plan_number: str | None = None
+    customer_id: str | None = None
+    plan_id: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    year: str | None = None
+    attempted_field_count: int = 0
+    failed_at: datetime
+    last_action_label: str = "Update failed"
+
+
+class FTWilliamsFailureQueueResponse(BaseModel):
+    total: int
+    items: list[FTWilliamsFailureQueueItem] = Field(default_factory=list)
+
+
+class FTWilliamsComparisonField(BaseModel):
+    field_id: str | None = None
+    rule_key: str | None = None
+    label: str
+    form_type: FormType | None = None
+    source_document_type: DocumentType | None = None
+    ftw_tag: str | None = None
+    current_value: str = ""
+    extracted_value: str = ""
+    proposed_value: str = ""
+    confidence: float = 0
+    priority: FieldPriority = FieldPriority.LOW
+    extraction_status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED
+    changed: bool = False
+    update_included: bool = False
+
+
+class ClientRejectedField(BaseModel):
+    tag: str
+    label: str | None = None
+    value: str | None = None
+    reason: str | None = None
+    suggested_value: str | None = None
+    form_type: FormType | None = None
+    field_id: str | None = None
+
+
+class FTWilliamsPlanLookup(BaseModel):
+    status: FTWilliamsPlanLookupStatus = FTWilliamsPlanLookupStatus.NOT_RUN
+    company_employer_id: str | None = None
+    plan_number: str | None = None
+    year: str | None = None
+    plan_name: str | None = None
+    sponsor_name: str | None = None
+    company_state: str | None = None
+    company_name_candidates: list[str] = Field(default_factory=list)
+    request_xml: str | None = None
+    response_xml: str | None = None
+    error_message: str | None = None
+    matches: list[dict] = Field(default_factory=list)
+    matched_identity: dict | None = None
+
+
+class ClientFacingError(BaseModel):
+    title: str
+    message: str
+    reason: str | None = None
+    next_action: str | None = None
+    severity: str = "error"
+    source: str = "System"
+    code: str | None = None
+    technical_details: str | None = None
+    rejected_fields: list[ClientRejectedField] = Field(default_factory=list)
+
+
+class FTWilliamsReview(BaseModel):
+    id: str | None = None
+    filing_id: str
+    status: FTWilliamsReviewStatus = FTWilliamsReviewStatus.PREVIEW_READY
+    configured: bool = False
+    current_query_sent: bool = False
+    current_query_success: bool = False
+    comparison_year: str | None = None
+    comparison_year_source: str | None = None
+    schedule_a_match: dict | None = None
+    schedule_a_candidates: list[dict] = Field(default_factory=list)
+    schedule_a_records: list[dict] = Field(default_factory=list)
+    schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
+    schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
+    schedule_a_contract_type_reason: str | None = None
+    schedule_a_contract_type_confirmed: bool = False
+    ftw_schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
+    ftw_schedule_a_contract_type_reason: str | None = None
+    schedule_a_contract_type_mismatch: bool = False
+    customer_id: str | None = None
+    plan_id: str | None = None
+    year: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    ftw_seq_no: str | None = None
+    plan_lookup: FTWilliamsPlanLookup | None = None
+    query_request_xml: str | None = None
+    query_response_xml: str | None = None
+    update_xml_5500: str | None = None
+    update_xml_schedule_a: str | None = None
+    update_response_xml: str | None = None
+    edit_check_request_xml: str | None = None
+    edit_check_response_xml: str | None = None
+    error_message: str | None = None
+    client_error: ClientFacingError | None = None
+    fields: list[FTWilliamsComparisonField] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWilliamsPrepareReviewRequest(BaseModel):
+    send_queries: bool = False
+
+
+class FTWilliamsManualMatchRequest(BaseModel):
+    customer_id: str | None = None
+    plan_id: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    year: str | None = None
+
+
+class FTWilliamsScheduleAMatchRequest(BaseModel):
+    ftw_seq_no: str | None = None
+    carrier: str | None = None
+    carrier_ein: str | None = None
+    contract: str | None = None
+    create_new: bool = False
+    schedule_desc: str | None = None
+
+
+class FTWilliamsScheduleAContractTypeRequest(BaseModel):
+    contract_type: ScheduleAContractType
+    reason: str | None = None
+
+
+class FTWilliamsSendUpdateRequest(BaseModel):
+    reason: str = ""
+    refresh_current_before_update: bool = True
+    run_edit_checks: bool = False
+
+
+class FTWilliamsPlanMapping(BaseModel):
+    id: str | None = None
+    company_employer_id: str
+    plan_number: str
+    year: str | None = None
+    plan_name: str | None = None
+    sponsor_name: str | None = None
+    customer_id: str | None = None
+    plan_id: str | None = None
+    ftw_customer_id: str | None = None
+    ftw_plan_id: str | None = None
+    source: str = "MANUAL"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

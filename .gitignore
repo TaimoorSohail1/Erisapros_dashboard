@@ -1,0 +1,15 @@
+node_modules
+frontend/node_modules
+frontend/dist
+backend/.venv
+backend/.uploads
+.mongodb-data
+logs/
+.pytest_cache/
+.tmp/
+__pycache__
+*.pyc
+*.tsbuildinfo
+.env
+.env.local
+.DS_Store

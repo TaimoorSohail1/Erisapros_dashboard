@@ -1,0 +1,442 @@
+import asyncio
+from datetime import datetime, timedelta
+
+from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FilingStatus, FormType, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
+from app.repositories import get_repository
+from app.services.extractor import ExtractionService
+from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.mapping import map_extraction_to_rules
+from app.services.schedule_a_classification import classify_schedule_a_fields
+from app.services.xml_builder import build_proposed_ftw_xml
+
+
+async def process_extraction_job(filing_id: str, job_id: str, file_bytes: bytes, file_name: str) -> None:
+    document_type = classify_document(file_name)
+    await process_package_extraction_job(
+        filing_id,
+        job_id,
+        [{"file_bytes": file_bytes, "file_name": file_name, "document_type": document_type}],
+    )
+
+
+async def process_package_extraction_job(filing_id: str, job_id: str, documents: list[dict]) -> None:
+    repo = get_repository()
+    jobs = await repo.list_extraction_jobs(filing_id)
+    job = next((item for item in jobs if item.id == job_id), None)
+    max_attempts = job.max_attempts if job else 3
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await repo.update_extraction_job(
+                job_id,
+                {
+                    "status": ExtractionJobStatus.SENT_TO_GROUNDX,
+                    "attempts": attempt,
+                    "started_at": datetime.utcnow(),
+                    "last_error": None,
+                },
+            )
+            await repo.update_filing(filing_id, {"status": FilingStatus.EXTRACTING, "error_message": None})
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="EXTRACTION_SENT",
+                    message=f"Sent filing package to extractor. Attempt {attempt} of {max_attempts}.",
+                    details={"document_count": len(documents)},
+                )
+            )
+
+            await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.EXTRACTING})
+            extractor = ExtractionService()
+            mapped_fields: list[ExtractedField] = []
+            providers: list[str] = []
+            raw_items: list[dict] = []
+            schedule_a_broker_rows: list[ScheduleABrokerRow] = []
+            schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
+
+            for document in documents:
+                file_name = str(document["file_name"])
+                file_bytes = document["file_bytes"]
+                document_type = document.get("document_type") or classify_document(file_name)
+                form_type = form_type_for_document(document_type)
+                extraction = await extractor.extract_document(file_bytes, file_name, document_type)
+                providers.append(f"{document_label(document_type)}: {extraction.provider}")
+                if document_type == DocumentType.SCHEDULE_A:
+                    schedule_a_broker_rows.extend(extraction.schedule_a_broker_rows)
+                    schedule_a_worksheet_summaries.extend(extraction.schedule_a_worksheet_summaries)
+                raw_items.append(
+                    {
+                        "file_name": file_name,
+                        "document_type": document_type.value,
+                        "provider": extraction.provider,
+                        "raw": extraction.raw,
+                        "schedule_a_broker_row_count": len(extraction.schedule_a_broker_rows),
+                        "schedule_a_worksheet_summary_count": len(extraction.schedule_a_worksheet_summaries),
+                    }
+                )
+
+                await repo.add_raw_extraction(
+                    RawExtraction(
+                        filing_id=filing_id,
+                        job_id=job_id,
+                        provider=extraction.provider,
+                        raw={
+                            "file_name": file_name,
+                            "document_type": document_type.value,
+                            "raw": extraction.raw,
+                            "schedule_a_broker_rows": [row.model_dump(mode="json") for row in extraction.schedule_a_broker_rows],
+                            "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in extraction.schedule_a_worksheet_summaries],
+                        },
+                    )
+                )
+                mapped = map_extraction_to_rules(
+                    filing_id,
+                    extraction.fields,
+                    form_type=form_type,
+                    source_document_type=document_type,
+                )
+                mapped_fields.extend(mapped["fields"])
+
+            await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.RAW_EXTRACTION_SAVED})
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="RAW_EXTRACTION_SAVED",
+                    message="Raw extractor response saved to MongoDB.",
+                    details={"providers": providers, "field_count": len(mapped_fields)},
+                )
+            )
+
+            await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.MAPPING})
+            mapped_fields = harmonize_schedule_a_reference_fields(mapped_fields)
+            mapped_fields = harmonize_schedule_a_business_rule_fields(mapped_fields)
+            summary = summarize_mapped_fields(mapped_fields)
+            contract_classification = classify_schedule_a_fields(mapped_fields)
+            fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
+            proposed_xml = build_proposed_ftw_xml(fields)
+
+            await repo.update_filing(
+                filing_id,
+                {
+                    "status": summary["status"],
+                    "extraction_provider": " + ".join(providers),
+                    "overall_confidence": summary["overall_confidence"],
+                    "missing_high_priority_count": summary["missing_high_priority_count"],
+                    "missing_medium_priority_count": summary["missing_medium_priority_count"],
+                    "missing_low_priority_count": summary["missing_low_priority_count"],
+                    "low_confidence_count": summary["low_confidence_count"],
+                    "unmapped_count": summary["unmapped_count"],
+                    "schedule_a_contract_type": contract_classification.contract_type,
+                    "schedule_a_contract_type_reason": contract_classification.reason,
+                    "schedule_a_contract_type_confirmed": False,
+                    "schedule_a_broker_rows": [row.model_dump(mode="json") for row in schedule_a_broker_rows],
+                    "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in schedule_a_worksheet_summaries],
+                    "proposed_xml": proposed_xml,
+                    "error_message": None,
+                },
+            )
+            await supersede_duplicate_active_package_rows(filing_id)
+            await repo.update_extraction_job(
+                job_id,
+                {
+                    "status": ExtractionJobStatus.COMPLETED,
+                    "completed_at": datetime.utcnow(),
+                    "next_retry_at": None,
+                },
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="MAPPING_COMPLETED",
+                    message="Fields mapped, validation completed, and XML preview generated.",
+                    details={
+                        "status": summary["status"],
+                        "missing_high": summary["missing_high_priority_count"],
+                        "low_confidence": summary["low_confidence_count"],
+                        "schedule_a_broker_row_count": len(schedule_a_broker_rows),
+                        "schedule_a_worksheet_summary_count": len(schedule_a_worksheet_summaries),
+                        "documents": [{"file_name": item["file_name"], "document_type": item["document_type"], "provider": item["provider"]} for item in raw_items],
+                    },
+                )
+            )
+            await auto_query_ftw_current(filing_id)
+            for document in documents:
+                sharefile_item_id = document.get("sharefile_item_id")
+                if sharefile_item_id:
+                    await repo.upsert_sharefile_file(
+                        str(sharefile_item_id),
+                        {
+                            "status": "EXTRACTED",
+                            "last_extracted_at": datetime.utcnow(),
+                            "filing_id": filing_id,
+                            "extraction_job_id": job_id,
+                        },
+                    )
+            return
+        except Exception as exc:
+            error = str(exc)
+            retry_at = datetime.utcnow() + timedelta(seconds=5 * attempt)
+            await repo.update_extraction_job(
+                job_id,
+                {
+                    "status": ExtractionJobStatus.FAILED,
+                    "attempts": attempt,
+                    "last_error": error,
+                    "next_retry_at": retry_at if attempt < max_attempts else None,
+                },
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="EXTRACTION_FAILED",
+                    message=error,
+                    details={"attempt": attempt, "will_retry": attempt < max_attempts},
+                )
+            )
+            if attempt >= max_attempts:
+                await repo.update_filing(filing_id, {"status": FilingStatus.FAILED, "error_message": error})
+                for document in documents:
+                    sharefile_item_id = document.get("sharefile_item_id")
+                    if sharefile_item_id:
+                        await repo.upsert_sharefile_file(
+                            str(sharefile_item_id),
+                            {
+                                "status": "FAILED",
+                                "last_extraction_failed_at": datetime.utcnow(),
+                                "last_extraction_error": error,
+                                "filing_id": filing_id,
+                                "extraction_job_id": job_id,
+                            },
+                        )
+                return
+            await asyncio.sleep(5 * attempt)
+
+
+async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsReviewService | None = None) -> None:
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    previous_status = filing.status if filing else FilingStatus.NEEDS_REVIEW
+    if previous_status not in {FilingStatus.FAILED, FilingStatus.REJECTED, FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+        await repo.update_filing(filing_id, {"status": FilingStatus.QUERYING_FTW_CURRENT})
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FTWILLIAMS_CURRENT_AUTO_QUERY_STARTED",
+            message="Automatic FT Williams current-data query started after extraction completed.",
+        )
+    )
+    try:
+        review = await (review_service or FTWilliamsReviewService()).prepare_review(filing_id, send_queries=True)
+        await repo.update_filing(filing_id, {"status": previous_status})
+        if review.current_query_success:
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="FTWILLIAMS_CURRENT_AUTO_QUERY_SUCCEEDED",
+                    message="Automatic FT Williams current-data query completed.",
+                    details={
+                        "comparison_year": review.comparison_year,
+                        "comparison_year_source": review.comparison_year_source,
+                        "field_count": len(review.fields),
+                    },
+                )
+            )
+            return
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_CURRENT_AUTO_QUERY_FAILED",
+                message="Automatic FT Williams current-data query did not return current FTW values.",
+                details={
+                    "error": review.error_message,
+                    "plan_lookup_status": review.plan_lookup.status if review.plan_lookup else None,
+                    "field_count": len(review.fields),
+                },
+            )
+        )
+    except Exception as exc:
+        await repo.update_filing(filing_id, {"status": previous_status})
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_CURRENT_AUTO_QUERY_FAILED",
+                message="Automatic FT Williams current-data query failed.",
+                details={"error": str(exc)},
+            )
+        )
+
+
+async def supersede_duplicate_active_package_rows(keep_filing_id: str) -> None:
+    repo = get_repository()
+    filings = await repo.list_filings()
+    keep = next((filing for filing in filings if filing.id == keep_filing_id), None)
+    if not keep or not keep.id:
+        return
+    package_key = filing_package_key(keep)
+    if not package_key:
+        return
+
+    for filing in filings:
+        if not filing.id or filing.id == keep.id:
+            continue
+        if filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+            continue
+        if filing_package_key(filing) != package_key:
+            continue
+        await repo.update_filing(
+            filing.id,
+            {
+                "status": FilingStatus.SUPERSEDED,
+                "error_message": f"Duplicate active ShareFile package row was superseded by {keep.id}.",
+            },
+        )
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing.id,
+                event="SHAREFILE_DUPLICATE_PACKAGE_SUPERSEDED",
+                message="Duplicate active ShareFile package row was superseded after extraction completed.",
+                details={"package_key": package_key, "kept_filing_id": keep.id},
+            )
+        )
+
+
+def filing_package_key(filing) -> str | None:
+    for document in filing.package_documents:
+        if document.get("package_key"):
+            return str(document["package_key"])
+    s3_key = str(filing.s3_key or "")
+    if s3_key.startswith("sharefile-package/"):
+        return s3_key.removeprefix("sharefile-package/")
+    return None
+
+
+def classify_document(file_name: str) -> DocumentType:
+    name = file_name.lower()
+    if "worksheet" in name or "plan worksheet" in name:
+        return DocumentType.PLAN_WORKSHEET
+    if name.endswith((".docx", ".doc")):
+        return DocumentType.PLAN_WORKSHEET
+    if "schedule" in name and "a" in name:
+        return DocumentType.SCHEDULE_A
+    return DocumentType.SCHEDULE_A
+
+
+def form_type_for_document(document_type: DocumentType) -> FormType:
+    if document_type == DocumentType.PLAN_WORKSHEET:
+        return FormType.FORM_5500
+    return FormType.SCHEDULE_A
+
+
+def document_label(document_type: DocumentType) -> str:
+    if document_type == DocumentType.PLAN_WORKSHEET:
+        return "Plan Worksheet"
+    if document_type == DocumentType.SCHEDULE_A:
+        return "Schedule A"
+    return "Unknown"
+
+
+SCHEDULE_A_REFERENCE_RULE_MAP = {
+    "schedule_a_part_iv_4a_plan_name": "form_5500_part_i_1a_plan_name",
+    "schedule_a_part_iv_4b_plan_number_pn": "form_5500_part_i_1b_plan_number_pn",
+    "schedule_a_part_iv_4c_sponsor_ein": "form_5500_part_i_1e_plan_sponsor_ein",
+    "schedule_a_part_iv_4d_plan_year_beginning_date": "form_5500_part_i_6_plan_year_beginning_date",
+    "schedule_a_part_iv_4e_plan_year_ending_date": "form_5500_part_i_7_plan_year_ending_date",
+}
+
+
+def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[ExtractedField]:
+    by_rule_key = {field.mapped_rule_key: field for field in fields if field.mapped_rule_key}
+    for schedule_key, worksheet_key in SCHEDULE_A_REFERENCE_RULE_MAP.items():
+        schedule_field = by_rule_key.get(schedule_key)
+        worksheet_field = by_rule_key.get(worksheet_key)
+        if not schedule_field or not worksheet_field:
+            continue
+
+        worksheet_value = str(worksheet_field.proposed_value or worksheet_field.value or "").strip()
+        if not worksheet_value:
+            continue
+
+        schedule_field.value = worksheet_value
+        schedule_field.proposed_value = worksheet_value
+        schedule_field.confidence = max(schedule_field.confidence, worksheet_field.confidence)
+        schedule_field.source_document_type = worksheet_field.source_document_type
+        schedule_field.page = worksheet_field.page
+        schedule_field.source_text = worksheet_field.source_text or worksheet_value
+        schedule_field.status = ExtractedFieldStatus.MATCHED
+        schedule_field.status_reason = (
+            f"Copied from {worksheet_field.mapped_label or worksheet_field.source_field_name} "
+            "because Schedule A Part IV uses the filing reference values."
+        )
+        schedule_field.updated_at = datetime.utcnow()
+
+    return fields
+
+
+def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> list[ExtractedField]:
+    by_rule_key = {field.mapped_rule_key: field for field in fields if field.mapped_rule_key}
+    purpose_field = by_rule_key.get("schedule_a_part_i_3d_purpose")
+    commissions_field = by_rule_key.get("schedule_a_part_i_3b_amount_of_commissions")
+    fees_field = by_rule_key.get("schedule_a_part_i_3c_amount_of_fees")
+    if not purpose_field:
+        return fields
+
+    derived_purpose = derive_schedule_a_purpose_from_fields(commissions_field, fees_field)
+    if not derived_purpose:
+        return fields
+
+    purpose_field.value = derived_purpose
+    purpose_field.proposed_value = derived_purpose
+    purpose_field.confidence = max(purpose_field.confidence, 0.95)
+    purpose_field.status = ExtractedFieldStatus.MATCHED
+    purpose_field.status_reason = "Derived from Schedule A commission and fee values per field rules."
+    purpose_field.updated_at = datetime.utcnow()
+    return fields
+
+
+def derive_schedule_a_purpose_from_fields(
+    commissions_field: ExtractedField | None,
+    fees_field: ExtractedField | None,
+) -> str | None:
+    commission_amount = parse_numeric_amount(commissions_field.proposed_value if commissions_field else "")
+    fee_amount = parse_numeric_amount(fees_field.proposed_value if fees_field else "")
+
+    has_commission = commission_amount is not None and commission_amount > 0
+    has_fee = fee_amount is not None and fee_amount > 0
+
+    if has_commission and has_fee:
+        return "COMMISSIONS & FEES"
+    if has_commission:
+        return "COMMISSIONS"
+    if has_fee:
+        return "FEES"
+    return None
+
+
+def parse_numeric_amount(value: str | None) -> float | None:
+    clean = str(value or "").replace("$", "").replace(",", "").strip()
+    if not clean:
+        return None
+    try:
+        return float(clean)
+    except ValueError:
+        return None
+
+
+def summarize_mapped_fields(fields: list[ExtractedField]) -> dict:
+    low_confidence_count = len([field for field in fields if field.status.value == "LOW_CONFIDENCE"])
+    unmapped_count = len([field for field in fields if field.status.value == "UNMAPPED"])
+    missing_high_priority_count = len([field for field in fields if field.status.value == "MISSING" and field.priority.value == "HIGH"])
+    missing_medium_priority_count = len([field for field in fields if field.status.value == "MISSING" and field.priority.value == "MEDIUM"])
+    missing_low_priority_count = len([field for field in fields if field.status.value == "MISSING" and field.priority.value == "LOW"])
+    scored = [field for field in fields if field.status.value != "MISSING" and field.priority.value != "IGNORE"]
+    overall_confidence = sum(field.confidence for field in scored) / len(scored) if scored else 0
+    status = FilingStatus.NEEDS_REVIEW if missing_high_priority_count or low_confidence_count or unmapped_count else FilingStatus.READY_FOR_APPROVAL
+    return {
+        "low_confidence_count": low_confidence_count,
+        "missing_high_priority_count": missing_high_priority_count,
+        "missing_medium_priority_count": missing_medium_priority_count,
+        "missing_low_priority_count": missing_low_priority_count,
+        "unmapped_count": unmapped_count,
+        "overall_confidence": overall_confidence,
+        "status": status,
+    }
