@@ -9,11 +9,15 @@ import type {
   FTWilliamsReview,
   ScheduleAContractType,
 } from "./types";
+import { getIdToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(API_BASE + path, options);
+  const headers = new Headers(options?.headers);
+  const idToken = await getIdToken();
+  if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
+  const response = await fetch(API_BASE + path, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || payload.error || "Request failed");

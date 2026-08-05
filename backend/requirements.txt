@@ -11,3 +11,4 @@ groundx>=3.6.0
 python-multipart>=0.0.9
 python-dotenv>=1.0.1
 pypdf>=4.3.0
+PyJWT[crypto]>=2.9.0

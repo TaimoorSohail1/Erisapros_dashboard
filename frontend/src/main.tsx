@@ -8,21 +8,24 @@ import { FTWilliamsFailuresPage } from "./pages/FTWilliamsFailuresPage";
 import { FilingReviewPage } from "./pages/FilingReviewPage";
 import { FieldRulesPage } from "./pages/FieldRulesPage";
 import { ShareFilePage } from "./pages/ShareFilePage";
+import { AuthGate } from "./ui/AuthGate";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <AppShell>
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/ftwilliams/failures" element={<FTWilliamsFailuresPage />} />
-          <Route path="/ftwilliams/activity" element={<FTWilliamsActivityPage />} />
-          <Route path="/filings/:id" element={<FilingReviewPage />} />
-          <Route path="/field-rules" element={<FieldRulesPage />} />
-          <Route path="/sharefile" element={<ShareFilePage />} />
-        </Routes>
-      </AppShell>
-    </BrowserRouter>
+    <AuthGate>
+      <BrowserRouter>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/ftwilliams/failures" element={<FTWilliamsFailuresPage />} />
+            <Route path="/ftwilliams/activity" element={<FTWilliamsActivityPage />} />
+            <Route path="/filings/:id" element={<FilingReviewPage />} />
+            <Route path="/field-rules" element={<FieldRulesPage />} />
+            <Route path="/sharefile" element={<ShareFilePage />} />
+          </Routes>
+        </AppShell>
+      </BrowserRouter>
+    </AuthGate>
   </React.StrictMode>
 );

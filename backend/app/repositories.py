@@ -499,6 +499,8 @@ def get_repository() -> Repository:
     if _repository:
         return _repository
     settings = get_settings()
+    if settings.is_production and not settings.mongodb_uri:
+        raise RuntimeError("MONGODB_URI is required in production; in-memory storage is disabled.")
     _repository = MongoRepository(settings.mongodb_uri) if settings.mongodb_uri else MemoryRepository()
     return _repository
 

@@ -3,7 +3,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    app_environment: str = "development"
     mongodb_uri: str | None = None
+
+    auth_enabled: bool = False
+    cognito_region: str | None = None
+    cognito_user_pool_id: str | None = None
+    cognito_app_client_id: str | None = None
 
     aws_region: str | None = None
     aws_access_key_id: str | None = None
@@ -43,6 +49,34 @@ class Settings(BaseSettings):
     ftwlink_sandbox_ftw_customer_id: str | None = None
     ftwlink_sandbox_ftw_plan_id: str | None = None
     ftwlink_sandbox_year_end: str | None = None
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_environment.strip().lower() == "production"
+
+    def validate_runtime(self) -> None:
+        if not self.is_production:
+            return
+
+        missing = []
+        if not self.mongodb_uri:
+            missing.append("MONGODB_URI")
+        if not self.aws_region:
+            missing.append("AWS_REGION")
+        if not self.s3_bucket_name:
+            missing.append("S3_BUCKET_NAME")
+        if not self.auth_enabled:
+            missing.append("AUTH_ENABLED=true")
+        if not self.cognito_region:
+            missing.append("COGNITO_REGION")
+        if not self.cognito_user_pool_id:
+            missing.append("COGNITO_USER_POOL_ID")
+        if not self.cognito_app_client_id:
+            missing.append("COGNITO_APP_CLIENT_ID")
+        if missing:
+            raise RuntimeError(
+                "Production configuration is incomplete. Missing: " + ", ".join(missing)
+            )
 
     model_config = SettingsConfigDict(
         env_file=(".env.local", "../.env.local", "backend/.env.local"),

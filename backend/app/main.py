@@ -2,9 +2,11 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import field_rules, filings, ftwilliams, sharefile
+from app.auth import AuthenticationError, verify_cognito_id_token
 from app.config import get_settings
 from app.services.sharefile import ShareFileService
 
@@ -35,6 +37,7 @@ async def sharefile_webhook_auto_register_loop(interval_seconds: int) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    settings.validate_runtime()
     poll_task = None
     webhook_auto_register_task = None
     if settings.sharefile_poll_enabled:
@@ -70,10 +73,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+PUBLIC_PATHS = {
+    "/health",
+    "/api/health",
+    "/api/sharefile/oauth/callback",
+    "/api/sharefile/webhook",
+}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    settings = get_settings()
+    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return JSONResponse(status_code=401, content={"detail": "Login is required."})
+
+    try:
+        request.state.user = await verify_cognito_id_token(token, settings)
+    except AuthenticationError as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    return await call_next(request)
+
 app.include_router(filings.router)
 app.include_router(field_rules.router)
 app.include_router(ftwilliams.router)
 app.include_router(sharefile.router)
+app.include_router(filings.router, prefix="/api")
+app.include_router(field_rules.router, prefix="/api")
 app.include_router(ftwilliams.router, prefix="/api")
 app.include_router(sharefile.router, prefix="/api")
 
@@ -81,3 +112,8 @@ app.include_router(sharefile.router, prefix="/api")
 @app.get("/health")
 async def health():
     return {"status": "ok", "stack": "react-python-mongodb"}
+
+
+@app.get("/api/health")
+async def api_health():
+    return await health()
