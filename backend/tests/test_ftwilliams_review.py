@@ -187,7 +187,12 @@ class FakeFTWilliamsFallbackService(FTWilliamsService):
                         error_code="0",
                         ftw_customer_id="900000001",
                         ftw_plan_id="900000002",
-                        query_results={"PLAN_NAME0": "Midwest Hose & Specialty Health and Welfare Benefits Plan"},
+                        query_results={
+                            "PLAN_NAME0": "Midwest Hose & Specialty Health and Welfare Benefits Plan",
+                            "TotPartcpBoyCnt": "999",
+                            "PlanYearBeginDate": "01/01/2023",
+                            "PlanYearEndDate": "12/31/2023",
+                        },
                     )
                 ],
             )
@@ -221,6 +226,15 @@ class FakeFTWilliamsFallbackService(FTWilliamsService):
                                 "InsCarrierName": "Medical Mutual",
                                 "InsCarrierEIN": "73-0000001",
                                 "InsContractNum": "MED-4455",
+                                "InsPrsnCoveredEoyCnt": "888",
+                                "InsPolicyFromDate": "01/01/2023",
+                                "InsPolicyToDate": "12/31/2023",
+                                "CommPdAmt01": "111111",
+                                "FeesPdAmt01": "222222",
+                                "WlfrPremiumRcvdAmt": "333333",
+                                "WlfrClaimsPaidAmt": "444444",
+                                "WlfrClaimsReserveAmt": "555555",
+                                "WlfrTotChargesPaidAmt": "666666",
                             },
                         )
                     ],
@@ -2674,6 +2688,54 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                         value="MED-4455",
                         proposed_value="MED-4455",
                     ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="11. Total participants at beginning of year",
+                        normalized_field_name="participants_beginning",
+                        mapped_rule_key="form_5500_part_ii_11_total_participants_at_beginning_of_year",
+                        mapped_label="11. Total participants at beginning of year",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.HIGH,
+                        value="",
+                        proposed_value="",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered (End of Policy Year)",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered (End of Policy Year)",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="",
+                        proposed_value="",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="3b. Amount of Commissions",
+                        normalized_field_name="commissions",
+                        mapped_rule_key="schedule_a_part_i_3b_amount_of_commissions",
+                        mapped_label="3b. Amount of Commissions",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="777",
+                        proposed_value="777",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="10a. Total premiums or subscription charges paid to carrier",
+                        normalized_field_name="total_premiums",
+                        mapped_rule_key="schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+                        mapped_label="10a. Total premiums or subscription charges paid to carrier",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="",
+                        proposed_value="",
+                    ),
                 ]
             )
         )
@@ -2689,6 +2751,39 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.comparison_year_source, "PRIOR_YEAR_FALLBACK")
         self.assertEqual(review.schedule_a_match["ftw_seq_no"], "4")
         self.assertIn("prior-year 2023", review.error_message)
+        by_rule = {field.rule_key: field for field in review.fields}
+        self.assertEqual(
+            by_rule["schedule_a_part_i_1a_name_of_insurance_company"].current_value,
+            "Medical Mutual",
+        )
+        self.assertEqual(
+            by_rule["form_5500_part_ii_11_total_participants_at_beginning_of_year"].current_value,
+            "",
+        )
+        self.assertEqual(
+            by_rule["schedule_a_part_i_1e_persons_covered_end_of_policy_year"].proposed_value,
+            "",
+        )
+        self.assertEqual(
+            by_rule["schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier"].current_value,
+            "",
+        )
+        self.assertEqual(
+            by_rule["schedule_a_part_i_3b_amount_of_commissions"].proposed_value,
+            "777",
+        )
+        self.assertIn("<CommPdAmt1>777</CommPdAmt1>", review.update_xml_schedule_a)
+        for prior_year_value in (
+            "01/01/2023",
+            "12/31/2023",
+            "111111",
+            "222222",
+            "333333",
+            "444444",
+            "555555",
+            "666666",
+        ):
+            self.assertNotIn(prior_year_value, review.update_xml_schedule_a)
 
     def test_manual_schedule_a_selection_uses_fallback_query_year_but_keeps_update_target_year(self):
         repo = repositories.get_repository()

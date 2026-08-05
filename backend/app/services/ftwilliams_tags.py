@@ -152,6 +152,68 @@ FORM_5500_UPDATE_TAGS_BY_RULE = {
 }
 
 
+FORM_5500_PRIOR_YEAR_ANNUAL_RULES = {
+    "form_5500_part_i_6_plan_year_beginning_date",
+    "form_5500_part_i_7_plan_year_ending_date",
+    "form_5500_part_ii_11_total_participants_at_beginning_of_year",
+    "form_5500_part_ii_12_total_participants_at_end_of_year",
+    "form_5500_part_ii_13_active_participants_at_beginning",
+    "form_5500_part_ii_14_active_participants_at_end",
+    "form_5500_part_ii_15_retired_separated_participants_receiving_benefits",
+    "form_5500_part_ii_16_other_retired_separated_participants_entitled_to_benefits",
+}
+
+SCHEDULE_A_PRIOR_YEAR_ANNUAL_RULES = {
+    "schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+    "schedule_a_part_i_1f_policy_year_beginning_date",
+    "schedule_a_part_i_1g_policy_year_ending_date",
+    "schedule_a_part_i_3b_amount_of_commissions",
+    "schedule_a_part_i_3c_amount_of_fees",
+    "schedule_a_part_iv_4d_plan_year_beginning_date",
+    "schedule_a_part_iv_4e_plan_year_ending_date",
+    "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+} | {
+    rule_key
+    for rule_key in SCHEDULE_A_CURRENT_TAGS_BY_RULE
+    if rule_key.startswith("schedule_a_part_iii_9")
+}
+
+
+def strip_prior_year_annual_values(form_type: FormType, current_values: dict[str, str]) -> dict[str, str]:
+    """Keep stable FTW identity data while suppressing annual carry-forward values."""
+    if not current_values:
+        return {}
+
+    if form_type == FormType.FORM_5500:
+        rules = FORM_5500_PRIOR_YEAR_ANNUAL_RULES
+        mappings = (FORM_5500_CURRENT_TAGS_BY_RULE, FORM_5500_UPDATE_TAGS_BY_RULE)
+    elif form_type == FormType.SCHEDULE_A:
+        rules = SCHEDULE_A_PRIOR_YEAR_ANNUAL_RULES
+        mappings = (SCHEDULE_A_CURRENT_TAGS_BY_RULE, SCHEDULE_A_TAGS_BY_RULE)
+    else:
+        return dict(current_values)
+
+    annual_tags = {
+        str(mapping.get(rule_key) or "").casefold()
+        for rule_key in rules
+        for mapping in mappings
+        if mapping.get(rule_key)
+    }
+    protected: dict[str, str] = {}
+    for tag, value in current_values.items():
+        normalized_tag = str(tag or "").strip()
+        if normalized_tag.casefold() in annual_tags:
+            continue
+        if form_type == FormType.SCHEDULE_A and re.fullmatch(
+            r"(?:CommPdAmt|FeesPdAmt)0*\d+",
+            normalized_tag,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        protected[tag] = value
+    return protected
+
+
 def resolve_ftw_tag(field: ExtractedField) -> str | None:
     if field.form_type == FormType.FORM_5500:
         return FORM_5500_TAGS_BY_RULE.get(str(field.mapped_rule_key or "")) or existing_real_tag(field)

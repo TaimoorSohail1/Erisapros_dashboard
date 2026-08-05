@@ -30,7 +30,15 @@ from app.models import (
 from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
 from app.services.ftwilliams import FTWilliamsService
-from app.services.ftwilliams_tags import normalize_compare_value, resolve_ftw_current_tag, resolve_ftw_current_value, resolve_ftw_tag, resolve_ftw_update_tag, values_meaningfully_different
+from app.services.ftwilliams_tags import (
+    normalize_compare_value,
+    resolve_ftw_current_tag,
+    resolve_ftw_current_value,
+    resolve_ftw_tag,
+    resolve_ftw_update_tag,
+    strip_prior_year_annual_values,
+    values_meaningfully_different,
+)
 from app.services.schedule_a_classification import (
     ScheduleAClassification,
     classify_schedule_a_current,
@@ -341,12 +349,23 @@ class FTWilliamsReviewService:
             if response.success and success_status and success_status.query_results:
                 if not success_status.ftw_seq_no:
                     success_status.ftw_seq_no = payload.ftw_seq_no
-                schedule_a_current = success_status.query_results
-                update_identity = update_identity | self._identity_from_status(success_status)
+                selected_status = success_status
+                if review.comparison_year_source == "PRIOR_YEAR_FALLBACK":
+                    selected_status = success_status.model_copy(
+                        update={
+                            "query_results": strip_prior_year_annual_values(
+                                FormType.SCHEDULE_A,
+                                success_status.query_results,
+                            )
+                        },
+                        deep=True,
+                    )
+                schedule_a_current = selected_status.query_results
+                update_identity = update_identity | self._identity_from_status(selected_status)
                 error_message = None
                 current_query_success = True
-                schedule_a_candidates = self._merge_schedule_candidate_payloads(schedule_a_candidates, success_status, fields)
-                schedule_a_records = self._merge_schedule_record_payloads(schedule_a_records, success_status)
+                schedule_a_candidates = self._merge_schedule_candidate_payloads(schedule_a_candidates, selected_status, fields)
+                schedule_a_records = self._merge_schedule_record_payloads(schedule_a_records, selected_status)
             else:
                 error_message = response.error or self._status_error(response.statuses) or "Selected FT Williams Schedule A could not be queried."
 
@@ -913,7 +932,11 @@ class FTWilliamsReviewService:
         fallback["query_request_xmls"] = [*initial["query_request_xmls"], *fallback["query_request_xmls"]]
         fallback["query_response_xmls"] = [*initial["query_response_xmls"], *fallback["query_response_xmls"]]
         if fallback["current_query_complete"]:
-            note = f"Using prior-year {fallback_year} FT Williams data because no usable {years[0]} data was found."
+            fallback = self._protect_prior_year_fallback(fallback)
+            note = (
+                f"Using prior-year {fallback_year} FT Williams data because no usable {years[0]} data was found. "
+                "Annual dates, headcounts, commissions, fees, premiums, claims, and reserves were left blank."
+            )
             fallback["error_message"] = "; ".join(filter(None, [note, fallback["error_message"]]))
             fallback["comparison_year"] = fallback_year
             fallback["comparison_year_source"] = "PRIOR_YEAR_FALLBACK"
@@ -933,6 +956,40 @@ class FTWilliamsReviewService:
         fallback["comparison_year"] = None
         fallback["comparison_year_source"] = None
         return fallback
+
+    def _protect_prior_year_fallback(self, result: dict) -> dict:
+        protected = dict(result)
+        protected["form_5500_current"] = strip_prior_year_annual_values(
+            FormType.FORM_5500,
+            result.get("form_5500_current") or {},
+        )
+        protected["schedule_a_current"] = strip_prior_year_annual_values(
+            FormType.SCHEDULE_A,
+            result.get("schedule_a_current") or {},
+        )
+
+        matched_schedule_a = result.get("matched_schedule_a")
+        if matched_schedule_a:
+            protected["matched_schedule_a"] = matched_schedule_a.model_copy(
+                update={"query_results": protected["schedule_a_current"]},
+                deep=True,
+            )
+
+        protected["schedule_a_candidates"] = [
+            {**candidate, "plan_year_begin": None, "plan_year_end": None}
+            for candidate in result.get("schedule_a_candidates") or []
+        ]
+        protected["schedule_a_records"] = [
+            {
+                **record,
+                "query_results": strip_prior_year_annual_values(
+                    FormType.SCHEDULE_A,
+                    record.get("query_results") or {},
+                ),
+            }
+            for record in result.get("schedule_a_records") or []
+        ]
+        return protected
 
     async def _run_current_queries_for_year(
         self,
