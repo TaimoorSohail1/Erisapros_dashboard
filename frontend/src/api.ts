@@ -11,7 +11,8 @@ import type {
 } from "./types";
 import { getIdToken } from "./auth";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "/api" : "http://localhost:8001");
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);

@@ -25,6 +25,10 @@ const dom = new JSDOM(html, {
 const bundlePath = path.join(frontendDir, "dist", scriptMatch[1].replace(/^\//, ""));
 const source = await readFile(bundlePath, "utf8");
 
+if (source.includes("http://localhost:8001")) {
+  throw new Error("Production bundle must not use the local development API URL.");
+}
+
 try {
   new vm.Script(source, { filename: bundlePath }).runInContext(dom.getInternalVMContext());
   await new Promise((resolve) => setTimeout(resolve, 50));
