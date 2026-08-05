@@ -103,6 +103,19 @@ class ShareFileRegressionTests(unittest.TestCase):
 
         self.service._create_filing_package = fake_create_filing_package
 
+    def test_explicit_schedule_a_filename_wins_over_worksheet_context(self):
+        document_type = self.service._classify_sharefile_document(
+            "Schedule A After Worksheet.pdf",
+            [
+                "Client (Test)",
+                "5500 Filing",
+                "2024 Filing Worksheet First",
+                "Schedule A After Worksheet.pdf",
+            ],
+        )
+
+        self.assertEqual(document_type, DocumentType.SCHEDULE_A)
+
     def test_sharefile_request_refreshes_early_revoked_access_token_after_401(self):
         token = ShareFileOAuthToken(
             subdomain="example",

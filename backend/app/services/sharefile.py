@@ -2774,6 +2774,12 @@ class ShareFileService:
         is_pdf = name.endswith(".pdf")
         is_word = name.endswith((".doc", ".docx"))
 
+        # An explicit Schedule A filename is stronger evidence than a nearby
+        # folder or suffix containing the generic word "worksheet".
+        looks_like_schedule = "schedulea" in compact_name or "schedule a" in name
+        if is_pdf and looks_like_schedule:
+            return DocumentType.SCHEDULE_A
+
         looks_like_plan_worksheet = (
             ("worksheet" in context_text and ("plan" in context_text or "5500" in context_text))
             or "planworksheet" in compact_name
@@ -2784,8 +2790,7 @@ class ShareFileService:
 
         excluded_schedule_names = ("cover", "dnu", "signature", "signed", "sar", "acknowledgement", "draft")
         in_schedule_folder = "schedule" in folder_text and "a" in folder_text
-        looks_like_schedule = "schedulea" in compact_name or "schedule a" in name
-        if is_pdf and (looks_like_schedule or (in_schedule_folder and not any(term in name for term in excluded_schedule_names))):
+        if is_pdf and in_schedule_folder and not any(term in name for term in excluded_schedule_names):
             return DocumentType.SCHEDULE_A
 
         if is_pdf and ("form5500" in compact_name or "form 5500" in name or "5500" in name):
