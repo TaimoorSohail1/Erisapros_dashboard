@@ -31,6 +31,23 @@ class ProductionRuntimeTests(unittest.TestCase):
 
         settings.validate_runtime()
 
+    def test_production_settings_reject_localhost_database(self):
+        settings = Settings(
+            app_environment="production",
+            mongodb_uri="mongodb://localhost:27017/erisapros",
+            aws_region="eu-north-1",
+            s3_bucket_name="erisapros-files",
+            auth_enabled=True,
+            cognito_region="eu-north-1",
+            cognito_user_pool_id="eu-north-1_example",
+            cognito_app_client_id="client-id",
+            sharefile_webhook_token="webhook-token",
+            _env_file=None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "remote MongoDB"):
+            settings.validate_runtime()
+
     @patch("app.services.storage.boto3.client")
     @patch("app.services.storage.get_settings")
     def test_s3_uses_ecs_role_without_static_access_keys(self, get_settings, boto_client):

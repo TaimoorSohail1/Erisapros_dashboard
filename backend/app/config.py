@@ -1,4 +1,6 @@
 from functools import lru_cache
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +64,14 @@ class Settings(BaseSettings):
         missing = []
         if not self.mongodb_uri:
             missing.append("MONGODB_URI")
+        elif (urlsplit(self.mongodb_uri).hostname or "").lower() in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise RuntimeError(
+                "Production requires a remote MongoDB connection; localhost is not persistent or reachable from ECS."
+            )
         if not self.aws_region:
             missing.append("AWS_REGION")
         if not self.s3_bucket_name:
