@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from starlette.requests import Request
 
@@ -9,6 +10,11 @@ from app.services.storage import StorageService
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def test_production_container_does_not_log_webhook_query_secrets(self):
+        dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+
+        self.assertIn("--no-access-log", dockerfile.read_text(encoding="utf-8"))
+
     def test_production_settings_require_persistent_services(self):
         settings = Settings(app_environment="production", _env_file=None)
 
