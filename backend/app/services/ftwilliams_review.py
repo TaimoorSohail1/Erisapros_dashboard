@@ -1301,7 +1301,11 @@ class FTWilliamsReviewService:
             tag = resolve_ftw_current_tag(field)
             current_values = form_5500_current if field.form_type == FormType.FORM_5500 else schedule_a_current
             current_value = resolve_ftw_current_value(field, current_values)
-            proposed_value = str(field.proposed_value or "")
+            extracted_proposed_value = str(field.proposed_value or "")
+            # A blank extraction must never visually suggest that an existing FTW
+            # value will be erased. Show the retained current value in the review
+            # column while still excluding blank extraction fields from updates.
+            proposed_value = extracted_proposed_value if extracted_proposed_value.strip() else current_value
             changed = values_meaningfully_different(current_value, proposed_value)
             comparison.append(
                 FTWilliamsComparisonField(
@@ -1318,7 +1322,11 @@ class FTWilliamsReviewService:
                     priority=field.priority,
                     extraction_status=field.status,
                     changed=changed,
-                    update_included=bool(tag and proposed_value.strip() and (update_field_ids is None or id(field) in update_field_ids)),
+                    update_included=bool(
+                        tag
+                        and extracted_proposed_value.strip()
+                        and (update_field_ids is None or id(field) in update_field_ids)
+                    ),
                 )
             )
         return comparison

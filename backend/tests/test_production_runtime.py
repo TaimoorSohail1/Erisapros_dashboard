@@ -10,6 +10,15 @@ from app.services.storage import StorageService
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def test_production_proxy_timeouts_allow_slow_ftw_current_queries(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertIn("idle_timeout.timeout_seconds", contents)
+        self.assertIn('Value: "120"', contents)
+        self.assertIn("OriginReadTimeout: 60", contents)
+        self.assertIn("OriginKeepaliveTimeout: 60", contents)
+
     def test_production_container_does_not_log_webhook_query_secrets(self):
         dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
 

@@ -1315,6 +1315,33 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["3b. Amount of Commissions"].current_value, "111893")
         self.assertEqual(by_label["3b. Amount of Commissions"].proposed_value, "112000")
 
+    def test_blank_extraction_displays_retained_ftw_value_without_sending_it(self):
+        field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="13. Active participants at beginning",
+            normalized_field_name="active participants beginning",
+            mapped_rule_key="form_5500_part_ii_13_active_participants_at_beginning",
+            mapped_label="13. Active participants at beginning",
+            form_type=FormType.FORM_5500,
+            source_document_type=DocumentType.PLAN_WORKSHEET,
+            priority=FieldPriority.HIGH,
+            value="",
+            proposed_value="",
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {"TotActPartcpBoyCnt": "249"},
+            {},
+            update_fields=[field],
+        )[0]
+
+        self.assertEqual(comparison.current_value, "249")
+        self.assertEqual(comparison.extracted_value, "")
+        self.assertEqual(comparison.proposed_value, "249")
+        self.assertFalse(comparison.changed)
+        self.assertFalse(comparison.update_included)
+
     def test_prepare_review_builds_schedule_a_payload_for_all_records_and_updates_selected(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))

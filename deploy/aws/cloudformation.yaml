@@ -210,6 +210,9 @@ Resources:
       SecurityGroups: [!Ref LoadBalancerSecurityGroup]
       Subnets: !Ref SubnetIds
       Type: application
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "120"
 
   ApiTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -458,6 +461,8 @@ Resources:
             CustomOriginConfig:
               HTTPPort: 80
               OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
             OriginCustomHeaders:
               - HeaderName: X-Erisapros-Origin
                 HeaderValue: !Ref OriginVerifyToken
