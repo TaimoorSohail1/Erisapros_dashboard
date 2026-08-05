@@ -1,8 +1,10 @@
 import os
 import unittest
 from unittest.mock import MagicMock, patch
+from starlette.requests import Request
 
 from app.config import Settings
+from app.api.sharefile import valid_webhook_token
 from app.services.storage import StorageService
 
 
@@ -23,6 +25,7 @@ class ProductionRuntimeTests(unittest.TestCase):
             cognito_region="eu-north-1",
             cognito_user_pool_id="eu-north-1_example",
             cognito_app_client_id="client-id",
+            sharefile_webhook_token="webhook-token",
             _env_file=None,
         )
 
@@ -40,6 +43,7 @@ class ProductionRuntimeTests(unittest.TestCase):
             cognito_region="eu-north-1",
             cognito_user_pool_id="eu-north-1_example",
             cognito_app_client_id="client-id",
+            sharefile_webhook_token="webhook-token",
             _env_file=None,
         )
         s3 = MagicMock()
@@ -62,11 +66,26 @@ class ProductionRuntimeTests(unittest.TestCase):
             cognito_region="eu-north-1",
             cognito_user_pool_id="eu-north-1_example",
             cognito_app_client_id="client-id",
+            sharefile_webhook_token="webhook-token",
             _env_file=None,
         )
 
         with self.assertRaisesRegex(RuntimeError, "S3_BUCKET_NAME"):
             StorageService().save_pdf("plan.pdf", "application/pdf", b"pdf")
+
+    @patch("app.api.sharefile.get_settings")
+    def test_production_webhook_requires_matching_token(self, get_settings):
+        get_settings.return_value = Settings(
+            app_environment="production",
+            sharefile_webhook_token="expected-token",
+            _env_file=None,
+        )
+
+        missing = Request({"type": "http", "method": "POST", "path": "/api/sharefile/webhook", "query_string": b"", "headers": []})
+        matching = Request({"type": "http", "method": "POST", "path": "/api/sharefile/webhook", "query_string": b"token=expected-token", "headers": []})
+
+        self.assertFalse(valid_webhook_token(missing))
+        self.assertTrue(valid_webhook_token(matching))
 
 
 if __name__ == "__main__":

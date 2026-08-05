@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     sharefile_client_secret: str | None = None
     sharefile_redirect_url: str | None = None
     sharefile_webhook_url: str | None = None
+    sharefile_webhook_token: str | None = None
     sharefile_intake_folder_id: str | None = None
     sharefile_intake_folder_path: str | None = None
     sharefile_discover_shared_folders: bool = False
@@ -73,6 +74,8 @@ class Settings(BaseSettings):
             missing.append("COGNITO_USER_POOL_ID")
         if not self.cognito_app_client_id:
             missing.append("COGNITO_APP_CLIENT_ID")
+        if not self.sharefile_webhook_token:
+            missing.append("SHAREFILE_WEBHOOK_TOKEN")
         if missing:
             raise RuntimeError(
                 "Production configuration is incomplete. Missing: " + ", ".join(missing)

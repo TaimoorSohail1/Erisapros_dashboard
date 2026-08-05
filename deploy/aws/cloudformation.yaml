@@ -318,6 +318,10 @@ Resources:
               ValueFrom: !Sub "${AppSecret}:SHAREFILE_CLIENT_SECRET::"
             - Name: SHAREFILE_REDIRECT_URL
               ValueFrom: !Sub "${AppSecret}:SHAREFILE_REDIRECT_URL::"
+            - Name: SHAREFILE_WEBHOOK_URL
+              ValueFrom: !Sub "${AppSecret}:SHAREFILE_WEBHOOK_URL::"
+            - Name: SHAREFILE_WEBHOOK_TOKEN
+              ValueFrom: !Sub "${AppSecret}:SHAREFILE_WEBHOOK_TOKEN::"
             - Name: SHAREFILE_INTAKE_FOLDER_ID
               ValueFrom: !Sub "${AppSecret}:SHAREFILE_INTAKE_FOLDER_ID::"
             - Name: SHAREFILE_INTAKE_FOLDER_PATH

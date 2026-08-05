@@ -1,7 +1,19 @@
+import hmac
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from app.config import get_settings
 from app.services.sharefile import ShareFileService
 
 router = APIRouter(prefix="/sharefile", tags=["sharefile"])
+
+
+def valid_webhook_token(request: Request) -> bool:
+    settings = get_settings()
+    expected = settings.sharefile_webhook_token
+    if not expected:
+        return not settings.is_production
+    supplied = request.query_params.get("token") or request.headers.get("x-sharefile-webhook-token", "")
+    return hmac.compare_digest(supplied, expected)
 
 
 @router.get("/status")
@@ -21,6 +33,8 @@ async def poll_sharefile_folder(background_tasks: BackgroundTasks):
 
 @router.post("/webhook")
 async def sharefile_webhook(request: Request, background_tasks: BackgroundTasks):
+    if not valid_webhook_token(request):
+        raise HTTPException(status_code=401, detail="Invalid ShareFile webhook token.")
     try:
         payload = await request.json()
     except ValueError:
