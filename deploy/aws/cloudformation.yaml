@@ -305,7 +305,7 @@ Resources:
             - Name: SHAREFILE_POLL_INTERVAL_SECONDS
               Value: "1800"
             - Name: SHAREFILE_WEBHOOK_AUTO_REGISTER_ENABLED
-              Value: "false"
+              Value: "true"
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
           Secrets:
