@@ -303,7 +303,7 @@ Resources:
             - Name: SHAREFILE_POLL_ENABLED
               Value: "true"
             - Name: SHAREFILE_POLL_INTERVAL_SECONDS
-              Value: "1800"
+              Value: "300"
             - Name: SHAREFILE_WEBHOOK_AUTO_REGISTER_ENABLED
               Value: "true"
             - Name: FTWLINK_ENDPOINT_URL
