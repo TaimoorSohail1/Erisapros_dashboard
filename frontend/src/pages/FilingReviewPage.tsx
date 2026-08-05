@@ -274,7 +274,24 @@ export function FilingReviewPage() {
 
   async function approveAnyway() {
     setShowApproveConfirm(false);
-    await decide("approve", { overrideBlockers: approvalBlocked });
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await decide("approve", { overrideBlockers: approvalBlocked });
+      setToast({
+        tone: "success",
+        title: "Filing approved",
+        message: `${displayFileName} is approved and ready for the remaining FT Williams safety checks.`,
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Could not approve filing",
+        message: error instanceof Error ? error.message : "The filing could not be approved.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
   }
 
   function handleApproveClick() {
@@ -282,8 +299,23 @@ export function FilingReviewPage() {
       setShowUnapproveConfirm(true);
       return;
     }
+    if (
+      expectsScheduleACurrent &&
+      (!scheduleAContractConfirmed || scheduleAContractType === "UNKNOWN" || scheduleAContractType === "NEEDS_REVIEW")
+    ) {
+      setToast({
+        tone: "error",
+        title: "Confirm Schedule A type",
+        message: "Choose Experience or Nonexperience in the Schedule A Type card before approving this filing.",
+      });
+      return;
+    }
     if (!ftwCurrentLoaded) {
-      setMessage("Query FTW Current before approving this filing. At least one current FT Williams form must load.");
+      setToast({
+        tone: "error",
+        title: "FT Williams current data required",
+        message: "Query FTW Current before approving this filing. At least one current FT Williams form must load.",
+      });
       return;
     }
     setMessage("");
