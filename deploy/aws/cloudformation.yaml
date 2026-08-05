@@ -102,9 +102,6 @@ Resources:
           RequireSymbols: true
           RequireUppercase: true
           TemporaryPasswordValidityDays: 7
-      UserPoolAddOns:
-        AdvancedSecurityMode: ENFORCED
-
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
