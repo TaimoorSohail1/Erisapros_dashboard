@@ -11,7 +11,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "../router";
 import { listFTWilliamsHistory } from "../api";
 import type { FTWilliamsHistoryItem, FTWilliamsHistoryRange } from "../types";
 import { formatFilingDisplayName } from "../utils";

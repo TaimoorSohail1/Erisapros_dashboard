@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "../router";
 import { listFTWilliamsFailureQueue } from "../api";
 import {
   classifyFTWilliamsFailure,

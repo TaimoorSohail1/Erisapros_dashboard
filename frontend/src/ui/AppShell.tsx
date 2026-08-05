@@ -1,5 +1,5 @@
 import { FolderSync, LayoutDashboard, ListChecks, ShieldCheck } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink } from "../router";
 import { FTWilliamsNotifications } from "./FTWilliamsNotifications";
 import { authenticationEnabled, signOut } from "../auth";
 

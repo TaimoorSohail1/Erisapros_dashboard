@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AppShell } from "./ui/AppShell";
 import { DashboardPage } from "./pages/DashboardPage";
 import { FTWilliamsActivityPage } from "./pages/FTWilliamsActivityPage";
@@ -11,21 +10,20 @@ import { ShareFilePage } from "./pages/ShareFilePage";
 import { AuthGate } from "./ui/AuthGate";
 import "./styles.css";
 
+function CurrentPage() {
+  const path = window.location.pathname.replace(/\/$/, "") || "/";
+  if (path === "/ftwilliams/failures") return <FTWilliamsFailuresPage />;
+  if (path === "/ftwilliams/activity") return <FTWilliamsActivityPage />;
+  if (path.startsWith("/filings/")) return <FilingReviewPage />;
+  if (path === "/field-rules") return <FieldRulesPage />;
+  if (path === "/sharefile") return <ShareFilePage />;
+  return <DashboardPage />;
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AuthGate>
-      <BrowserRouter>
-        <AppShell>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/ftwilliams/failures" element={<FTWilliamsFailuresPage />} />
-            <Route path="/ftwilliams/activity" element={<FTWilliamsActivityPage />} />
-            <Route path="/filings/:id" element={<FilingReviewPage />} />
-            <Route path="/field-rules" element={<FieldRulesPage />} />
-            <Route path="/sharefile" element={<ShareFilePage />} />
-          </Routes>
-        </AppShell>
-      </BrowserRouter>
+      <AppShell><CurrentPage /></AppShell>
     </AuthGate>
   </React.StrictMode>
 );
