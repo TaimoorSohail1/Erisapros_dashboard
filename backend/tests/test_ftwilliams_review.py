@@ -1264,6 +1264,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
         by_label = {field.label: field for field in review.fields}
 
+        self.assertTrue(review.current_year_exists)
+        self.assertFalse(review.bring_forward_required)
+        self.assertEqual(review.status, FTWilliamsReviewStatus.CURRENT_QUERIED)
         self.assertEqual(by_label["13. Active participants at beginning"].current_value, "249")
         self.assertEqual(by_label["14. Active participants at end"].current_value, "279")
         self.assertEqual(by_label["12. Total participants at end of year"].current_value, "298")
@@ -1782,6 +1785,35 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Resolve 1 high-priority missing field before approving"):
             run_async(FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(filing.id))
+
+        updated_filing = run_async(repo.get_filing(filing.id))
+        self.assertNotEqual(updated_filing.status, FilingStatus.APPROVED)
+
+    def test_approve_blocks_when_current_year_ftw_record_is_missing(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_year_exists=False,
+                    bring_forward_required=True,
+                    ftw_plan_url="https://www.ftwilliam.com/",
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "native Bring Forward action"):
+            run_async(
+                FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
+                    filing.id,
+                    override_blockers=True,
+                )
+            )
 
         updated_filing = run_async(repo.get_filing(filing.id))
         self.assertNotEqual(updated_filing.status, FilingStatus.APPROVED)
@@ -2746,11 +2778,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         queried_5500_years = [call.year for call in fake_ftw.calls if call.operation == "query_5500"]
         self.assertEqual(queried_5500_years, ["2024", "2023"])
         self.assertTrue(review.current_query_success)
+        self.assertFalse(review.current_year_exists)
+        self.assertTrue(review.bring_forward_required)
+        self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
+        self.assertEqual(review.ftw_plan_url, "https://www.ftwilliam.com/")
         self.assertEqual(review.year, "2024")
         self.assertEqual(review.comparison_year, "2023")
         self.assertEqual(review.comparison_year_source, "PRIOR_YEAR_FALLBACK")
         self.assertEqual(review.schedule_a_match["ftw_seq_no"], "4")
-        self.assertIn("prior-year 2023", review.error_message)
+        self.assertIn("Prior-year 2023", review.error_message)
         by_rule = {field.rule_key: field for field in review.fields}
         self.assertEqual(
             by_rule["schedule_a_part_i_1a_name_of_insurance_company"].current_value,
@@ -2772,7 +2808,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             by_rule["schedule_a_part_i_3b_amount_of_commissions"].proposed_value,
             "777",
         )
-        self.assertIn("<CommPdAmt1>777</CommPdAmt1>", review.update_xml_schedule_a)
+        self.assertNotIn("<CommPdAmt1>777</CommPdAmt1>", review.update_xml_schedule_a)
         for prior_year_value in (
             "01/01/2023",
             "12/31/2023",
@@ -2784,6 +2820,106 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "666666",
         ):
             self.assertNotIn(prior_year_value, review.update_xml_schedule_a)
+
+    def test_prepare_review_flags_prior_year_fallback_for_multiple_documents(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            service = FTWilliamsReviewService(FakeFTWilliamsFallbackService())
+            reviews = []
+            for index in range(3):
+                filing = await repo.create_filing(
+                    sample_filing().model_copy(update={"file_name": f"2025 Filing Package {index + 1}"})
+                )
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1e. Plan Sponsor EIN",
+                            normalized_field_name="sponsor_ein",
+                            mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+                            mapped_label="1e. Plan Sponsor EIN",
+                            form_type=FormType.FORM_5500,
+                            source_document_type=DocumentType.PLAN_WORKSHEET,
+                            priority=FieldPriority.MEDIUM,
+                            value="73-1185740",
+                            proposed_value="73-1185740",
+                        ),
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1b. Plan Number (PN)",
+                            normalized_field_name="plan_number",
+                            mapped_rule_key="form_5500_part_i_1b_plan_number_pn",
+                            mapped_label="1b. Plan Number (PN)",
+                            form_type=FormType.FORM_5500,
+                            source_document_type=DocumentType.PLAN_WORKSHEET,
+                            priority=FieldPriority.MEDIUM,
+                            value="501",
+                            proposed_value="501",
+                        ),
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="7. Plan Year Ending Date",
+                            normalized_field_name="plan_year_end",
+                            mapped_rule_key="form_5500_part_i_7_plan_year_ending_date",
+                            mapped_label="7. Plan Year Ending Date",
+                            form_type=FormType.FORM_5500,
+                            source_document_type=DocumentType.PLAN_WORKSHEET,
+                            priority=FieldPriority.LOW,
+                            value="2024-12-31",
+                            proposed_value="2024-12-31",
+                        ),
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1a. Name of Insurance Company",
+                            normalized_field_name="carrier",
+                            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                            mapped_label="1a. Name of Insurance Company",
+                            form_type=FormType.SCHEDULE_A,
+                            source_document_type=DocumentType.SCHEDULE_A,
+                            priority=FieldPriority.HIGH,
+                            value="Medical Mutual",
+                            proposed_value="Medical Mutual",
+                        ),
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1b. Insurance Carrier EIN",
+                            normalized_field_name="carrier_ein",
+                            mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                            mapped_label="1b. Insurance Carrier EIN",
+                            form_type=FormType.SCHEDULE_A,
+                            source_document_type=DocumentType.SCHEDULE_A,
+                            priority=FieldPriority.HIGH,
+                            value="73-0000001",
+                            proposed_value="73-0000001",
+                        ),
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1d. Contract / Policy Number",
+                            normalized_field_name="contract",
+                            mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                            mapped_label="1d. Contract / Policy Number",
+                            form_type=FormType.SCHEDULE_A,
+                            source_document_type=DocumentType.SCHEDULE_A,
+                            priority=FieldPriority.HIGH,
+                            value="MED-4455",
+                            proposed_value="MED-4455",
+                        ),
+                    ]
+                )
+                reviews.append(await service.prepare_review(filing.id, send_queries=True))
+            return reviews
+
+        reviews = run_async(scenario())
+
+        self.assertEqual(len(reviews), 3)
+        self.assertEqual(len({review.filing_id for review in reviews}), 3)
+        for review in reviews:
+            self.assertTrue(review.current_query_success)
+            self.assertFalse(review.current_year_exists)
+            self.assertTrue(review.bring_forward_required)
+            self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
+            self.assertNotIn("<DOL5500Data>", review.update_xml_5500 or "")
+            self.assertNotIn("<DOLScheduleAData>", review.update_xml_schedule_a or "")
 
     def test_manual_schedule_a_selection_uses_fallback_query_year_but_keeps_update_target_year(self):
         repo = repositories.get_repository()

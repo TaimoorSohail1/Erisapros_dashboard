@@ -31,6 +31,9 @@ if (source.includes("http://localhost:8001")) {
 if (!source.includes("eu-north-1_vfU0v0s9f") || !source.includes("4k9pm7unsniiokmqdc8qtjms7n")) {
   throw new Error("Production bundle must include the Cognito authentication configuration.");
 }
+if (!source.includes("Open FTW Bring Forward") || !source.includes("Refresh FTW Data")) {
+  throw new Error("Production bundle must include the safe FT Williams Bring Forward workflow.");
+}
 
 try {
   new vm.Script(source, { filename: bundlePath }).runInContext(dom.getInternalVMContext());

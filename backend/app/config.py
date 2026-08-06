@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     ftwlink_sandbox_ftw_customer_id: str | None = None
     ftwlink_sandbox_ftw_plan_id: str | None = None
     ftwlink_sandbox_year_end: str | None = None
+    ftw_plan_page_url_template: str = "https://www.ftwilliam.com/"
 
     @property
     def is_production(self) -> bool:

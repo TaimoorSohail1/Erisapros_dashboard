@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import urlsplit
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from app.models import (
     ApproveRequest,
@@ -264,6 +265,49 @@ async def prepare_ftwilliams_review(filing_id: str, payload: FTWilliamsPrepareRe
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ftw_review": review}
+
+
+@router.post("/{filing_id}/ftw/bring-forward-link")
+async def get_ftwilliams_bring_forward_link(filing_id: str):
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    review = await repo.get_ftwilliams_review(filing_id)
+    if not review or not review.bring_forward_required:
+        raise HTTPException(status_code=409, detail="FT Williams Bring Forward is not required for this filing.")
+    url = str(review.ftw_plan_url or "").strip()
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        safe_url = (
+            parsed.scheme == "https"
+            and (host == "ftwilliam.com" or host.endswith(".ftwilliam.com"))
+            and not parsed.username
+            and not parsed.password
+            and parsed.port in {None, 443}
+        )
+    except ValueError:
+        safe_url = False
+    if not safe_url:
+        raise HTTPException(status_code=400, detail="A safe FT Williams plan URL is not configured.")
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FTWILLIAMS_BRING_FORWARD_OPENED",
+            message="Reviewer opened FT Williams to complete the native Bring Forward action.",
+            details={
+                "target_year": review.year,
+                "prior_year": review.comparison_year,
+                "mutation_requested": False,
+            },
+        )
+    )
+    return {
+        "url": url,
+        "target_year": review.year,
+        "prior_year": review.comparison_year,
+    }
 
 
 @router.post("/{filing_id}/ftw/manual-match")

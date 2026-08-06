@@ -308,6 +308,8 @@ Resources:
               Value: "true"
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
+            - Name: FTW_PLAN_PAGE_URL_TEMPLATE
+              Value: https://www.ftwilliam.com/
           Secrets:
             - Name: MONGODB_URI
               ValueFrom: !Sub "${AppSecret}:MONGODB_URI::"

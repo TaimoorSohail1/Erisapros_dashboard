@@ -6,8 +6,13 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.api.filings import delete_filing_from_dashboard, list_filings, unapprove_filing
-from app.models import ExtractedField, ExtractedFieldStatus, Filing, FilingStatus
+from app.api.filings import (
+    delete_filing_from_dashboard,
+    get_ftwilliams_bring_forward_link,
+    list_filings,
+    unapprove_filing,
+)
+from app.models import ExtractedField, ExtractedFieldStatus, Filing, FilingStatus, FTWilliamsReview
 
 
 def run_async(coro):
@@ -91,6 +96,44 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIsNone(updated.approved_at)
         self.assertEqual(events[-1].type, "UNAPPROVE")
         self.assertEqual(audits[-1].event, "UNAPPROVED")
+
+    def test_bring_forward_link_is_safe_and_audited_without_mutating_ftw(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Missing Current Year Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/bring-forward",
+                    intake_source="SHAREFILE",
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_year_exists=False,
+                    bring_forward_required=True,
+                    comparison_year="2024",
+                    comparison_year_source="PRIOR_YEAR_FALLBACK",
+                    year="2025",
+                    ftw_plan_url="https://www.ftwilliam.com/",
+                )
+            )
+            response = await get_ftwilliams_bring_forward_link(filing.id)
+            audits = await repo.list_audit_logs(filing.id)
+            return response, audits
+
+        response, audits = run_async(scenario())
+
+        self.assertEqual(response["url"], "https://www.ftwilliam.com/")
+        self.assertEqual(response["target_year"], "2025")
+        self.assertEqual(response["prior_year"], "2024")
+        self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
+        self.assertFalse(audits[-1].details["mutation_requested"])
 
 
 if __name__ == "__main__":

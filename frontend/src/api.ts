@@ -95,6 +95,14 @@ export async function prepareFTWilliamsReview(filingId: string, sendQueries = fa
   });
 }
 
+export async function getFTWilliamsBringForwardLink(filingId: string): Promise<{
+  url: string;
+  target_year?: string | null;
+  prior_year?: string | null;
+}> {
+  return request("/filings/" + filingId + "/ftw/bring-forward-link", { method: "POST" });
+}
+
 export async function saveManualFTWilliamsMatch(
   filingId: string,
   payload: {

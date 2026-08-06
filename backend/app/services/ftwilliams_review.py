@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+from urllib.parse import quote, urlsplit
 
 from app.config import get_settings
 from app.models import (
@@ -75,6 +76,8 @@ class FTWilliamsReviewService:
         schedule_a_records: list[dict] = []
         error_message: str | None = None
         current_query_success = False
+        current_year_exists = False
+        bring_forward_required = False
         comparison_year: str | None = None
         comparison_year_source: str | None = None
         create_new_schedule_a = bool((existing_review.schedule_a_match or {}).get("create_new")) if existing_review else False
@@ -90,6 +93,8 @@ class FTWilliamsReviewService:
             schedule_a_candidates = list(existing_review.schedule_a_candidates or [])
             schedule_a_records = list(existing_review.schedule_a_records or [])
             current_query_success = existing_review.current_query_success
+            current_year_exists = existing_review.current_year_exists
+            bring_forward_required = existing_review.bring_forward_required
             comparison_year = existing_review.comparison_year
             comparison_year_source = existing_review.comparison_year_source
 
@@ -116,6 +121,8 @@ class FTWilliamsReviewService:
                 schedule_a_records = query_result["schedule_a_records"]
                 error_message = query_result["error_message"]
                 current_query_success = query_result["current_query_success"]
+                current_year_exists = query_result["current_year_exists"]
+                bring_forward_required = query_result["bring_forward_required"]
                 comparison_year = query_result["comparison_year"]
                 comparison_year_source = query_result["comparison_year_source"]
 
@@ -165,14 +172,17 @@ class FTWilliamsReviewService:
             schedule_a_current,
             update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
         )
-        include_5500_update = self._should_build_update_payload(send_queries, form_5500_current)
-        include_schedule_a_update = self._should_build_update_payload(send_queries, schedule_a_current) or (
-            create_new_schedule_a and send_queries and bool(schedule_a_records)
+        include_5500_update = not bring_forward_required and self._should_build_update_payload(send_queries, form_5500_current)
+        include_schedule_a_update = not bring_forward_required and (
+            self._should_build_update_payload(send_queries, schedule_a_current) or (
+                create_new_schedule_a and send_queries and bool(schedule_a_records)
+            )
         )
         existing_identity = self._identity_from_review(existing_review) if existing_review else {}
         if existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
+        ftw_plan_url = self._ftw_plan_page_url(identity, query_payload_base.get("year")) if bring_forward_required else None
         update_xml_5500 = build_single_document_update_xml(
             "DOL5500Data",
             safe_form_5500_fields if include_5500_update else [],
@@ -181,7 +191,7 @@ class FTWilliamsReviewService:
             current_values=form_5500_current,
             **identity,
         )
-        update_xml_schedule_a = self._build_schedule_a_update_xml(
+        update_xml_schedule_a = "" if bring_forward_required else self._build_schedule_a_update_xml(
             safe_schedule_a_fields if include_schedule_a_update else [],
             schedule_a_records,
             identity.get("ftw_seq_no"),
@@ -196,10 +206,19 @@ class FTWilliamsReviewService:
 
         review = FTWilliamsReview(
             filing_id=filing_id,
-            status=FTWilliamsReviewStatus.CURRENT_QUERIED if current_query_success else FTWilliamsReviewStatus.PREVIEW_READY,
+            status=(
+                FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED
+                if bring_forward_required
+                else FTWilliamsReviewStatus.CURRENT_QUERIED
+                if current_query_success
+                else FTWilliamsReviewStatus.PREVIEW_READY
+            ),
             configured=configured,
             current_query_sent=send_queries or bool(existing_review and existing_review.current_query_sent and current_query_success),
             current_query_success=current_query_success,
+            current_year_exists=current_year_exists,
+            bring_forward_required=bring_forward_required,
+            ftw_plan_url=ftw_plan_url,
             comparison_year=comparison_year,
             comparison_year_source=comparison_year_source,
             schedule_a_match=(
@@ -268,6 +287,8 @@ class FTWilliamsReviewService:
                 details={
                     "send_queries": send_queries,
                     "current_query_success": current_query_success,
+                    "current_year_exists": current_year_exists,
+                    "bring_forward_required": bring_forward_required,
                     "plan_lookup_status": plan_lookup.status,
                     "field_count": len(comparison_fields),
                     "error": error_message,
@@ -911,7 +932,10 @@ class FTWilliamsReviewService:
     ) -> dict:
         years = self._current_query_year_candidates(query_payload_base.get("year"))
         if not years:
-            return await self._run_current_queries_for_year(fields, query_payload_base, existing_review)
+            result = await self._run_current_queries_for_year(fields, query_payload_base, existing_review)
+            result["current_year_exists"] = bool(result["current_query_complete"])
+            result["bring_forward_required"] = False
+            return result
 
         initial = await self._run_current_queries_for_year(
             fields,
@@ -921,6 +945,8 @@ class FTWilliamsReviewService:
         if initial["current_query_complete"] or len(years) == 1:
             initial["comparison_year"] = years[0] if initial["current_query_complete"] else None
             initial["comparison_year_source"] = "CURRENT" if initial["current_query_complete"] else None
+            initial["current_year_exists"] = bool(initial["current_query_complete"])
+            initial["bring_forward_required"] = False
             return initial
 
         fallback_year = years[1]
@@ -934,12 +960,15 @@ class FTWilliamsReviewService:
         if fallback["current_query_complete"]:
             fallback = self._protect_prior_year_fallback(fallback)
             note = (
-                f"Using prior-year {fallback_year} FT Williams data because no usable {years[0]} data was found. "
-                "Annual dates, headcounts, commissions, fees, premiums, claims, and reserves were left blank."
+                f"Current-year {years[0]} FT Williams data is incomplete. Prior-year {fallback_year} data is shown for reference only. "
+                "Use FT Williams' native Bring Forward action, then refresh this dashboard. Annual dates, headcounts, "
+                "commissions, fees, premiums, claims, and reserves were left blank."
             )
             fallback["error_message"] = "; ".join(filter(None, [note, fallback["error_message"]]))
             fallback["comparison_year"] = fallback_year
             fallback["comparison_year_source"] = "PRIOR_YEAR_FALLBACK"
+            fallback["current_year_exists"] = False
+            fallback["bring_forward_required"] = True
             return fallback
 
         combined_error = "; ".join(
@@ -955,6 +984,8 @@ class FTWilliamsReviewService:
         fallback["error_message"] = combined_error
         fallback["comparison_year"] = None
         fallback["comparison_year_source"] = None
+        fallback["current_year_exists"] = False
+        fallback["bring_forward_required"] = False
         return fallback
 
     def _protect_prior_year_fallback(self, result: dict) -> dict:
@@ -1125,6 +1156,12 @@ class FTWilliamsReviewService:
             }:
                 approval_fields = filter_schedule_a_fields_for_contract_type(fields, review.schedule_a_contract_type)
             approval_error = self._approval_blocking_error(approval_fields)
+            if review and review.current_query_sent and (
+                not review.current_year_exists or review.bring_forward_required
+            ):
+                raise ValueError(
+                    "The current-year FT Williams record is missing. Complete FT Williams' native Bring Forward action and refresh FTW data before approval."
+                )
             contract_type_error = self._review_contract_type_block_reason(review) if review else None
             if contract_type_error:
                 raise ValueError(contract_type_error)
@@ -1163,6 +1200,13 @@ class FTWilliamsReviewService:
             raise ValueError(error_message)
         if not review.current_query_success:
             error_message = "Current FT Williams data must be queried successfully before sending approved updates."
+            await self._record_update_failure(repo, filing_id, review, error_message)
+            raise ValueError(error_message)
+        if not review.current_year_exists or review.bring_forward_required:
+            error_message = (
+                "The current-year FT Williams record is missing. Complete FT Williams' native Bring Forward action "
+                "and refresh FTW data before sending any update."
+            )
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
         contract_type_error = self._review_contract_type_block_reason(review)
@@ -2550,6 +2594,32 @@ class FTWilliamsReviewService:
         return bool(identity.get("customer_id") and identity.get("plan_id")) or bool(
             identity.get("ftw_customer_id") and identity.get("ftw_plan_id")
         )
+
+    def _ftw_plan_page_url(self, identity: dict, target_year: str | None) -> str:
+        fallback_url = "https://www.ftwilliam.com/"
+        template = (get_settings().ftw_plan_page_url_template or fallback_url).strip()
+        values = {
+            "customer_id": quote(str(identity.get("customer_id") or ""), safe=""),
+            "plan_id": quote(str(identity.get("plan_id") or ""), safe=""),
+            "ftw_customer_id": quote(str(identity.get("ftw_customer_id") or ""), safe=""),
+            "ftw_plan_id": quote(str(identity.get("ftw_plan_id") or ""), safe=""),
+            "year": quote(str(target_year or identity.get("year") or ""), safe=""),
+        }
+        try:
+            url = template.format(**values)
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if (
+                parsed.scheme != "https"
+                or (host != "ftwilliam.com" and not host.endswith(".ftwilliam.com"))
+                or parsed.username
+                or parsed.password
+                or parsed.port not in {None, 443}
+            ):
+                return fallback_url
+            return url
+        except (KeyError, ValueError):
+            return fallback_url
 
     def _query_payload_base(self) -> dict:
         settings = get_settings()

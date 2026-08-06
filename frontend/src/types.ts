@@ -195,6 +195,9 @@ export interface FTWilliamsReview {
   configured: boolean;
   current_query_sent: boolean;
   current_query_success: boolean;
+  current_year_exists: boolean;
+  bring_forward_required: boolean;
+  ftw_plan_url?: string | null;
   comparison_year?: string | null;
   comparison_year_source?: string | null;
   schedule_a_match?: Record<string, unknown> | null;

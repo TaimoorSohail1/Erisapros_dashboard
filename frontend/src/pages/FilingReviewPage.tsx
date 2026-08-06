@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Edit3,
   Eye,
+  ExternalLink,
   FileText,
   ListChecks,
   Lock,
@@ -25,6 +26,7 @@ import { useParams } from "../router";
 import {
   approveFiling,
   getFiling,
+  getFTWilliamsBringForwardLink,
   prepareFTWilliamsReview,
   regenerateXml,
   rejectFiling,
@@ -216,7 +218,14 @@ export function FilingReviewPage() {
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
-  const ftwCurrentLoaded = Boolean(ftwReview?.configured && ftwReview.current_query_success && (form5500CurrentLoaded || scheduleACurrentLoaded));
+  const bringForwardRequired = Boolean(ftwReview?.bring_forward_required);
+  const ftwCurrentLoaded = Boolean(
+    ftwReview?.configured &&
+    ftwReview.current_query_success &&
+    ftwReview.current_year_exists &&
+    !bringForwardRequired &&
+    (form5500CurrentLoaded || scheduleACurrentLoaded),
+  );
   const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
@@ -313,8 +322,10 @@ export function FilingReviewPage() {
     if (!ftwCurrentLoaded) {
       setToast({
         tone: "error",
-        title: "FT Williams current data required",
-        message: "Query FTW Current before approving this filing. At least one current FT Williams form must load.",
+        title: bringForwardRequired ? "Bring Forward required in FT Williams" : "FT Williams current data required",
+        message: bringForwardRequired
+          ? "Open FT Williams, complete its native Bring Forward action, then refresh FTW data before approving."
+          : "Query FTW Current before approving this filing. At least one current FT Williams form must load.",
       });
       return;
     }
@@ -366,10 +377,52 @@ export function FilingReviewPage() {
     setFtwBusy(true);
     setMessage("");
     try {
-      await prepareFTWilliamsReview(id, sendQueries);
-      setFiling(await getFiling(id));
+      const result = await prepareFTWilliamsReview(id, sendQueries);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      if (sendQueries && result.ftw_review.current_year_exists && !result.ftw_review.bring_forward_required) {
+        setToast({
+          tone: "success",
+          title: "Current-year FTW data loaded",
+          message: `FT Williams ${result.ftw_review.year || "current-year"} data is ready for comparison.`,
+        });
+      } else if (sendQueries && result.ftw_review.bring_forward_required) {
+        setToast({
+          tone: "error",
+          title: "Bring Forward still required",
+          message: "The current-year FTW record is still missing. Complete Bring Forward in FT Williams, then refresh again.",
+        });
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not prepare FT Williams comparison");
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function openFtwBringForward() {
+    if (!id) return;
+    const ftwWindow = window.open("about:blank", "_blank");
+    if (ftwWindow) ftwWindow.opener = null;
+    setFtwBusy(true);
+    setMessage("");
+    try {
+      const result = await getFTWilliamsBringForwardLink(id);
+      if (ftwWindow) ftwWindow.location.href = result.url;
+      else window.open(result.url, "_blank", "noopener,noreferrer");
+      setToast({
+        tone: "success",
+        title: "FT Williams opened",
+        message: "Complete FTW's native Bring Forward action, return here, and click Refresh FTW Data.",
+      });
+    } catch (error) {
+      ftwWindow?.close();
+      setToast({
+        tone: "error",
+        title: "Could not open FT Williams",
+        message: error instanceof Error ? error.message : "The FT Williams page could not be opened.",
+      });
     } finally {
       setFtwBusy(false);
     }
@@ -550,6 +603,28 @@ export function FilingReviewPage() {
         {ftwInteractionBusy ? <FTWilliamsLoadingPanel sendBusy={ftwSendBusy} autoQuery={autoFtwQueryBusy} /> : null}
 
         {isProcessing && !fields.length ? <ProcessingPanel filing={filing} /> : null}
+
+        {bringForwardRequired ? (
+          <section className="ftw-bring-forward-card" aria-live="polite">
+            <div>
+              <ExternalLink size={22} />
+              <span>
+                <strong>Current-year FT Williams record is missing</strong>
+                <small>
+                  Prior-year {ftwReview?.comparison_year || "data"} is shown only for reference. Use FTW's native Bring Forward action for {ftwReview?.year || "the current year"}; annual values remain blank.
+                </small>
+              </span>
+            </div>
+            <div className="ftw-bring-forward-actions">
+              <button className="button" type="button" disabled={ftwInteractionBusy} onClick={openFtwBringForward}>
+                <ExternalLink size={16} /> Open FTW Bring Forward
+              </button>
+              <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={() => prepareFtw(true)}>
+                <RefreshCw size={16} /> Refresh FTW Data
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         <section className={`approval-banner ${approvalBlocked ? "blocked" : "ready"}`}>
           <div>

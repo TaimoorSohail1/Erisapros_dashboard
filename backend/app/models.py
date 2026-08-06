@@ -61,6 +61,7 @@ class ExtractedFieldStatus(str, Enum):
 class FTWilliamsReviewStatus(str, Enum):
     PREVIEW_READY = "PREVIEW_READY"
     CURRENT_QUERIED = "CURRENT_QUERIED"
+    BRING_FORWARD_REQUIRED = "BRING_FORWARD_REQUIRED"
     UPDATE_READY = "UPDATE_READY"
     UPDATE_SENT = "UPDATE_SENT"
     UPDATE_FAILED = "UPDATE_FAILED"
@@ -489,6 +490,9 @@ class FTWilliamsReview(BaseModel):
     configured: bool = False
     current_query_sent: bool = False
     current_query_success: bool = False
+    current_year_exists: bool = False
+    bring_forward_required: bool = False
+    ftw_plan_url: str | None = None
     comparison_year: str | None = None
     comparison_year_source: str | None = None
     schedule_a_match: dict | None = None
