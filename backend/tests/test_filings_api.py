@@ -117,10 +117,11 @@ class FilingsApiTests(unittest.TestCase):
                     current_query_success=True,
                     current_year_exists=False,
                     bring_forward_required=True,
-                    comparison_year="2024",
-                    comparison_year_source="PRIOR_YEAR_FALLBACK",
                     year="2025",
-                    ftw_plan_url="https://www.ftwilliam.com/",
+                    ftw_plan_url=(
+                        "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+                        "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y"
+                    ),
                 )
             )
             response = await get_ftwilliams_bring_forward_link(filing.id)
@@ -129,9 +130,13 @@ class FilingsApiTests(unittest.TestCase):
 
         response, audits = run_async(scenario())
 
-        self.assertEqual(response["url"], "https://www.ftwilliam.com/")
+        self.assertEqual(
+            response["url"],
+            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+            "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y",
+        )
         self.assertEqual(response["target_year"], "2025")
-        self.assertEqual(response["prior_year"], "2024")
+        self.assertIsNone(response["prior_year"])
         self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
         self.assertFalse(audits[-1].details["mutation_requested"])
 

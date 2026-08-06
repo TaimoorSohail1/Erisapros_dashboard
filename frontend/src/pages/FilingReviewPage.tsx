@@ -622,7 +622,7 @@ export function FilingReviewPage() {
               <span>
                 <strong>Current-year FT Williams record is missing</strong>
                 <small>
-                  Prior-year {ftwReview?.comparison_year || "data"} is shown only for reference. Use FTW's native Bring Forward action for {ftwReview?.year || "the current year"}; annual values remain blank.
+                  No prior-year values were loaded into this comparison. Open the exact FTW plan, use its native Bring Forward action for {ftwReview?.year || "the current year"}, then refresh here; annual values remain blank until current-year data is supplied.
                 </small>
               </span>
             </div>

@@ -2783,7 +2783,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(review.current_year_exists)
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
-        self.assertEqual(review.ftw_plan_url, "https://www.ftwilliam.com/")
+        self.assertEqual(
+            review.ftw_plan_url,
+            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+            "CommonField=900000001&ChildField=900000002&Year=2024&OnePlan=Y",
+        )
         self.assertEqual(review.year, "2024")
         self.assertIsNone(review.comparison_year)
         self.assertIsNone(review.comparison_year_source)

@@ -13,6 +13,7 @@ from app.services.extractor import (
     extract_eyemed_broker_rows,
     extract_eyemed_schedule_a_fields,
     extract_eyemed_schedule_a_summaries,
+    extract_fields_from_groundx_xray,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
     extract_bcbsma_schedule_a_worksheet_summaries,
@@ -33,9 +34,101 @@ from app.services.extractor import (
 )
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
+from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_groundx_xray_maps_gross_premium_table_to_nonexperience_line_10a(self):
+        payload = {
+            "chunks": [
+                {
+                    "pageNumbers": [2],
+                    "text": "Total Premium received - Type of Benefit - Gross Premium",
+                    "json": [
+                        {
+                            "record_type": "total_premium_received",
+                            "rows": [
+                                {"type_of_benefit": "Dental", "gross_premium": "$95,409.74"},
+                                {"type_of_benefit": "Total", "gross_premium": "$95,409.74"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "documentPages": [{"pageNumber": 2}],
+        }
+
+        fields = extract_fields_from_groundx_xray(payload)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(
+            by_name["10a. Total premiums or subscription charges paid to carrier"],
+            "95,409.74",
+        )
+
+    def test_groundx_ocr_maps_vendor_total_premium_to_nonexperience_line_10a(self):
+        text = """
+        5500 Schedule A Insurance Information
+        Name of insurance carrier Sun Life Assurance Company of Canada
+        Total Premium received 01/01/2025 to 12/31/2025
+        Type of Benefit Dental Gross Premium $95,409.74
+        Total $95,409.74
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(
+            by_name["10a. Total premiums or subscription charges paid to carrier"],
+            "95,409.74",
+        )
+        mapped = map_extraction_to_rules(
+            "peerless-test",
+            fields,
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+        )["fields"]
+        self.assertEqual(classify_schedule_a_fields(mapped).contract_type.value, "NONEXPERIENCE_RATED")
+
+    def test_groundx_ocr_maps_policy_year_premium_sentence_to_nonexperience_line_10a(self):
+        text = """
+        Annual Policy Information Report
+        Premiums, Commissions and Fees are as paid during the policy year.
+        Total premiums paid to Insurance Company during the policy year: $12,013.49
+        See below for total commissions and fees paid by Insurance Company.
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(
+            by_name["10a. Total premiums or subscription charges paid to carrier"],
+            "12,013.49",
+        )
+
+    def test_groundx_ocr_maps_experience_section_amounts_to_line_9(self):
+        text = """
+        Schedule A Part III
+        9 Experience-rated contracts
+        9a. Premiums: (1) Amount Received $1,739,422
+        9b(1). Benefit Charges (1) Claims paid $1,503,774
+        9c(1)(H). Total retention $235,648
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(by_name["9a. Premiums: (1) Amount Received"], "1,739,422")
+        self.assertEqual(by_name["9b(1). Benefit Charges (1) Claims paid"], "1,503,774")
+        self.assertEqual(by_name["9c(1)(H). Total retention"], "235,648")
+        mapped = map_extraction_to_rules(
+            "experience-test",
+            fields,
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+        )["fields"]
+        self.assertEqual(classify_schedule_a_fields(mapped).contract_type.value, "EXPERIENCE_RATED")
+
     def test_schedule_a_parser_extracts_fee_org_code_and_derived_purpose(self):
         text = """
         SCHEDULE A (Form 5500) 2024

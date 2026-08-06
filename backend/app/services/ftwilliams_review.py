@@ -2543,7 +2543,11 @@ class FTWilliamsReviewService:
 
     def _ftw_plan_page_url(self, identity: dict, target_year: str | None) -> str:
         fallback_url = "https://www.ftwilliam.com/"
-        template = (get_settings().ftw_plan_page_url_template or fallback_url).strip()
+        default_template = (
+            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+            "CommonField={ftw_customer_id}&ChildField={ftw_plan_id}&Year={year}&OnePlan=Y"
+        )
+        template = (get_settings().ftw_plan_page_url_template or default_template).strip()
         values = {
             "customer_id": quote(str(identity.get("customer_id") or ""), safe=""),
             "plan_id": quote(str(identity.get("plan_id") or ""), safe=""),
@@ -2551,6 +2555,8 @@ class FTWilliamsReviewService:
             "ftw_plan_id": quote(str(identity.get("ftw_plan_id") or ""), safe=""),
             "year": quote(str(target_year or identity.get("year") or ""), safe=""),
         }
+        if template == default_template and not (values["ftw_customer_id"] and values["ftw_plan_id"] and values["year"]):
+            return fallback_url
         try:
             url = template.format(**values)
             parsed = urlsplit(url)

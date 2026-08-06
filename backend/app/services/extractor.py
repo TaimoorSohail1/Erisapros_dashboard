@@ -777,6 +777,14 @@ def extract_schedule_a_fields_from_xray_json(item: dict[str, Any], page: int | N
         lambda path: "nonexperience" in path and ("total" in path or "subtotal" in path) and ("amount" in path or "premium" in path),
         confidence=0.9,
     )
+    for path, value in flat_values:
+        if normalize_xray_path(path).endswith("gross_premium"):
+            add(
+                "10a. Total premiums or subscription charges paid to carrier",
+                money_value(str(value)),
+                0.9,
+            )
+            break
     premium_total = extract_nonexperience_total_premium_from_text(source_text)
     if premium_total:
         add("10a. Total premiums or subscription charges paid to carrier", premium_total, 0.93)
@@ -985,6 +993,17 @@ def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
     normalized = normalize_ocr_text(text)
     if not normalized:
         return None
+
+    vendor_total = re.search(
+        r"(?:gross\s+premium|total\s+premiums?\s+(?:received|paid)"
+        r"(?:\s+to\s+(?:the\s+)?insurance\s+company)?"
+        r"(?:\s+during\s+(?:the\s+)?policy\s+year)?)"
+        r"\s*:?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)(?![0-9/])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if vendor_total:
+        return vendor_total.group(1)
 
     for match in re.finditer(
         r'"(?:total_premiums_or_subscription_charges_paid_to_carrier|total_premiums|total_premium|total_amount)"\s*:\s*"?([0-9][0-9,]*(?:\.\d{2})?)"?',
@@ -3666,6 +3685,17 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
         ),
         0.91,
     )
+    for field_label in SCHEDULE_A_EXPERIENCE_RATED_FIELDS:
+        add(
+            field_label,
+            extract_labeled_value(
+                text,
+                [field_label],
+                MONEY_VALUE_PATTERN,
+                transform=money_value,
+            ),
+            0.93,
+        )
     add(
         "10a. Total premiums or subscription charges paid to carrier",
         extract_labeled_value(
