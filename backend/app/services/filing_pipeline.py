@@ -6,7 +6,7 @@ from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
-from app.services.schedule_a_classification import classify_schedule_a_fields
+from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
 from app.services.xml_builder import build_proposed_ftw_xml
 
 
@@ -110,10 +110,16 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.MAPPING})
             mapped_fields = harmonize_schedule_a_reference_fields(mapped_fields)
             mapped_fields = harmonize_schedule_a_business_rule_fields(mapped_fields)
-            summary = summarize_mapped_fields(mapped_fields)
             contract_classification = classify_schedule_a_fields(mapped_fields)
+            relevant_fields = filter_schedule_a_fields_for_contract_type(
+                mapped_fields,
+                contract_classification.contract_type,
+            )
+            summary = summarize_mapped_fields(relevant_fields)
             fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
-            proposed_xml = build_proposed_ftw_xml(fields)
+            proposed_xml = build_proposed_ftw_xml(
+                filter_schedule_a_fields_for_contract_type(fields, contract_classification.contract_type)
+            )
 
             await repo.update_filing(
                 filing_id,
@@ -126,6 +132,9 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "missing_low_priority_count": summary["missing_low_priority_count"],
                     "low_confidence_count": summary["low_confidence_count"],
                     "unmapped_count": summary["unmapped_count"],
+                    "review_field_count": summary["review_field_count"],
+                    "found_field_count": summary["found_field_count"],
+                    "excluded_field_count": max(0, len(mapped_fields) - len(relevant_fields)),
                     "schedule_a_contract_type": contract_classification.contract_type,
                     "schedule_a_contract_type_reason": contract_classification.reason,
                     "schedule_a_contract_type_confirmed": False,
@@ -431,6 +440,15 @@ def summarize_mapped_fields(fields: list[ExtractedField]) -> dict:
     scored = [field for field in fields if field.status.value != "MISSING" and field.priority.value != "IGNORE"]
     overall_confidence = sum(field.confidence for field in scored) / len(scored) if scored else 0
     status = FilingStatus.NEEDS_REVIEW if missing_high_priority_count or low_confidence_count or unmapped_count else FilingStatus.READY_FOR_APPROVAL
+    review_fields = [field for field in fields if field.priority.value != "IGNORE"]
+    found_field_count = len(
+        [
+            field
+            for field in review_fields
+            if field.status.value not in {"MISSING", "UNMAPPED"}
+            and str(field.proposed_value or field.value or "").strip()
+        ]
+    )
     return {
         "low_confidence_count": low_confidence_count,
         "missing_high_priority_count": missing_high_priority_count,
@@ -439,4 +457,6 @@ def summarize_mapped_fields(fields: list[ExtractedField]) -> dict:
         "unmapped_count": unmapped_count,
         "overall_confidence": overall_confidence,
         "status": status,
+        "review_field_count": len(review_fields),
+        "found_field_count": found_field_count,
     }

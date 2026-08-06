@@ -114,6 +114,7 @@ export function FilingReviewPage() {
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
   const [showAllFields, setShowAllFields] = useState(false);
+  const [showExcludedFields, setShowExcludedFields] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
@@ -158,18 +159,28 @@ export function FilingReviewPage() {
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
   const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
+  const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
   const missingHigh = approvalRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
   const missingOther = approvalRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
   const lowConfidence = approvalRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
   const unmapped = approvalRelevantFields.filter((field) => field.status === "UNMAPPED");
-  const extracted = fields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
-  const matched = fields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
+  const extracted = approvalRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
+  const matched = approvalRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
   const actionFields = useMemo(
     () => [...missingHigh, ...lowConfidence, ...unmapped, ...missingOther].sort(compareFields),
     [missingHigh, lowConfidence, unmapped, missingOther],
   );
-  const reviewRows = useMemo(() => buildReviewDecisionRows(fields, filing?.ftw_review || null), [fields, filing?.ftw_review]);
-  const sectionOptions = useMemo(() => [...new Set(fields.map(sectionForField))].sort(), [fields]);
+  const reviewRows = useMemo(
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false),
+    [fields, filing?.ftw_review, scheduleAContractType],
+  );
+  const visibleReviewRows = useMemo(
+    () => showExcludedFields
+      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true)
+      : reviewRows,
+    [fields, filing?.ftw_review, reviewRows, scheduleAContractType, showExcludedFields],
+  );
+  const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
   const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION");
   const willUpdateRows = reviewRows.filter((row) => row.group === "WILL_UPDATE");
   const sameRows = reviewRows.filter((row) => row.group === "SAME");
@@ -178,7 +189,7 @@ export function FilingReviewPage() {
   const approvalBlockerRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" || (row.group === "MISSING" && row.priority === "HIGH"));
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return reviewRows.filter((row) => {
+    return visibleReviewRows.filter((row) => {
       const haystack = [
         row.label,
         row.formLabel,
@@ -200,7 +211,7 @@ export function FilingReviewPage() {
         (contractTypeFilter === "ALL" || scheduleAContractType === contractTypeFilter)
       );
     });
-  }, [activeTab, contractTypeFilter, formFilter, priorityFilter, reviewRows, scheduleAContractType, search, sectionFilter, statusFilter]);
+  }, [activeTab, contractTypeFilter, formFilter, priorityFilter, visibleReviewRows, scheduleAContractType, search, sectionFilter, statusFilter]);
   const selectedField = useMemo(
     () => selectedFieldId ? fields.find((field) => field.id === selectedFieldId) : undefined,
     [fields, selectedFieldId],
@@ -211,8 +222,8 @@ export function FilingReviewPage() {
   const pagedRows = displayRows.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
   const previewRows = displayRows.slice(0, 8);
   const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0;
-  const expectsForm5500Current = expectsCurrentForForm(fields, reviewRows, "FORM_5500");
-  const expectsScheduleACurrent = expectsCurrentForForm(fields, reviewRows, "SCHEDULE_A");
+  const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
+  const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
@@ -238,7 +249,7 @@ export function FilingReviewPage() {
     scheduleASafetyReady,
   );
   const foundCount = extracted.length;
-  const totalFields = fields.length;
+  const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
@@ -752,6 +763,11 @@ export function FilingReviewPage() {
               <SelectFilter label="Status" value={statusFilter} onChange={setStatusFilter} options={["NEEDS_DECISION", "WILL_UPDATE", "SAME", "MISSING", "LOW_CONFIDENCE"]} />
               <SelectFilter label="Priority" value={priorityFilter} onChange={setPriorityFilter} options={["HIGH", "MEDIUM", "LOW"]} />
               <SelectFilter label="Section" value={sectionFilter} onChange={setSectionFilter} options={sectionOptions} />
+              {excludedFields.length ? (
+                <button className="button secondary" type="button" onClick={() => setShowExcludedFields((current) => !current)}>
+                  <Eye size={16} /> {showExcludedFields ? "Hide" : "Show"} excluded fields ({excludedFields.length})
+                </button>
+              ) : null}
             </div>
 
             <div className="approval-table-wrap">
@@ -2201,10 +2217,6 @@ function formatFtwLookupStatus(status: string) {
 function formatCurrentQueryYear(review: FTWilliamsReview | null) {
   const comparisonYear = textValue(review?.comparison_year);
   if (!comparisonYear) return "Pending";
-  if (review?.comparison_year_source === "PRIOR_YEAR_FALLBACK") {
-    const targetYear = textValue(review?.year);
-    return targetYear && targetYear !== comparisonYear ? `${comparisonYear} (fallback from ${targetYear})` : `${comparisonYear} (prior year fallback)`;
-  }
   return comparisonYear;
 }
 
@@ -2217,18 +2229,25 @@ function FTWMeta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function buildReviewDecisionRows(fields: ExtractedField[], review: FTWilliamsReview | null): ReviewDecisionRow[] {
+function buildReviewDecisionRows(
+  fields: ExtractedField[],
+  review: FTWilliamsReview | null,
+  contractType: ScheduleAContractType,
+  includeExcluded: boolean,
+): ReviewDecisionRow[] {
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const usedFieldIds = new Set<string>();
   const rows: ReviewDecisionRow[] = [];
 
   (review?.fields ?? []).forEach((comparison, index) => {
     const extractedField = comparison.field_id ? fieldById.get(comparison.field_id) : undefined;
+    if (!includeExcluded && !comparisonAllowedForContractType(comparison, extractedField, contractType)) return;
     if (comparison.field_id) usedFieldIds.add(comparison.field_id);
     rows.push(rowFromComparison(comparison, extractedField, index, rejectedFieldForComparison(comparison, review)));
   });
 
   fields.forEach((field) => {
+    if (!includeExcluded && !fieldAllowedForContractType(field, contractType)) return;
     if (field.id && usedFieldIds.has(field.id)) return;
     if (field.status === "MATCHED" || field.status === "EDITED") return;
     rows.push(rowFromExtractedField(field));
@@ -2513,10 +2532,22 @@ function filterOptionLabel(option: string) {
 
 function fieldAllowedForContractType(field: ExtractedField, contractType: ScheduleAContractType) {
   if (field.form_type !== "SCHEDULE_A") return true;
-  const ruleKey = fieldRuleKey(field);
+  return ruleAllowedForContractType(fieldRuleKey(field), contractType);
+}
+
+function comparisonAllowedForContractType(
+  comparison: FTWilliamsComparisonField,
+  field: ExtractedField | undefined,
+  contractType: ScheduleAContractType,
+) {
+  if (comparison.form_type !== "SCHEDULE_A") return true;
+  return ruleAllowedForContractType(comparison.rule_key || (field ? fieldRuleKey(field) : ""), contractType);
+}
+
+function ruleAllowedForContractType(ruleKey: string, contractType: ScheduleAContractType) {
   if (contractType === "EXPERIENCE_RATED") return !NONEXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
   if (contractType === "NONEXPERIENCE_RATED") return !EXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
-  return true;
+  return !EXPERIENCE_SCHEDULE_A_RULES.has(ruleKey) && !NONEXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
 }
 
 function SelectFilter({ label, value, options, onChange }: { label: string; value: FilterValue; options: string[]; onChange: (value: FilterValue) => void }) {

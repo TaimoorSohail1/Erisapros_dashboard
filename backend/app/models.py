@@ -219,6 +219,9 @@ class Filing(BaseModel):
     missing_low_priority_count: int = 0
     low_confidence_count: int = 0
     unmapped_count: int = 0
+    review_field_count: int = 0
+    found_field_count: int = 0
+    excluded_field_count: int = 0
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False

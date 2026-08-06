@@ -101,6 +101,9 @@ export interface Filing {
   missing_low_priority_count: number;
   low_confidence_count: number;
   unmapped_count: number;
+  review_field_count?: number;
+  found_field_count?: number;
+  excluded_field_count?: number;
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_confirmed?: boolean;

@@ -134,6 +134,7 @@ class FakeFTWilliamsService(FTWilliamsService):
 class FakeFTWilliamsFallbackService(FTWilliamsService):
     def __init__(self):
         self.calls = []
+        self.current_year_available = False
 
     def status(self) -> dict:
         return {"configured": True}
@@ -164,7 +165,7 @@ class FakeFTWilliamsFallbackService(FTWilliamsService):
                 ],
             )
         if payload.operation == "query_5500":
-            if payload.year == "2024":
+            if payload.year == "2024" and not self.current_year_available:
                 return FTWilliamsQueryResponse(
                     operation=payload.operation,
                     configured=True,
@@ -190,14 +191,14 @@ class FakeFTWilliamsFallbackService(FTWilliamsService):
                         query_results={
                             "PLAN_NAME0": "Midwest Hose & Specialty Health and Welfare Benefits Plan",
                             "TotPartcpBoyCnt": "999",
-                            "PlanYearBeginDate": "01/01/2023",
-                            "PlanYearEndDate": "12/31/2023",
+                            "PlanYearBeginDate": f"01/01/{payload.year}",
+                            "PlanYearEndDate": f"12/31/{payload.year}",
                         },
                     )
                 ],
             )
         if payload.operation == "query_schedule_a":
-            if payload.year == "2024":
+            if payload.year == "2024" and not self.current_year_available:
                 return FTWilliamsQueryResponse(
                     operation=payload.operation,
                     configured=True,
@@ -227,8 +228,8 @@ class FakeFTWilliamsFallbackService(FTWilliamsService):
                                 "InsCarrierEIN": "73-0000001",
                                 "InsContractNum": "MED-4455",
                                 "InsPrsnCoveredEoyCnt": "888",
-                                "InsPolicyFromDate": "01/01/2023",
-                                "InsPolicyToDate": "12/31/2023",
+                                "InsPolicyFromDate": f"01/01/{payload.year}",
+                                "InsPolicyToDate": f"12/31/{payload.year}",
                                 "CommPdAmt01": "111111",
                                 "FeesPdAmt01": "222222",
                                 "WlfrPremiumRcvdAmt": "333333",
@@ -2642,7 +2643,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("<DOLScheduleAData>", review.update_xml_schedule_a)
         self.assertIn("<InsCarrierName>BlueCross BlueShield of Oklahoma</InsCarrierName>", review.update_xml_schedule_a)
 
-    def test_prepare_review_falls_back_to_prior_year_when_target_year_has_no_ftw_data(self):
+    def test_prepare_review_never_loads_prior_year_when_target_year_has_no_ftw_data(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(
@@ -2776,21 +2777,24 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         review = run_async(FTWilliamsReviewService(fake_ftw).prepare_review(filing.id, send_queries=True))
 
         queried_5500_years = [call.year for call in fake_ftw.calls if call.operation == "query_5500"]
-        self.assertEqual(queried_5500_years, ["2024", "2023"])
-        self.assertTrue(review.current_query_success)
+        self.assertEqual(queried_5500_years, ["2024"])
+        self.assertFalse(any(call.year == "2023" for call in fake_ftw.calls))
+        self.assertFalse(review.current_query_success)
         self.assertFalse(review.current_year_exists)
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
         self.assertEqual(review.ftw_plan_url, "https://www.ftwilliam.com/")
         self.assertEqual(review.year, "2024")
-        self.assertEqual(review.comparison_year, "2023")
-        self.assertEqual(review.comparison_year_source, "PRIOR_YEAR_FALLBACK")
-        self.assertEqual(review.schedule_a_match["ftw_seq_no"], "4")
-        self.assertIn("Prior-year 2023", review.error_message)
+        self.assertIsNone(review.comparison_year)
+        self.assertIsNone(review.comparison_year_source)
+        self.assertIsNone(review.schedule_a_match)
+        self.assertEqual(review.schedule_a_candidates, [])
+        self.assertIn("current-year 2024", review.error_message.lower())
+        self.assertIn("no prior-year values were loaded", review.error_message.lower())
         by_rule = {field.rule_key: field for field in review.fields}
         self.assertEqual(
             by_rule["schedule_a_part_i_1a_name_of_insurance_company"].current_value,
-            "Medical Mutual",
+            "",
         )
         self.assertEqual(
             by_rule["form_5500_part_ii_11_total_participants_at_beginning_of_year"].current_value,
@@ -2810,6 +2814,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
         self.assertNotIn("<CommPdAmt1>777</CommPdAmt1>", review.update_xml_schedule_a)
         for prior_year_value in (
+            "Medical Mutual",
+            "73-0000001",
+            "MED-4455",
             "01/01/2023",
             "12/31/2023",
             "111111",
@@ -2819,12 +2826,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "555555",
             "666666",
         ):
-            self.assertNotIn(prior_year_value, review.update_xml_schedule_a)
+            self.assertNotIn(prior_year_value, review.update_xml_schedule_a or "")
 
-    def test_prepare_review_flags_prior_year_fallback_for_multiple_documents(self):
+    def test_prepare_review_requires_current_year_for_multiple_documents_without_prior_queries(self):
         async def scenario():
             repo = repositories.get_repository()
-            service = FTWilliamsReviewService(FakeFTWilliamsFallbackService())
+            fake_ftw = FakeFTWilliamsFallbackService()
+            service = FTWilliamsReviewService(fake_ftw)
             reviews = []
             for index in range(3):
                 filing = await repo.create_filing(
@@ -2907,21 +2915,22 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     ]
                 )
                 reviews.append(await service.prepare_review(filing.id, send_queries=True))
-            return reviews
+            return reviews, fake_ftw.calls
 
-        reviews = run_async(scenario())
+        reviews, calls = run_async(scenario())
 
         self.assertEqual(len(reviews), 3)
         self.assertEqual(len({review.filing_id for review in reviews}), 3)
+        self.assertFalse(any(call.year == "2023" for call in calls))
         for review in reviews:
-            self.assertTrue(review.current_query_success)
+            self.assertFalse(review.current_query_success)
             self.assertFalse(review.current_year_exists)
             self.assertTrue(review.bring_forward_required)
             self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
             self.assertNotIn("<DOL5500Data>", review.update_xml_5500 or "")
             self.assertNotIn("<DOLScheduleAData>", review.update_xml_schedule_a or "")
 
-    def test_manual_schedule_a_selection_uses_fallback_query_year_but_keeps_update_target_year(self):
+    def test_refresh_loads_only_current_year_after_native_ftw_bring_forward(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(
@@ -2993,20 +3002,21 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         fake_ftw = FakeFTWilliamsFallbackService()
         service = FTWilliamsReviewService(fake_ftw)
-        review = run_async(service.prepare_review(filing.id, send_queries=True))
-        selected = run_async(
-            service.select_schedule_a_match(
-                filing.id,
-                FTWilliamsScheduleAMatchRequest(ftw_seq_no="4"),
-            )
-        )
+        missing = run_async(service.prepare_review(filing.id, send_queries=True))
+        fake_ftw.current_year_available = True
+        refreshed = run_async(service.prepare_review(filing.id, send_queries=True))
 
         schedule_calls = [call for call in fake_ftw.calls if call.operation == "query_schedule_a" and call.ftw_seq_no == "4"]
-        self.assertTrue(any(call.year == "2023" for call in schedule_calls))
-        self.assertEqual(review.comparison_year, "2023")
-        self.assertEqual(selected.year, "2024")
-        self.assertIn("<Year>2024</Year>", selected.update_xml_schedule_a)
-        self.assertNotIn("<FTWSeqNo>", selected.update_xml_schedule_a)
+        self.assertFalse(any(call.year == "2023" for call in fake_ftw.calls))
+        self.assertTrue(all(call.year == "2024" for call in schedule_calls))
+        self.assertTrue(missing.bring_forward_required)
+        self.assertFalse(missing.current_year_exists)
+        self.assertTrue(refreshed.current_year_exists)
+        self.assertFalse(refreshed.bring_forward_required)
+        self.assertEqual(refreshed.comparison_year, "2024")
+        self.assertEqual(refreshed.comparison_year_source, "CURRENT")
+        self.assertEqual(refreshed.schedule_a_match["ftw_seq_no"], "4")
+        self.assertIn("<Year>2024</Year>", refreshed.update_xml_schedule_a)
 
     def test_manual_schedule_a_selection_keeps_all_candidates_visible(self):
         repo = repositories.get_repository()

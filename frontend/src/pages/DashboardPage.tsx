@@ -481,9 +481,9 @@ function FilterDropdown({
 function DashboardFilingRow({ filing, onDeleteRequest }: { filing: Filing; onDeleteRequest: (filing: Filing) => void }) {
   const missingOther = (filing.missing_medium_priority_count || 0) + (filing.missing_low_priority_count || 0);
   const problemCount = (filing.missing_high_priority_count || 0) + missingOther + (filing.low_confidence_count || 0) + (filing.unmapped_count || 0);
-  const totalFields = DASHBOARD_REVIEW_FIELD_TOTAL;
+  const totalFields = filing.review_field_count || DASHBOARD_REVIEW_FIELD_TOTAL;
   const missingFields = (filing.missing_high_priority_count || 0) + missingOther;
-  const foundFields = Math.max(0, totalFields - missingFields);
+  const foundFields = filing.review_field_count ? (filing.found_field_count || 0) : Math.max(0, totalFields - missingFields);
   const pipelineStage = dashboardPipelineStage(filing);
   const fieldMetrics = dashboardFieldMetrics(filing, foundFields, totalFields, pipelineStage);
   const issueMetrics = dashboardIssueMetrics(filing, problemCount, missingOther, pipelineStage);

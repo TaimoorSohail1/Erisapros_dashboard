@@ -37,7 +37,6 @@ from app.services.ftwilliams_tags import (
     resolve_ftw_current_value,
     resolve_ftw_tag,
     resolve_ftw_update_tag,
-    strip_prior_year_annual_values,
     values_meaningfully_different,
 )
 from app.services.schedule_a_classification import (
@@ -85,7 +84,7 @@ class FTWilliamsReviewService:
         schedule_a_broker_rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
         schedule_a_worksheet_summaries = self._normalized_schedule_a_worksheet_summaries(filing.schedule_a_worksheet_summaries)
 
-        if not send_queries and existing_review and existing_review.current_query_success:
+        if not send_queries and existing_review:
             query_request_xmls.extend([existing_review.query_request_xml] if existing_review.query_request_xml else [])
             query_response_xmls.extend([existing_review.query_response_xml] if existing_review.query_response_xml else [])
             form_5500_current = self._review_current_values(existing_review, FormType.FORM_5500)
@@ -107,7 +106,7 @@ class FTWilliamsReviewService:
                     or "FT Williams current-data query needs CustomerID/PlanID or FTWCustomerID/FTWPlanID plus filing year."
                 )
             else:
-                query_result = await self._query_current_values_with_year_fallback(
+                query_result = await self._query_current_values_for_target_year(
                     fields,
                     current_query_payload_base,
                     existing_review,
@@ -171,6 +170,7 @@ class FTWilliamsReviewService:
             form_5500_current,
             schedule_a_current,
             update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
+            schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
         include_5500_update = not bring_forward_required and self._should_build_update_payload(send_queries, form_5500_current)
         include_schedule_a_update = not bring_forward_required and (
@@ -214,7 +214,7 @@ class FTWilliamsReviewService:
                 else FTWilliamsReviewStatus.PREVIEW_READY
             ),
             configured=configured,
-            current_query_sent=send_queries or bool(existing_review and existing_review.current_query_sent and current_query_success),
+            current_query_sent=send_queries or bool(existing_review and existing_review.current_query_sent),
             current_query_success=current_query_success,
             current_year_exists=current_year_exists,
             bring_forward_required=bring_forward_required,
@@ -371,16 +371,6 @@ class FTWilliamsReviewService:
                 if not success_status.ftw_seq_no:
                     success_status.ftw_seq_no = payload.ftw_seq_no
                 selected_status = success_status
-                if review.comparison_year_source == "PRIOR_YEAR_FALLBACK":
-                    selected_status = success_status.model_copy(
-                        update={
-                            "query_results": strip_prior_year_annual_values(
-                                FormType.SCHEDULE_A,
-                                success_status.query_results,
-                            )
-                        },
-                        deep=True,
-                    )
                 schedule_a_current = selected_status.query_results
                 update_identity = update_identity | self._identity_from_status(selected_status)
                 error_message = None
@@ -451,6 +441,7 @@ class FTWilliamsReviewService:
             form_5500_current,
             schedule_a_current,
             update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
+            schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
         include_5500_update = self._should_build_update_payload(review.current_query_sent, form_5500_current)
         include_schedule_a_update = self._should_build_update_payload(review.current_query_sent, schedule_a_current) or (
@@ -562,36 +553,15 @@ class FTWilliamsReviewService:
                 "error_message": None,
             },
         )
-
-        review = await repo.get_ftwilliams_review(filing_id)
-        if not review:
-            review = await self.prepare_review(filing_id, send_queries=False)
-        mismatch = (
-            review.ftw_schedule_a_contract_type not in {ScheduleAContractType.UNKNOWN, payload.contract_type}
-            and payload.contract_type != ScheduleAContractType.NEEDS_REVIEW
+        fields = await repo.list_fields(filing_id)
+        relevant_fields = filter_schedule_a_fields_for_contract_type(fields, payload.contract_type)
+        await repo.update_filing(
+            filing_id,
+            self._review_field_count_updates(fields, relevant_fields),
         )
-        filtered_fields = []
-        for field in review.fields or []:
-            if field.form_type == FormType.SCHEDULE_A and not schedule_a_contract_type_allows_rule(payload.contract_type, field.rule_key):
-                field.update_included = False
-                if field.changed:
-                    field.changed = False
-            filtered_fields.append(field)
-        updated_review = FTWilliamsReview(
-            **{
-                **review.model_dump(exclude={"id", "created_at", "updated_at"}),
-                "schedule_a_contract_type": payload.contract_type,
-                "schedule_a_contract_type_reason": reason,
-                "schedule_a_contract_type_confirmed": confirmed,
-                "schedule_a_contract_type_mismatch": mismatch,
-                "fields": filtered_fields,
-                "error_message": None if confirmed else review.error_message,
-                "client_error": None if confirmed else review.client_error,
-            }
-        )
-        updated_review.id = review.id
-        updated_review.created_at = review.created_at
-        updated_review = await repo.upsert_ftwilliams_review(updated_review)
+        # Rebuild the complete preview and replace-style XML. Mutating only the
+        # comparison flags can leave an opposite contract-type tag in stale XML.
+        updated_review = await self.prepare_review(filing_id, send_queries=False)
         await repo.add_audit(
             AuditLog(
                 filing_id=filing_id,
@@ -601,6 +571,40 @@ class FTWilliamsReviewService:
             )
         )
         return updated_review
+
+    def _review_field_count_updates(
+        self,
+        all_fields: list[ExtractedField],
+        relevant_fields: list[ExtractedField],
+    ) -> dict:
+        review_fields = [field for field in relevant_fields if field.priority != FieldPriority.IGNORE]
+        found_fields = [
+            field
+            for field in review_fields
+            if field.status not in {ExtractedFieldStatus.MISSING, ExtractedFieldStatus.UNMAPPED}
+            and str(field.proposed_value or field.value or "").strip()
+        ]
+        missing_high = len(
+            [field for field in review_fields if field.status == ExtractedFieldStatus.MISSING and field.priority == FieldPriority.HIGH]
+        )
+        missing_medium = len(
+            [field for field in review_fields if field.status == ExtractedFieldStatus.MISSING and field.priority == FieldPriority.MEDIUM]
+        )
+        missing_low = len(
+            [field for field in review_fields if field.status == ExtractedFieldStatus.MISSING and field.priority == FieldPriority.LOW]
+        )
+        low_confidence = len([field for field in review_fields if field.status == ExtractedFieldStatus.LOW_CONFIDENCE])
+        unmapped = len([field for field in review_fields if field.status == ExtractedFieldStatus.UNMAPPED])
+        return {
+            "review_field_count": len(review_fields),
+            "found_field_count": len(found_fields),
+            "excluded_field_count": max(0, len(all_fields) - len(relevant_fields)),
+            "missing_high_priority_count": missing_high,
+            "missing_medium_priority_count": missing_medium,
+            "missing_low_priority_count": missing_low,
+            "low_confidence_count": low_confidence,
+            "unmapped_count": unmapped,
+        }
 
     async def send_approved_update(self, filing_id: str, payload: FTWilliamsSendUpdateRequest) -> FTWilliamsReview | None:
         repo = get_repository()
@@ -924,103 +928,37 @@ class FTWilliamsReviewService:
             )
         )
 
-    async def _query_current_values_with_year_fallback(
+    async def _query_current_values_for_target_year(
         self,
         fields: list[ExtractedField],
         query_payload_base: dict,
         existing_review: FTWilliamsReview | None,
     ) -> dict:
-        years = self._current_query_year_candidates(query_payload_base.get("year"))
-        if not years:
-            result = await self._run_current_queries_for_year(fields, query_payload_base, existing_review)
-            result["current_year_exists"] = bool(result["current_query_complete"])
-            result["bring_forward_required"] = False
-            return result
-
-        initial = await self._run_current_queries_for_year(
-            fields,
-            {**query_payload_base, "year": years[0]},
-            existing_review,
+        target_year = str(query_payload_base.get("year") or "").strip()
+        result = await self._run_current_queries_for_year(fields, query_payload_base, existing_review)
+        expects_form_5500 = any(field.form_type == FormType.FORM_5500 for field in fields)
+        expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
+        missing_required_record = (
+            (expects_schedule_a and not result["schedule_a_candidates"])
+            or (not expects_schedule_a and expects_form_5500 and not result["form_5500_current"])
         )
-        if initial["current_query_complete"] or len(years) == 1:
-            initial["comparison_year"] = years[0] if initial["current_query_complete"] else None
-            initial["comparison_year_source"] = "CURRENT" if initial["current_query_complete"] else None
-            initial["current_year_exists"] = bool(initial["current_query_complete"])
-            initial["bring_forward_required"] = False
-            return initial
-
-        fallback_year = years[1]
-        fallback = await self._run_current_queries_for_year(
-            fields,
-            {**query_payload_base, "year": fallback_year},
-            existing_review,
+        current_year_exists = bool(
+            result["schedule_a_candidates"]
+            if expects_schedule_a
+            else result["form_5500_current"]
         )
-        fallback["query_request_xmls"] = [*initial["query_request_xmls"], *fallback["query_request_xmls"]]
-        fallback["query_response_xmls"] = [*initial["query_response_xmls"], *fallback["query_response_xmls"]]
-        if fallback["current_query_complete"]:
-            fallback = self._protect_prior_year_fallback(fallback)
+        result["comparison_year"] = target_year if current_year_exists else None
+        result["comparison_year_source"] = "CURRENT" if current_year_exists else None
+        result["current_year_exists"] = current_year_exists
+        result["bring_forward_required"] = missing_required_record
+        if missing_required_record:
             note = (
-                f"Current-year {years[0]} FT Williams data is incomplete. Prior-year {fallback_year} data is shown for reference only. "
-                "Use FT Williams' native Bring Forward action, then refresh this dashboard. Annual dates, headcounts, "
-                "commissions, fees, premiums, claims, and reserves were left blank."
+                f"The required current-year {target_year} FT Williams record is missing. "
+                "Use FT Williams' native Bring Forward action, then refresh FTW data. "
+                "No prior-year values were loaded into this comparison."
             )
-            fallback["error_message"] = "; ".join(filter(None, [note, fallback["error_message"]]))
-            fallback["comparison_year"] = fallback_year
-            fallback["comparison_year_source"] = "PRIOR_YEAR_FALLBACK"
-            fallback["current_year_exists"] = False
-            fallback["bring_forward_required"] = True
-            return fallback
-
-        combined_error = "; ".join(
-            filter(
-                None,
-                [
-                    initial["error_message"],
-                    fallback["error_message"],
-                    f"No usable FT Williams data was found for {years[0]} or prior year {fallback_year}.",
-                ],
-            )
-        )
-        fallback["error_message"] = combined_error
-        fallback["comparison_year"] = None
-        fallback["comparison_year_source"] = None
-        fallback["current_year_exists"] = False
-        fallback["bring_forward_required"] = False
-        return fallback
-
-    def _protect_prior_year_fallback(self, result: dict) -> dict:
-        protected = dict(result)
-        protected["form_5500_current"] = strip_prior_year_annual_values(
-            FormType.FORM_5500,
-            result.get("form_5500_current") or {},
-        )
-        protected["schedule_a_current"] = strip_prior_year_annual_values(
-            FormType.SCHEDULE_A,
-            result.get("schedule_a_current") or {},
-        )
-
-        matched_schedule_a = result.get("matched_schedule_a")
-        if matched_schedule_a:
-            protected["matched_schedule_a"] = matched_schedule_a.model_copy(
-                update={"query_results": protected["schedule_a_current"]},
-                deep=True,
-            )
-
-        protected["schedule_a_candidates"] = [
-            {**candidate, "plan_year_begin": None, "plan_year_end": None}
-            for candidate in result.get("schedule_a_candidates") or []
-        ]
-        protected["schedule_a_records"] = [
-            {
-                **record,
-                "query_results": strip_prior_year_annual_values(
-                    FormType.SCHEDULE_A,
-                    record.get("query_results") or {},
-                ),
-            }
-            for record in result.get("schedule_a_records") or []
-        ]
-        return protected
+            result["error_message"] = "; ".join(filter(None, [note, result["error_message"]]))
+        return result
 
     async def _run_current_queries_for_year(
         self,
@@ -1393,6 +1331,7 @@ class FTWilliamsReviewService:
         form_5500_current: dict[str, str],
         schedule_a_current: dict[str, str],
         update_fields: list[ExtractedField] | None = None,
+        schedule_a_contract_type: ScheduleAContractType | None = None,
     ) -> list[FTWilliamsComparisonField]:
         comparison: list[FTWilliamsComparisonField] = []
         update_field_ids = {id(field) for field in update_fields} if update_fields is not None else None
@@ -1407,7 +1346,13 @@ class FTWilliamsReviewService:
             # value will be erased. Show the retained current value in the review
             # column while still excluding blank extraction fields from updates.
             proposed_value = extracted_proposed_value if extracted_proposed_value.strip() else current_value
-            changed = values_meaningfully_different(current_value, proposed_value)
+            update_allowed = update_field_ids is None or id(field) in update_field_ids
+            contract_type_allowed = (
+                field.form_type != FormType.SCHEDULE_A
+                or schedule_a_contract_type is None
+                or schedule_a_contract_type_allows_rule(schedule_a_contract_type, field.mapped_rule_key)
+            )
+            changed = values_meaningfully_different(current_value, proposed_value) and contract_type_allowed
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,
@@ -1426,7 +1371,8 @@ class FTWilliamsReviewService:
                     update_included=bool(
                         tag
                         and extracted_proposed_value.strip()
-                        and (update_field_ids is None or id(field) in update_field_ids)
+                        and update_allowed
+                        and contract_type_allowed
                     ),
                 )
             )
@@ -2630,13 +2576,6 @@ class FTWilliamsReviewService:
             "ftw_customer_id": settings.ftwlink_sandbox_ftw_customer_id,
             "ftw_plan_id": settings.ftwlink_sandbox_ftw_plan_id,
         }
-
-    def _current_query_year_candidates(self, year: str | None) -> list[str]:
-        normalized_year = self._normalize_year(year)
-        if not normalized_year:
-            return []
-        prior_year = str(int(normalized_year) - 1)
-        return [normalized_year, prior_year]
 
     def _identity_from_status(self, status: FTWilliamsStatusItem | None) -> dict:
         if not status:
