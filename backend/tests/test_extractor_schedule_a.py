@@ -106,6 +106,30 @@ class ScheduleAExtractionTests(unittest.TestCase):
             "12,013.49",
         )
 
+    def test_groundx_ocr_maps_nonparticipating_subscription_charge_wording_to_line_10a(self):
+        text = """
+        Official ERISA Notification
+        7. NON-PARTICIPATING CONTRACTS (PREMIUMS):
+        (A) TOTAL PREMIUM OR SUBSCRIPTION CHARGES PAID
+        TO CARRIER. $49,429.65
+        (B) PREMIUMS DUE AND UNPAID AT END OF THE PLAN YEAR. $.00
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(
+            by_name["10a. Total premiums or subscription charges paid to carrier"],
+            "49,429.65",
+        )
+        mapped = map_extraction_to_rules(
+            "oxford-test",
+            fields,
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+        )["fields"]
+        self.assertEqual(classify_schedule_a_fields(mapped).contract_type.value, "NONEXPERIENCE_RATED")
+
     def test_groundx_ocr_maps_experience_section_amounts_to_line_9(self):
         text = """
         Schedule A Part III

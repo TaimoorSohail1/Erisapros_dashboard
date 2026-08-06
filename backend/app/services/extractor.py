@@ -995,10 +995,10 @@ def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
         return None
 
     vendor_total = re.search(
-        r"(?:gross\s+premium|total\s+premiums?\s+(?:received|paid)"
-        r"(?:\s+to\s+(?:the\s+)?insurance\s+company)?"
+        r"(?:gross\s+premium|total\s+premiums?(?:\s+or\s+subscription\s+charges)?\s+(?:received|paid)"
+        r"(?:\s+to\s+(?:(?:the\s+)?insurance\s+company|carrier))?"
         r"(?:\s+during\s+(?:the\s+)?policy\s+year)?)"
-        r"\s*:?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)(?![0-9/])",
+        r"[\s.:]*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)(?![0-9/])",
         normalized,
         flags=re.IGNORECASE,
     )
