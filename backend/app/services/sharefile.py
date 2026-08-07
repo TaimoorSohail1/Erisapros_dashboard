@@ -380,16 +380,28 @@ class ShareFileService:
             scanned_files: list[dict] = []
             scan_errors: list[dict] = []
             for root in scan_roots:
-                scanned_files.extend(
-                    await self._scan_folder(
-                        client,
-                        token,
-                        root["id"],
-                        root["path_parts"],
-                        root_folder_id=root["id"],
-                        scan_errors=scan_errors,
+                try:
+                    scanned_files.extend(
+                        await self._scan_folder(
+                            client,
+                            token,
+                            root["id"],
+                            root["path_parts"],
+                            root_folder_id=root["id"],
+                            scan_errors=scan_errors,
+                        )
                     )
-                )
+                except Exception as exc:
+                    # Belt and braces: a failure inside one client's folder tree
+                    # must never abort the scan of the remaining clients.
+                    scan_errors.append(
+                        {
+                            "folder_id": root["id"],
+                            "path": " > ".join(root["path_parts"]) or root["name"],
+                            "status_code": None,
+                            "response": f"{type(exc).__name__}: {exc}"[:300],
+                        }
+                    )
 
             state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY)
             first_scan = not bool(state and state.get("baseline_completed"))
@@ -1742,7 +1754,9 @@ class ShareFileService:
             return []
         try:
             children = await self._list_folder(client, token, folder_id)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
+            # Includes network-level failures (timeouts, dropped connections),
+            # which must not abort folder discovery.
             return []
 
         folders: list[dict] = []
@@ -1801,7 +1815,7 @@ class ShareFileService:
 
         try:
             children = await self._list_folder(client, token, root_id)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
             return roots
         for item in children:
             item_id = item.get("Id")
@@ -1824,7 +1838,9 @@ class ShareFileService:
     ) -> list[dict]:
         try:
             children = await self._list_folder(client, token, folder_id)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
+            # Includes network-level failures (timeouts, dropped connections),
+            # which must not abort folder discovery.
             return []
 
         roots: list[dict] = []
@@ -1849,7 +1865,9 @@ class ShareFileService:
     ) -> list[dict]:
         try:
             children = await self._list_folder(client, token, folder_id)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
+            # Includes network-level failures (timeouts, dropped connections),
+            # which must not abort folder discovery.
             return []
 
         roots: list[dict] = []
@@ -1877,7 +1895,9 @@ class ShareFileService:
             return []
         try:
             children = await self._list_folder(client, token, folder_id)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
+            # Includes network-level failures (timeouts, dropped connections),
+            # which must not abort folder discovery.
             return []
 
         roots: list[dict] = []
@@ -2394,14 +2414,19 @@ class ShareFileService:
 
         try:
             children = await self._list_folder(client, token, folder_id)
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
+            # One slow or broken folder must never abort the whole scan.
+            # HTTPError covers both ShareFile error responses (HTTPStatusError)
+            # and network-level failures such as timeouts and dropped
+            # connections. Record the folder and continue with the rest.
             if scan_errors is not None:
+                is_status_error = isinstance(exc, httpx.HTTPStatusError)
                 scan_errors.append(
                     {
                         "folder_id": folder_id,
                         "path": " > ".join(path_parts) or folder_id,
-                        "status_code": exc.response.status_code,
-                        "response": exc.response.text[:300],
+                        "status_code": exc.response.status_code if is_status_error else None,
+                        "response": exc.response.text[:300] if is_status_error else f"{type(exc).__name__}: {exc}"[:300],
                     }
                 )
             return []
