@@ -91,7 +91,7 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             code="FTW_NOT_CONFIGURED",
         )
 
-    if "transaction type 2 is not allowed" in lowered or "filing is locked" in lowered or "locked" in lowered:
+    if "transaction type 2 is not allowed" in lowered or "filing is locked" in lowered or re.search(r"\block(?:ed)?\b", lowered):
         return build(
             "The filing is locked in FT Williams",
             "FT Williams rejected the update because this filing is not currently editable.",

@@ -105,7 +105,14 @@ class ExtractionService:
                 local_result = local_schedule_a_pdf_result(file_bytes, file_name, provider=f"Local PDF parser fallback ({safe_error_summary(exc)})")
                 if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
                     return local_result
-                raise
+                # Unrecognized layout: degrade gracefully instead of crashing the
+                # pipeline. The filing completes with all fields MISSING and is
+                # routed to manual review.
+                return NormalizedExtractionResult(
+                    provider=f"Unrecognized layout - manual review required (AI extraction failed: {safe_error_summary(exc)})",
+                    fields=[],
+                    raw={"file_name": file_name, "error": safe_error_summary(exc), "source": "unrecognized_layout_fallback"},
+                )
 
         if not settings.eyelevel_api_key or not settings.eyelevel_extract_url:
             local_result = local_schedule_a_pdf_result(file_bytes, file_name)
@@ -584,22 +591,25 @@ def merge_schedule_a_fields(
     if not pdf_text_fields:
         return dedupe_fields(primary_fields)
 
-    preferred_pdf_by_name = {
-        field.field_name: field for field in pdf_text_fields if field.field_name in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS
-    }
-    merged: list[NormalizedExtractionField] = []
+    def _has_usable_value(field: NormalizedExtractionField) -> bool:
+        value = (field.value or "").strip()
+        return bool(value) and value.lower() not in {"n/a", "na", "none", "null", "-", "unknown", "not found"}
 
-    for field in primary_fields:
-        if field.field_name in preferred_pdf_by_name:
-            continue
-        merged.append(field)
-
-    merged.extend(preferred_pdf_by_name.values())
+    # AI-extracted (primary) values win. Local PDF-text parsing is used only to
+    # fill fields the primary extractor did not return a usable value for.
+    primary_named = {field.field_name for field in primary_fields if _has_usable_value(field)}
+    merged: list[NormalizedExtractionField] = list(primary_fields)
     existing_names = {field.field_name for field in merged}
     for field in pdf_text_fields:
-        if field.field_name not in existing_names:
-            merged.append(field)
-            existing_names.add(field.field_name)
+        if field.field_name in primary_named:
+            continue
+        if field.field_name in existing_names and field.field_name not in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS:
+            continue
+        if field.field_name in existing_names:
+            # Primary returned the field but with no usable value - replace it.
+            merged = [f for f in merged if f.field_name != field.field_name]
+        merged.append(field)
+        existing_names.add(field.field_name)
 
     return dedupe_fields(merged)
 

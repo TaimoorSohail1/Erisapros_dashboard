@@ -113,6 +113,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.MAPPING})
             mapped_fields = harmonize_schedule_a_reference_fields(mapped_fields)
             mapped_fields = harmonize_schedule_a_business_rule_fields(mapped_fields)
+            mapped_fields = apply_schedule_a_sanity_checks(mapped_fields)
             contract_classification = classify_schedule_a_fields(mapped_fields)
             relevant_fields = filter_schedule_a_fields_for_contract_type(
                 mapped_fields,
@@ -405,6 +406,87 @@ def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> l
     purpose_field.status = ExtractedFieldStatus.MATCHED
     purpose_field.status_reason = "Derived from Schedule A commission and fee values per field rules."
     purpose_field.updated_at = datetime.utcnow()
+    return fields
+
+
+SANITY_MONEY_RULE_KEYS = {
+    "schedule_a_part_i_3b_amount_of_commissions",
+    "schedule_a_part_i_3c_amount_of_fees",
+    "schedule_a_part_iii_9a_premiums_1_amount_received",
+    "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+}
+SANITY_NAME_RULE_KEYS = {
+    "schedule_a_part_i_1a_name_of_insurance_company",
+    "schedule_a_part_i_3a_name_of_agent_broker_person",
+    "schedule_a_part_iv_4a_plan_name",
+    "form_5500_part_i_1a_plan_name",
+    "form_5500_part_i_1d_plan_sponsor_name",
+}
+SANITY_HEADER_TOKENS = (
+    "contract number",
+    "naic code",
+    "total premium",
+    "# covered",
+    "policy year",
+    "agent or broker",
+    "feespaid",
+    "persons covered",
+    "beginning date",
+    "ending date",
+    "insurance carrier",
+)
+
+
+def _flag_field_suspicious(field: ExtractedField, reason: str) -> None:
+    if field.status not in (ExtractedFieldStatus.MATCHED, ExtractedFieldStatus.LOW_CONFIDENCE):
+        return
+    field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+    field.confidence = min(field.confidence, 0.5)
+    field.status_reason = f"Sanity check: {reason}"
+    field.updated_at = datetime.utcnow()
+
+
+def apply_schedule_a_sanity_checks(fields: list[ExtractedField]) -> list[ExtractedField]:
+    """Flag values that are very likely mis-parsed (date fragments as amounts,
+    header text as names, commissions larger than premiums). Values are never
+    changed or removed - only routed to review with lowered confidence."""
+    by_rule_key = {field.mapped_rule_key: field for field in fields if field.mapped_rule_key}
+
+    premium_field = by_rule_key.get("schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier") or by_rule_key.get(
+        "schedule_a_part_iii_9a_premiums_1_amount_received"
+    )
+    premium_amount = parse_numeric_amount(premium_field.proposed_value or premium_field.value) if premium_field else None
+
+    for rule_key in SANITY_MONEY_RULE_KEYS:
+        field = by_rule_key.get(rule_key)
+        if not field:
+            continue
+        amount = parse_numeric_amount(field.proposed_value or field.value)
+        if amount is None:
+            continue
+        if 0 < amount <= 31 and float(amount).is_integer():
+            _flag_field_suspicious(field, f"Amount {amount:.0f} looks like a date fragment rather than a dollar amount.")
+        elif rule_key in ("schedule_a_part_i_3b_amount_of_commissions", "schedule_a_part_i_3c_amount_of_fees") and premium_amount and amount > premium_amount:
+            _flag_field_suspicious(field, "Commission/fee amount exceeds the total premium, which is very unlikely.")
+
+    covered_field = by_rule_key.get("schedule_a_part_i_1e_persons_covered_end_of_policy_year")
+    if covered_field and premium_field:
+        covered_amount = parse_numeric_amount(covered_field.proposed_value or covered_field.value)
+        if covered_amount is not None and premium_amount is not None and covered_amount == premium_amount and covered_amount > 0:
+            _flag_field_suspicious(covered_field, "Persons covered equals the premium amount, which suggests both were mis-parsed from the same text.")
+            _flag_field_suspicious(premium_field, "Premium equals the persons-covered count, which suggests both were mis-parsed from the same text.")
+
+    for rule_key in SANITY_NAME_RULE_KEYS:
+        field = by_rule_key.get(rule_key)
+        if not field:
+            continue
+        value = str(field.proposed_value or field.value or "").strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if len(value) > 80 or "\n" in value or any(token in lowered for token in SANITY_HEADER_TOKENS):
+            _flag_field_suspicious(field, "Value looks like table header or layout text captured by mistake, not a real name.")
+
     return fields
 
 
