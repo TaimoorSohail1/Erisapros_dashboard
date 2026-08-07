@@ -34,6 +34,10 @@ FTW_INDICATOR_TAGS = {
     "BenefitGeneralAssetInd",
 }
 
+FTW_ONE_TWO_BOOLEAN_TAGS = {
+    "InsFailProvideInfoInd",
+}
+
 FORM_5500_INDICATOR_GROUPS = {
     "form_5500_part_ii_9_plan_funding_arrangement": [
         ("FundingInsuranceInd", ("insurance",)),
@@ -535,6 +539,12 @@ def _normalize_ftw_xml_value(tag: str, value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return text
+    if tag in FTW_ONE_TWO_BOOLEAN_TAGS:
+        normalized_text = text.lower()
+        if normalized_text in {"1", "y", "yes", "true"}:
+            return "1"
+        if normalized_text in {"0", "2", "n", "no", "false"}:
+            return "2"
     if tag in FTW_INDICATOR_TAGS:
         normalized_text = text.lower()
         if normalized_text in {"1", "y", "yes", "true", "insurance"}:

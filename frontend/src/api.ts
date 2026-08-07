@@ -9,11 +9,16 @@ import type {
   FTWilliamsReview,
   ScheduleAContractType,
 } from "./types";
+import { getIdToken } from "./auth";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "/api" : "http://localhost:8001");
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(API_BASE + path, options);
+  const headers = new Headers(options?.headers);
+  const idToken = await getIdToken();
+  if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
+  const response = await fetch(API_BASE + path, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || payload.error || "Request failed");
@@ -46,11 +51,12 @@ export async function updateField(
   filingId: string,
   fieldId: string,
   proposedValue: string,
+  options?: { markMissing?: boolean },
 ): Promise<{ field: ExtractedField; proposed_xml: string; ftw_review?: FTWilliamsReview | null }> {
   return request("/filings/" + filingId + "/fields/" + fieldId, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proposed_value: proposedValue })
+    body: JSON.stringify({ proposed_value: proposedValue, mark_missing: Boolean(options?.markMissing) })
   });
 }
 
@@ -88,6 +94,14 @@ export async function prepareFTWilliamsReview(filingId: string, sendQueries = fa
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ send_queries: sendQueries })
   });
+}
+
+export async function getFTWilliamsBringForwardLink(filingId: string): Promise<{
+  url: string;
+  target_year?: string | null;
+  prior_year?: string | null;
+}> {
+  return request("/filings/" + filingId + "/ftw/bring-forward-link", { method: "POST" });
 }
 
 export async function saveManualFTWilliamsMatch(
@@ -155,9 +169,73 @@ export async function retryExtraction(filingId: string): Promise<{ id: string; s
   return request("/filings/" + filingId + "/retry-extraction", { method: "POST" });
 }
 
-export async function listFieldRules(): Promise<FieldRule[]> {
-  const payload = await request<{ field_rules: FieldRule[] }>("/field-rules");
-  return payload.field_rules;
+export interface FieldRuleListResponse {
+  field_rules: FieldRule[];
+  published_version: string;
+  can_manage: boolean;
+}
+
+export async function listFieldRules(): Promise<FieldRuleListResponse> {
+  return request<FieldRuleListResponse>("/field-rules");
+}
+
+export async function saveFieldRuleDraft(rule: FieldRule, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>("/field-rules/drafts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rule, reason })
+  });
+  return payload.field_rule;
+}
+
+export async function testFieldRule(rule: FieldRule, sampleFieldName: string): Promise<{
+  valid: boolean;
+  matched: boolean;
+  mapped_rule_key?: string | null;
+  mapped_ftw_field?: string | null;
+  message: string;
+}> {
+  return request("/field-rules/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rule, sample_field_name: sampleFieldName })
+  });
+}
+
+export async function publishFieldRule(key: string, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason })
+  });
+  return payload.field_rule;
+}
+
+export async function disableFieldRule(key: string, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/disable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason })
+  });
+  return payload.field_rule;
+}
+
+export async function getFieldRuleHistory(key: string): Promise<FieldRule[]> {
+  const payload = await request<{ history: FieldRule[] }>(`/field-rules/${encodeURIComponent(key)}/history`);
+  return payload.history;
+}
+
+export async function rollbackFieldRule(key: string, version: number, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version, reason })
+  });
+  return payload.field_rule;
+}
+
+export async function reEvaluateFilingRules(filingId: string): Promise<{ status: string; field_rule_set_version: string; field_count: number }> {
+  return request(`/filings/${filingId}/re-evaluate-rules`, { method: "POST" });
 }
 
 export async function getShareFileStatus(): Promise<{

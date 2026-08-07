@@ -6,8 +6,14 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.api.filings import delete_filing_from_dashboard, list_filings, unapprove_filing
-from app.models import ExtractedField, ExtractedFieldStatus, Filing, FilingStatus
+from app.api.filings import (
+    delete_filing_from_dashboard,
+    get_ftwilliams_bring_forward_link,
+    list_filings,
+    unapprove_filing,
+    update_field,
+)
+from app.models import ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FTWilliamsReview
 
 
 def run_async(coro):
@@ -91,6 +97,98 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIsNone(updated.approved_at)
         self.assertEqual(events[-1].type, "UNAPPROVE")
         self.assertEqual(audits[-1].event, "UNAPPROVED")
+
+    def test_field_review_actions_distinguish_confirmed_values_from_marked_missing(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Review Buttons Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/review-buttons",
+                    intake_source="SHAREFILE",
+                )
+            )
+            field = (
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="4. Plan Characteristic Codes",
+                            normalized_field_name="4. Plan Characteristic Codes",
+                            status=ExtractedFieldStatus.MISSING,
+                            status_reason="Not found in extraction output.",
+                        )
+                    ]
+                )
+            )[0]
+
+            confirmed = await update_field(
+                filing.id,
+                field.id,
+                FieldEditRequest(proposed_value="2A"),
+            )
+            confirmed_field = confirmed["field"].model_copy(deep=True)
+            marked_missing = await update_field(
+                filing.id,
+                field.id,
+                FieldEditRequest(proposed_value="", mark_missing=True),
+            )
+            events = await repo.list_events(filing.id)
+            return confirmed_field, marked_missing, events
+
+        confirmed, marked_missing, events = run_async(scenario())
+
+        self.assertEqual(confirmed.status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(confirmed.status_reason, "Value confirmed by reviewer.")
+        self.assertEqual(marked_missing["field"].status, ExtractedFieldStatus.MISSING)
+        self.assertEqual(marked_missing["field"].proposed_value, "")
+        self.assertEqual(marked_missing["field"].status_reason, "Marked missing by reviewer.")
+        self.assertEqual([event.type for event in events[-2:]], ["EDIT", "MARK_MISSING"])
+
+    def test_bring_forward_link_is_safe_and_audited_without_mutating_ftw(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Missing Current Year Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/bring-forward",
+                    intake_source="SHAREFILE",
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_year_exists=False,
+                    bring_forward_required=True,
+                    year="2025",
+                    ftw_plan_url=(
+                        "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+                        "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y"
+                    ),
+                )
+            )
+            response = await get_ftwilliams_bring_forward_link(filing.id)
+            audits = await repo.list_audit_logs(filing.id)
+            return response, audits
+
+        response, audits = run_async(scenario())
+
+        self.assertEqual(
+            response["url"],
+            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+            "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y",
+        )
+        self.assertEqual(response["target_year"], "2025")
+        self.assertIsNone(response["prior_year"])
+        self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
+        self.assertFalse(audits[-1].details["mutation_requested"])
 
 
 if __name__ == "__main__":

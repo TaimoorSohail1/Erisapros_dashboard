@@ -38,6 +38,20 @@ class FieldPriority(str, Enum):
     IGNORE = "IGNORE"
 
 
+class FieldRuleStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    DISABLED = "DISABLED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class FieldRuleApplicability(str, Enum):
+    BOTH = "BOTH"
+    EXPERIENCE = "EXPERIENCE"
+    NONEXPERIENCE = "NONEXPERIENCE"
+    FORM_5500 = "FORM_5500"
+
+
 class DocumentType(str, Enum):
     SCHEDULE_A = "SCHEDULE_A"
     PLAN_WORKSHEET = "PLAN_WORKSHEET"
@@ -61,6 +75,7 @@ class ExtractedFieldStatus(str, Enum):
 class FTWilliamsReviewStatus(str, Enum):
     PREVIEW_READY = "PREVIEW_READY"
     CURRENT_QUERIED = "CURRENT_QUERIED"
+    BRING_FORWARD_REQUIRED = "BRING_FORWARD_REQUIRED"
     UPDATE_READY = "UPDATE_READY"
     UPDATE_SENT = "UPDATE_SENT"
     UPDATE_FAILED = "UPDATE_FAILED"
@@ -85,6 +100,7 @@ class FTWilliamsPlanLookupStatus(str, Enum):
 
 
 class FieldRule(BaseModel):
+    id: str | None = None
     key: str
     label: str
     ftw_field: str
@@ -101,6 +117,28 @@ class FieldRule(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     required: bool = False
     order: int = 0
+    applicability: FieldRuleApplicability = FieldRuleApplicability.BOTH
+    status: FieldRuleStatus = FieldRuleStatus.PUBLISHED
+    version: int = 1
+    updated_by: str | None = None
+    change_reason: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FieldRuleDraftRequest(BaseModel):
+    rule: FieldRule
+    reason: str = ""
+
+
+class FieldRuleActionRequest(BaseModel):
+    reason: str
+    version: int | None = None
+
+
+class FieldRuleTestRequest(BaseModel):
+    rule: FieldRule
+    sample_field_name: str
 
 
 class NormalizedExtractionField(BaseModel):
@@ -212,12 +250,16 @@ class Filing(BaseModel):
     sharefile_parent_id: str | None = None
     sharefile_downloaded_at: datetime | None = None
     extraction_provider: str | None = None
+    field_rule_set_version: str | None = None
     overall_confidence: float = 0
     missing_high_priority_count: int = 0
     missing_medium_priority_count: int = 0
     missing_low_priority_count: int = 0
     low_confidence_count: int = 0
     unmapped_count: int = 0
+    review_field_count: int = 0
+    found_field_count: int = 0
+    excluded_field_count: int = 0
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False
@@ -288,6 +330,7 @@ class AuditLog(BaseModel):
 
 class FieldEditRequest(BaseModel):
     proposed_value: str
+    mark_missing: bool = False
 
 
 class RejectRequest(BaseModel):
@@ -489,6 +532,9 @@ class FTWilliamsReview(BaseModel):
     configured: bool = False
     current_query_sent: bool = False
     current_query_success: bool = False
+    current_year_exists: bool = False
+    bring_forward_required: bool = False
+    ftw_plan_url: str | None = None
     comparison_year: str | None = None
     comparison_year_source: str | None = None
     schedule_a_match: dict | None = None

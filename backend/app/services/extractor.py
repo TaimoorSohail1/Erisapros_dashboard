@@ -68,6 +68,9 @@ SCHEDULE_A_PREFER_PDF_TEXT_FIELDS = {
 
 
 class ExtractionService:
+    def __init__(self, field_rules=None):
+        self.field_rules = list(field_rules) if field_rules is not None else DEFAULT_FIELD_RULES
+
     async def extract_document(self, file_bytes: bytes, file_name: str, document_type: DocumentType) -> NormalizedExtractionResult:
         if document_type == DocumentType.PLAN_WORKSHEET:
             return await self.extract_plan_worksheet(file_bytes, file_name)
@@ -377,7 +380,7 @@ class ExtractionService:
         document_id: str,
         file_name: str | None = None,
     ) -> Any | None:
-        query = build_groundx_schema_query(file_name)
+        query = build_groundx_schema_query(file_name, self.field_rules)
         body = {
             "search": {
                 "query": query,
@@ -777,6 +780,14 @@ def extract_schedule_a_fields_from_xray_json(item: dict[str, Any], page: int | N
         lambda path: "nonexperience" in path and ("total" in path or "subtotal" in path) and ("amount" in path or "premium" in path),
         confidence=0.9,
     )
+    for path, value in flat_values:
+        if normalize_xray_path(path).endswith("gross_premium"):
+            add(
+                "10a. Total premiums or subscription charges paid to carrier",
+                money_value(str(value)),
+                0.9,
+            )
+            break
     premium_total = extract_nonexperience_total_premium_from_text(source_text)
     if premium_total:
         add("10a. Total premiums or subscription charges paid to carrier", premium_total, 0.93)
@@ -986,6 +997,17 @@ def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
     if not normalized:
         return None
 
+    vendor_total = re.search(
+        r"(?:gross\s+premium|total\s+premiums?(?:\s+or\s+subscription\s+charges)?\s+(?:received|paid)"
+        r"(?:\s+to\s+(?:(?:the\s+)?insurance\s+company|carrier))?"
+        r"(?:\s+during\s+(?:the\s+)?policy\s+year)?)"
+        r"[\s.:]*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)(?![0-9/])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if vendor_total:
+        return vendor_total.group(1)
+
     for match in re.finditer(
         r'"(?:total_premiums_or_subscription_charges_paid_to_carrier|total_premiums|total_premium|total_amount)"\s*:\s*"?([0-9][0-9,]*(?:\.\d{2})?)"?',
         normalized,
@@ -1028,8 +1050,8 @@ def find_money_amounts(text: str) -> list[str]:
     return re.findall(r"\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?\b|\b[0-9]{4,}(?:\.\d{2})?\b", text)
 
 
-def build_groundx_schema_query(file_name: str | None = None) -> str:
-    labels = "; ".join(rule.label for rule in DEFAULT_FIELD_RULES)
+def build_groundx_schema_query(file_name: str | None = None, rules=None) -> str:
+    labels = "; ".join(rule.label for rule in (rules if rules is not None else DEFAULT_FIELD_RULES))
     file_hint = f" Prefer content from file named {file_name} when that file is searchable. " if file_name else " "
     return (
         "Using this Schedule A / Form 5500 document, retrieve the text needed to extract these FT Williams fields."
@@ -3666,6 +3688,17 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
         ),
         0.91,
     )
+    for field_label in SCHEDULE_A_EXPERIENCE_RATED_FIELDS:
+        add(
+            field_label,
+            extract_labeled_value(
+                text,
+                [field_label],
+                MONEY_VALUE_PATTERN,
+                transform=money_value,
+            ),
+            0.93,
+        )
     add(
         "10a. Total premiums or subscription charges paid to carrier",
         extract_labeled_value(

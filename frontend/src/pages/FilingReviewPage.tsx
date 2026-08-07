@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Edit3,
   Eye,
+  ExternalLink,
   FileText,
   ListChecks,
   Lock,
@@ -15,18 +16,21 @@ import {
   Search,
   SearchX,
   ShieldCheck,
+  Sparkles,
   SlidersHorizontal,
   X,
   XCircle,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams } from "../router";
 import {
   approveFiling,
   getFiling,
+  getFTWilliamsBringForwardLink,
   prepareFTWilliamsReview,
   regenerateXml,
+  reEvaluateFilingRules,
   rejectFiling,
   retryExtraction,
   saveManualFTWilliamsMatch,
@@ -49,6 +53,11 @@ type ReviewToast = {
   title: string;
   tone: "error" | "success";
 } | null;
+type FieldSaveOptions = {
+  markMissing?: boolean;
+  successMessage?: string;
+  successTitle?: string;
+};
 const REVIEW_POLL_MS = 30000;
 const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9a_premiums_1_amount_received",
@@ -67,6 +76,11 @@ const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9c_1_f_charges_for_risks_or_other_contingencies",
   "schedule_a_part_iii_9c_1_g_other_retention_charges",
   "schedule_a_part_iii_9c_1_h_total_retention",
+  "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
+  "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement",
+  "schedule_a_part_iii_9d_2_claim_reserves",
+  "schedule_a_part_iii_9d_3_other_reserves",
+  "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due",
 ]);
 const NONEXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
@@ -110,8 +124,11 @@ export function FilingReviewPage() {
   const [pollVersion, setPollVersion] = useState(0);
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
+  const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
+  const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
   const [showAllFields, setShowAllFields] = useState(false);
+  const [showExcludedFields, setShowExcludedFields] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
@@ -156,18 +173,28 @@ export function FilingReviewPage() {
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
   const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
+  const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
   const missingHigh = approvalRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
   const missingOther = approvalRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
   const lowConfidence = approvalRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
   const unmapped = approvalRelevantFields.filter((field) => field.status === "UNMAPPED");
-  const extracted = fields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
-  const matched = fields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
+  const extracted = approvalRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
+  const matched = approvalRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
   const actionFields = useMemo(
     () => [...missingHigh, ...lowConfidence, ...unmapped, ...missingOther].sort(compareFields),
     [missingHigh, lowConfidence, unmapped, missingOther],
   );
-  const reviewRows = useMemo(() => buildReviewDecisionRows(fields, filing?.ftw_review || null), [fields, filing?.ftw_review]);
-  const sectionOptions = useMemo(() => [...new Set(fields.map(sectionForField))].sort(), [fields]);
+  const reviewRows = useMemo(
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false),
+    [fields, filing?.ftw_review, scheduleAContractType],
+  );
+  const visibleReviewRows = useMemo(
+    () => showExcludedFields
+      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true)
+      : reviewRows,
+    [fields, filing?.ftw_review, reviewRows, scheduleAContractType, showExcludedFields],
+  );
+  const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
   const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION");
   const willUpdateRows = reviewRows.filter((row) => row.group === "WILL_UPDATE");
   const sameRows = reviewRows.filter((row) => row.group === "SAME");
@@ -176,7 +203,7 @@ export function FilingReviewPage() {
   const approvalBlockerRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" || (row.group === "MISSING" && row.priority === "HIGH"));
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return reviewRows.filter((row) => {
+    return visibleReviewRows.filter((row) => {
       const haystack = [
         row.label,
         row.formLabel,
@@ -198,7 +225,7 @@ export function FilingReviewPage() {
         (contractTypeFilter === "ALL" || scheduleAContractType === contractTypeFilter)
       );
     });
-  }, [activeTab, contractTypeFilter, formFilter, priorityFilter, reviewRows, scheduleAContractType, search, sectionFilter, statusFilter]);
+  }, [activeTab, contractTypeFilter, formFilter, priorityFilter, visibleReviewRows, scheduleAContractType, search, sectionFilter, statusFilter]);
   const selectedField = useMemo(
     () => selectedFieldId ? fields.find((field) => field.id === selectedFieldId) : undefined,
     [fields, selectedFieldId],
@@ -209,17 +236,25 @@ export function FilingReviewPage() {
   const pagedRows = displayRows.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
   const previewRows = displayRows.slice(0, 8);
   const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0;
-  const expectsForm5500Current = expectsCurrentForForm(fields, reviewRows, "FORM_5500");
-  const expectsScheduleACurrent = expectsCurrentForForm(fields, reviewRows, "SCHEDULE_A");
+  const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
+  const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
-  const ftwCurrentLoaded = Boolean(ftwReview?.configured && ftwReview.current_query_success && (form5500CurrentLoaded || scheduleACurrentLoaded));
+  const bringForwardRequired = Boolean(ftwReview?.bring_forward_required);
+  const ftwCurrentLoaded = Boolean(
+    ftwReview?.configured &&
+    ftwReview.current_query_success &&
+    ftwReview.current_year_exists &&
+    !bringForwardRequired &&
+    (form5500CurrentLoaded || scheduleACurrentLoaded),
+  );
   const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
+  const reviewInteractionBusy = ftwInteractionBusy || Boolean(fieldSavingId);
   const ftwSendStatusReady = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
   const ftwReadyToSend = Boolean(
     ftwSendStatusReady &&
@@ -229,7 +264,7 @@ export function FilingReviewPage() {
     scheduleASafetyReady,
   );
   const foundCount = extracted.length;
-  const totalFields = fields.length;
+  const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
@@ -252,15 +287,36 @@ export function FilingReviewPage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function saveField(fieldId: string, proposedValue: string) {
-    if (!id || !filing) return;
-    const result = await updateField(id, fieldId, proposedValue);
-    setFiling({
-      ...filing,
-      ftw_review: result.ftw_review ?? filing.ftw_review,
-      proposed_xml: result.proposed_xml,
-      fields: filing.fields.map((field) => field.id === fieldId ? result.field : field),
-    });
+  async function saveField(fieldId: string, proposedValue: string, options: FieldSaveOptions = {}) {
+    if (!id || !filing || fieldSavingId) return false;
+    setFieldSavingId(fieldId);
+    setToast(null);
+    try {
+      const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
+      setFiling((current) => current ? {
+        ...current,
+        ftw_review: result.ftw_review ?? current.ftw_review,
+        proposed_xml: result.proposed_xml,
+        fields: current.fields.map((field) => field.id === fieldId ? result.field : field),
+      } : current);
+      setToast({
+        tone: "success",
+        title: options.successTitle || (options.markMissing ? "Field marked missing" : "Field decision saved"),
+        message: options.successMessage || (options.markMissing
+          ? "This field will remain excluded until a value is entered."
+          : "The proposed FT Williams value has been updated."),
+      });
+      return true;
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Field decision was not saved",
+        message: error instanceof Error ? error.message : "Please try again.",
+      });
+      return false;
+    } finally {
+      setFieldSavingId(null);
+    }
   }
 
   async function decide(action: "approve" | "reject", options?: { overrideBlockers?: boolean }) {
@@ -274,7 +330,24 @@ export function FilingReviewPage() {
 
   async function approveAnyway() {
     setShowApproveConfirm(false);
-    await decide("approve", { overrideBlockers: approvalBlocked });
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await decide("approve", { overrideBlockers: approvalBlocked });
+      setToast({
+        tone: "success",
+        title: "Filing approved",
+        message: `${displayFileName} is approved and ready for the remaining FT Williams safety checks.`,
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Could not approve filing",
+        message: error instanceof Error ? error.message : "The filing could not be approved.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
   }
 
   function handleApproveClick() {
@@ -282,8 +355,25 @@ export function FilingReviewPage() {
       setShowUnapproveConfirm(true);
       return;
     }
+    if (
+      expectsScheduleACurrent &&
+      (!scheduleAContractConfirmed || scheduleAContractType === "UNKNOWN" || scheduleAContractType === "NEEDS_REVIEW")
+    ) {
+      setToast({
+        tone: "error",
+        title: "Confirm Schedule A type",
+        message: "Choose Experience or Nonexperience in the Schedule A Type card before approving this filing.",
+      });
+      return;
+    }
     if (!ftwCurrentLoaded) {
-      setMessage("Query FTW Current before approving this filing. At least one current FT Williams form must load.");
+      setToast({
+        tone: "error",
+        title: bringForwardRequired ? "Bring Forward required in FT Williams" : "FT Williams current data required",
+        message: bringForwardRequired
+          ? "Open FT Williams, complete its native Bring Forward action, then refresh FTW data before approving."
+          : "Query FTW Current before approving this filing. At least one current FT Williams form must load.",
+      });
       return;
     }
     setMessage("");
@@ -334,10 +424,52 @@ export function FilingReviewPage() {
     setFtwBusy(true);
     setMessage("");
     try {
-      await prepareFTWilliamsReview(id, sendQueries);
-      setFiling(await getFiling(id));
+      const result = await prepareFTWilliamsReview(id, sendQueries);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      if (sendQueries && result.ftw_review.current_year_exists && !result.ftw_review.bring_forward_required) {
+        setToast({
+          tone: "success",
+          title: "Current-year FTW data loaded",
+          message: `FT Williams ${result.ftw_review.year || "current-year"} data is ready for comparison.`,
+        });
+      } else if (sendQueries && result.ftw_review.bring_forward_required) {
+        setToast({
+          tone: "error",
+          title: "Bring Forward still required",
+          message: "The current-year FTW record is still missing. Complete Bring Forward in FT Williams, then refresh again.",
+        });
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not prepare FT Williams comparison");
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function openFtwBringForward() {
+    if (!id) return;
+    const ftwWindow = window.open("about:blank", "_blank");
+    if (ftwWindow) ftwWindow.opener = null;
+    setFtwBusy(true);
+    setMessage("");
+    try {
+      const result = await getFTWilliamsBringForwardLink(id);
+      if (ftwWindow) ftwWindow.location.href = result.url;
+      else window.open(result.url, "_blank", "noopener,noreferrer");
+      setToast({
+        tone: "success",
+        title: "FT Williams opened",
+        message: "Complete FTW's native Bring Forward action, return here, and click Refresh FTW Data.",
+      });
+    } catch (error) {
+      ftwWindow?.close();
+      setToast({
+        tone: "error",
+        title: "Could not open FT Williams",
+        message: error instanceof Error ? error.message : "The FT Williams page could not be opened.",
+      });
     } finally {
       setFtwBusy(false);
     }
@@ -461,6 +593,28 @@ export function FilingReviewPage() {
     setPollVersion((value) => value + 1);
   }
 
+  async function reEvaluateWithLatestRules() {
+    if (!id) return;
+    setRulesBusy(true);
+    setMessage("");
+    setToast(null);
+    try {
+      const result = await reEvaluateFilingRules(id);
+      setFiling(await getFiling(id));
+      setToast({
+        tone: "success",
+        title: "Rules re-evaluated",
+        message: `${result.field_count} fields were remapped with rule set ${result.field_rule_set_version}. EyeLevel was not run again.`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Rules could not be re-evaluated.";
+      setMessage(errorMessage);
+      setToast({ tone: "error", title: "Re-evaluation failed", message: errorMessage });
+    } finally {
+      setRulesBusy(false);
+    }
+  }
+
   function resetFilters() {
     setSearch("");
     setStatusFilter("ALL");
@@ -470,9 +624,9 @@ export function FilingReviewPage() {
     setContractTypeFilter("ALL");
   }
 
-  async function setProposedValue(row: ReviewDecisionRow, value: string) {
+  async function setProposedValue(row: ReviewDecisionRow, value: string, options: FieldSaveOptions = {}) {
     if (!row.fieldId) return;
-    await saveField(row.fieldId, value);
+    await saveField(row.fieldId, value, options);
   }
 
   if (message && !filing) return <div className="card card-pad">{message}</div>;
@@ -518,6 +672,28 @@ export function FilingReviewPage() {
         {ftwInteractionBusy ? <FTWilliamsLoadingPanel sendBusy={ftwSendBusy} autoQuery={autoFtwQueryBusy} /> : null}
 
         {isProcessing && !fields.length ? <ProcessingPanel filing={filing} /> : null}
+
+        {bringForwardRequired ? (
+          <section className="ftw-bring-forward-card" aria-live="polite">
+            <div>
+              <ExternalLink size={22} />
+              <span>
+                <strong>Current-year FT Williams record is missing</strong>
+                <small>
+                  No prior-year values were loaded into this comparison. Open the exact FTW plan, use its native Bring Forward action for {ftwReview?.year || "the current year"}, then refresh here; annual values remain blank until current-year data is supplied.
+                </small>
+              </span>
+            </div>
+            <div className="ftw-bring-forward-actions">
+              <button className="button" type="button" disabled={ftwInteractionBusy} onClick={openFtwBringForward}>
+                <ExternalLink size={16} /> Open FTW Bring Forward
+              </button>
+              <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={() => prepareFtw(true)}>
+                <RefreshCw size={16} /> Refresh FTW Data
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         <section className={`approval-banner ${approvalBlocked ? "blocked" : "ready"}`}>
           <div>
@@ -601,6 +777,9 @@ export function FilingReviewPage() {
                 <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={rebuildXml}>
                   <RefreshCw size={16} /> Preview XML
                 </button>
+                <button className="button secondary" type="button" disabled={ftwInteractionBusy || rulesBusy} onClick={reEvaluateWithLatestRules}>
+                  <Sparkles size={16} /> {rulesBusy ? "Re-evaluating…" : "Re-evaluate Rules"}
+                </button>
                 {filing.status === "FAILED" ? (
                   <button className="button secondary" disabled={ftwInteractionBusy} onClick={retryFailedExtraction}>
                     <RefreshCw size={16} /> Retry Extraction
@@ -645,6 +824,11 @@ export function FilingReviewPage() {
               <SelectFilter label="Status" value={statusFilter} onChange={setStatusFilter} options={["NEEDS_DECISION", "WILL_UPDATE", "SAME", "MISSING", "LOW_CONFIDENCE"]} />
               <SelectFilter label="Priority" value={priorityFilter} onChange={setPriorityFilter} options={["HIGH", "MEDIUM", "LOW"]} />
               <SelectFilter label="Section" value={sectionFilter} onChange={setSectionFilter} options={sectionOptions} />
+              {excludedFields.length ? (
+                <button className="button secondary" type="button" onClick={() => setShowExcludedFields((current) => !current)}>
+                  <Eye size={16} /> {showExcludedFields ? "Hide" : "Show"} excluded fields ({excludedFields.length})
+                </button>
+              ) : null}
             </div>
 
             <div className="approval-table-wrap">
@@ -666,9 +850,16 @@ export function FilingReviewPage() {
                       row={row}
                       selected={row.fieldId === selectedFieldId}
                       onInspect={() => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-                      onAccept={() => setProposedValue(row, row.proposed)}
-                      onKeepFtw={() => setProposedValue(row, row.currentFtw)}
-                      disabled={ftwInteractionBusy}
+                      onAccept={() => setProposedValue(row, row.proposed, {
+                        successTitle: "Proposed value accepted",
+                        successMessage: `${row.label} is ready for FT Williams review.`,
+                      })}
+                      onKeepFtw={() => setProposedValue(row, row.currentFtw, {
+                        successTitle: "FT Williams value kept",
+                        successMessage: `${row.label} will keep its current FT Williams value.`,
+                      })}
+                      disabled={reviewInteractionBusy}
+                      saving={fieldSavingId === row.fieldId}
                     />
                   ))}
                 </tbody>
@@ -774,6 +965,7 @@ export function FilingReviewPage() {
           field={selectedField}
           onClose={() => setSelectedFieldId(null)}
           onSave={saveField}
+          saving={fieldSavingId === selectedField.id}
         />
       ) : null}
 
@@ -813,10 +1005,17 @@ export function FilingReviewPage() {
           lowConfidenceRows={lowConfidenceRows}
           missingRows={missingRows}
           needsDecisionRows={needsDecisionRows}
-          onAccept={(row) => setProposedValue(row, row.proposed)}
+          disabled={reviewInteractionBusy}
+          onAccept={(row) => setProposedValue(row, row.proposed, {
+            successTitle: "Proposed value accepted",
+            successMessage: `${row.label} is ready for FT Williams review.`,
+          })}
           onClose={() => setShowAllFields(false)}
           onInspect={(row) => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-          onKeepFtw={(row) => setProposedValue(row, row.currentFtw)}
+          onKeepFtw={(row) => setProposedValue(row, row.currentFtw, {
+            successTitle: "FT Williams value kept",
+            successMessage: `${row.label} will keep its current FT Williams value.`,
+          })}
           onPageChange={setCurrentPage}
           onResetFilters={resetFilters}
           onRowsPerPageChange={setRowsPerPage}
@@ -828,6 +1027,7 @@ export function FilingReviewPage() {
           priorityFilter={priorityFilter}
           reviewRows={reviewRows}
           rowsPerPage={rowsPerPage}
+          savingFieldId={fieldSavingId}
           sameRows={sameRows}
           search={search}
           sectionFilter={sectionFilter}
@@ -1100,6 +1300,7 @@ function ReviewDecisionTableRow({
   onInspect,
   onKeepFtw,
   row,
+  saving = false,
   selected,
 }: {
   disabled?: boolean;
@@ -1107,6 +1308,7 @@ function ReviewDecisionTableRow({
   onInspect: () => void;
   onKeepFtw: () => void;
   row: ReviewDecisionRow;
+  saving?: boolean;
   selected: boolean;
 }) {
   const canEdit = Boolean(row.fieldId);
@@ -1131,11 +1333,24 @@ function ReviewDecisionTableRow({
       </td>
       <td>
         <div className="decision-actions">
-          {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
-          <button type="button" disabled={disabled || !canEdit || !row.currentFtw} onClick={onKeepFtw}>Keep FTW</button>
-          <button type="button" disabled={disabled || !canEdit} onClick={onInspect}>
-            {row.proposed ? "Edit" : "Enter value"}
-          </button>
+          {saving ? (
+            <button type="button" disabled><RefreshCw size={14} /> Saving...</button>
+          ) : (
+            <>
+              {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
+              <button
+                type="button"
+                disabled={disabled || !canEdit || !row.currentFtw}
+                onClick={onKeepFtw}
+                title={!row.currentFtw ? "No current FT Williams value is available to keep." : "Keep the current FT Williams value."}
+              >
+                Keep FTW
+              </button>
+              <button type="button" disabled={disabled || !canEdit} onClick={onInspect}>
+                {row.proposed ? "Edit" : "Enter value"}
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>
@@ -1146,6 +1361,7 @@ function FullFieldReviewDrawer({
   activeTab,
   contractTypeFilter,
   currentPage,
+  disabled,
   displayRows,
   formFilter,
   lowConfidenceRows,
@@ -1166,6 +1382,7 @@ function FullFieldReviewDrawer({
   priorityFilter,
   reviewRows,
   rowsPerPage,
+  savingFieldId,
   sameRows,
   search,
   sectionFilter,
@@ -1184,6 +1401,7 @@ function FullFieldReviewDrawer({
   activeTab: ReviewTab;
   contractTypeFilter: ContractTypeFilter;
   currentPage: number;
+  disabled: boolean;
   displayRows: ReviewDecisionRow[];
   formFilter: FilterValue;
   lowConfidenceRows: ReviewDecisionRow[];
@@ -1204,6 +1422,7 @@ function FullFieldReviewDrawer({
   priorityFilter: FilterValue;
   reviewRows: ReviewDecisionRow[];
   rowsPerPage: number;
+  savingFieldId: string | null;
   sameRows: ReviewDecisionRow[];
   search: string;
   sectionFilter: FilterValue;
@@ -1278,6 +1497,8 @@ function FullFieldReviewDrawer({
                   onInspect={() => onInspect(row)}
                   onAccept={() => onAccept(row)}
                   onKeepFtw={() => onKeepFtw(row)}
+                  disabled={disabled}
+                  saving={savingFieldId === row.fieldId}
                 />
               ))}
             </tbody>
@@ -2094,10 +2315,6 @@ function formatFtwLookupStatus(status: string) {
 function formatCurrentQueryYear(review: FTWilliamsReview | null) {
   const comparisonYear = textValue(review?.comparison_year);
   if (!comparisonYear) return "Pending";
-  if (review?.comparison_year_source === "PRIOR_YEAR_FALLBACK") {
-    const targetYear = textValue(review?.year);
-    return targetYear && targetYear !== comparisonYear ? `${comparisonYear} (fallback from ${targetYear})` : `${comparisonYear} (prior year fallback)`;
-  }
   return comparisonYear;
 }
 
@@ -2110,18 +2327,25 @@ function FTWMeta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function buildReviewDecisionRows(fields: ExtractedField[], review: FTWilliamsReview | null): ReviewDecisionRow[] {
+function buildReviewDecisionRows(
+  fields: ExtractedField[],
+  review: FTWilliamsReview | null,
+  contractType: ScheduleAContractType,
+  includeExcluded: boolean,
+): ReviewDecisionRow[] {
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const usedFieldIds = new Set<string>();
   const rows: ReviewDecisionRow[] = [];
 
   (review?.fields ?? []).forEach((comparison, index) => {
     const extractedField = comparison.field_id ? fieldById.get(comparison.field_id) : undefined;
+    if (!includeExcluded && !comparisonAllowedForContractType(comparison, extractedField, contractType)) return;
     if (comparison.field_id) usedFieldIds.add(comparison.field_id);
     rows.push(rowFromComparison(comparison, extractedField, index, rejectedFieldForComparison(comparison, review)));
   });
 
   fields.forEach((field) => {
+    if (!includeExcluded && !fieldAllowedForContractType(field, contractType)) return;
     if (field.id && usedFieldIds.has(field.id)) return;
     if (field.status === "MATCHED" || field.status === "EDITED") return;
     rows.push(rowFromExtractedField(field));
@@ -2309,7 +2533,17 @@ function FieldTableRow({ field, selected, onSelect }: { field: ExtractedField; s
   );
 }
 
-function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; onClose: () => void; onSave: (fieldId: string, proposedValue: string) => void }) {
+function FieldReviewModal({
+  field,
+  onClose,
+  onSave,
+  saving,
+}: {
+  field: ExtractedField;
+  onClose: () => void;
+  onSave: (fieldId: string, proposedValue: string, options?: FieldSaveOptions) => Promise<boolean>;
+  saving: boolean;
+}) {
   const [draft, setDraft] = useState(field?.proposed_value ?? "");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2317,8 +2551,9 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
     setDraft(field?.proposed_value ?? "");
   }, [field?.id, field?.proposed_value]);
 
-  async function save(value: string) {
-    await onSave(field.id, value);
+  async function save(value: string, options: FieldSaveOptions = {}) {
+    const saved = await onSave(field.id, value, options);
+    if (saved) onClose();
   }
 
   return (
@@ -2349,7 +2584,8 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
               </label>
               <label>
                 <span>Proposed Value</span>
-                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} />
+                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} />
+                <small className="field-edit-hint">Enter or edit the value, then save it. Empty values must be marked missing.</small>
               </label>
             </div>
           </div>
@@ -2374,16 +2610,16 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
         </div>
 
         <div className="field-review-modal-actions">
-          <button className="button" onClick={() => save(draft)}>
-            <CheckCircle2 size={16} /> Accept Proposed
+          <button className="button" disabled={saving || !draft.trim()} onClick={() => save(draft)}>
+            <CheckCircle2 size={16} /> {saving ? "Saving..." : draft === (field.proposed_value ?? "") ? "Accept Proposed" : "Save Value"}
           </button>
-          <button className="button secondary" onClick={() => inputRef.current?.focus()}>
+          <button className="button secondary" disabled={saving} onClick={() => { inputRef.current?.focus(); inputRef.current?.select(); }}>
             <Edit3 size={16} /> Edit Value
           </button>
-          <button className="button danger" onClick={() => { setDraft(""); save(""); }}>
+          <button className="button danger" disabled={saving} onClick={() => save("", { markMissing: true })}>
             <Ban size={16} /> Mark Missing
           </button>
-          <button className="button secondary" onClick={onClose}>Close</button>
+          <button className="button secondary" disabled={saving} onClick={onClose}>Close</button>
         </div>
       </section>
     </div>
@@ -2406,10 +2642,22 @@ function filterOptionLabel(option: string) {
 
 function fieldAllowedForContractType(field: ExtractedField, contractType: ScheduleAContractType) {
   if (field.form_type !== "SCHEDULE_A") return true;
-  const ruleKey = fieldRuleKey(field);
+  return ruleAllowedForContractType(fieldRuleKey(field), contractType);
+}
+
+function comparisonAllowedForContractType(
+  comparison: FTWilliamsComparisonField,
+  field: ExtractedField | undefined,
+  contractType: ScheduleAContractType,
+) {
+  if (comparison.form_type !== "SCHEDULE_A") return true;
+  return ruleAllowedForContractType(comparison.rule_key || (field ? fieldRuleKey(field) : ""), contractType);
+}
+
+function ruleAllowedForContractType(ruleKey: string, contractType: ScheduleAContractType) {
   if (contractType === "EXPERIENCE_RATED") return !NONEXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
   if (contractType === "NONEXPERIENCE_RATED") return !EXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
-  return true;
+  return !EXPERIENCE_SCHEDULE_A_RULES.has(ruleKey) && !NONEXPERIENCE_SCHEDULE_A_RULES.has(ruleKey);
 }
 
 function SelectFilter({ label, value, options, onChange }: { label: string; value: FilterValue; options: string[]; onChange: (value: FilterValue) => void }) {

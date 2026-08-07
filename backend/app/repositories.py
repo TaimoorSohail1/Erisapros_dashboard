@@ -13,6 +13,8 @@ from app.models import (
     FTWilliamsPlanMapping,
     RawExtraction,
     Filing,
+    FieldRule,
+    FieldRuleStatus,
     ReviewEvent,
     ShareFileOAuthToken,
 )
@@ -38,7 +40,15 @@ class Repository:
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def list_fields(self, filing_id: str) -> list[ExtractedField]: ...
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None: ...
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
     async def add_audit(self, audit: AuditLog) -> None: ...
@@ -61,6 +71,8 @@ class Repository:
     async def list_sharefile_files(self) -> list[dict]: ...
     async def get_sharefile_state(self, key: str) -> dict | None: ...
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule: ...
 
 
 class MongoRepository(Repository):
@@ -73,6 +85,16 @@ class MongoRepository(Repository):
         result = await self.db.filings.insert_one(to_mongo(filing))
         filing.id = str(result.inserted_id)
         return filing
+
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
+        query = {"key": key} if key else {}
+        docs = await self.db.field_rule_versions.find(query).sort([("key", 1), ("version", -1), ("created_at", -1)]).to_list(2000)
+        return [from_mongo(doc, FieldRule) for doc in docs]
+
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule:
+        result = await self.db.field_rule_versions.insert_one(to_mongo(rule))
+        rule.id = str(result.inserted_id)
+        return rule
 
     async def list_filings(self) -> list[Filing]:
         docs = await self.db.filings.find().sort("created_at", -1).to_list(100)
@@ -108,12 +130,27 @@ class MongoRepository(Repository):
         docs = await self.db.extracted_fields.find({"filing_id": filing_id}).sort("mapped_label", 1).to_list(500)
         return [from_mongo(doc, ExtractedField) for doc in docs]
 
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None:
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
+        updates = {
+            "proposed_value": proposed_value,
+            "status": status,
+            "updated_at": datetime.utcnow(),
+        }
+        if status_reason is not None:
+            updates["status_reason"] = status_reason
         doc = await self.db.extracted_fields.find_one_and_update(
             {"_id": ObjectId(field_id), "filing_id": filing_id},
-            {"$set": {"proposed_value": proposed_value, "status": ExtractedFieldStatus.EDITED, "updated_at": datetime.utcnow()}},
+            {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
         return from_mongo(doc, ExtractedField) if doc else None
@@ -308,6 +345,17 @@ class MemoryRepository(Repository):
         self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
+        self.field_rule_versions: dict[str, FieldRule] = {}
+
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
+        rules = [rule for rule in self.field_rule_versions.values() if key is None or rule.key == key]
+        return sorted(rules, key=lambda item: (item.key, -item.version, -item.created_at.timestamp()))
+
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule:
+        stored = rule.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.field_rule_versions[stored.id] = stored
+        return stored.model_copy(deep=True)
 
     async def create_filing(self, filing: Filing) -> Filing:
         filing.id = str(uuid4())
@@ -342,12 +390,22 @@ class MemoryRepository(Repository):
     async def list_fields(self, filing_id: str) -> list[ExtractedField]:
         return [field for field in self.fields.values() if field.filing_id == filing_id]
 
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None:
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
             return None
         field.proposed_value = proposed_value
-        field.status = ExtractedFieldStatus.EDITED
+        field.status = status
+        if status_reason is not None:
+            field.status_reason = status_reason
         field.updated_at = datetime.utcnow()
         return field
 
@@ -499,6 +557,8 @@ def get_repository() -> Repository:
     if _repository:
         return _repository
     settings = get_settings()
+    if settings.is_production and not settings.mongodb_uri:
+        raise RuntimeError("MONGODB_URI is required in production; in-memory storage is disabled.")
     _repository = MongoRepository(settings.mongodb_uri) if settings.mongodb_uri else MemoryRepository()
     return _repository
 

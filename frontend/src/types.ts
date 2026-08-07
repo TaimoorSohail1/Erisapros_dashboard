@@ -101,6 +101,9 @@ export interface Filing {
   missing_low_priority_count: number;
   low_confidence_count: number;
   unmapped_count: number;
+  review_field_count?: number;
+  found_field_count?: number;
+  excluded_field_count?: number;
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_confirmed?: boolean;
@@ -195,6 +198,9 @@ export interface FTWilliamsReview {
   configured: boolean;
   current_query_sent: boolean;
   current_query_success: boolean;
+  current_year_exists: boolean;
+  bring_forward_required: boolean;
+  ftw_plan_url?: string | null;
   comparison_year?: string | null;
   comparison_year_source?: string | null;
   schedule_a_match?: Record<string, unknown> | null;
@@ -327,6 +333,7 @@ export interface FilingDetail extends Filing {
 }
 
 export interface FieldRule {
+    id?: string | null;
   key: string;
   label: string;
   ftw_field: string;
@@ -342,5 +349,12 @@ export interface FieldRule {
   client_notes?: string | null;
   aliases: string[];
   required: boolean;
-  order: number;
-}
+    order: number;
+    applicability: "BOTH" | "EXPERIENCE" | "NONEXPERIENCE" | "FORM_5500";
+    status: "DRAFT" | "PUBLISHED" | "DISABLED" | "SUPERSEDED";
+    version: number;
+    updated_by?: string | null;
+    change_reason?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  }

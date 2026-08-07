@@ -14,10 +14,13 @@ class StorageService:
         filing_id = str(uuid.uuid4())
         key = f"schedule-a/{filing_id}/{sanitize_filename(file_name)}"
 
-        if all([settings.aws_region, settings.aws_access_key_id, settings.aws_secret_access_key, settings.s3_bucket_name]):
+        if settings.aws_region and settings.s3_bucket_name:
             client = boto3.client("s3", region_name=settings.aws_region)
             client.put_object(Bucket=settings.s3_bucket_name, Key=key, Body=file_bytes, ContentType=content_type)
             return {"id": filing_id, "key": key, "bucket": settings.s3_bucket_name, "uploaded": True}
+
+        if settings.is_production:
+            raise RuntimeError("S3_BUCKET_NAME and AWS_REGION are required for production file storage.")
 
         upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", ".uploads", filing_id)
         os.makedirs(upload_dir, exist_ok=True)
@@ -28,7 +31,7 @@ class StorageService:
 
     def load_pdf(self, key: str, bucket: str | None = None, local_path: str | None = None) -> bytes:
         settings = get_settings()
-        if bucket and all([settings.aws_region, settings.aws_access_key_id, settings.aws_secret_access_key]):
+        if bucket and settings.aws_region:
             client = boto3.client("s3", region_name=settings.aws_region)
             response = client.get_object(Bucket=bucket, Key=key)
             return response["Body"].read()

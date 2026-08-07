@@ -20,6 +20,7 @@ from app.models import (
     ScheduleAContractType,
 )
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.filing_pipeline import summarize_mapped_fields
 from app.services.schedule_a_classification import (
     classify_schedule_a_current,
     classify_schedule_a_fields,
@@ -30,6 +31,13 @@ from app.services.schedule_a_classification import (
 
 LINE_9A = "schedule_a_part_iii_9a_premiums_1_amount_received"
 LINE_9C = "schedule_a_part_iii_9c_1_a_commissions"
+LINE_9_REMAINDER_RULES = (
+    "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
+    "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement",
+    "schedule_a_part_iii_9d_2_claim_reserves",
+    "schedule_a_part_iii_9d_3_other_reserves",
+    "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due",
+)
 LINE_10A = "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier"
 
 
@@ -63,6 +71,13 @@ class ScheduleAClassificationTests(unittest.TestCase):
 
         self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
 
+    def test_remaining_line_9_values_are_experience_rated(self):
+        classification = classify_schedule_a_fields([
+            extracted_field("schedule_a_part_iii_9d_2_claim_reserves", "109724")
+        ])
+
+        self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+
     def test_line_10a_only_is_nonexperience_rated(self):
         classification = classify_schedule_a_fields([extracted_field(LINE_10A, "170074")])
 
@@ -76,12 +91,25 @@ class ScheduleAClassificationTests(unittest.TestCase):
 
         self.assertEqual(classification.contract_type, ScheduleAContractType.NEEDS_REVIEW)
 
+    def test_zero_defaults_do_not_choose_a_contract_type(self):
+        classification = classify_schedule_a_fields([
+            extracted_field(LINE_9A, "0"),
+            extracted_field(LINE_10A, "$0.00"),
+        ])
+
+        self.assertEqual(classification.contract_type, ScheduleAContractType.UNKNOWN)
+
     def test_ftw_current_data_uses_same_classification_rules(self):
         extracted = classify_schedule_a_fields([extracted_field(LINE_9A, "17007.41")])
         current = classify_schedule_a_current({"WlfrTotChargesPaidAmt": "170074"})
 
         self.assertEqual(extracted.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
         self.assertEqual(current.contract_type, ScheduleAContractType.NONEXPERIENCE_RATED)
+
+    def test_ftw_current_remaining_line_9_values_are_experience_rated(self):
+        current = classify_schedule_a_current({"WlfrClaimsReserveAmt": "109724"})
+
+        self.assertEqual(current.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
 
     def test_contract_type_filters_opposite_line_group_from_send_fields(self):
         line_9 = extracted_field(LINE_9C, "2500")
@@ -98,6 +126,35 @@ class ScheduleAClassificationTests(unittest.TestCase):
         self.assertFalse(schedule_a_contract_type_allows_rule(ScheduleAContractType.NEEDS_REVIEW, LINE_9A))
         self.assertFalse(schedule_a_contract_type_allows_rule(ScheduleAContractType.NEEDS_REVIEW, LINE_10A))
 
+    def test_nonexperience_filters_every_remaining_experience_line_9_field(self):
+        line_9_fields = [extracted_field(rule_key) for rule_key in LINE_9_REMAINDER_RULES]
+
+        self.assertEqual(
+            filter_schedule_a_fields_for_contract_type(
+                line_9_fields,
+                ScheduleAContractType.NONEXPERIENCE_RATED,
+            ),
+            [],
+        )
+
+    def test_nonexperience_counts_exclude_missing_experience_fields(self):
+        line_10 = extracted_field(LINE_10A, "170074")
+        missing_line_9 = extracted_field(LINE_9A, "")
+        missing_line_9.status = ExtractedFieldStatus.MISSING
+        missing_line_9.priority = FieldPriority.HIGH
+
+        relevant = filter_schedule_a_fields_for_contract_type(
+            [line_10, missing_line_9],
+            ScheduleAContractType.NONEXPERIENCE_RATED,
+        )
+        summary = summarize_mapped_fields(relevant)
+
+        self.assertEqual(relevant, [line_10])
+        self.assertEqual(summary["missing_high_priority_count"], 0)
+        self.assertEqual(summary["review_field_count"], 1)
+        self.assertEqual(summary["found_field_count"], 1)
+        self.assertEqual(summary["status"], FilingStatus.READY_FOR_APPROVAL)
+
     def test_manual_override_confirms_type_and_removes_opposite_fields(self):
         async def scenario():
             repo = repositories.get_repository()
@@ -110,6 +167,11 @@ class ScheduleAClassificationTests(unittest.TestCase):
                     intake_source="SHAREFILE",
                 )
             )
+            line_9 = extracted_field(LINE_9A, "100")
+            line_9.filing_id = filing.id
+            line_10 = extracted_field(LINE_10A, "200")
+            line_10.filing_id = filing.id
+            await repo.add_fields([line_9, line_10])
             await repo.upsert_ftwilliams_review(
                 FTWilliamsReview(
                     filing_id=filing.id,
@@ -148,10 +210,14 @@ class ScheduleAClassificationTests(unittest.TestCase):
 
         self.assertEqual(filing.schedule_a_contract_type, ScheduleAContractType.EXPERIENCE_RATED)
         self.assertTrue(filing.schedule_a_contract_type_confirmed)
+        self.assertEqual(filing.review_field_count, 1)
+        self.assertEqual(filing.found_field_count, 1)
+        self.assertEqual(filing.excluded_field_count, 1)
         self.assertFalse(review.schedule_a_contract_type_mismatch)
-        self.assertTrue(review.fields[0].update_included)
-        self.assertFalse(review.fields[1].update_included)
-        self.assertFalse(review.fields[1].changed)
+        by_rule = {field.rule_key: field for field in review.fields}
+        self.assertTrue(by_rule[LINE_9A].update_included)
+        self.assertFalse(by_rule[LINE_10A].update_included)
+        self.assertFalse(by_rule[LINE_10A].changed)
 
     def test_approval_ignores_irrelevant_missing_line_group_after_confirmation(self):
         async def scenario():

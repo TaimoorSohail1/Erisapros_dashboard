@@ -1,6 +1,6 @@
 import { Activity, AlertTriangle, Bell, CheckCircle2, Eye, X, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "../router";
 import { listFTWilliamsFailureQueue, listFTWilliamsHistory } from "../api";
 import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem } from "../types";
 import { formatFilingDisplayName } from "../utils";

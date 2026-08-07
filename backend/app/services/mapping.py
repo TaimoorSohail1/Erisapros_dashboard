@@ -1,6 +1,6 @@
 from datetime import datetime
 from app.config import get_settings
-from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FilingStatus, FormType, NormalizedExtractionField
+from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FilingStatus, FormType, NormalizedExtractionField
 from app.services.field_rules import find_rule_for_field, form_type_for_rule, normalize_name, rules_for_form_type
 
 
@@ -9,13 +9,14 @@ def map_extraction_to_rules(
     fields: list[NormalizedExtractionField],
     form_type: FormType | None = None,
     source_document_type: DocumentType | None = None,
+    rules: list[FieldRule] | None = None,
 ):
     settings = get_settings()
     low_confidence_threshold = settings.low_confidence_threshold
     now = datetime.utcnow()
     mapped_by_rule: dict[str, ExtractedField] = {}
     unmapped: list[ExtractedField] = []
-    field_rules = rules_for_form_type(form_type)
+    field_rules = rules_for_form_type(form_type, rules)
 
     for field in fields:
         field_rule = find_rule_for_field(field.field_name, field_rules)

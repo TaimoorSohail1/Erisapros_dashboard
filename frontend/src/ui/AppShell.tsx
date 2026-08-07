@@ -1,6 +1,7 @@
 import { FolderSync, LayoutDashboard, ListChecks, ShieldCheck } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink } from "../router";
 import { FTWilliamsNotifications } from "./FTWilliamsNotifications";
+import { authenticationEnabled, signOut } from "../auth";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -24,6 +25,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <i />
             Review workspace
           </div>
+          {authenticationEnabled() && (
+            <button className="button secondary" type="button" onClick={() => { signOut(); window.location.reload(); }}>
+              Sign out
+            </button>
+          )}
         </div>
       </header>
       <main className="main">{children}</main>

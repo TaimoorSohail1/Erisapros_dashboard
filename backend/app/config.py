@@ -1,9 +1,22 @@
 from functools import lru_cache
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    app_environment: str = "development"
     mongodb_uri: str | None = None
+
+    auth_enabled: bool = False
+    cognito_region: str | None = None
+    cognito_user_pool_id: str | None = None
+    cognito_app_client_id: str | None = None
+    field_rules_admin_emails: str = "support@highlandtech.ai"
+
+    @property
+    def field_rules_admin_email_set(self) -> set[str]:
+        return {item.strip().lower() for item in self.field_rules_admin_emails.split(",") if item.strip()}
 
     aws_region: str | None = None
     aws_access_key_id: str | None = None
@@ -26,6 +39,7 @@ class Settings(BaseSettings):
     sharefile_client_secret: str | None = None
     sharefile_redirect_url: str | None = None
     sharefile_webhook_url: str | None = None
+    sharefile_webhook_token: str | None = None
     sharefile_intake_folder_id: str | None = None
     sharefile_intake_folder_path: str | None = None
     sharefile_discover_shared_folders: bool = False
@@ -43,6 +57,48 @@ class Settings(BaseSettings):
     ftwlink_sandbox_ftw_customer_id: str | None = None
     ftwlink_sandbox_ftw_plan_id: str | None = None
     ftwlink_sandbox_year_end: str | None = None
+    ftw_plan_page_url_template: str = (
+        "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
+        "CommonField={ftw_customer_id}&ChildField={ftw_plan_id}&Year={year}&OnePlan=Y"
+    )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_environment.strip().lower() == "production"
+
+    def validate_runtime(self) -> None:
+        if not self.is_production:
+            return
+
+        missing = []
+        if not self.mongodb_uri:
+            missing.append("MONGODB_URI")
+        elif (urlsplit(self.mongodb_uri).hostname or "").lower() in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise RuntimeError(
+                "Production requires a remote MongoDB connection; localhost is not persistent or reachable from ECS."
+            )
+        if not self.aws_region:
+            missing.append("AWS_REGION")
+        if not self.s3_bucket_name:
+            missing.append("S3_BUCKET_NAME")
+        if not self.auth_enabled:
+            missing.append("AUTH_ENABLED=true")
+        if not self.cognito_region:
+            missing.append("COGNITO_REGION")
+        if not self.cognito_user_pool_id:
+            missing.append("COGNITO_USER_POOL_ID")
+        if not self.cognito_app_client_id:
+            missing.append("COGNITO_APP_CLIENT_ID")
+        if not self.sharefile_webhook_token:
+            missing.append("SHAREFILE_WEBHOOK_TOKEN")
+        if missing:
+            raise RuntimeError(
+                "Production configuration is incomplete. Missing: " + ", ".join(missing)
+            )
 
     model_config = SettingsConfigDict(
         env_file=(".env.local", "../.env.local", "backend/.env.local"),

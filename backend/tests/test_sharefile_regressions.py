@@ -1,12 +1,16 @@
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import DocumentType, ExtractionJob, Filing, FilingStatus
+from app.models import DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken
 from app.services.extractor import (
     SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
     parse_schedule_a_text,
@@ -98,6 +102,73 @@ class ShareFileRegressionTests(unittest.TestCase):
             return filing, job, processing_documents
 
         self.service._create_filing_package = fake_create_filing_package
+
+    def test_explicit_schedule_a_filename_wins_over_worksheet_context(self):
+        document_type = self.service._classify_sharefile_document(
+            "Schedule A After Worksheet.pdf",
+            [
+                "Client (Test)",
+                "5500 Filing",
+                "2024 Filing Worksheet First",
+                "Schedule A After Worksheet.pdf",
+            ],
+        )
+
+        self.assertEqual(document_type, DocumentType.SCHEDULE_A)
+
+    def test_content_sniff_skips_unreadable_pdf_instead_of_aborting_scan(self):
+        async def download_unreadable_pdf(client, token, item_id):
+            return b"\r\n\r\n\rnot-a-real-pdf"
+
+        self.service._download_item = download_unreadable_pdf
+
+        with patch("app.services.sharefile.extract_pdf_text_pages", side_effect=RuntimeError("unreadable PDF pages")):
+            document_type = run_async(
+                self.service._classify_sharefile_document_by_content(
+                    client=None,
+                    token=None,
+                    item_id="bad-pdf",
+                    file_name="Bad Upload.pdf",
+                )
+            )
+
+        self.assertIsNone(document_type)
+
+    def test_sharefile_request_refreshes_early_revoked_access_token_after_401(self):
+        token = ShareFileOAuthToken(
+            subdomain="example",
+            access_token="revoked-access-token",
+            refresh_token="valid-refresh-token",
+            expires_at=datetime.utcnow() + timedelta(hours=6),
+        )
+        client = AsyncMock()
+        request = httpx.Request("GET", "https://example.sf-api.com/sf/v3/Items(file-1)")
+        client.request.side_effect = [
+            httpx.Response(401, request=request),
+            httpx.Response(200, request=request, json={"Id": "file-1", "Name": "Schedule A.pdf"}),
+        ]
+        refresh_request = httpx.Request("POST", "https://example.sharefile.com/oauth/token")
+        client.post.return_value = httpx.Response(
+            200,
+            request=refresh_request,
+            json={
+                "access_token": "fresh-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+
+        item = run_async(self.service._get_item(client, token, "file-1"))
+
+        self.assertEqual(item["Id"], "file-1")
+        self.assertEqual(token.access_token, "fresh-access-token")
+        self.assertEqual(token.refresh_token, "rotated-refresh-token")
+        self.assertEqual(client.request.await_count, 2)
+        first_headers = client.request.await_args_list[0].kwargs["headers"]
+        second_headers = client.request.await_args_list[1].kwargs["headers"]
+        self.assertEqual(first_headers["Authorization"], "Bearer revoked-access-token")
+        self.assertEqual(second_headers["Authorization"], "Bearer fresh-access-token")
 
     def test_schedule_a_child_folder_has_same_root_but_separate_package_from_worksheet(self):
         worksheet = sharefile_file(

@@ -252,6 +252,39 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<InsFailProvideInfoInd>2</InsFailProvideInfoInd>", xml)
         self.assertIn("<ScheduleDesc>EQUITABL</ScheduleDesc>", xml)
 
+    def test_schedule_a_batch_normalizes_fail_to_provide_yes_no_to_ftw_codes(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {
+                        "ScheduleDesc": "PRUDNTL",
+                        "InsCarrierName": "Prudential Insurance Company of America",
+                        "InsFailProvideInfoInd": "No",
+                    },
+                },
+                {
+                    "ftw_seq_no": "2",
+                    "query_results": {
+                        "ScheduleDesc": "TESTYES",
+                        "InsCarrierName": "Test Carrier",
+                        "InsFailProvideInfoInd": "Yes",
+                    },
+                },
+            ],
+            "1",
+            [],
+            ftw_customer_id="1683573117",
+            ftw_plan_id="2031322679",
+            year="2025",
+        )
+
+        self.assertEqual(xml.count("<DOLScheduleAData>"), 2)
+        self.assertIn("<InsFailProvideInfoInd>2</InsFailProvideInfoInd>", xml)
+        self.assertIn("<InsFailProvideInfoInd>1</InsFailProvideInfoInd>", xml)
+        self.assertNotIn("<InsFailProvideInfoInd>No</InsFailProvideInfoInd>", xml)
+        self.assertNotIn("<InsFailProvideInfoInd>Yes</InsFailProvideInfoInd>", xml)
+
     def test_schedule_a_full_replace_is_empty_when_there_are_no_changes(self):
         fields = [
             ExtractedField(

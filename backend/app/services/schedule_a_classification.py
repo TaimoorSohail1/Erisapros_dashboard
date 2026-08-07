@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
 
-from app.models import ExtractedField, FormType, ScheduleAContractType
+from app.models import ExtractedField, FieldRule, FieldRuleApplicability, FormType, ScheduleAContractType
 
 
 EXPERIENCE_PREMIUM_RULES = {
@@ -32,8 +32,16 @@ EXPERIENCE_ADMIN_RULES = {
     "schedule_a_part_iii_9c_1_h_total_retention",
 }
 
+EXPERIENCE_OTHER_RULES = {
+    "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
+    "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement",
+    "schedule_a_part_iii_9d_2_claim_reserves",
+    "schedule_a_part_iii_9d_3_other_reserves",
+    "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due",
+}
+
 NONEXPERIENCE_PREMIUM_RULE = "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier"
-EXPERIENCE_RULES = EXPERIENCE_PREMIUM_RULES | EXPERIENCE_CLAIM_RULES | EXPERIENCE_ADMIN_RULES
+EXPERIENCE_RULES = EXPERIENCE_PREMIUM_RULES | EXPERIENCE_CLAIM_RULES | EXPERIENCE_ADMIN_RULES | EXPERIENCE_OTHER_RULES
 NONEXPERIENCE_RULES = {NONEXPERIENCE_PREMIUM_RULE}
 
 CURRENT_TAGS_BY_RULE = {
@@ -53,6 +61,11 @@ CURRENT_TAGS_BY_RULE = {
     "schedule_a_part_iii_9c_1_f_charges_for_risks_or_other_contingencies": "WlfrRetChargesAmt",
     "schedule_a_part_iii_9c_1_g_other_retention_charges": "WlfrRetOthChrgsAmt",
     "schedule_a_part_iii_9c_1_h_total_retention": "WlfrRetTotAmt",
+    "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds": "WlfrRefundAmt",
+    "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement": "WlfrHeldBnftsAmt",
+    "schedule_a_part_iii_9d_2_claim_reserves": "WlfrClaimsReserveAmt",
+    "schedule_a_part_iii_9d_3_other_reserves": "WlfrOthReserveAmt",
+    "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due": "WlfrDivndsDueAmt",
     NONEXPERIENCE_PREMIUM_RULE: "WlfrTotChargesPaidAmt",
 }
 
@@ -81,8 +94,9 @@ def classify_schedule_a_values(values_by_rule_key: dict[str, str]) -> ScheduleAC
     has_premium = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_PREMIUM_RULES)
     has_claims = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_CLAIM_RULES)
     has_admin = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_ADMIN_RULES)
+    has_other = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_OTHER_RULES)
     has_10a = _has_meaningful_amount(values_by_rule_key.get(NONEXPERIENCE_PREMIUM_RULE))
-    has_any_experience = has_premium or has_claims or has_admin
+    has_any_experience = has_premium or has_claims or has_admin or has_other
 
     if has_any_experience and not has_10a:
         return ScheduleAClassification(
@@ -119,11 +133,22 @@ def schedule_a_contract_type_allows_rule(contract_type: ScheduleAContractType, r
 def filter_schedule_a_fields_for_contract_type(
     fields: list[ExtractedField],
     contract_type: ScheduleAContractType,
+    rules: list[FieldRule] | None = None,
 ) -> list[ExtractedField]:
+    applicability_by_key = {rule.key: rule.applicability for rule in (rules or [])}
+
+    def is_allowed(field: ExtractedField) -> bool:
+        applicability = applicability_by_key.get(str(field.mapped_rule_key or ""))
+        if applicability == FieldRuleApplicability.EXPERIENCE:
+            return contract_type == ScheduleAContractType.EXPERIENCE_RATED
+        if applicability == FieldRuleApplicability.NONEXPERIENCE:
+            return contract_type == ScheduleAContractType.NONEXPERIENCE_RATED
+        return schedule_a_contract_type_allows_rule(contract_type, field.mapped_rule_key)
+
     return [
         field
         for field in fields
-        if schedule_a_contract_type_allows_rule(contract_type, field.mapped_rule_key)
+        if is_allowed(field)
     ]
 
 

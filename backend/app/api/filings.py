@@ -1,5 +1,7 @@
 from datetime import datetime
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from urllib.parse import urlsplit
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from app.auth import require_field_rule_admin
 from app.models import (
     ApproveRequest,
     AuditLog,
@@ -10,6 +12,7 @@ from app.models import (
     Filing,
     FilingDetail,
     FilingStatus,
+    NormalizedExtractionField,
     FTWilliamsManualMatchRequest,
     FTWilliamsPrepareReviewRequest,
     FTWilliamsScheduleAContractTypeRequest,
@@ -19,7 +22,15 @@ from app.models import (
     ReviewEvent,
 )
 from app.repositories import get_repository
-from app.services.filing_pipeline import process_package_extraction_job
+from app.services.filing_pipeline import (
+    harmonize_schedule_a_business_rule_fields,
+    harmonize_schedule_a_reference_fields,
+    process_package_extraction_job,
+    summarize_mapped_fields,
+)
+from app.services.field_rule_admin import FieldRuleService
+from app.services.mapping import map_extraction_to_rules
+from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml
@@ -146,12 +157,94 @@ async def retry_extraction(filing_id: str, background_tasks: BackgroundTasks):
     return {"id": filing.id, "status": FilingStatus.QUEUED, "job_id": job.id}
 
 
+@router.post("/{filing_id}/re-evaluate-rules")
+async def re_evaluate_filing_rules(
+    filing_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    existing_fields = await repo.list_fields(filing_id)
+    stored_values = [
+        NormalizedExtractionField(
+            field_name=field.source_field_name,
+            value=field.proposed_value or field.value,
+            confidence=field.confidence,
+            page=field.page,
+            source_text=field.source_text,
+        )
+        for field in existing_fields
+        if (field.proposed_value or field.value) and field.status != ExtractedFieldStatus.IGNORED
+    ]
+    snapshot = await FieldRuleService(repo).published_snapshot()
+    mapped = map_extraction_to_rules(filing_id, stored_values, rules=snapshot.rules)
+    fields = harmonize_schedule_a_reference_fields(mapped["fields"])
+    fields = harmonize_schedule_a_business_rule_fields(fields)
+    classification = classify_schedule_a_fields(fields)
+    relevant_fields = filter_schedule_a_fields_for_contract_type(fields, classification.contract_type, rules=snapshot.rules)
+    summary = summarize_mapped_fields(relevant_fields)
+    saved_fields = await repo.replace_fields(filing_id, fields)
+    proposed_xml = build_proposed_ftw_xml(
+        filter_schedule_a_fields_for_contract_type(saved_fields, classification.contract_type, rules=snapshot.rules)
+    )
+    await repo.update_filing(
+        filing_id,
+        {
+            "status": summary["status"],
+            "field_rule_set_version": snapshot.version,
+            "overall_confidence": summary["overall_confidence"],
+            "missing_high_priority_count": summary["missing_high_priority_count"],
+            "missing_medium_priority_count": summary["missing_medium_priority_count"],
+            "missing_low_priority_count": summary["missing_low_priority_count"],
+            "low_confidence_count": summary["low_confidence_count"],
+            "unmapped_count": summary["unmapped_count"],
+            "review_field_count": summary["review_field_count"],
+            "found_field_count": summary["found_field_count"],
+            "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
+            "schedule_a_contract_type": classification.contract_type,
+            "schedule_a_contract_type_reason": classification.reason,
+            "proposed_xml": proposed_xml,
+        },
+    )
+    # The filing detail page merges stored extraction fields with the cached
+    # FT Williams comparison. Rebuild that comparison from the newly mapped
+    # fields so removed/renamed rules cannot remain as stale decision rows.
+    await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FIELD_RULES_RE_EVALUATED",
+            message="Stored extraction values were re-evaluated using the latest published field rules.",
+            details={
+                "field_rule_set_version": snapshot.version,
+                "actor": claims.get("email") or claims.get("sub"),
+                "eyelevel_rerun": False,
+            },
+        )
+    )
+    return {
+        "status": "re-evaluated",
+        "field_rule_set_version": snapshot.version,
+        "field_count": len(relevant_fields),
+    }
+
+
 @router.patch("/{filing_id}/fields/{field_id}")
 async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest):
     repo = get_repository()
     existing_fields = await repo.list_fields(filing_id)
     before = next((field.proposed_value for field in existing_fields if field.id == field_id), None)
-    field = await repo.update_field(filing_id, field_id, payload.proposed_value)
+    field_status = ExtractedFieldStatus.MISSING if payload.mark_missing else ExtractedFieldStatus.EDITED
+    status_reason = "Marked missing by reviewer." if payload.mark_missing else "Value confirmed by reviewer."
+    field = await repo.update_field(
+        filing_id,
+        field_id,
+        "" if payload.mark_missing else payload.proposed_value,
+        status=field_status,
+        status_reason=status_reason,
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     fields = await repo.list_fields(filing_id)
@@ -162,7 +255,15 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         ftw_review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
     except ValueError:
         pass
-    await repo.add_event(ReviewEvent(filing_id=filing_id, type="EDIT", field_id=field_id, before=before, after=payload.proposed_value))
+    await repo.add_event(
+        ReviewEvent(
+            filing_id=filing_id,
+            type="MARK_MISSING" if payload.mark_missing else "EDIT",
+            field_id=field_id,
+            before=before,
+            after="" if payload.mark_missing else payload.proposed_value,
+        )
+    )
     return {"field": field, "proposed_xml": proposed_xml, "ftw_review": ftw_review}
 
 
@@ -264,6 +365,49 @@ async def prepare_ftwilliams_review(filing_id: str, payload: FTWilliamsPrepareRe
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ftw_review": review}
+
+
+@router.post("/{filing_id}/ftw/bring-forward-link")
+async def get_ftwilliams_bring_forward_link(filing_id: str):
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    review = await repo.get_ftwilliams_review(filing_id)
+    if not review or not review.bring_forward_required:
+        raise HTTPException(status_code=409, detail="FT Williams Bring Forward is not required for this filing.")
+    url = str(review.ftw_plan_url or "").strip()
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        safe_url = (
+            parsed.scheme == "https"
+            and (host == "ftwilliam.com" or host.endswith(".ftwilliam.com"))
+            and not parsed.username
+            and not parsed.password
+            and parsed.port in {None, 443}
+        )
+    except ValueError:
+        safe_url = False
+    if not safe_url:
+        raise HTTPException(status_code=400, detail="A safe FT Williams plan URL is not configured.")
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FTWILLIAMS_BRING_FORWARD_OPENED",
+            message="Reviewer opened FT Williams to complete the native Bring Forward action.",
+            details={
+                "target_year": review.year,
+                "prior_year": review.comparison_year,
+                "mutation_requested": False,
+            },
+        )
+    )
+    return {
+        "url": url,
+        "target_year": review.year,
+        "prior_year": review.comparison_year,
+    }
 
 
 @router.post("/{filing_id}/ftw/manual-match")
