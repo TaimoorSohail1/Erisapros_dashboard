@@ -282,8 +282,29 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   const [busy, setBusy] = useState(false);
   const isNewIdentity = state.mode !== "edit";
 
-  function update<K extends keyof FieldRule>(key: K, value: FieldRule[K]) { setRule((current) => ({ ...current, [key]: value })); setTestResult(null); }
-  function preparedRule(): FieldRule { return { ...rule, aliases: aliases.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean), status: "DRAFT" }; }
+  function update<K extends keyof FieldRule>(key: K, value: FieldRule[K]) { setRule((current) => ({ ...current, [key]: value })); }
+  function updateLabel(label: string) {
+    setRule((current) => ({
+      ...current,
+      label,
+      ...(isNewIdentity ? {
+        key: slugKey(label),
+        ftw_field: label,
+        xml_tag: xmlTagFromLabel(label),
+      } : {}),
+    }));
+    setTestResult(null);
+  }
+  function preparedRule(): FieldRule {
+    return {
+      ...rule,
+      key: rule.key.trim() || slugKey(rule.label),
+      ftw_field: rule.ftw_field.trim() || rule.label.trim(),
+      xml_tag: rule.xml_tag?.trim() || xmlTagFromLabel(rule.label),
+      aliases: aliases.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+      status: "DRAFT",
+    };
+  }
 
   async function testCurrentRule() {
     setBusy(true); setError("");
@@ -293,7 +314,9 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   }
 
   async function save() {
-    if (!rule.key.trim() || !rule.label.trim() || !rule.ftw_field.trim()) return setError("Stable key, official label, and FT Williams field are required.");
+    if (!rule.label.trim()) return setError("Field name is required.");
+    if (!aliases.split(/\r?\n|,/).some((item) => item.trim())) return setError("Add at least one EyeLevel alias.");
+    if (isNewIdentity && (!testResult?.valid || !testResult.matched)) return setError("Run a successful mapping test before saving this new rule.");
     if (!reason.trim()) return setError("A change reason is required.");
     setBusy(true); setError("");
     try { await onSaved(await saveFieldRuleDraft(preparedRule(), reason)); }
@@ -304,21 +327,30 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   return <div className="drawer-layer editor-layer" role="dialog" aria-modal="true">
     <button className="drawer-scrim" type="button" onClick={onClose} aria-label="Close editor" />
     <aside className="rule-editor-panel">
-      <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Save as a draft, validate with a real source label, then publish from the rule details.</p></div><button className="icon-button" type="button" onClick={onClose}><X size={20} /></button></header>
+      <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Add the field name and aliases, test the match, then save the rule as a draft.</p></div><button className="icon-button" type="button" onClick={onClose}><X size={20} /></button></header>
       <div className="rule-editor-body">
-        <EditorSection number="1" title="Field identity" description="The canonical destination and stable internal identity.">
-          <div className="form-grid"><Field label="Official FT Williams label"><input value={rule.label} onChange={(event) => update("label", event.target.value)} /></Field><Field label="Stable key" hint={isNewIdentity ? "Use lowercase words separated by underscores." : "Locked after creation."}><input value={rule.key} disabled={!isNewIdentity} onChange={(event) => update("key", slugKey(event.target.value))} /></Field><Field label="FT Williams field"><input value={rule.ftw_field} onChange={(event) => update("ftw_field", event.target.value)} /></Field><Field label="FT Williams XML tag"><input value={rule.xml_tag || ""} onChange={(event) => update("xml_tag", event.target.value)} /></Field></div>
+        <EditorSection number="1" title="Field setup" description="Choose what the field is called and where it applies.">
+          <div className="form-grid client-rule-grid"><Field label="Field name" hint="Use the official name reviewers expect to see."><input value={rule.label} onChange={(event) => updateLabel(event.target.value)} placeholder="Insurance Carrier EIN" /></Field><Field label="Applies to"><select value={rule.applicability} onChange={(event) => update("applicability", event.target.value as FieldRule["applicability"])}><option value="BOTH">Both contract types</option><option value="EXPERIENCE">Experience rated only</option><option value="NONEXPERIENCE">Nonexperience rated only</option><option value="FORM_5500">Form 5500 only</option></select></Field><Field label="Priority"><select value={rule.priority} onChange={(event) => update("priority", event.target.value as FieldRule["priority"])}><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>IGNORE</option></select></Field></div>
         </EditorSection>
-        <EditorSection number="2" title="Scope and behavior" description="Controls where the field appears and whether it can propose an update.">
-          <div className="form-grid"><Field label="Form section"><input value={rule.form_section || ""} onChange={(event) => update("form_section", event.target.value)} placeholder="Schedule A - Part III" /></Field><Field label="Field type"><select value={rule.field_type} onChange={(event) => update("field_type", event.target.value)}><option>Dynamic</option><option>Static</option><option>Calculated</option></select></Field><Field label="Applicability"><select value={rule.applicability} onChange={(event) => update("applicability", event.target.value as FieldRule["applicability"])}><option value="BOTH">Both contract types</option><option value="EXPERIENCE">Experience rated</option><option value="NONEXPERIENCE">Nonexperience rated</option><option value="FORM_5500">Form 5500</option></select></Field><Field label="Priority"><select value={rule.priority} onChange={(event) => update("priority", event.target.value as FieldRule["priority"])}><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>IGNORE</option></select></Field><Field label="Existing record behavior"><select value={rule.existing_behavior || "Review Only"} onChange={(event) => update("existing_behavior", event.target.value)}><option>Update</option><option>Keep FTW</option><option>Review Only</option><option>Add</option></select></Field><Field label="New record behavior"><select value={rule.new_behavior || "Add"} onChange={(event) => update("new_behavior", event.target.value)}><option>Add</option><option>Update</option><option>Review Only</option><option>Keep FTW</option></select></Field></div>
-        </EditorSection>
-        <EditorSection number="3" title="Agent matching" description="One alias per line. Exact labels are preferred before normalized and AI-assisted matching.">
+        <EditorSection number="2" title="EyeLevel aliases" description="Add the names EyeLevel may return, one per line, then test a real example.">
           <Field label="Aliases"><textarea className="aliases-editor" value={aliases} onChange={(event) => { setAliases(event.target.value); setTestResult(null); }} placeholder="Insurance Carrier EIN&#10;Carrier federal EIN" /></Field>
-          <div className="rule-test-box"><div><FlaskConical size={18} /><div><strong>Test this mapping</strong><span>Paste a source label exactly as EyeLevel may return it.</span></div></div><div className="rule-test-controls"><input value={sample} onChange={(event) => setSample(event.target.value)} placeholder="Sample extracted field name" /><button type="button" disabled={busy || !sample.trim()} onClick={() => void testCurrentRule()}>Run test</button></div>{testResult ? <div className={`test-result ${testResult.valid && testResult.matched ? "pass" : "fail"}`}>{testResult.valid && testResult.matched ? <CheckCircle2 size={17} /> : <X size={17} />} {testResult.message}</div> : null}</div>
+          <div className="rule-test-box"><div><FlaskConical size={18} /><div><strong>Test the match</strong><span>Paste one field name exactly as EyeLevel returned it.</span></div></div><div className="rule-test-controls"><input value={sample} onChange={(event) => { setSample(event.target.value); setTestResult(null); }} placeholder="Sample EyeLevel field name" /><button type="button" disabled={busy || !sample.trim()} onClick={() => void testCurrentRule()}>Run test</button></div>{testResult ? <div className={`test-result ${testResult.valid && testResult.matched ? "pass" : "fail"}`}>{testResult.valid && testResult.matched ? <CheckCircle2 size={17} /> : <X size={17} />} {testResult.message}</div> : null}</div>
         </EditorSection>
-        <EditorSection number="4" title="Guidance and audit" description="Explain the business rule and why this version is needed.">
-          <Field label="Rule notes"><textarea value={rule.client_notes || rule.notes || ""} onChange={(event) => update("client_notes", event.target.value)} placeholder="Explain when reviewers and the agent should use this field." /></Field><Field label="Required change reason"><textarea value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
+        <EditorSection number="3" title="Review notes" description="Briefly explain when this rule should be used and why it is changing.">
+          <Field label="Instructions for reviewers" hint="Optional"><textarea value={rule.client_notes || rule.notes || ""} onChange={(event) => update("client_notes", event.target.value)} placeholder="Explain when reviewers and the agent should use this field." /></Field><Field label="Change reason"><textarea value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
         </EditorSection>
+        <details className="advanced-rule-settings">
+          <summary><div><strong>Advanced settings</strong><span>Technical values are generated automatically. Only change them if instructed by a technical administrator.</span></div><ChevronRight size={18} /></summary>
+          <div className="advanced-rule-settings-content form-grid">
+            <Field label="Stable key" hint={isNewIdentity ? "Generated from the field name." : "Locked after creation."}><input value={rule.key} disabled={!isNewIdentity} onChange={(event) => update("key", slugKey(event.target.value))} /></Field>
+            <Field label="FT Williams field"><input value={rule.ftw_field} onChange={(event) => update("ftw_field", event.target.value)} /></Field>
+            <Field label="FT Williams XML tag"><input value={rule.xml_tag || ""} onChange={(event) => update("xml_tag", event.target.value)} /></Field>
+            <Field label="Form section"><input value={rule.form_section || ""} onChange={(event) => update("form_section", event.target.value)} placeholder="Schedule A - Part III" /></Field>
+            <Field label="Field type"><select value={rule.field_type} onChange={(event) => update("field_type", event.target.value)}><option>Dynamic</option><option>Static</option><option>Calculated</option></select></Field>
+            <Field label="Existing FTW value"><select value={rule.existing_behavior || "Review Only"} onChange={(event) => update("existing_behavior", event.target.value)}><option>Update</option><option>Keep FTW</option><option>Review Only</option><option>Add</option></select></Field>
+            <Field label="Empty FTW value"><select value={rule.new_behavior || "Add"} onChange={(event) => update("new_behavior", event.target.value)}><option>Add</option><option>Update</option><option>Review Only</option><option>Keep FTW</option></select></Field>
+          </div>
+        </details>
         {error ? <div className="form-error editor-error">{error}</div> : null}
       </div>
       <footer><button type="button" className="button-secondary" onClick={onClose}>Cancel</button><button type="button" className="button" disabled={busy} onClick={() => void save()}><Save size={17} /> {busy ? "Saving…" : "Save draft"}</button></footer>
@@ -336,4 +368,5 @@ function titleCase(value: string) { return value.toLowerCase().replace(/(^|_|\s)
 function applicabilityLabel(value: FieldRule["applicability"]) { return value === "BOTH" ? "Both types" : value === "EXPERIENCE" ? "Experience" : value === "NONEXPERIENCE" ? "Nonexperience" : "Form 5500"; }
 function formatDate(value?: string) { if (!value) return "—"; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)); }
 function slugKey(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
+function xmlTagFromLabel(value: string) { const key = slugKey(value); return key ? `field_${key}` : ""; }
 function emptyRule(): FieldRule { return { key: "", label: "", ftw_field: "", xml_tag: "", priority: "MEDIUM", source: "Schedule A", form_section: "Schedule A - Part I", field_type: "Dynamic", existing_or_new: "BOTH", existing_behavior: "Review Only", new_behavior: "Add", notes: "", client_notes: "", aliases: [], required: false, order: 0, applicability: "BOTH", status: "DRAFT", version: 1 }; }
