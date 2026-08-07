@@ -69,6 +69,11 @@ const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9c_1_f_charges_for_risks_or_other_contingencies",
   "schedule_a_part_iii_9c_1_g_other_retention_charges",
   "schedule_a_part_iii_9c_1_h_total_retention",
+  "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
+  "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement",
+  "schedule_a_part_iii_9d_2_claim_reserves",
+  "schedule_a_part_iii_9d_3_other_reserves",
+  "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due",
 ]);
 const NONEXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
