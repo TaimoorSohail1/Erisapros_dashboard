@@ -2815,11 +2815,16 @@ class ShareFileService:
 
         text = ""
         name = file_name.lower()
-        if name.endswith(".pdf"):
-            pages = extract_pdf_text_pages(file_bytes)
-            text = "\n".join(page_text for _, page_text in pages[:2])
-        elif name.endswith((".doc", ".docx")):
-            text = extract_docx_text(file_bytes)
+        try:
+            if name.endswith(".pdf"):
+                pages = extract_pdf_text_pages(file_bytes)
+                text = "\n".join(page_text for _, page_text in pages[:2])
+            elif name.endswith((".doc", ".docx")):
+                text = extract_docx_text(file_bytes)
+        except Exception:
+            # A malformed or mislabeled document must not abort the recursive
+            # ShareFile scan and prevent later valid Schedule A files from intake.
+            return None
         return self._classify_document_text(text)
 
     def _classify_document_text(self, text: str) -> DocumentType | None:

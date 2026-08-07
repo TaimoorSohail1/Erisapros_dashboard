@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -115,6 +115,24 @@ class ShareFileRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(document_type, DocumentType.SCHEDULE_A)
+
+    def test_content_sniff_skips_unreadable_pdf_instead_of_aborting_scan(self):
+        async def download_unreadable_pdf(client, token, item_id):
+            return b"\r\n\r\n\rnot-a-real-pdf"
+
+        self.service._download_item = download_unreadable_pdf
+
+        with patch("app.services.sharefile.extract_pdf_text_pages", side_effect=RuntimeError("unreadable PDF pages")):
+            document_type = run_async(
+                self.service._classify_sharefile_document_by_content(
+                    client=None,
+                    token=None,
+                    item_id="bad-pdf",
+                    file_name="Bad Upload.pdf",
+                )
+            )
+
+        self.assertIsNone(document_type)
 
     def test_sharefile_request_refreshes_early_revoked_access_token_after_401(self):
         token = ShareFileOAuthToken(
