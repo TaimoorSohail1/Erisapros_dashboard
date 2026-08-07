@@ -292,6 +292,7 @@ class AuditLog(BaseModel):
 
 class FieldEditRequest(BaseModel):
     proposed_value: str
+    mark_missing: bool = False
 
 
 class RejectRequest(BaseModel):

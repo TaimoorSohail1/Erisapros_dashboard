@@ -51,6 +51,11 @@ type ReviewToast = {
   title: string;
   tone: "error" | "success";
 } | null;
+type FieldSaveOptions = {
+  markMissing?: boolean;
+  successMessage?: string;
+  successTitle?: string;
+};
 const REVIEW_POLL_MS = 30000;
 const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9a_premiums_1_amount_received",
@@ -117,6 +122,7 @@ export function FilingReviewPage() {
   const [pollVersion, setPollVersion] = useState(0);
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
+  const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
   const [toast, setToast] = useState<ReviewToast>(null);
   const [showAllFields, setShowAllFields] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
@@ -245,6 +251,7 @@ export function FilingReviewPage() {
   const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
+  const reviewInteractionBusy = ftwInteractionBusy || Boolean(fieldSavingId);
   const ftwSendStatusReady = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
   const ftwReadyToSend = Boolean(
     ftwSendStatusReady &&
@@ -277,15 +284,36 @@ export function FilingReviewPage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function saveField(fieldId: string, proposedValue: string) {
-    if (!id || !filing) return;
-    const result = await updateField(id, fieldId, proposedValue);
-    setFiling({
-      ...filing,
-      ftw_review: result.ftw_review ?? filing.ftw_review,
-      proposed_xml: result.proposed_xml,
-      fields: filing.fields.map((field) => field.id === fieldId ? result.field : field),
-    });
+  async function saveField(fieldId: string, proposedValue: string, options: FieldSaveOptions = {}) {
+    if (!id || !filing || fieldSavingId) return false;
+    setFieldSavingId(fieldId);
+    setToast(null);
+    try {
+      const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
+      setFiling((current) => current ? {
+        ...current,
+        ftw_review: result.ftw_review ?? current.ftw_review,
+        proposed_xml: result.proposed_xml,
+        fields: current.fields.map((field) => field.id === fieldId ? result.field : field),
+      } : current);
+      setToast({
+        tone: "success",
+        title: options.successTitle || (options.markMissing ? "Field marked missing" : "Field decision saved"),
+        message: options.successMessage || (options.markMissing
+          ? "This field will remain excluded until a value is entered."
+          : "The proposed FT Williams value has been updated."),
+      });
+      return true;
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Field decision was not saved",
+        message: error instanceof Error ? error.message : "Please try again.",
+      });
+      return false;
+    } finally {
+      setFieldSavingId(null);
+    }
   }
 
   async function decide(action: "approve" | "reject", options?: { overrideBlockers?: boolean }) {
@@ -571,9 +599,9 @@ export function FilingReviewPage() {
     setContractTypeFilter("ALL");
   }
 
-  async function setProposedValue(row: ReviewDecisionRow, value: string) {
+  async function setProposedValue(row: ReviewDecisionRow, value: string, options: FieldSaveOptions = {}) {
     if (!row.fieldId) return;
-    await saveField(row.fieldId, value);
+    await saveField(row.fieldId, value, options);
   }
 
   if (message && !filing) return <div className="card card-pad">{message}</div>;
@@ -794,9 +822,15 @@ export function FilingReviewPage() {
                       row={row}
                       selected={row.fieldId === selectedFieldId}
                       onInspect={() => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-                      onAccept={() => setProposedValue(row, row.proposed)}
-                      onKeepFtw={() => setProposedValue(row, row.currentFtw)}
-                      disabled={ftwInteractionBusy}
+                      onAccept={() => setProposedValue(row, row.proposed, {
+                        successTitle: "Proposed value accepted",
+                        successMessage: `${row.label} is ready for FT Williams review.`,
+                      })}
+                      onKeepFtw={() => setProposedValue(row, row.currentFtw, {
+                        successTitle: "FT Williams value kept",
+                        successMessage: `${row.label} will keep its current FT Williams value.`,
+                      })}
+                      disabled={reviewInteractionBusy}
                     />
                   ))}
                 </tbody>
@@ -902,6 +936,7 @@ export function FilingReviewPage() {
           field={selectedField}
           onClose={() => setSelectedFieldId(null)}
           onSave={saveField}
+          saving={fieldSavingId === selectedField.id}
         />
       ) : null}
 
@@ -941,10 +976,17 @@ export function FilingReviewPage() {
           lowConfidenceRows={lowConfidenceRows}
           missingRows={missingRows}
           needsDecisionRows={needsDecisionRows}
-          onAccept={(row) => setProposedValue(row, row.proposed)}
+          disabled={reviewInteractionBusy}
+          onAccept={(row) => setProposedValue(row, row.proposed, {
+            successTitle: "Proposed value accepted",
+            successMessage: `${row.label} is ready for FT Williams review.`,
+          })}
           onClose={() => setShowAllFields(false)}
           onInspect={(row) => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-          onKeepFtw={(row) => setProposedValue(row, row.currentFtw)}
+          onKeepFtw={(row) => setProposedValue(row, row.currentFtw, {
+            successTitle: "FT Williams value kept",
+            successMessage: `${row.label} will keep its current FT Williams value.`,
+          })}
           onPageChange={setCurrentPage}
           onResetFilters={resetFilters}
           onRowsPerPageChange={setRowsPerPage}
@@ -1274,6 +1316,7 @@ function FullFieldReviewDrawer({
   activeTab,
   contractTypeFilter,
   currentPage,
+  disabled,
   displayRows,
   formFilter,
   lowConfidenceRows,
@@ -1312,6 +1355,7 @@ function FullFieldReviewDrawer({
   activeTab: ReviewTab;
   contractTypeFilter: ContractTypeFilter;
   currentPage: number;
+  disabled: boolean;
   displayRows: ReviewDecisionRow[];
   formFilter: FilterValue;
   lowConfidenceRows: ReviewDecisionRow[];
@@ -1406,6 +1450,7 @@ function FullFieldReviewDrawer({
                   onInspect={() => onInspect(row)}
                   onAccept={() => onAccept(row)}
                   onKeepFtw={() => onKeepFtw(row)}
+                  disabled={disabled}
                 />
               ))}
             </tbody>
@@ -2440,7 +2485,17 @@ function FieldTableRow({ field, selected, onSelect }: { field: ExtractedField; s
   );
 }
 
-function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; onClose: () => void; onSave: (fieldId: string, proposedValue: string) => void }) {
+function FieldReviewModal({
+  field,
+  onClose,
+  onSave,
+  saving,
+}: {
+  field: ExtractedField;
+  onClose: () => void;
+  onSave: (fieldId: string, proposedValue: string, options?: FieldSaveOptions) => Promise<boolean>;
+  saving: boolean;
+}) {
   const [draft, setDraft] = useState(field?.proposed_value ?? "");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2448,8 +2503,9 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
     setDraft(field?.proposed_value ?? "");
   }, [field?.id, field?.proposed_value]);
 
-  async function save(value: string) {
-    await onSave(field.id, value);
+  async function save(value: string, options: FieldSaveOptions = {}) {
+    const saved = await onSave(field.id, value, options);
+    if (saved) onClose();
   }
 
   return (
@@ -2480,7 +2536,8 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
               </label>
               <label>
                 <span>Proposed Value</span>
-                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} />
+                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} />
+                <small className="field-edit-hint">Enter or edit the value, then save it. Empty values must be marked missing.</small>
               </label>
             </div>
           </div>
@@ -2505,16 +2562,16 @@ function FieldReviewModal({ field, onClose, onSave }: { field: ExtractedField; o
         </div>
 
         <div className="field-review-modal-actions">
-          <button className="button" onClick={() => save(draft)}>
-            <CheckCircle2 size={16} /> Accept Proposed
+          <button className="button" disabled={saving || !draft.trim()} onClick={() => save(draft)}>
+            <CheckCircle2 size={16} /> {saving ? "Saving..." : draft === (field.proposed_value ?? "") ? "Accept Proposed" : "Save Value"}
           </button>
-          <button className="button secondary" onClick={() => inputRef.current?.focus()}>
+          <button className="button secondary" disabled={saving} onClick={() => { inputRef.current?.focus(); inputRef.current?.select(); }}>
             <Edit3 size={16} /> Edit Value
           </button>
-          <button className="button danger" onClick={() => { setDraft(""); save(""); }}>
+          <button className="button danger" disabled={saving} onClick={() => save("", { markMissing: true })}>
             <Ban size={16} /> Mark Missing
           </button>
-          <button className="button secondary" onClick={onClose}>Close</button>
+          <button className="button secondary" disabled={saving} onClick={onClose}>Close</button>
         </div>
       </section>
     </div>

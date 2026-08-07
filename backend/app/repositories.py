@@ -38,7 +38,15 @@ class Repository:
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def list_fields(self, filing_id: str) -> list[ExtractedField]: ...
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None: ...
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
     async def add_audit(self, audit: AuditLog) -> None: ...
@@ -108,12 +116,27 @@ class MongoRepository(Repository):
         docs = await self.db.extracted_fields.find({"filing_id": filing_id}).sort("mapped_label", 1).to_list(500)
         return [from_mongo(doc, ExtractedField) for doc in docs]
 
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None:
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
+        updates = {
+            "proposed_value": proposed_value,
+            "status": status,
+            "updated_at": datetime.utcnow(),
+        }
+        if status_reason is not None:
+            updates["status_reason"] = status_reason
         doc = await self.db.extracted_fields.find_one_and_update(
             {"_id": ObjectId(field_id), "filing_id": filing_id},
-            {"$set": {"proposed_value": proposed_value, "status": ExtractedFieldStatus.EDITED, "updated_at": datetime.utcnow()}},
+            {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
         return from_mongo(doc, ExtractedField) if doc else None
@@ -342,12 +365,22 @@ class MemoryRepository(Repository):
     async def list_fields(self, filing_id: str) -> list[ExtractedField]:
         return [field for field in self.fields.values() if field.filing_id == filing_id]
 
-    async def update_field(self, filing_id: str, field_id: str, proposed_value: str) -> ExtractedField | None:
+    async def update_field(
+        self,
+        filing_id: str,
+        field_id: str,
+        proposed_value: str,
+        *,
+        status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
+        status_reason: str | None = None,
+    ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
             return None
         field.proposed_value = proposed_value
-        field.status = ExtractedFieldStatus.EDITED
+        field.status = status
+        if status_reason is not None:
+            field.status_reason = status_reason
         field.updated_at = datetime.utcnow()
         return field
 

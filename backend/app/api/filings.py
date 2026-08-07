@@ -152,7 +152,15 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     repo = get_repository()
     existing_fields = await repo.list_fields(filing_id)
     before = next((field.proposed_value for field in existing_fields if field.id == field_id), None)
-    field = await repo.update_field(filing_id, field_id, payload.proposed_value)
+    field_status = ExtractedFieldStatus.MISSING if payload.mark_missing else ExtractedFieldStatus.EDITED
+    status_reason = "Marked missing by reviewer." if payload.mark_missing else "Value confirmed by reviewer."
+    field = await repo.update_field(
+        filing_id,
+        field_id,
+        "" if payload.mark_missing else payload.proposed_value,
+        status=field_status,
+        status_reason=status_reason,
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     fields = await repo.list_fields(filing_id)
@@ -163,7 +171,15 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         ftw_review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
     except ValueError:
         pass
-    await repo.add_event(ReviewEvent(filing_id=filing_id, type="EDIT", field_id=field_id, before=before, after=payload.proposed_value))
+    await repo.add_event(
+        ReviewEvent(
+            filing_id=filing_id,
+            type="MARK_MISSING" if payload.mark_missing else "EDIT",
+            field_id=field_id,
+            before=before,
+            after="" if payload.mark_missing else payload.proposed_value,
+        )
+    )
     return {"field": field, "proposed_xml": proposed_xml, "ftw_review": ftw_review}
 
 

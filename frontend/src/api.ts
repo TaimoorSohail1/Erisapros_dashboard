@@ -51,11 +51,12 @@ export async function updateField(
   filingId: string,
   fieldId: string,
   proposedValue: string,
+  options?: { markMissing?: boolean },
 ): Promise<{ field: ExtractedField; proposed_xml: string; ftw_review?: FTWilliamsReview | null }> {
   return request("/filings/" + filingId + "/fields/" + fieldId, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proposed_value: proposedValue })
+    body: JSON.stringify({ proposed_value: proposedValue, mark_missing: Boolean(options?.markMissing) })
   });
 }
 
