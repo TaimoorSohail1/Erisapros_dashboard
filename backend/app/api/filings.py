@@ -208,6 +208,10 @@ async def re_evaluate_filing_rules(
             "proposed_xml": proposed_xml,
         },
     )
+    # The filing detail page merges stored extraction fields with the cached
+    # FT Williams comparison. Rebuild that comparison from the newly mapped
+    # fields so removed/renamed rules cannot remain as stale decision rows.
+    await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
     await repo.add_audit(
         AuditLog(
             filing_id=filing_id,
@@ -220,7 +224,11 @@ async def re_evaluate_filing_rules(
             },
         )
     )
-    return {"status": "re-evaluated", "field_rule_set_version": snapshot.version, "field_count": len(saved_fields)}
+    return {
+        "status": "re-evaluated",
+        "field_rule_set_version": snapshot.version,
+        "field_count": len(relevant_fields),
+    }
 
 
 @router.patch("/{filing_id}/fields/{field_id}")

@@ -6,7 +6,15 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import ExtractedField, FieldRule, FieldRuleApplicability, FieldRuleStatus, Filing
+from app.models import (
+    ExtractedField,
+    FieldRule,
+    FieldRuleApplicability,
+    FieldRuleStatus,
+    Filing,
+    FTWilliamsComparisonField,
+    FTWilliamsReview,
+)
 from app.services.field_rule_admin import FieldRuleService
 from app.services.mapping import map_extraction_to_rules
 from app.models import NormalizedExtractionField
@@ -143,6 +151,12 @@ class FieldRuleAdminTests(unittest.TestCase):
                     )
                 ]
             )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    fields=[FTWilliamsComparisonField(label="Stale comparison field")],
+                )
+            )
             service = FieldRuleService(repo)
             draft = await service.create_draft(
                 FieldRule(
@@ -161,13 +175,16 @@ class FieldRuleAdminTests(unittest.TestCase):
             await service.publish(draft.key, actor="admin@example.com", reason="Approved")
             response = await re_evaluate_filing_rules(filing.id, {"email": "admin@example.com"})
             jobs = await repo.list_extraction_jobs(filing.id)
-            return response, await repo.list_fields(filing.id), jobs
+            review = await repo.get_ftwilliams_review(filing.id)
+            return response, await repo.list_fields(filing.id), jobs, review
 
-        response, fields, jobs = run_async(scenario())
+        response, fields, jobs, review = run_async(scenario())
 
         self.assertEqual(response["status"], "re-evaluated")
         self.assertIn("schedule_a_re_evaluate", {field.mapped_rule_key for field in fields})
         self.assertEqual(jobs, [])
+        self.assertNotIn("Stale comparison field", {field.label for field in review.fields})
+        self.assertGreater(response["field_count"], 0)
 
     def test_rule_applicability_controls_contract_specific_visibility(self):
         experience_rule = FieldRule(
