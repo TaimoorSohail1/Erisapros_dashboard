@@ -528,6 +528,56 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
 
+  # --- Scheduled ShareFile poll (reliable backstop for webhooks / new client folders) ---
+  ShareFilePollConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      AuthorizationType: API_KEY
+      Description: Auth header for the scheduled ShareFile poll endpoint
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: x-sharefile-webhook-token
+          ApiKeyValue: !Sub "{{resolve:secretsmanager:${AppSecret}:SecretString:SHAREFILE_WEBHOOK_TOKEN}}"
+
+  ShareFilePollApiDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      ConnectionArn: !GetAtt ShareFilePollConnection.Arn
+      Description: Triggers a full ShareFile scan so new client folders and files are always picked up
+      HttpMethod: POST
+      InvocationEndpoint: !Sub "https://${Distribution.DomainName}/api/sharefile/poll-scheduled"
+      InvocationRateLimitPerSecond: 1
+
+  ShareFilePollSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-sharefile-poll
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !GetAtt ShareFilePollApiDestination.Arn
+
+  ShareFilePollScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Poll ShareFile every 5 minutes so new folders and files are processed automatically
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: sharefile-poll
+          Arn: !GetAtt ShareFilePollApiDestination.Arn
+          RoleArn: !GetAtt ShareFilePollSchedulerRole.Arn
+
 Outputs:
   FrontendBucketName:
     Value: !Ref FrontendBucket
