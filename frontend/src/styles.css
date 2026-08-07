@@ -1685,6 +1685,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 .drawer-layer {
   inset: 0;
+  overflow: hidden;
   position: fixed;
   z-index: 50;
 }
@@ -1899,12 +1900,15 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .rule-history-list button { background: #fff; border: 1px solid #cbd5e1; border-radius: 7px; color: #475569; cursor: pointer; font-size: 11px; font-weight: 850; padding: 6px 9px; }
 .rule-history-list button:disabled { cursor: not-allowed; opacity: .45; }
 .editor-layer { z-index: 70; }
-.rule-editor-panel { background: #f5f8f7; box-shadow: -28px 0 70px rgba(15,23,42,.28); display: grid; grid-template-rows: auto minmax(0,1fr) auto; height: 100%; max-width: 780px; position: absolute; right: 0; top: 0; width: min(780px, 98vw); }
+.rule-editor-panel { background: #f5f8f7; box-shadow: -28px 0 70px rgba(15,23,42,.28); display: grid; grid-template-rows: auto minmax(0,1fr) auto; height: 100dvh; max-height: 100dvh; max-width: 780px; overflow: hidden; position: absolute; right: 0; top: 0; width: min(780px, 98vw); }
 .rule-editor-panel > header { align-items: flex-start; background: #fff; border-bottom: 1px solid #dce3ea; display: flex; gap: 20px; justify-content: space-between; padding: 23px 26px; }
 .rule-editor-panel > header h2 { font-size: 25px; margin: 3px 0 6px; }
 .rule-editor-panel > header p { color: #64748b; line-height: 1.45; margin: 0; }
-.rule-editor-body { display: grid; gap: 14px; overflow: auto; padding: 20px 24px 30px; }
-.editor-section { background: #fff; border: 1px solid #dce3ea; border-radius: 12px; box-shadow: 0 7px 20px rgba(16,32,51,.04); overflow: hidden; }
+.rule-editor-body { align-content: start; display: grid; gap: 14px; grid-auto-rows: max-content; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px 30px; scrollbar-color: #94a3b8 transparent; scrollbar-gutter: stable; scrollbar-width: thin; }
+.rule-editor-body::-webkit-scrollbar { width: 10px; }
+.rule-editor-body::-webkit-scrollbar-thumb { background: #94a3b8; border: 2px solid #f5f8f7; border-radius: 999px; }
+.rule-editor-body::-webkit-scrollbar-track { background: transparent; }
+.editor-section { background: #fff; border: 1px solid #dce3ea; border-radius: 12px; box-shadow: 0 7px 20px rgba(16,32,51,.04); min-height: max-content; overflow: hidden; }
 .editor-section-heading { align-items: flex-start; border-bottom: 1px solid #edf1f4; display: flex; gap: 12px; padding: 16px 18px; }
 .editor-section-heading > span { align-items: center; background: #e7f7ef; border-radius: 8px; color: #08744b; display: inline-flex; flex: 0 0 29px; font-size: 12px; font-weight: 900; height: 29px; justify-content: center; }
 .editor-section-heading h3 { font-size: 15px; margin: 1px 0 3px; }
@@ -1931,7 +1935,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .test-result.pass { background: #ecfdf5; color: #047857; }
 .test-result.fail { background: #fff1f2; color: #be123c; }
 .editor-error { margin: 0; }
-.rule-editor-panel > footer { align-items: center; background: #fff; border-top: 1px solid #dce3ea; display: flex; gap: 10px; justify-content: flex-end; padding: 14px 24px; }
+.rule-editor-panel > footer { align-items: center; background: #fff; border-top: 1px solid #dce3ea; box-shadow: 0 -8px 22px rgba(15,23,42,.05); display: flex; gap: 10px; justify-content: flex-end; padding: 14px 24px; position: relative; z-index: 1; }
 .button-secondary { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; color: #334155; cursor: pointer; font-weight: 800; padding: 10px 14px; }
 
 @media (max-width: 1180px) {
