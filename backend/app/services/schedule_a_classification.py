@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
 
-from app.models import ExtractedField, FormType, ScheduleAContractType
+from app.models import ExtractedField, FieldRule, FieldRuleApplicability, FormType, ScheduleAContractType
 
 
 EXPERIENCE_PREMIUM_RULES = {
@@ -133,11 +133,22 @@ def schedule_a_contract_type_allows_rule(contract_type: ScheduleAContractType, r
 def filter_schedule_a_fields_for_contract_type(
     fields: list[ExtractedField],
     contract_type: ScheduleAContractType,
+    rules: list[FieldRule] | None = None,
 ) -> list[ExtractedField]:
+    applicability_by_key = {rule.key: rule.applicability for rule in (rules or [])}
+
+    def is_allowed(field: ExtractedField) -> bool:
+        applicability = applicability_by_key.get(str(field.mapped_rule_key or ""))
+        if applicability == FieldRuleApplicability.EXPERIENCE:
+            return contract_type == ScheduleAContractType.EXPERIENCE_RATED
+        if applicability == FieldRuleApplicability.NONEXPERIENCE:
+            return contract_type == ScheduleAContractType.NONEXPERIENCE_RATED
+        return schedule_a_contract_type_allows_rule(contract_type, field.mapped_rule_key)
+
     return [
         field
         for field in fields
-        if schedule_a_contract_type_allows_rule(contract_type, field.mapped_rule_key)
+        if is_allowed(field)
     ]
 
 

@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
+from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_tags import (
     normalize_compare_value,
@@ -55,6 +56,7 @@ class FTWilliamsReviewService:
 
     async def prepare_review(self, filing_id: str, send_queries: bool = False) -> FTWilliamsReview:
         repo = get_repository()
+        published_rules = await FieldRuleService(repo).published_rules()
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
@@ -164,6 +166,7 @@ class FTWilliamsReviewService:
                 has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
             ),
             extracted_contract_classification.contract_type,
+            rules=published_rules,
         )
         comparison_fields = self._comparison_fields(
             fields,
@@ -335,6 +338,7 @@ class FTWilliamsReviewService:
 
     async def select_schedule_a_match(self, filing_id: str, payload: FTWilliamsScheduleAMatchRequest) -> FTWilliamsReview:
         repo = get_repository()
+        published_rules = await FieldRuleService(repo).published_rules()
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
@@ -435,6 +439,7 @@ class FTWilliamsReviewService:
                 has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
             ),
             extracted_contract_classification.contract_type,
+            rules=published_rules,
         )
         comparison_fields = self._comparison_fields(
             fields,
@@ -525,6 +530,7 @@ class FTWilliamsReviewService:
         payload: FTWilliamsScheduleAContractTypeRequest,
     ) -> FTWilliamsReview:
         repo = get_repository()
+        published_rules = await FieldRuleService(repo).published_rules()
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
@@ -554,7 +560,7 @@ class FTWilliamsReviewService:
             },
         )
         fields = await repo.list_fields(filing_id)
-        relevant_fields = filter_schedule_a_fields_for_contract_type(fields, payload.contract_type)
+        relevant_fields = filter_schedule_a_fields_for_contract_type(fields, payload.contract_type, rules=published_rules)
         await repo.update_filing(
             filing_id,
             self._review_field_count_updates(fields, relevant_fields),
@@ -1084,6 +1090,7 @@ class FTWilliamsReviewService:
         override_blockers: bool = False,
     ) -> FTWilliamsReview | None:
         repo = get_repository()
+        published_rules = await FieldRuleService(repo).published_rules()
         if not send_to_ftw:
             fields = await repo.list_fields(filing_id)
             review = await repo.get_ftwilliams_review(filing_id)
@@ -1092,7 +1099,7 @@ class FTWilliamsReviewService:
                 ScheduleAContractType.EXPERIENCE_RATED,
                 ScheduleAContractType.NONEXPERIENCE_RATED,
             }:
-                approval_fields = filter_schedule_a_fields_for_contract_type(fields, review.schedule_a_contract_type)
+                approval_fields = filter_schedule_a_fields_for_contract_type(fields, review.schedule_a_contract_type, rules=published_rules)
             approval_error = self._approval_blocking_error(approval_fields)
             if review and review.current_query_sent and (
                 not review.current_year_exists or review.bring_forward_required

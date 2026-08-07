@@ -333,6 +333,7 @@ export interface FilingDetail extends Filing {
 }
 
 export interface FieldRule {
+    id?: string | null;
   key: string;
   label: string;
   ftw_field: string;
@@ -348,5 +349,12 @@ export interface FieldRule {
   client_notes?: string | null;
   aliases: string[];
   required: boolean;
-  order: number;
-}
+    order: number;
+    applicability: "BOTH" | "EXPERIENCE" | "NONEXPERIENCE" | "FORM_5500";
+    status: "DRAFT" | "PUBLISHED" | "DISABLED" | "SUPERSEDED";
+    version: number;
+    updated_by?: string | null;
+    change_reason?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  }

@@ -1,6 +1,7 @@
 from datetime import datetime
 from urllib.parse import urlsplit
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from app.auth import require_field_rule_admin
 from app.models import (
     ApproveRequest,
     AuditLog,
@@ -11,6 +12,7 @@ from app.models import (
     Filing,
     FilingDetail,
     FilingStatus,
+    NormalizedExtractionField,
     FTWilliamsManualMatchRequest,
     FTWilliamsPrepareReviewRequest,
     FTWilliamsScheduleAContractTypeRequest,
@@ -20,7 +22,15 @@ from app.models import (
     ReviewEvent,
 )
 from app.repositories import get_repository
-from app.services.filing_pipeline import process_package_extraction_job
+from app.services.filing_pipeline import (
+    harmonize_schedule_a_business_rule_fields,
+    harmonize_schedule_a_reference_fields,
+    process_package_extraction_job,
+    summarize_mapped_fields,
+)
+from app.services.field_rule_admin import FieldRuleService
+from app.services.mapping import map_extraction_to_rules
+from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml
@@ -145,6 +155,72 @@ async def retry_extraction(filing_id: str, background_tasks: BackgroundTasks):
     await repo.add_audit(AuditLog(filing_id=filing.id, event="RETRY_QUEUED", message="Extraction retry queued from stored package."))
     background_tasks.add_task(process_package_extraction_job, filing.id, job.id, documents)
     return {"id": filing.id, "status": FilingStatus.QUEUED, "job_id": job.id}
+
+
+@router.post("/{filing_id}/re-evaluate-rules")
+async def re_evaluate_filing_rules(
+    filing_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    existing_fields = await repo.list_fields(filing_id)
+    stored_values = [
+        NormalizedExtractionField(
+            field_name=field.source_field_name,
+            value=field.proposed_value or field.value,
+            confidence=field.confidence,
+            page=field.page,
+            source_text=field.source_text,
+        )
+        for field in existing_fields
+        if (field.proposed_value or field.value) and field.status != ExtractedFieldStatus.IGNORED
+    ]
+    snapshot = await FieldRuleService(repo).published_snapshot()
+    mapped = map_extraction_to_rules(filing_id, stored_values, rules=snapshot.rules)
+    fields = harmonize_schedule_a_reference_fields(mapped["fields"])
+    fields = harmonize_schedule_a_business_rule_fields(fields)
+    classification = classify_schedule_a_fields(fields)
+    relevant_fields = filter_schedule_a_fields_for_contract_type(fields, classification.contract_type, rules=snapshot.rules)
+    summary = summarize_mapped_fields(relevant_fields)
+    saved_fields = await repo.replace_fields(filing_id, fields)
+    proposed_xml = build_proposed_ftw_xml(
+        filter_schedule_a_fields_for_contract_type(saved_fields, classification.contract_type, rules=snapshot.rules)
+    )
+    await repo.update_filing(
+        filing_id,
+        {
+            "status": summary["status"],
+            "field_rule_set_version": snapshot.version,
+            "overall_confidence": summary["overall_confidence"],
+            "missing_high_priority_count": summary["missing_high_priority_count"],
+            "missing_medium_priority_count": summary["missing_medium_priority_count"],
+            "missing_low_priority_count": summary["missing_low_priority_count"],
+            "low_confidence_count": summary["low_confidence_count"],
+            "unmapped_count": summary["unmapped_count"],
+            "review_field_count": summary["review_field_count"],
+            "found_field_count": summary["found_field_count"],
+            "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
+            "schedule_a_contract_type": classification.contract_type,
+            "schedule_a_contract_type_reason": classification.reason,
+            "proposed_xml": proposed_xml,
+        },
+    )
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FIELD_RULES_RE_EVALUATED",
+            message="Stored extraction values were re-evaluated using the latest published field rules.",
+            details={
+                "field_rule_set_version": snapshot.version,
+                "actor": claims.get("email") or claims.get("sub"),
+                "eyelevel_rerun": False,
+            },
+        )
+    )
+    return {"status": "re-evaluated", "field_rule_set_version": snapshot.version, "field_count": len(saved_fields)}
 
 
 @router.patch("/{filing_id}/fields/{field_id}")

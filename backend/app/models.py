@@ -38,6 +38,20 @@ class FieldPriority(str, Enum):
     IGNORE = "IGNORE"
 
 
+class FieldRuleStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    DISABLED = "DISABLED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class FieldRuleApplicability(str, Enum):
+    BOTH = "BOTH"
+    EXPERIENCE = "EXPERIENCE"
+    NONEXPERIENCE = "NONEXPERIENCE"
+    FORM_5500 = "FORM_5500"
+
+
 class DocumentType(str, Enum):
     SCHEDULE_A = "SCHEDULE_A"
     PLAN_WORKSHEET = "PLAN_WORKSHEET"
@@ -86,6 +100,7 @@ class FTWilliamsPlanLookupStatus(str, Enum):
 
 
 class FieldRule(BaseModel):
+    id: str | None = None
     key: str
     label: str
     ftw_field: str
@@ -102,6 +117,28 @@ class FieldRule(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     required: bool = False
     order: int = 0
+    applicability: FieldRuleApplicability = FieldRuleApplicability.BOTH
+    status: FieldRuleStatus = FieldRuleStatus.PUBLISHED
+    version: int = 1
+    updated_by: str | None = None
+    change_reason: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FieldRuleDraftRequest(BaseModel):
+    rule: FieldRule
+    reason: str = ""
+
+
+class FieldRuleActionRequest(BaseModel):
+    reason: str
+    version: int | None = None
+
+
+class FieldRuleTestRequest(BaseModel):
+    rule: FieldRule
+    sample_field_name: str
 
 
 class NormalizedExtractionField(BaseModel):
@@ -213,6 +250,7 @@ class Filing(BaseModel):
     sharefile_parent_id: str | None = None
     sharefile_downloaded_at: datetime | None = None
     extraction_provider: str | None = None
+    field_rule_set_version: str | None = None
     overall_confidence: float = 0
     missing_high_priority_count: int = 0
     missing_medium_priority_count: int = 0

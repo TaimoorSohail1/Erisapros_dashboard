@@ -3,8 +3,9 @@ from functools import lru_cache
 
 import jwt
 from jwt import PyJWKClient
+from fastapi import HTTPException, Request
 
-from app.config import Settings
+from app.config import Settings, get_settings
 
 
 class AuthenticationError(Exception):
@@ -40,3 +41,21 @@ def _decode_cognito_id_token(token: str, settings: Settings) -> dict:
 
 async def verify_cognito_id_token(token: str, settings: Settings) -> dict:
     return await asyncio.to_thread(_decode_cognito_id_token, token, settings)
+
+
+def has_field_rule_admin_access(claims: dict | None, settings: Settings) -> bool:
+    if not settings.auth_enabled:
+        return True
+    claims = claims or {}
+    raw_groups = claims.get("cognito:groups") or []
+    groups = {str(group).strip().lower() for group in (raw_groups if isinstance(raw_groups, list) else [raw_groups])}
+    email = str(claims.get("email") or claims.get("cognito:username") or "").strip().lower()
+    return "admins" in groups or email in settings.field_rules_admin_email_set
+
+
+async def require_field_rule_admin(request: Request) -> dict:
+    settings = get_settings()
+    claims = getattr(request.state, "user", None)
+    if not has_field_rule_admin_access(claims, settings):
+        raise HTTPException(status_code=403, detail="Administrator access is required to manage field rules.")
+    return claims or {"sub": "local-admin", "email": "local-admin"}

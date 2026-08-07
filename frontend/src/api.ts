@@ -169,9 +169,73 @@ export async function retryExtraction(filingId: string): Promise<{ id: string; s
   return request("/filings/" + filingId + "/retry-extraction", { method: "POST" });
 }
 
-export async function listFieldRules(): Promise<FieldRule[]> {
-  const payload = await request<{ field_rules: FieldRule[] }>("/field-rules");
-  return payload.field_rules;
+export interface FieldRuleListResponse {
+  field_rules: FieldRule[];
+  published_version: string;
+  can_manage: boolean;
+}
+
+export async function listFieldRules(): Promise<FieldRuleListResponse> {
+  return request<FieldRuleListResponse>("/field-rules");
+}
+
+export async function saveFieldRuleDraft(rule: FieldRule, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>("/field-rules/drafts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rule, reason })
+  });
+  return payload.field_rule;
+}
+
+export async function testFieldRule(rule: FieldRule, sampleFieldName: string): Promise<{
+  valid: boolean;
+  matched: boolean;
+  mapped_rule_key?: string | null;
+  mapped_ftw_field?: string | null;
+  message: string;
+}> {
+  return request("/field-rules/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rule, sample_field_name: sampleFieldName })
+  });
+}
+
+export async function publishFieldRule(key: string, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason })
+  });
+  return payload.field_rule;
+}
+
+export async function disableFieldRule(key: string, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/disable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason })
+  });
+  return payload.field_rule;
+}
+
+export async function getFieldRuleHistory(key: string): Promise<FieldRule[]> {
+  const payload = await request<{ history: FieldRule[] }>(`/field-rules/${encodeURIComponent(key)}/history`);
+  return payload.history;
+}
+
+export async function rollbackFieldRule(key: string, version: number, reason: string): Promise<FieldRule> {
+  const payload = await request<{ field_rule: FieldRule }>(`/field-rules/${encodeURIComponent(key)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version, reason })
+  });
+  return payload.field_rule;
+}
+
+export async function reEvaluateFilingRules(filingId: string): Promise<{ status: string; field_rule_set_version: string; field_count: number }> {
+  return request(`/filings/${filingId}/re-evaluate-rules`, { method: "POST" });
 }
 
 export async function getShareFileStatus(): Promise<{

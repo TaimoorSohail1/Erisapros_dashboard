@@ -13,6 +13,8 @@ from app.models import (
     FTWilliamsPlanMapping,
     RawExtraction,
     Filing,
+    FieldRule,
+    FieldRuleStatus,
     ReviewEvent,
     ShareFileOAuthToken,
 )
@@ -69,6 +71,8 @@ class Repository:
     async def list_sharefile_files(self) -> list[dict]: ...
     async def get_sharefile_state(self, key: str) -> dict | None: ...
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule: ...
 
 
 class MongoRepository(Repository):
@@ -81,6 +85,16 @@ class MongoRepository(Repository):
         result = await self.db.filings.insert_one(to_mongo(filing))
         filing.id = str(result.inserted_id)
         return filing
+
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
+        query = {"key": key} if key else {}
+        docs = await self.db.field_rule_versions.find(query).sort([("key", 1), ("version", -1), ("created_at", -1)]).to_list(2000)
+        return [from_mongo(doc, FieldRule) for doc in docs]
+
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule:
+        result = await self.db.field_rule_versions.insert_one(to_mongo(rule))
+        rule.id = str(result.inserted_id)
+        return rule
 
     async def list_filings(self) -> list[Filing]:
         docs = await self.db.filings.find().sort("created_at", -1).to_list(100)
@@ -331,6 +345,17 @@ class MemoryRepository(Repository):
         self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
+        self.field_rule_versions: dict[str, FieldRule] = {}
+
+    async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
+        rules = [rule for rule in self.field_rule_versions.values() if key is None or rule.key == key]
+        return sorted(rules, key=lambda item: (item.key, -item.version, -item.created_at.timestamp()))
+
+    async def save_field_rule_version(self, rule: FieldRule) -> FieldRule:
+        stored = rule.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.field_rule_versions[stored.id] = stored
+        return stored.model_copy(deep=True)
 
     async def create_filing(self, filing: Filing) -> Filing:
         filing.id = str(uuid4())

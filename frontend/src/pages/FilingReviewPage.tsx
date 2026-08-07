@@ -16,6 +16,7 @@ import {
   Search,
   SearchX,
   ShieldCheck,
+  Sparkles,
   SlidersHorizontal,
   X,
   XCircle,
@@ -29,6 +30,7 @@ import {
   getFTWilliamsBringForwardLink,
   prepareFTWilliamsReview,
   regenerateXml,
+  reEvaluateFilingRules,
   rejectFiling,
   retryExtraction,
   saveManualFTWilliamsMatch,
@@ -123,6 +125,7 @@ export function FilingReviewPage() {
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
+  const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
   const [showAllFields, setShowAllFields] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
@@ -590,6 +593,28 @@ export function FilingReviewPage() {
     setPollVersion((value) => value + 1);
   }
 
+  async function reEvaluateWithLatestRules() {
+    if (!id) return;
+    setRulesBusy(true);
+    setMessage("");
+    setToast(null);
+    try {
+      const result = await reEvaluateFilingRules(id);
+      setFiling(await getFiling(id));
+      setToast({
+        tone: "success",
+        title: "Rules re-evaluated",
+        message: `${result.field_count} fields were remapped with rule set ${result.field_rule_set_version}. EyeLevel was not run again.`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Rules could not be re-evaluated.";
+      setMessage(errorMessage);
+      setToast({ tone: "error", title: "Re-evaluation failed", message: errorMessage });
+    } finally {
+      setRulesBusy(false);
+    }
+  }
+
   function resetFilters() {
     setSearch("");
     setStatusFilter("ALL");
@@ -751,6 +776,9 @@ export function FilingReviewPage() {
                 </button>
                 <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={rebuildXml}>
                   <RefreshCw size={16} /> Preview XML
+                </button>
+                <button className="button secondary" type="button" disabled={ftwInteractionBusy || rulesBusy} onClick={reEvaluateWithLatestRules}>
+                  <Sparkles size={16} /> {rulesBusy ? "Re-evaluating…" : "Re-evaluate Rules"}
                 </button>
                 {filing.status === "FAILED" ? (
                   <button className="button secondary" disabled={ftwInteractionBusy} onClick={retryFailedExtraction}>

@@ -68,6 +68,9 @@ SCHEDULE_A_PREFER_PDF_TEXT_FIELDS = {
 
 
 class ExtractionService:
+    def __init__(self, field_rules=None):
+        self.field_rules = list(field_rules) if field_rules is not None else DEFAULT_FIELD_RULES
+
     async def extract_document(self, file_bytes: bytes, file_name: str, document_type: DocumentType) -> NormalizedExtractionResult:
         if document_type == DocumentType.PLAN_WORKSHEET:
             return await self.extract_plan_worksheet(file_bytes, file_name)
@@ -377,7 +380,7 @@ class ExtractionService:
         document_id: str,
         file_name: str | None = None,
     ) -> Any | None:
-        query = build_groundx_schema_query(file_name)
+        query = build_groundx_schema_query(file_name, self.field_rules)
         body = {
             "search": {
                 "query": query,
@@ -1047,8 +1050,8 @@ def find_money_amounts(text: str) -> list[str]:
     return re.findall(r"\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?\b|\b[0-9]{4,}(?:\.\d{2})?\b", text)
 
 
-def build_groundx_schema_query(file_name: str | None = None) -> str:
-    labels = "; ".join(rule.label for rule in DEFAULT_FIELD_RULES)
+def build_groundx_schema_query(file_name: str | None = None, rules=None) -> str:
+    labels = "; ".join(rule.label for rule in (rules if rules is not None else DEFAULT_FIELD_RULES))
     file_hint = f" Prefer content from file named {file_name} when that file is searchable. " if file_name else " "
     return (
         "Using this Schedule A / Form 5500 document, retrieve the text needed to extract these FT Williams fields."

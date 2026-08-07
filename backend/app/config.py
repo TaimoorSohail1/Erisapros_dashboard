@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     cognito_region: str | None = None
     cognito_user_pool_id: str | None = None
     cognito_app_client_id: str | None = None
+    field_rules_admin_emails: str = "support@highlandtech.ai"
+
+    @property
+    def field_rules_admin_email_set(self) -> set[str]:
+        return {item.strip().lower() for item in self.field_rules_admin_emails.split(",") if item.strip()}
 
     aws_region: str | None = None
     aws_access_key_id: str | None = None

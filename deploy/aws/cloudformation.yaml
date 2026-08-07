@@ -17,6 +17,9 @@ Parameters:
   GitBranch:
     Type: String
     Default: codex/aws-production-deployment
+  FieldRulesAdminEmails:
+    Type: String
+    Default: support@highlandtech.ai
 
 Resources:
   FrontendBucket:
@@ -288,6 +291,8 @@ Resources:
               Value: !Ref UserPool
             - Name: COGNITO_APP_CLIENT_ID
               Value: !Ref UserPoolClient
+            - Name: FIELD_RULES_ADMIN_EMAILS
+              Value: !Ref FieldRulesAdminEmails
             - Name: GROUNDX_API_BASE_URL
               Value: https://api.groundx.ai/api/v1
             - Name: GROUNDX_POLL_SECONDS

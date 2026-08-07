@@ -42,7 +42,8 @@ def form_type_for_rule(rule: FieldRule) -> FormType:
     return FormType.SCHEDULE_A
 
 
-def rules_for_form_type(form_type: FormType | None) -> list[FieldRule]:
+def rules_for_form_type(form_type: FormType | None, rules: list[FieldRule] | None = None) -> list[FieldRule]:
+    available_rules = rules if rules is not None else DEFAULT_FIELD_RULES
     if not form_type:
-        return DEFAULT_FIELD_RULES
-    return [rule for rule in DEFAULT_FIELD_RULES if form_type_for_rule(rule) == form_type]
+        return available_rules
+    return [rule for rule in available_rules if form_type_for_rule(rule) == form_type]

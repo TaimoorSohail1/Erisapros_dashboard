@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FilingStatus, FormType, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
 from app.repositories import get_repository
 from app.services.extractor import ExtractionService
+from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
@@ -21,6 +22,7 @@ async def process_extraction_job(filing_id: str, job_id: str, file_bytes: bytes,
 
 async def process_package_extraction_job(filing_id: str, job_id: str, documents: list[dict]) -> None:
     repo = get_repository()
+    rule_snapshot = await FieldRuleService(repo).published_snapshot()
     jobs = await repo.list_extraction_jobs(filing_id)
     job = next((item for item in jobs if item.id == job_id), None)
     max_attempts = job.max_attempts if job else 3
@@ -47,7 +49,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             )
 
             await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.EXTRACTING})
-            extractor = ExtractionService()
+            extractor = ExtractionService(rule_snapshot.rules)
             mapped_fields: list[ExtractedField] = []
             providers: list[str] = []
             raw_items: list[dict] = []
@@ -94,6 +96,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     extraction.fields,
                     form_type=form_type,
                     source_document_type=document_type,
+                    rules=rule_snapshot.rules,
                 )
                 mapped_fields.extend(mapped["fields"])
 
@@ -114,11 +117,12 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             relevant_fields = filter_schedule_a_fields_for_contract_type(
                 mapped_fields,
                 contract_classification.contract_type,
+                rules=rule_snapshot.rules,
             )
             summary = summarize_mapped_fields(relevant_fields)
             fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
             proposed_xml = build_proposed_ftw_xml(
-                filter_schedule_a_fields_for_contract_type(fields, contract_classification.contract_type)
+                filter_schedule_a_fields_for_contract_type(fields, contract_classification.contract_type, rules=rule_snapshot.rules)
             )
 
             await repo.update_filing(
@@ -126,6 +130,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                 {
                     "status": summary["status"],
                     "extraction_provider": " + ".join(providers),
+                    "field_rule_set_version": rule_snapshot.version,
                     "overall_confidence": summary["overall_confidence"],
                     "missing_high_priority_count": summary["missing_high_priority_count"],
                     "missing_medium_priority_count": summary["missing_medium_priority_count"],
@@ -165,6 +170,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         "schedule_a_broker_row_count": len(schedule_a_broker_rows),
                         "schedule_a_worksheet_summary_count": len(schedule_a_worksheet_summaries),
                         "documents": [{"file_name": item["file_name"], "document_type": item["document_type"], "provider": item["provider"]} for item in raw_items],
+                        "field_rule_set_version": rule_snapshot.version,
                     },
                 )
             )
