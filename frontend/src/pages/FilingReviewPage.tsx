@@ -831,6 +831,7 @@ export function FilingReviewPage() {
                         successMessage: `${row.label} will keep its current FT Williams value.`,
                       })}
                       disabled={reviewInteractionBusy}
+                      saving={fieldSavingId === row.fieldId}
                     />
                   ))}
                 </tbody>
@@ -998,6 +999,7 @@ export function FilingReviewPage() {
           priorityFilter={priorityFilter}
           reviewRows={reviewRows}
           rowsPerPage={rowsPerPage}
+          savingFieldId={fieldSavingId}
           sameRows={sameRows}
           search={search}
           sectionFilter={sectionFilter}
@@ -1270,6 +1272,7 @@ function ReviewDecisionTableRow({
   onInspect,
   onKeepFtw,
   row,
+  saving = false,
   selected,
 }: {
   disabled?: boolean;
@@ -1277,6 +1280,7 @@ function ReviewDecisionTableRow({
   onInspect: () => void;
   onKeepFtw: () => void;
   row: ReviewDecisionRow;
+  saving?: boolean;
   selected: boolean;
 }) {
   const canEdit = Boolean(row.fieldId);
@@ -1301,11 +1305,24 @@ function ReviewDecisionTableRow({
       </td>
       <td>
         <div className="decision-actions">
-          {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
-          <button type="button" disabled={disabled || !canEdit || !row.currentFtw} onClick={onKeepFtw}>Keep FTW</button>
-          <button type="button" disabled={disabled || !canEdit} onClick={onInspect}>
-            {row.proposed ? "Edit" : "Enter value"}
-          </button>
+          {saving ? (
+            <button type="button" disabled><RefreshCw size={14} /> Saving...</button>
+          ) : (
+            <>
+              {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
+              <button
+                type="button"
+                disabled={disabled || !canEdit || !row.currentFtw}
+                onClick={onKeepFtw}
+                title={!row.currentFtw ? "No current FT Williams value is available to keep." : "Keep the current FT Williams value."}
+              >
+                Keep FTW
+              </button>
+              <button type="button" disabled={disabled || !canEdit} onClick={onInspect}>
+                {row.proposed ? "Edit" : "Enter value"}
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>
@@ -1337,6 +1354,7 @@ function FullFieldReviewDrawer({
   priorityFilter,
   reviewRows,
   rowsPerPage,
+  savingFieldId,
   sameRows,
   search,
   sectionFilter,
@@ -1376,6 +1394,7 @@ function FullFieldReviewDrawer({
   priorityFilter: FilterValue;
   reviewRows: ReviewDecisionRow[];
   rowsPerPage: number;
+  savingFieldId: string | null;
   sameRows: ReviewDecisionRow[];
   search: string;
   sectionFilter: FilterValue;
@@ -1451,6 +1470,7 @@ function FullFieldReviewDrawer({
                   onAccept={() => onAccept(row)}
                   onKeepFtw={() => onKeepFtw(row)}
                   disabled={disabled}
+                  saving={savingFieldId === row.fieldId}
                 />
               ))}
             </tbody>
