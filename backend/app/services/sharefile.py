@@ -384,17 +384,16 @@ class ShareFileService:
 
             scanned_files: list[dict] = []
             scan_errors: list[dict] = []
-            for root in scan_roots:
+
+            async def scan_one_root(root: dict) -> list[dict]:
                 try:
-                    scanned_files.extend(
-                        await self._scan_folder(
-                            client,
-                            token,
-                            root["id"],
-                            root["path_parts"],
-                            root_folder_id=root["id"],
-                            scan_errors=scan_errors,
-                        )
+                    return await self._scan_folder(
+                        client,
+                        token,
+                        root["id"],
+                        root["path_parts"],
+                        root_folder_id=root["id"],
+                        scan_errors=scan_errors,
                     )
                 except Exception as exc:
                     # Belt and braces: a failure inside one client's folder tree
@@ -407,6 +406,12 @@ class ShareFileService:
                             "response": f"{type(exc).__name__}: {exc}"[:300],
                         }
                     )
+                    return []
+
+            # Client folder trees are independent - scan them concurrently.
+            # The shared semaphore inside _scan_folder bounds ShareFile load.
+            for root_files in await asyncio.gather(*(scan_one_root(root) for root in scan_roots)):
+                scanned_files.extend(root_files)
 
             state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY)
             first_scan = not bool(state and state.get("baseline_completed"))
@@ -1596,6 +1601,13 @@ class ShareFileService:
         for file_item in scanned_files:
             if file_item.get("document_type") or not file_item.get("needs_content_sniff"):
                 continue
+            if not self._sniff_path_is_relevant(file_item.get("path_parts") or []):
+                # Only files inside a filing structure (a Schedule A folder, a
+                # year folder, or a 5500 filing folder) can ever join a filing
+                # package. Random client documents elsewhere are classified by
+                # name only - never downloaded. This keeps even the very first
+                # baseline scan fast.
+                continue
             existing = await repo.get_sharefile_file(file_item["id"])
             if existing and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
                 indexed_type = existing.get("document_type")
@@ -1611,6 +1623,17 @@ class ShareFileService:
                 client, token, file_item["id"], file_item["name"]
             )
         return scanned_files
+
+    def _sniff_path_is_relevant(self, path_parts: list[str]) -> bool:
+        for part in path_parts[:-1]:
+            segment = str(part)
+            if (
+                self._is_schedule_a_folder_segment(segment)
+                or self._is_year_filing_segment(segment)
+                or self._is_5500_filing_folder_segment(segment)
+            ):
+                return True
+        return False
 
     def _sharefile_index_record(
         self,
@@ -2479,8 +2502,12 @@ class ShareFileService:
         if path_parts:
             folder_ids_by_depth[len(path_parts) - 1] = folder_id
 
+        semaphore = getattr(self, "_scan_semaphore", None)
+        if semaphore is None:
+            semaphore = self._scan_semaphore = asyncio.Semaphore(8)
         try:
-            children = await self._list_folder(client, token, folder_id)
+            async with semaphore:
+                children = await self._list_folder(client, token, folder_id)
         except httpx.HTTPError as exc:
             # One slow or broken folder must never abort the whole scan.
             # HTTPError covers both ShareFile error responses (HTTPStatusError)
@@ -2499,6 +2526,7 @@ class ShareFileService:
             return []
 
         files: list[dict] = []
+        subfolder_scans = []
         for item in children:
             item_id = item.get("Id")
             name = item.get("Name") or item.get("FileName") or ""
@@ -2506,8 +2534,10 @@ class ShareFileService:
                 continue
             item_path = path_parts + [name]
             if self._is_folder(item):
-                files.extend(
-                    await self._scan_folder(
+                # Walk sibling subfolders concurrently - a sequential walk of
+                # hundreds of folders took many minutes per scan.
+                subfolder_scans.append(
+                    self._scan_folder(
                         client,
                         token,
                         item_id,
@@ -2542,6 +2572,22 @@ class ShareFileService:
                     "raw": item,
                 }
             )
+
+        if subfolder_scans:
+            results = await asyncio.gather(*subfolder_scans, return_exceptions=True)
+            for scanned in results:
+                if isinstance(scanned, BaseException):
+                    if scan_errors is not None:
+                        scan_errors.append(
+                            {
+                                "folder_id": folder_id,
+                                "path": " > ".join(path_parts) or folder_id,
+                                "status_code": None,
+                                "response": f"{type(scanned).__name__}: {scanned}"[:300],
+                            }
+                        )
+                    continue
+                files.extend(scanned)
         return files
 
     def _group_files_by_package(self, files: list[dict]) -> dict[str, list[dict]]:

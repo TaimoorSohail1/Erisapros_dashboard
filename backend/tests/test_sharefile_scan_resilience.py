@@ -227,3 +227,14 @@ class DeferredSniffAndSpeedTests(unittest.IsolatedAsyncioTestCase):
         # No crash; falls back to configured folder IDs (may or may not resolve
         # in this fixture, but the sync must return a result dict).
         self.assertIsInstance(result, dict)
+
+    async def test_files_outside_filing_structure_are_never_downloaded(self):
+        service = ShareFileService()
+        await service.sync_changes(BackgroundTasks(), process_new_files=True)  # baseline
+
+        # A random client PDF outside any filing structure arrives - it must be
+        # classified by name only, never downloaded for sniffing.
+        self.tree["f_c"].append(_pdf("d_random", "invoice_march.pdf"))
+        self.download_calls.clear()
+        await service.sync_changes(BackgroundTasks(), process_new_files=True)
+        self.assertNotIn("d_random", self.download_calls)
