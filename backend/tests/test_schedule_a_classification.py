@@ -31,6 +31,13 @@ from app.services.schedule_a_classification import (
 
 LINE_9A = "schedule_a_part_iii_9a_premiums_1_amount_received"
 LINE_9C = "schedule_a_part_iii_9c_1_a_commissions"
+LINE_9_REMAINDER_RULES = (
+    "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
+    "schedule_a_part_iii_9d_1_status_of_policyholder_reserves_at_end_of_year_1_amount_held_to_provide_benefits_after_retirement",
+    "schedule_a_part_iii_9d_2_claim_reserves",
+    "schedule_a_part_iii_9d_3_other_reserves",
+    "schedule_a_part_iii_9e_dividends_or_retroactive_rate_refunds_due",
+)
 LINE_10A = "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier"
 
 
@@ -64,6 +71,13 @@ class ScheduleAClassificationTests(unittest.TestCase):
 
         self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
 
+    def test_remaining_line_9_values_are_experience_rated(self):
+        classification = classify_schedule_a_fields([
+            extracted_field("schedule_a_part_iii_9d_2_claim_reserves", "109724")
+        ])
+
+        self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+
     def test_line_10a_only_is_nonexperience_rated(self):
         classification = classify_schedule_a_fields([extracted_field(LINE_10A, "170074")])
 
@@ -92,6 +106,11 @@ class ScheduleAClassificationTests(unittest.TestCase):
         self.assertEqual(extracted.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
         self.assertEqual(current.contract_type, ScheduleAContractType.NONEXPERIENCE_RATED)
 
+    def test_ftw_current_remaining_line_9_values_are_experience_rated(self):
+        current = classify_schedule_a_current({"WlfrClaimsReserveAmt": "109724"})
+
+        self.assertEqual(current.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+
     def test_contract_type_filters_opposite_line_group_from_send_fields(self):
         line_9 = extracted_field(LINE_9C, "2500")
         line_10 = extracted_field(LINE_10A, "170074")
@@ -106,6 +125,17 @@ class ScheduleAClassificationTests(unittest.TestCase):
         )
         self.assertFalse(schedule_a_contract_type_allows_rule(ScheduleAContractType.NEEDS_REVIEW, LINE_9A))
         self.assertFalse(schedule_a_contract_type_allows_rule(ScheduleAContractType.NEEDS_REVIEW, LINE_10A))
+
+    def test_nonexperience_filters_every_remaining_experience_line_9_field(self):
+        line_9_fields = [extracted_field(rule_key) for rule_key in LINE_9_REMAINDER_RULES]
+
+        self.assertEqual(
+            filter_schedule_a_fields_for_contract_type(
+                line_9_fields,
+                ScheduleAContractType.NONEXPERIENCE_RATED,
+            ),
+            [],
+        )
 
     def test_nonexperience_counts_exclude_missing_experience_fields(self):
         line_10 = extracted_field(LINE_10A, "170074")
