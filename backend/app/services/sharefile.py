@@ -16,6 +16,10 @@ from app.services.storage import StorageService
 
 
 MAX_SHAREFILE_SCAN_DEPTH = 8
+# Files larger than this are never downloaded for content classification.
+# Real Schedule A documents are well under 1 MB; multi-MB files are carrier
+# booklets, scans, or templates that would make the scan take minutes each.
+MAX_CONTENT_SNIFF_BYTES = 10 * 1024 * 1024
 SHAREFILE_INCREMENTAL_STATE_KEY = "sharefile_incremental_scan"
 SUPPORTED_SHAREFILE_DOCUMENT_TYPES = {DocumentType.PLAN_WORKSHEET, DocumentType.SCHEDULE_A}
 
@@ -484,6 +488,8 @@ class ShareFileService:
             "last_scan_errors": state.get("last_scan_errors") or [],
             "baseline_completed": state.get("baseline_completed", False),
             "scan_scope": state.get("scan_scope"),
+            "sniff_total": state.get("sniff_total"),
+            "sniff_done": state.get("sniff_done"),
         }
 
     async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
@@ -1598,6 +1604,7 @@ class ShareFileService:
         reuse the document type recorded in the ShareFile index.
         """
         repo = get_repository()
+        candidates: list[dict] = []
         for file_item in scanned_files:
             if file_item.get("document_type") or not file_item.get("needs_content_sniff"):
                 continue
@@ -1607,6 +1614,10 @@ class ShareFileService:
                 # package. Random client documents elsewhere are classified by
                 # name only - never downloaded. This keeps even the very first
                 # baseline scan fast.
+                continue
+            if int(file_item.get("size") or 0) > MAX_CONTENT_SNIFF_BYTES:
+                # Oversized files are never real Schedule A / worksheet
+                # documents; downloading and parsing them made scans crawl.
                 continue
             existing = await repo.get_sharefile_file(file_item["id"])
             if existing and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
@@ -1619,9 +1630,37 @@ class ShareFileService:
                 # Unchanged and previously classified (possibly as not useful):
                 # never download it again.
                 continue
-            file_item["document_type"] = await self._classify_sharefile_document_by_content(
-                client, token, file_item["id"], file_item["name"]
-            )
+            candidates.append(file_item)
+
+        if not candidates:
+            return scanned_files
+
+        # Sniff concurrently (bounded) and publish progress so scan-status
+        # shows what a long-running scan is actually doing.
+        semaphore = asyncio.Semaphore(6)
+        done_count = 0
+
+        async def sniff_one(file_item: dict) -> None:
+            nonlocal done_count
+            async with semaphore:
+                file_item["document_type"] = await self._classify_sharefile_document_by_content(
+                    client, token, file_item["id"], file_item["name"]
+                )
+            done_count += 1
+            if done_count % 10 == 0 or done_count == len(candidates):
+                try:
+                    await repo.upsert_sharefile_state(
+                        SHAREFILE_INCREMENTAL_STATE_KEY,
+                        {"sniff_total": len(candidates), "sniff_done": done_count},
+                    )
+                except Exception:
+                    pass
+
+        await repo.upsert_sharefile_state(
+            SHAREFILE_INCREMENTAL_STATE_KEY,
+            {"sniff_total": len(candidates), "sniff_done": 0},
+        )
+        await asyncio.gather(*(sniff_one(item) for item in candidates))
         return scanned_files
 
     def _sniff_path_is_relevant(self, path_parts: list[str]) -> bool:
