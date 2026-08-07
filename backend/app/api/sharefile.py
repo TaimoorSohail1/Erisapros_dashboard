@@ -25,6 +25,11 @@ async def sharefile_status():
     return await ShareFileService().status()
 
 
+@router.get("/scan-status")
+async def sharefile_scan_status():
+    return await ShareFileService().scan_status()
+
+
 @router.post("/sync-folder")
 async def sync_sharefile_folder(background_tasks: BackgroundTasks):
     return await ShareFileService().sync_folder(background_tasks)

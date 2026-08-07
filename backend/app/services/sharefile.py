@@ -359,6 +359,11 @@ class ShareFileService:
             }
 
         settings = get_settings()
+        scan_started_at = datetime.utcnow()
+        await repo.upsert_sharefile_state(
+            SHAREFILE_INCREMENTAL_STATE_KEY,
+            {"last_scan_started_at": scan_started_at},
+        )
         async with httpx.AsyncClient(timeout=90) as client:
             token = await self._ensure_access_token(client, token)
             scan_roots = await self._resolve_scan_roots(client, token)
@@ -415,10 +420,16 @@ class ShareFileService:
                 source="SHAREFILE_INCREMENTAL_POLL",
                 scan_errors=scan_errors,
             )
+            scan_finished_at = datetime.utcnow()
+            scan_error_list = list(result.get("scan_errors") or [])
             await repo.upsert_sharefile_state(
                 SHAREFILE_INCREMENTAL_STATE_KEY,
                 {
-                    "last_scan_at": datetime.utcnow(),
+                    "last_scan_at": scan_finished_at,
+                    "last_scan_completed_at": scan_finished_at,
+                    "last_scan_duration_seconds": round((scan_finished_at - scan_started_at).total_seconds(), 1),
+                    "last_scan_error_count": len(scan_error_list),
+                    "last_scan_errors": scan_error_list[:5],
                     "baseline_completed": True,
                     "baseline_completed_at": (state or {}).get("baseline_completed_at") or datetime.utcnow(),
                     "last_scan_found": result.get("found", 0),
@@ -448,6 +459,27 @@ class ShareFileService:
             }
         )
         return result
+
+    async def scan_status(self) -> dict:
+        """Visibility into the background scan so nobody has to guess whether
+        scans are running, finishing, or failing."""
+        state = await get_repository().get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+        started = state.get("last_scan_started_at")
+        completed = state.get("last_scan_completed_at") or state.get("last_scan_at")
+        running = bool(started and (not completed or completed < started))
+        return {
+            "scan_running": running,
+            "last_scan_started_at": started,
+            "last_scan_completed_at": completed,
+            "last_scan_duration_seconds": state.get("last_scan_duration_seconds"),
+            "last_scan_found": state.get("last_scan_found"),
+            "last_scan_supported": state.get("last_scan_supported"),
+            "last_scan_synced": state.get("last_scan_synced"),
+            "last_scan_error_count": state.get("last_scan_error_count"),
+            "last_scan_errors": state.get("last_scan_errors") or [],
+            "baseline_completed": state.get("baseline_completed", False),
+            "scan_scope": state.get("scan_scope"),
+        }
 
     async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
         return await self.sync_changes(background_tasks, process_new_files=True)
@@ -572,6 +604,7 @@ class ShareFileService:
     ) -> dict:
         repo = get_repository()
         scanned_files = self._dedupe_scanned_files(scanned_files)
+        scanned_files = await self._resolve_deferred_content_sniffs(client, token, scanned_files)
         useful_files = [item for item in scanned_files if item.get("document_type")]
         extractable_files = [
             item
@@ -1545,6 +1578,40 @@ class ShareFileService:
                 ),
             )
 
+    async def _resolve_deferred_content_sniffs(
+        self,
+        client: httpx.AsyncClient,
+        token: ShareFileOAuthToken,
+        scanned_files: list[dict],
+    ) -> list[dict]:
+        """Classify by file content only where it is actually needed.
+
+        Downloading and parsing files during the recursive folder walk made a
+        full scan of all client folders take tens of minutes, so scans never
+        finished within a poll window. Instead, sniff after the walk and only
+        for files that are new or changed since the last scan; unchanged files
+        reuse the document type recorded in the ShareFile index.
+        """
+        repo = get_repository()
+        for file_item in scanned_files:
+            if file_item.get("document_type") or not file_item.get("needs_content_sniff"):
+                continue
+            existing = await repo.get_sharefile_file(file_item["id"])
+            if existing and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
+                indexed_type = existing.get("document_type")
+                if indexed_type:
+                    try:
+                        file_item["document_type"] = DocumentType(indexed_type)
+                    except ValueError:
+                        pass
+                # Unchanged and previously classified (possibly as not useful):
+                # never download it again.
+                continue
+            file_item["document_type"] = await self._classify_sharefile_document_by_content(
+                client, token, file_item["id"], file_item["name"]
+            )
+        return scanned_files
+
     def _sharefile_index_record(
         self,
         file_item: dict,
@@ -2454,12 +2521,15 @@ class ShareFileService:
                 continue
 
             document_type = self._classify_sharefile_document(name, item_path)
-            if not document_type and self._should_content_sniff(name):
-                document_type = await self._classify_sharefile_document_by_content(client, token, item_id, name)
+            # Content sniffing (download + parse) is deferred until after the
+            # scan so a full recursive walk of every client folder stays fast.
+            # See _resolve_deferred_content_sniffs.
+            needs_content_sniff = bool(not document_type and self._should_content_sniff(name))
             files.append(
                 {
                     "id": item_id,
                     "name": name,
+                    "needs_content_sniff": needs_content_sniff,
                     "path": " > ".join(item_path),
                     "path_parts": item_path,
                     "root_folder_id": root_folder_id,
@@ -2633,7 +2703,12 @@ class ShareFileService:
         return deduped
 
     async def _discover_shared_folder_roots(self, client: httpx.AsyncClient, token: ShareFileOAuthToken) -> list[dict]:
-        children = await self._list_folder(client, token, "allshared")
+        try:
+            children = await self._list_folder(client, token, "allshared")
+        except httpx.HTTPError:
+            # A hiccup listing the shared root must not abort the whole sync;
+            # the configured fallback folder IDs still provide scan roots.
+            return []
         roots: list[dict] = []
         for item in children:
             item_id = item.get("Id")
