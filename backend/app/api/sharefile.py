@@ -31,6 +31,19 @@ async def poll_sharefile_folder(background_tasks: BackgroundTasks):
     return await ShareFileService().poll_folder(background_tasks)
 
 
+@router.post("/poll-scheduled")
+async def poll_sharefile_folder_scheduled(request: Request, background_tasks: BackgroundTasks):
+    """Machine-to-machine poll trigger for the external scheduler (EventBridge).
+
+    Authenticated with the shared ShareFile webhook token instead of a user
+    login, so AWS can call it every few minutes as a reliable backstop for
+    missed webhooks and brand-new client folders.
+    """
+    if not valid_webhook_token(request):
+        raise HTTPException(status_code=401, detail="Invalid scheduler token.")
+    return await ShareFileService().poll_folder(background_tasks)
+
+
 @router.post("/webhook")
 async def sharefile_webhook(request: Request, background_tasks: BackgroundTasks):
     if not valid_webhook_token(request):

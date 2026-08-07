@@ -79,6 +79,7 @@ PUBLIC_PATHS = {
     "/api/health",
     "/api/sharefile/oauth/callback",
     "/api/sharefile/webhook",
+    "/api/sharefile/poll-scheduled",
 }
 
 

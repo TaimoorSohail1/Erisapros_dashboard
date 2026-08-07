@@ -132,6 +132,7 @@ export function FilingReviewPage() {
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
+  const bringForwardOpenedRef = useRef(false);
 
   useEffect(() => {
     if (!id) return;
@@ -419,6 +420,29 @@ export function FilingReviewPage() {
     setShowAllFields(true);
   }
 
+  // Auto-refresh FTW data when the user returns from the FT Williams tab after
+  // opening Bring Forward, instead of requiring a manual "Refresh FTW Data" click.
+  useEffect(() => {
+    function handleReturnFromFtw() {
+      if (document.visibilityState !== "visible") return;
+      if (!bringForwardOpenedRef.current || ftwBusy) return;
+      bringForwardOpenedRef.current = false;
+      setToast({
+        tone: "success",
+        title: "Refreshing FT Williams data",
+        message: "Checking whether the current-year record now exists after Bring Forward.",
+      });
+      void prepareFtw(true);
+    }
+    document.addEventListener("visibilitychange", handleReturnFromFtw);
+    window.addEventListener("focus", handleReturnFromFtw);
+    return () => {
+      document.removeEventListener("visibilitychange", handleReturnFromFtw);
+      window.removeEventListener("focus", handleReturnFromFtw);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ftwBusy, id]);
+
   async function prepareFtw(sendQueries: boolean) {
     if (!id) return;
     setFtwBusy(true);
@@ -458,10 +482,11 @@ export function FilingReviewPage() {
       const result = await getFTWilliamsBringForwardLink(id);
       if (ftwWindow) ftwWindow.location.href = result.url;
       else window.open(result.url, "_blank", "noopener,noreferrer");
+      bringForwardOpenedRef.current = true;
       setToast({
         tone: "success",
         title: "FT Williams opened",
-        message: "Complete FTW's native Bring Forward action, return here, and click Refresh FTW Data.",
+        message: "Complete FTW's native Bring Forward action and return here - FTW data will refresh automatically.",
       });
     } catch (error) {
       ftwWindow?.close();
