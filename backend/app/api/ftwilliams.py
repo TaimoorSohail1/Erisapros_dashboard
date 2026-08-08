@@ -14,7 +14,7 @@ from app.models import (
     FTWilliamsReview,
     FTWilliamsReviewStatus,
 )
-from app.repositories import get_repository
+from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
 
 
@@ -36,13 +36,17 @@ async def query(payload: FTWilliamsQueryRequest):
 
 @router.get("/failure-queue", response_model=FTWilliamsFailureQueueResponse)
 async def failure_queue():
-    repo = get_repository()
+    return await retry_repository_read(_build_failure_queue)
+
+
+async def _build_failure_queue(repo):
     items: list[FTWilliamsFailureQueueItem] = []
-    for filing in await repo.list_filings():
-        if not filing.id or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
-            continue
-        review = await repo.get_ftwilliams_review(filing.id)
-        if not review or review.status != FTWilliamsReviewStatus.UPDATE_FAILED:
+    # Failed reviews are normally empty or very small. Query that collection
+    # first instead of loading every filing and issuing two more queries per
+    # row on every dashboard refresh.
+    for review in await repo.list_failed_ftwilliams_reviews():
+        filing = await repo.get_filing(review.filing_id)
+        if not filing or not filing.id or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
             continue
         audits = await repo.list_audit_logs(filing.id)
         failed_audit = next((audit for audit in audits if audit.event == "FTWILLIAMS_UPDATE_FAILED"), None)

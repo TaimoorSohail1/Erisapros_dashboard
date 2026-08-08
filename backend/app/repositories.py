@@ -1,7 +1,11 @@
 from datetime import datetime
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 from uuid import uuid4
 from bson import ObjectId
 from pymongo import ReturnDocument
+from pymongo.errors import PyMongoError
+from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import get_settings
 from app.models import (
@@ -55,6 +59,7 @@ class Repository:
     async def add_audit(self, audit: AuditLog) -> None: ...
     async def list_audit_logs(self, filing_id: str) -> list[AuditLog]: ...
     async def list_ftwilliams_audit_logs(self, since: datetime, limit: int = 100) -> list[AuditLog]: ...
+    async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]: ...
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
     async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None: ...
@@ -86,9 +91,10 @@ class MongoRepository(Repository):
             uri,
             serverSelectionTimeoutMS=5_000,
             connectTimeoutMS=5_000,
-            socketTimeoutMS=10_000,
+            socketTimeoutMS=15_000,
             waitQueueTimeoutMS=5_000,
-            timeoutMS=12_000,
+            timeoutMS=18_000,
+            read_preference=ReadPreference.SECONDARY_PREFERRED,
         )
         db_name = uri.rsplit("/", 1)[-1].split("?", 1)[0] or "erisapros_dashboard"
         self.db = self.client[db_name]
@@ -237,6 +243,12 @@ class MongoRepository(Repository):
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         doc = await self.db.ftwilliams_reviews.find_one({"filing_id": filing_id})
         return from_mongo(doc, FTWilliamsReview) if doc else None
+
+    async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
+        docs = await self.db.ftwilliams_reviews.find(
+            {"status": "UPDATE_FAILED"}
+        ).sort("updated_at", -1).to_list(100)
+        return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:
         values = to_mongo(review)
@@ -495,6 +507,17 @@ class MemoryRepository(Repository):
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         return self.ftwilliams_reviews.get(filing_id)
 
+    async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
+        return sorted(
+            (
+                review
+                for review in self.ftwilliams_reviews.values()
+                if review.status.value == "UPDATE_FAILED"
+            ),
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:
         existing = self.ftwilliams_reviews.get(review.filing_id)
         review.id = existing.id if existing and existing.id else review.id or str(uuid4())
@@ -624,12 +647,21 @@ def get_repository() -> Repository:
 
 
 def reset_repository() -> None:
-    """Close and discard the process-local repository connection pool."""
+    """Discard the pool for new requests without breaking in-flight users."""
     global _repository
-    repository = _repository
     _repository = None
-    if isinstance(repository, MongoRepository):
-        repository.client.close()
+
+
+T = TypeVar("T")
+
+
+async def retry_repository_read(operation: Callable[[Repository], Awaitable[T]]) -> T:
+    """Retry one idempotent repository read with a fresh connection pool."""
+    try:
+        return await operation(get_repository())
+    except PyMongoError:
+        reset_repository()
+        return await operation(get_repository())
 
 
 FTWILLIAMS_HISTORY_EVENTS = {
