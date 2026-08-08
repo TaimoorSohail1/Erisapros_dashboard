@@ -78,7 +78,18 @@ class Repository:
 
 class MongoRepository(Repository):
     def __init__(self, uri: str):
-        self.client = AsyncIOMotorClient(uri)
+        # Never let a dead Atlas socket or exhausted pool leave an HTTP
+        # request pending until CloudFront returns a 504. PyMongo reconnects
+        # automatically; these bounds make it abandon stale topology/pool
+        # state and retry on a healthy connection promptly.
+        self.client = AsyncIOMotorClient(
+            uri,
+            serverSelectionTimeoutMS=5_000,
+            connectTimeoutMS=5_000,
+            socketTimeoutMS=10_000,
+            waitQueueTimeoutMS=5_000,
+            timeoutMS=12_000,
+        )
         db_name = uri.rsplit("/", 1)[-1].split("?", 1)[0] or "erisapros_dashboard"
         self.db = self.client[db_name]
 
@@ -610,6 +621,15 @@ def get_repository() -> Repository:
         raise RuntimeError("MONGODB_URI is required in production; in-memory storage is disabled.")
     _repository = MongoRepository(settings.mongodb_uri) if settings.mongodb_uri else MemoryRepository()
     return _repository
+
+
+def reset_repository() -> None:
+    """Close and discard the process-local repository connection pool."""
+    global _repository
+    repository = _repository
+    _repository = None
+    if isinstance(repository, MongoRepository):
+        repository.client.close()
 
 
 FTWILLIAMS_HISTORY_EVENTS = {
