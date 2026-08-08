@@ -1166,7 +1166,9 @@ class ShareFileService:
                 if background_tasks is not None:
                     background_tasks.add_task(process_package_extraction_job, filing.id, job.id, processing_documents)
                 else:
-                    asyncio.create_task(process_package_extraction_job(filing.id, job.id, processing_documents))
+                    # The dedicated worker must not acknowledge the SQS
+                    # message until extraction and persistence have finished.
+                    await process_package_extraction_job(filing.id, job.id, processing_documents)
 
                 synced.append(
                     {

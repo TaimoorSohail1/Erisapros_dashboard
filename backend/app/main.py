@@ -5,9 +5,11 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pymongo.errors import PyMongoError
 from app.api import field_rules, filings, ftwilliams, sharefile
 from app.auth import AuthenticationError, verify_cognito_id_token
 from app.config import get_settings
+from app.repositories import reset_repository
 from app.services.sharefile_processes import (
     start_sharefile_poll_process,
     start_sharefile_webhook_registration_process,
@@ -43,11 +45,13 @@ async def lifespan(app: FastAPI):
     settings.validate_runtime()
     poll_task = None
     webhook_auto_register_task = None
-    if settings.sharefile_poll_enabled:
+    # With SQS configured, a dedicated worker owns all ShareFile work. These
+    # legacy local loops remain only for developer environments without SQS.
+    if settings.sharefile_poll_enabled and not settings.sharefile_work_queue_url:
         poll_task = asyncio.create_task(sharefile_poll_loop(settings.sharefile_poll_interval_seconds))
         app.state.sharefile_poll_task = poll_task
         logger.info("ShareFile background polling enabled every %s seconds.", settings.sharefile_poll_interval_seconds)
-    if settings.sharefile_webhook_auto_register_enabled:
+    if settings.sharefile_webhook_auto_register_enabled and not settings.sharefile_work_queue_url:
         webhook_auto_register_task = asyncio.create_task(
             sharefile_webhook_auto_register_loop(settings.sharefile_webhook_discovery_interval_seconds)
         )
@@ -75,6 +79,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def recover_stale_database_pool(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except PyMongoError:
+        logger.exception("MongoDB request failed; discarding the process-local connection pool.")
+        reset_repository()
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database connection is recovering. Please retry."},
+            headers={"Retry-After": "2"},
+        )
 
 
 PUBLIC_PATHS = {

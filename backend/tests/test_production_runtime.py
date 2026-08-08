@@ -41,6 +41,7 @@ class ProductionRuntimeTests(unittest.TestCase):
             cognito_user_pool_id="eu-north-1_example",
             cognito_app_client_id="client-id",
             sharefile_webhook_token="webhook-token",
+            sharefile_work_queue_url="https://sqs.eu-north-1.amazonaws.com/123/work",
             _env_file=None,
         )
 

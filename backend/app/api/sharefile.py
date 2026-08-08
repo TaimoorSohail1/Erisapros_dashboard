@@ -9,6 +9,7 @@ from app.services.sharefile_processes import (
     start_sharefile_sync_process,
     start_sharefile_webhook_registration_process,
 )
+from app.services.sharefile_queue import enqueue_sharefile_work
 
 router = APIRouter(prefix="/sharefile", tags=["sharefile"])
 logger = logging.getLogger(__name__)
@@ -35,7 +36,12 @@ async def sharefile_scan_status():
 
 @router.post("/sync-folder")
 async def sync_sharefile_folder():
-    queued = start_sharefile_sync_process()
+    settings = get_settings()
+    queued = (
+        await enqueue_sharefile_work("deep_sync")
+        if settings.sharefile_work_queue_url
+        else start_sharefile_sync_process()
+    )
     return {
         "connected": True,
         "folder_access": True,
@@ -51,7 +57,12 @@ async def sync_sharefile_folder():
 
 @router.post("/poll")
 async def poll_sharefile_folder():
-    queued = start_sharefile_poll_process()
+    settings = get_settings()
+    queued = (
+        await enqueue_sharefile_work("poll")
+        if settings.sharefile_work_queue_url
+        else start_sharefile_poll_process()
+    )
     return {
         "connected": True,
         "folder_access": True,
@@ -75,7 +86,12 @@ async def poll_sharefile_folder_scheduled(request: Request):
     """
     if not valid_webhook_token(request):
         raise HTTPException(status_code=401, detail="Invalid scheduler token.")
-    queued = start_sharefile_poll_process()
+    settings = get_settings()
+    queued = (
+        await enqueue_sharefile_work("poll")
+        if settings.sharefile_work_queue_url
+        else start_sharefile_poll_process()
+    )
     return {
         "accepted": True,
         "queued": queued,
@@ -95,6 +111,13 @@ async def sharefile_webhook(request: Request, background_tasks: BackgroundTasks)
         payload = await request.json()
     except ValueError:
         payload = {}
+    if get_settings().sharefile_work_queue_url:
+        queued = await enqueue_sharefile_work("webhook", payload)
+        return {
+            "accepted": queued,
+            "queued": 1 if queued else 0,
+            "message": "ShareFile webhook queued for isolated processing.",
+        }
     return await ShareFileService().handle_webhook(payload, background_tasks)
 
 
@@ -110,7 +133,12 @@ async def register_sharefile_webhooks():
 
 @router.post("/webhooks/auto-register")
 async def auto_register_sharefile_webhooks():
-    queued = start_sharefile_webhook_registration_process()
+    settings = get_settings()
+    queued = (
+        await enqueue_sharefile_work("auto_register")
+        if settings.sharefile_work_queue_url
+        else start_sharefile_webhook_registration_process()
+    )
     return {
         "queued": queued,
         "message": (

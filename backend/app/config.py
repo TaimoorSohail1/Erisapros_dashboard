@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Schedule A's). Raising this notices unusually named folders sooner at
     # a steep cost in listing calls per poll.
     sharefile_quick_scan_depth: int = 1
+    # Production sends all ShareFile scans, webhooks, and extraction work to
+    # a dedicated ECS worker through SQS. The API never executes that work.
+    sharefile_work_queue_url: str | None = None
 
     ftwlink_key_id: str | None = None
     ftwlink_endpoint_url: str | None = None
@@ -105,6 +108,8 @@ class Settings(BaseSettings):
             missing.append("COGNITO_APP_CLIENT_ID")
         if not self.sharefile_webhook_token:
             missing.append("SHAREFILE_WEBHOOK_TOKEN")
+        if not self.sharefile_work_queue_url:
+            missing.append("SHAREFILE_WORK_QUEUE_URL")
         if missing:
             raise RuntimeError(
                 "Production configuration is incomplete. Missing: " + ", ".join(missing)

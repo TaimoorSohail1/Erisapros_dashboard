@@ -14,6 +14,7 @@ class ScheduledPollEndpointTests(unittest.TestCase):
 
     def setUp(self):
         os.environ["SHAREFILE_WEBHOOK_TOKEN"] = "test-scheduler-token"
+        os.environ["SHAREFILE_WORK_QUEUE_URL"] = "https://sqs.example.test/queue"
         os.environ["AUTH_ENABLED"] = "true"
         get_settings.cache_clear()
         from app.main import app
@@ -22,6 +23,7 @@ class ScheduledPollEndpointTests(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("SHAREFILE_WEBHOOK_TOKEN", None)
+        os.environ.pop("SHAREFILE_WORK_QUEUE_URL", None)
         os.environ.pop("AUTH_ENABLED", None)
         get_settings.cache_clear()
 
@@ -38,7 +40,7 @@ class ScheduledPollEndpointTests(unittest.TestCase):
 
     def test_accepts_valid_token_and_triggers_poll(self):
         with patch(
-            "app.api.sharefile.start_sharefile_poll_process",
+            "app.api.sharefile.enqueue_sharefile_work",
             return_value=True,
         ) as start_mock:
             response = self.client.post(
@@ -54,11 +56,11 @@ class ScheduledPollEndpointTests(unittest.TestCase):
                 "message": "ShareFile scan accepted for background processing.",
             },
         )
-        start_mock.assert_called_once_with()
+        start_mock.assert_awaited_once_with("poll")
 
     def test_returns_already_running_when_scan_process_is_active(self):
         with patch(
-            "app.api.sharefile.start_sharefile_poll_process",
+            "app.api.sharefile.enqueue_sharefile_work",
             return_value=False,
         ):
             response = self.client.post(
