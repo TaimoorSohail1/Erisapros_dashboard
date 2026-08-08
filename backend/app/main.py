@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import field_rules, filings, ftwilliams, sharefile
 from app.auth import AuthenticationError, verify_cognito_id_token
 from app.config import get_settings
-from app.services.sharefile import ShareFileService
+from app.services.sharefile_processes import (
+    start_sharefile_poll_process,
+    start_sharefile_webhook_registration_process,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -19,18 +22,18 @@ async def sharefile_poll_loop(interval_seconds: int) -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            await ShareFileService().poll_folder()
+            start_sharefile_poll_process()
         except Exception:
-            logger.exception("ShareFile background poll failed.")
+            logger.exception("ShareFile background poll could not be started.")
 
 
 async def sharefile_webhook_auto_register_loop(interval_seconds: int) -> None:
     interval = max(interval_seconds, 300)
     while True:
         try:
-            await ShareFileService().auto_register_relevant_webhooks()
+            start_sharefile_webhook_registration_process()
         except Exception:
-            logger.exception("ShareFile webhook auto-registration failed.")
+            logger.exception("ShareFile webhook auto-registration could not be started.")
         await asyncio.sleep(interval)
 
 

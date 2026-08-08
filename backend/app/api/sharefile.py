@@ -1,14 +1,17 @@
-import asyncio
 import hmac
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from app.config import get_settings
 from app.services.sharefile import ShareFileService
+from app.services.sharefile_processes import (
+    start_sharefile_poll_process,
+    start_sharefile_sync_process,
+    start_sharefile_webhook_registration_process,
+)
 
 router = APIRouter(prefix="/sharefile", tags=["sharefile"])
 logger = logging.getLogger(__name__)
-_scheduled_poll_lock = asyncio.Lock()
 
 
 def valid_webhook_token(request: Request) -> bool:
@@ -31,28 +34,39 @@ async def sharefile_scan_status():
 
 
 @router.post("/sync-folder")
-async def sync_sharefile_folder(background_tasks: BackgroundTasks):
-    return await ShareFileService().sync_folder(background_tasks)
+async def sync_sharefile_folder():
+    queued = start_sharefile_sync_process()
+    return {
+        "connected": True,
+        "folder_access": True,
+        "found": 0,
+        "supported": 0,
+        "packages": 0,
+        "synced": 0,
+        "skipped": 0,
+        "queued": queued,
+        "message": "ShareFile deep sync started." if queued else "A ShareFile scan is already running.",
+    }
 
 
 @router.post("/poll")
-async def poll_sharefile_folder(background_tasks: BackgroundTasks):
-    return await ShareFileService().poll_folder(background_tasks)
-
-
-async def run_scheduled_sharefile_poll() -> None:
-    if _scheduled_poll_lock.locked():
-        logger.info("Skipping scheduled ShareFile poll because the previous scan is still running.")
-        return
-    async with _scheduled_poll_lock:
-        try:
-            await ShareFileService().poll_folder(None)
-        except Exception:
-            logger.exception("Scheduled ShareFile poll failed.")
+async def poll_sharefile_folder():
+    queued = start_sharefile_poll_process()
+    return {
+        "connected": True,
+        "folder_access": True,
+        "found": 0,
+        "supported": 0,
+        "packages": 0,
+        "synced": 0,
+        "skipped": 0,
+        "queued": queued,
+        "message": "ShareFile poll started." if queued else "A ShareFile scan is already running.",
+    }
 
 
 @router.post("/poll-scheduled", status_code=202)
-async def poll_sharefile_folder_scheduled(request: Request, background_tasks: BackgroundTasks):
+async def poll_sharefile_folder_scheduled(request: Request):
     """Machine-to-machine poll trigger for the external scheduler (EventBridge).
 
     Authenticated with the shared ShareFile webhook token instead of a user
@@ -61,11 +75,15 @@ async def poll_sharefile_folder_scheduled(request: Request, background_tasks: Ba
     """
     if not valid_webhook_token(request):
         raise HTTPException(status_code=401, detail="Invalid scheduler token.")
-    background_tasks.add_task(run_scheduled_sharefile_poll)
+    queued = start_sharefile_poll_process()
     return {
         "accepted": True,
-        "queued": True,
-        "message": "ShareFile scan accepted for background processing.",
+        "queued": queued,
+        "message": (
+            "ShareFile scan accepted for background processing."
+            if queued
+            else "ShareFile scan is already running."
+        ),
     }
 
 
@@ -92,7 +110,15 @@ async def register_sharefile_webhooks():
 
 @router.post("/webhooks/auto-register")
 async def auto_register_sharefile_webhooks():
-    return await ShareFileService().auto_register_relevant_webhooks()
+    queued = start_sharefile_webhook_registration_process()
+    return {
+        "queued": queued,
+        "message": (
+            "ShareFile webhook discovery started."
+            if queued
+            else "A ShareFile maintenance task is already running."
+        ),
+    }
 
 
 @router.get("/oauth/start")

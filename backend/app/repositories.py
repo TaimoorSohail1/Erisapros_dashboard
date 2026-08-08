@@ -35,6 +35,7 @@ def from_mongo(data: dict, model):
 class Repository:
     async def create_filing(self, filing: Filing) -> Filing: ...
     async def list_filings(self) -> list[Filing]: ...
+    async def list_dashboard_filings(self) -> list[Filing]: ...
     async def get_filing(self, filing_id: str) -> Filing | None: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
@@ -98,6 +99,51 @@ class MongoRepository(Repository):
 
     async def list_filings(self) -> list[Filing]:
         docs = await self.db.filings.find().sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, Filing) for doc in docs]
+
+    async def list_dashboard_filings(self) -> list[Filing]:
+        # The dashboard does not need extraction payloads, worksheet tables,
+        # broker rows, storage metadata, or approval timestamps. Avoid pulling
+        # those potentially large fields across Atlas for every page refresh.
+        projection = {
+            "file_name": 1,
+            "content_type": 1,
+            "file_size": 1,
+            "document_type": 1,
+            "package_document_count": 1,
+            "status": 1,
+            "s3_key": 1,
+            "package_documents": 1,
+            "intake_source": 1,
+            "extraction_provider": 1,
+            "overall_confidence": 1,
+            "missing_high_priority_count": 1,
+            "missing_medium_priority_count": 1,
+            "missing_low_priority_count": 1,
+            "low_confidence_count": 1,
+            "unmapped_count": 1,
+            "review_field_count": 1,
+            "found_field_count": 1,
+            "excluded_field_count": 1,
+            "schedule_a_contract_type": 1,
+            "schedule_a_contract_type_reason": 1,
+            "schedule_a_contract_type_confirmed": 1,
+            "ftw_schedule_a_contract_type": 1,
+            "ftw_schedule_a_contract_type_reason": 1,
+            "proposed_xml": 1,
+            "error_message": 1,
+            "rejection_reason": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        }
+        docs = await (
+            self.db.filings.find(
+                {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
+                projection,
+            )
+            .sort("created_at", -1)
+            .to_list(100)
+        )
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
@@ -364,6 +410,9 @@ class MemoryRepository(Repository):
 
     async def list_filings(self) -> list[Filing]:
         return sorted(self.filings.values(), key=lambda item: item.created_at, reverse=True)
+
+    async def list_dashboard_filings(self) -> list[Filing]:
+        return await self.list_filings()
 
     async def get_filing(self, filing_id: str) -> Filing | None:
         return self.filings.get(filing_id)
