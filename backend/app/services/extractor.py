@@ -176,11 +176,16 @@ class ExtractionService:
                 fallback_fields.extend(self._extract_field_like_items(payload))
 
         if form_type == FormType.SCHEDULE_A:
-            # GroundX is useful, but for Schedule A we also have stable label-driven PDF text
-            # parsing that recovers fields GroundX may miss or emit inconsistently.
-            pdf_text_fields = extract_fields_from_pdf_text(file_bytes)
-            schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
-            schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
+            # GroundX is useful, but for Schedule A we also have stable label-driven text
+            # parsing that recovers fields GroundX may miss or emit inconsistently. It runs
+            # on whatever format the document arrived in, not only PDFs.
+            if str(file_name or "").lower().endswith(".pdf"):
+                pdf_text_fields = extract_fields_from_pdf_text(file_bytes)
+                schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
+                schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
+            else:
+                pdf_text_fields = extract_fields_from_document_text(file_bytes, file_name)
+                schedule_a_broker_rows = extract_schedule_a_broker_rows_from_document(file_bytes, file_name)
 
         fields = merge_schedule_a_fields([*xray_fields, *search_fields], pdf_text_fields)
         provider = "GroundX X-Ray + retrieval" if xray_fields and search_fields else "GroundX X-Ray"
@@ -1308,9 +1313,213 @@ def local_schedule_a_pdf_result(file_bytes: bytes, file_name: str, provider: str
     )
 
 
-def extract_fields_from_pdf_text(file_bytes: bytes) -> list[NormalizedExtractionField]:
+def extract_document_text_pages(file_bytes: bytes, file_name: str | None = None) -> list[tuple[int, str]]:
+    """Get readable text out of a document, whatever format it arrived in.
+
+    The label-driven parsing below is the strongest part of Schedule A
+    extraction, and it used to run on PDFs only. A Schedule A that arrives as
+    a spreadsheet or a CSV export carries the same labels and values, so it
+    gets the same treatment - the rows are just flattened to text first.
+    """
+    name = str(file_name or "").lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        return _spreadsheet_text_pages(file_bytes)
+    if name.endswith((".csv", ".txt")):
+        return [(1, _delimited_text(file_bytes.decode("utf-8", errors="ignore")))]
+    if name.endswith((".doc", ".docx")):
+        text = extract_docx_text(file_bytes)
+        return [(1, text)] if text else []
+    return extract_pdf_text_pages(file_bytes)
+
+
+def _spreadsheet_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return []
+    try:
+        workbook = load_workbook(BytesIO(file_bytes), data_only=True, read_only=True)
+    except Exception:
+        return []
+
+    pages: list[tuple[int, str]] = []
+    for index, sheet in enumerate(workbook.worksheets, start=1):
+        lines: list[str] = []
+        for row in sheet.iter_rows(values_only=True):
+            cells = [str(cell).strip() for cell in row if cell not in (None, "")]
+            if not cells:
+                continue
+            # A two-column row is a label and its value - write it the way the
+            # label parser expects to see it.
+            lines.append(f"{cells[0]}: {cells[1]}" if len(cells) == 2 else " ".join(cells))
+        if lines:
+            pages.append((index, "\n".join(lines)))
+    return pages
+
+
+def _delimited_text(text: str) -> str:
+    """Turn "Label,Value" rows into "Label: Value" lines."""
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        parts = [part.strip().strip('"') for part in raw_line.split(",")]
+        parts = [part for part in parts if part]
+        if not parts:
+            continue
+        lines.append(f"{parts[0]}: {parts[1]}" if len(parts) == 2 else " ".join(parts))
+    return "\n".join(lines)
+
+
+def extract_fields_from_document_text(file_bytes: bytes, file_name: str | None = None) -> list[NormalizedExtractionField]:
+    pages = extract_document_text_pages(file_bytes, file_name)
+    fields = [
+        *_extract_fields_from_pages(pages),
+        *extract_labelled_schedule_a_fields(pages),
+        *schedule_a_broker_compensation_fields(extract_tabular_broker_rows(pages)),
+    ]
+    return dedupe_fields(fields)
+
+
+# Spreadsheets and exports state the same values as a carrier statement, but as
+# plain "label, value" rows rather than in prose. These are the label wordings
+# seen on the documents clients send.
+_LABELLED_SCHEDULE_A_FIELDS: list[tuple[str, tuple[str, ...]]] = [
+    (
+        "1a. Name of Insurance Company",
+        ("name of insurance carrier", "name of insurance company", "insurance carrier name", "carrier name"),
+    ),
+    ("1b. Insurance Carrier EIN", ("carrier ein", "insurance carrier ein", "ein")),
+    ("1c. NAIC Code", ("naic code", "naic")),
+    (
+        "1d. Contract/Policy Number",
+        ("contract/policy number", "contract or policy number", "policy number", "contract number"),
+    ),
+    (
+        "1e. Persons Covered (End of Policy Year)",
+        (
+            "persons covered end of policy year",
+            "persons covered at end of policy year",
+            "approximate number of persons covered at the end of the policy year",
+            "number of persons covered",
+        ),
+    ),
+    ("1f. Policy Year Beginning Date", ("policy year beginning date", "policy year from", "contract/policy year from")),
+    ("1g. Policy Year Ending Date", ("policy year ending date", "policy year to", "contract/policy year to")),
+    (
+        "3a. Name of Agent/Broker/Person",
+        ("name of agent/broker", "name of agent or broker", "agent/broker name", "broker name", "name of agent"),
+    ),
+    ("3b. Amount of Commissions", ("amount of commissions", "total commissions", "commissions paid", "commissions")),
+    ("3c. Amount of Fees", ("amount of fees", "total fees", "fees paid")),
+    ("3d. Purpose", ("purpose for which paid", "purpose")),
+    (
+        "10a. Total premiums or subscription charges paid to carrier",
+        (
+            "total premiums paid to insurance company during the policy year",
+            "total premiums paid",
+            "total premiums",
+        ),
+    ),
+]
+
+
+def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Read "Label: Value" lines out of a flattened spreadsheet or export."""
     fields: list[NormalizedExtractionField] = []
-    page_texts = extract_pdf_text_pages(file_bytes)
+    seen: set[str] = set()
+    for page, text in page_texts:
+        for line in normalize_ocr_text(text or "").splitlines():
+            label, separator, value = line.partition(":")
+            if not separator:
+                continue
+            key = re.sub(r"[^a-z0-9/ ]+", "", label.strip().lower()).strip()
+            value = clean_extracted_value(value)
+            if not key or not value:
+                continue
+            for field_name, aliases in _LABELLED_SCHEDULE_A_FIELDS:
+                if field_name in seen or key not in aliases:
+                    continue
+                if field_name.startswith("3a.") and not is_probable_person_or_entity_name(value):
+                    continue
+                seen.add(field_name)
+                fields.append(
+                    NormalizedExtractionField(
+                        field_name=field_name,
+                        value=value,
+                        confidence=0.85,
+                        page=page,
+                        source_text="Labelled row",
+                    )
+                )
+                break
+    return fields
+
+
+def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None) -> list[ScheduleABrokerRow]:
+    page_texts = extract_document_text_pages(file_bytes, file_name)
+    full_text = "\n\n".join(text for _, text in page_texts)
+    return dedupe_schedule_a_broker_rows(
+        [
+            *extract_schedule_a_broker_rows(full_text),
+            *extract_compensation_table_broker_rows(page_texts),
+            *extract_tabular_broker_rows(page_texts),
+        ]
+    )
+
+
+# "Brokerage LLC, 500 Market Street, Boston MA 02110 7412.33 615 Standard Commissions"
+_TABULAR_BROKER_ROW = re.compile(
+    r"^(?P<name>[A-Za-z].*?)\s+(?P<commissions>[\d,]+(?:\.\d{1,2})?)\s+(?P<fees>[\d,]+(?:\.\d{1,2})?)\s*(?P<purpose>[A-Za-z][A-Za-z /]*)?$"
+)
+
+
+def extract_tabular_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Read a broker row out of a spreadsheet, where there are no currency signs.
+
+    A workbook row flattens to "name  commissions  fees  purpose" with nothing
+    marking the amounts, so this only runs where the sheet itself says the
+    columns are commissions and fees.
+    """
+    rows: list[ScheduleABrokerRow] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text or "")
+        lowered = normalized.lower()
+        if "commission" not in lowered or "fee" not in lowered:
+            continue
+        for line in normalized.splitlines():
+            stripped = line.strip()
+            match = _TABULAR_BROKER_ROW.match(stripped)
+            if not match:
+                continue
+            name = _AGENT_NUMBER_PREFIX.sub("", match.group("name")).strip(" ,")
+            name = name.split(",")[0].strip()
+            if not is_probable_person_or_entity_name(name):
+                continue
+            commissions = money_value(match.group("commissions"))
+            fees = money_value(match.group("fees"))
+            if not commissions and not fees:
+                continue
+            purpose = clean_extracted_value(match.group("purpose") or "") or None
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    commission_total=commissions or None,
+                    fee_total=fees or None,
+                    commission_rows=(
+                        [ScheduleABrokerMoneyRow(amount=commissions, purpose=purpose)] if commissions else []
+                    ),
+                    fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose=purpose)] if fees else [],
+                    source_page=page,
+                )
+            )
+    return rows
+
+
+def extract_fields_from_pdf_text(file_bytes: bytes) -> list[NormalizedExtractionField]:
+    return _extract_fields_from_pages(extract_pdf_text_pages(file_bytes))
+
+
+def _extract_fields_from_pages(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    fields: list[NormalizedExtractionField] = []
     for index, text in page_texts:
         fields.extend(parse_schedule_a_text(text, index))
         fields.extend(extract_bcbsma_schedule_a_worksheet_fields(text, index))
