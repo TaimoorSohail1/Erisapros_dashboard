@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.auth import has_field_rule_admin_access, require_field_rule_admin
 from app.config import get_settings
 from app.models import FieldRuleActionRequest, FieldRuleDraftRequest, FieldRuleTestRequest
-from app.repositories import get_repository
+from app.repositories import get_repository, retry_repository_read
 from app.services.field_rule_admin import FieldRuleService, FieldRuleValidationError
 from app.services.field_rules import find_rule_for_field
 
@@ -16,9 +16,11 @@ def actor_from_claims(claims: dict) -> str:
 
 @router.get("")
 async def list_field_rules(request: Request):
-    service = FieldRuleService(get_repository())
-    rules = await service.list_rules()
-    snapshot = await service.published_snapshot()
+    async def load(repo):
+        service = FieldRuleService(repo)
+        return await service.list_rules(), await service.published_snapshot()
+
+    rules, snapshot = await retry_repository_read(load)
     return {
         "field_rules": rules,
         "published_version": snapshot.version,

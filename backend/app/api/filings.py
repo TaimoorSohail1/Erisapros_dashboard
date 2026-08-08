@@ -21,7 +21,7 @@ from app.models import (
     RejectRequest,
     ReviewEvent,
 )
-from app.repositories import get_repository
+from app.repositories import get_repository, retry_repository_read
 from app.services.filing_pipeline import (
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
@@ -40,10 +40,9 @@ router = APIRouter(prefix="/filings", tags=["filings"])
 
 @router.get("")
 async def list_filings():
-    repo = get_repository()
     filings = [
         filing
-        for filing in await repo.list_dashboard_filings()
+        for filing in await retry_repository_read(lambda repo: repo.list_dashboard_filings())
         if filing.status not in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}
     ]
     return {"filings": dedupe_active_sharefile_packages(filings)}

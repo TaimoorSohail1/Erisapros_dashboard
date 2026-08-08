@@ -1,10 +1,12 @@
 import unittest
+import asyncio
 from unittest.mock import AsyncMock, patch
 
-from fastapi.testclient import TestClient
 from pymongo.errors import NetworkTimeout
+from pymongo.read_preferences import ReadPreference
 
-from app.repositories import MongoRepository
+from app import repositories
+from app.repositories import MongoRepository, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
@@ -15,25 +17,38 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             "mongodb://example.test/erisapros",
             serverSelectionTimeoutMS=5_000,
             connectTimeoutMS=5_000,
-            socketTimeoutMS=10_000,
+            socketTimeoutMS=15_000,
             waitQueueTimeoutMS=5_000,
-            timeoutMS=12_000,
+            timeoutMS=18_000,
+            read_preference=ReadPreference.SECONDARY_PREFERRED,
         )
 
-    def test_api_resets_stale_pool_and_returns_service_unavailable(self):
-        from app.main import app
-
-        repository = AsyncMock()
-        repository.list_dashboard_filings.side_effect = NetworkTimeout("stale pool")
+    def test_safe_repository_read_replaces_pool_and_retries_once(self):
+        stale = AsyncMock()
+        healthy = AsyncMock()
+        stale.list_dashboard_filings.side_effect = NetworkTimeout("stale pool")
+        healthy.list_dashboard_filings.return_value = []
         with (
-            patch("app.api.filings.get_repository", return_value=repository),
-            patch("app.main.reset_repository") as reset,
+            patch("app.repositories.get_repository", side_effect=[stale, healthy]),
+            patch("app.repositories.reset_repository") as reset,
         ):
-            response = TestClient(app).get("/api/filings")
+            result = asyncio.run(retry_repository_read(lambda repo: repo.list_dashboard_filings()))
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["detail"], "Database connection is recovering. Please retry.")
+        self.assertEqual(result, [])
+        stale.list_dashboard_filings.assert_awaited_once_with()
+        healthy.list_dashboard_filings.assert_awaited_once_with()
         reset.assert_called_once_with()
+
+    def test_reset_does_not_close_pool_used_by_other_inflight_requests(self):
+        with patch("app.repositories.AsyncIOMotorClient") as client:
+            repository = MongoRepository("mongodb://example.test/erisapros")
+        repositories._repository = repository
+        try:
+            repositories.reset_repository()
+            self.assertIsNone(repositories._repository)
+            client.return_value.close.assert_not_called()
+        finally:
+            repositories._repository = None
 
 
 if __name__ == "__main__":
