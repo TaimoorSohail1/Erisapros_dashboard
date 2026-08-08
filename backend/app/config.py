@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     sharefile_poll_interval_seconds: int = 1800
     sharefile_webhook_auto_register_enabled: bool = False
     sharefile_webhook_discovery_interval_seconds: int = 3600
+    # Frequent polls run a quick top-level scan that only looks for folders
+    # that appeared since the last sweep; the exhaustive deep sweep runs at
+    # most this often. See ShareFileService.sync_changes.
+    sharefile_deep_scan_interval_hours: int = 12
+    # How many folder levels below a client the quick scan always lists
+    # (minimum 1, so every client's own subfolders are always seen). Below
+    # that it follows the filing structure only (5500 Filing > year folder >
+    # Schedule A's). Raising this notices unusually named folders sooner at
+    # a steep cost in listing calls per poll.
+    sharefile_quick_scan_depth: int = 1
 
     ftwlink_key_id: str | None = None
     ftwlink_endpoint_url: str | None = None
