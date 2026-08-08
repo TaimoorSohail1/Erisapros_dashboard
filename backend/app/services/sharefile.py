@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.models import AuditLog, DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.repositories import get_repository
 from app.services.extractor import extract_docx_text, extract_pdf_text_pages
+from app.services.intake_formats import is_supported_intake_file, normalize_intake_document
 from app.services.filing_pipeline import process_package_extraction_job
 from app.services.storage import StorageService
 
@@ -2489,13 +2490,21 @@ class ShareFileService:
         total_size = 0
 
         for file_item in sorted(package_files, key=self._document_sort_key):
-            file_bytes = await self._download_item(client, token, file_item["id"])
-            content_type = self._content_type_for(file_item["name"])
-            storage = StorageService().save_file(file_item["name"], content_type, file_bytes)
+            downloaded_bytes = await self._download_item(client, token, file_item["id"])
+            # An email is a wrapper around the real document, and legacy .xls
+            # is a format the extractor cannot read - resolve both here so
+            # everything downstream sees an ordinary readable file.
+            intake = normalize_intake_document(file_item["name"], downloaded_bytes)
+            file_bytes = intake.file_bytes
+            content_type = self._content_type_for(intake.file_name)
+            storage = StorageService().save_file(intake.file_name, content_type, file_bytes)
             document_type = file_item["document_type"]
             total_size += len(file_bytes)
             package_document = {
-                "file_name": file_item["name"],
+                "file_name": intake.file_name,
+                "source_file_name": file_item["name"],
+                "intake_conversion": intake.conversion,
+                "intake_note": intake.note,
                 "content_type": content_type,
                 "file_size": len(file_bytes),
                 "document_type": document_type.value,
@@ -2519,7 +2528,10 @@ class ShareFileService:
             processing_documents.append(
                 {
                     "file_bytes": file_bytes,
-                    "file_name": file_item["name"],
+                    # The extractor keys off the file name, so it must be the
+                    # resolved one (the attachment, or the converted workbook).
+                    "file_name": intake.file_name,
+                    "source_file_name": file_item["name"],
                     "file_size": len(file_bytes),
                     "content_type": content_type,
                     "document_type": document_type,
@@ -3200,11 +3212,16 @@ class ShareFileService:
         context_text = f"{name} {folder_text}"
         is_pdf = name.endswith(".pdf")
         is_word = name.endswith((".doc", ".docx"))
+        # Clients send Schedule A documents as spreadsheets, scans and email
+        # attachments too, not only as PDFs. Anything the extractor can read
+        # (after conversion where needed) is a candidate; the file still has
+        # to look like a Schedule A by name or by the folder it sits in.
+        is_intake_document = is_supported_intake_file(name)
 
         # An explicit Schedule A filename is stronger evidence than a nearby
         # folder or suffix containing the generic word "worksheet".
         looks_like_schedule = "schedulea" in compact_name or "schedule a" in name
-        if is_pdf and looks_like_schedule:
+        if is_intake_document and looks_like_schedule:
             return DocumentType.SCHEDULE_A
 
         looks_like_plan_worksheet = (
@@ -3217,7 +3234,7 @@ class ShareFileService:
 
         excluded_schedule_names = ("cover", "dnu", "signature", "signed", "sar", "acknowledgement", "draft")
         in_schedule_folder = "schedule" in folder_text and "a" in folder_text
-        if is_pdf and in_schedule_folder and not any(term in name for term in excluded_schedule_names):
+        if is_intake_document and in_schedule_folder and not any(term in name for term in excluded_schedule_names):
             return DocumentType.SCHEDULE_A
 
         if is_pdf and ("form5500" in compact_name or "form 5500" in name or "5500" in name):
@@ -3225,6 +3242,9 @@ class ShareFileService:
         return None
 
     def _should_content_sniff(self, file_name: str) -> bool:
+        # Only formats we can cheaply read text from locally. Spreadsheets,
+        # scans and emails are classified by name and folder instead of being
+        # downloaded during the scan.
         name = file_name.lower()
         return name.endswith((".pdf", ".doc", ".docx"))
 
@@ -3322,6 +3342,24 @@ class ShareFileService:
             return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         if name.endswith(".doc"):
             return "application/msword"
+        if name.endswith(".xlsx"):
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if name.endswith(".xls"):
+            return "application/vnd.ms-excel"
+        if name.endswith(".csv"):
+            return "text/csv"
+        if name.endswith(".txt"):
+            return "text/plain"
+        if name.endswith(".png"):
+            return "image/png"
+        if name.endswith((".jpg", ".jpeg")):
+            return "image/jpeg"
+        if name.endswith((".tif", ".tiff")):
+            return "image/tiff"
+        if name.endswith(".msg"):
+            return "application/vnd.ms-outlook"
+        if name.endswith(".eml"):
+            return "message/rfc822"
         return "application/pdf"
 
     def _extract_download_url(self, payload: dict | list | str | None) -> str | None:
