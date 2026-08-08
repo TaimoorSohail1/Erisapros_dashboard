@@ -21,6 +21,21 @@ MAX_SHAREFILE_SCAN_DEPTH = 8
 # booklets, scans, or templates that would make the scan take minutes each.
 MAX_CONTENT_SNIFF_BYTES = 10 * 1024 * 1024
 SHAREFILE_INCREMENTAL_STATE_KEY = "sharefile_incremental_scan"
+# A deep scan walks every folder of every client - on a large ShareFile
+# account that is thousands of folder listings and takes the best part of an
+# hour. Running it every few minutes keeps the account permanently busy and
+# still leaves a brand-new client folder unnoticed for up to a full sweep.
+#
+# The quick scan instead lists only the top folder levels
+# (client > 5500 Filing > year folder). That is a couple of hundred listings,
+# it finishes in seconds, and it answers the only question a frequent poll
+# needs to answer: did a folder appear that we have never scanned? Anything
+# new is then deep-scanned on its own, and the full deep sweep runs on a
+# slower cadence as the safety net.
+MAX_KNOWN_FOLDER_IDS = 20000
+SCAN_MODE_AUTO = "auto"
+SCAN_MODE_QUICK = "quick"
+SCAN_MODE_DEEP = "deep"
 SUPPORTED_SHAREFILE_DOCUMENT_TYPES = {DocumentType.PLAN_WORKSHEET, DocumentType.SCHEDULE_A}
 
 
@@ -100,7 +115,9 @@ class ShareFileService:
         )
 
     async def poll_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
-        return await self.sync_changes(background_tasks, process_new_files=True)
+        # Scheduled polls decide for themselves: a quick top-level check most
+        # of the time, a full deep sweep when one is due.
+        return await self.sync_changes(background_tasks, process_new_files=True, scan_mode=SCAN_MODE_AUTO)
 
     async def list_webhooks(self) -> dict:
         status = await self.status()
@@ -347,6 +364,7 @@ class ShareFileService:
         self,
         background_tasks: BackgroundTasks | None = None,
         process_new_files: bool = True,
+        scan_mode: str = SCAN_MODE_AUTO,
     ) -> dict:
         status = await self.status()
         if not status.configured:
@@ -412,13 +430,31 @@ class ShareFileService:
                     )
                     return []
 
+            state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+            first_scan = not bool(state.get("baseline_completed"))
+            known_folder_ids = set(state.get("known_folder_ids") or [])
+
+            # Cheap pass on every scan: walk the filing structure only. It
+            # tells us what documents are there now and whether any folder
+            # appeared that has never been scanned.
+            quick_files, folder_index = await self._quick_scan(client, token, scan_roots, scan_errors)
+            scanned_files.extend(quick_files)
+            new_folder_ids = [folder_id for folder_id in folder_index if folder_id not in known_folder_ids]
+
+            deep = self._deep_scan_due(scan_mode, state, first_scan, known_folder_ids)
+            if deep:
+                scan_targets = list(scan_roots)
+            else:
+                # Only walk the subtrees that are actually new. Everything
+                # else was scanned before and is kept current by webhooks.
+                scan_targets = self._new_scan_targets(folder_index, new_folder_ids)
+
             # Client folder trees are independent - scan them concurrently.
             # The shared semaphore inside _scan_folder bounds ShareFile load.
-            for root_files in await asyncio.gather(*(scan_one_root(root) for root in scan_roots)):
-                scanned_files.extend(root_files)
+            if scan_targets:
+                for root_files in await asyncio.gather(*(scan_one_root(root) for root in scan_targets)):
+                    scanned_files.extend(root_files)
 
-            state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY)
-            first_scan = not bool(state and state.get("baseline_completed"))
             result = await self._process_changed_sharefile_files(
                 client,
                 token,
@@ -426,28 +462,37 @@ class ShareFileService:
                 background_tasks,
                 first_scan=first_scan,
                 process_new_files=process_new_files,
-                source="SHAREFILE_INCREMENTAL_POLL",
+                source="SHAREFILE_INCREMENTAL_POLL" if deep else "SHAREFILE_QUICK_POLL",
                 scan_errors=scan_errors,
+                # A quick scan only looked at part of the account, so it must
+                # never conclude that the folders it did not visit are gone.
+                partial_scan=not deep,
             )
             scan_finished_at = datetime.utcnow()
             scan_error_list = list(result.get("scan_errors") or [])
-            await repo.upsert_sharefile_state(
-                SHAREFILE_INCREMENTAL_STATE_KEY,
-                {
-                    "last_scan_at": scan_finished_at,
-                    "last_scan_completed_at": scan_finished_at,
-                    "last_scan_duration_seconds": round((scan_finished_at - scan_started_at).total_seconds(), 1),
-                    "last_scan_error_count": len(scan_error_list),
-                    "last_scan_errors": scan_error_list[:5],
-                    "baseline_completed": True,
-                    "baseline_completed_at": (state or {}).get("baseline_completed_at") or datetime.utcnow(),
-                    "last_scan_found": result.get("found", 0),
-                    "last_scan_supported": result.get("supported", 0),
-                    "last_scan_synced": result.get("synced", 0),
-                    "last_scan_deleted": result.get("deleted", 0),
-                    "scan_scope": self._scan_scope_label(),
-                },
-            )
+            state_update = {
+                "last_scan_at": scan_finished_at,
+                "last_scan_completed_at": scan_finished_at,
+                "last_scan_duration_seconds": round((scan_finished_at - scan_started_at).total_seconds(), 1),
+                "last_scan_error_count": len(scan_error_list),
+                "last_scan_errors": scan_error_list[:5],
+                "baseline_completed": True,
+                "baseline_completed_at": state.get("baseline_completed_at") or datetime.utcnow(),
+                "last_scan_found": result.get("found", 0),
+                "last_scan_supported": result.get("supported", 0),
+                "last_scan_synced": result.get("synced", 0),
+                "last_scan_deleted": result.get("deleted", 0),
+                "last_scan_mode": SCAN_MODE_DEEP if deep else SCAN_MODE_QUICK,
+                "last_scan_new_folders": len(new_folder_ids),
+                "known_folder_ids": self._merged_known_folder_ids(known_folder_ids, folder_index),
+                "scan_scope": self._scan_scope_label(),
+            }
+            if deep:
+                state_update["last_deep_scan_at"] = scan_finished_at
+                state_update["last_deep_scan_duration_seconds"] = state_update["last_scan_duration_seconds"]
+            else:
+                state_update["last_quick_scan_at"] = scan_finished_at
+            await repo.upsert_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY, state_update)
 
         result.update(
             {
@@ -455,6 +500,9 @@ class ShareFileService:
                 "folder_access": True,
                 "folder_id": settings.sharefile_intake_folder_id,
                 "folder_ids": [root["id"] for root in scan_roots],
+                "scan_mode": SCAN_MODE_DEEP if deep else SCAN_MODE_QUICK,
+                "new_folders": len(new_folder_ids),
+                "scanned_targets": len(scan_targets),
                 "scan_scope": self._scan_scope_label(),
                 "scan_roots": [
                     {
@@ -468,6 +516,165 @@ class ShareFileService:
             }
         )
         return result
+
+    def _deep_scan_due(
+        self,
+        scan_mode: str,
+        state: dict,
+        first_scan: bool,
+        known_folder_ids: set[str],
+    ) -> bool:
+        """A deep sweep is the safety net, not the every-poll default."""
+        if scan_mode == SCAN_MODE_DEEP:
+            return True
+        if scan_mode == SCAN_MODE_QUICK:
+            return False
+        if first_scan or not known_folder_ids:
+            # Nothing has ever been walked, so there is no "known" set to
+            # compare against - the quick scan would be meaningless.
+            return True
+        last_deep = self._as_datetime(state.get("last_deep_scan_at"))
+        if last_deep is None:
+            return True
+        interval_hours = max(1, get_settings().sharefile_deep_scan_interval_hours)
+        return datetime.utcnow() - last_deep >= timedelta(hours=interval_hours)
+
+    def _as_datetime(self, value) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                return None
+        return None
+
+    async def _quick_scan(
+        self,
+        client: httpx.AsyncClient,
+        token: ShareFileOAuthToken,
+        scan_roots: list[dict],
+        scan_errors: list[dict] | None = None,
+    ) -> tuple[list[dict], dict[str, dict]]:
+        """The cheap half of the two-speed scan.
+
+        It visits the top folder levels of every client plus the filing
+        structure itself (5500 Filing > year folder > Schedule A's) and skips
+        everything else a client folder happens to contain. That is a few
+        hundred listings instead of thousands, so it can run on every poll
+        while still seeing new folders and new documents where they matter.
+
+        Returns the files it saw and an index of every folder it saw.
+        """
+        folder_sink: list[dict] = []
+        files: list[dict] = []
+
+        async def quick_scan_root(root: dict) -> list[dict]:
+            try:
+                return await self._scan_folder(
+                    client,
+                    token,
+                    root["id"],
+                    root["path_parts"],
+                    root_folder_id=root["id"],
+                    scan_errors=scan_errors,
+                    descend=self._quick_scan_descend,
+                    folder_sink=folder_sink,
+                )
+            except Exception as exc:
+                if scan_errors is not None:
+                    scan_errors.append(
+                        {
+                            "folder_id": root["id"],
+                            "path": " > ".join(root["path_parts"]) or root["name"],
+                            "status_code": None,
+                            "response": f"{type(exc).__name__}: {exc}"[:300],
+                        }
+                    )
+                return []
+
+        for root_files in await asyncio.gather(*(quick_scan_root(root) for root in scan_roots)):
+            files.extend(root_files)
+
+        index: dict[str, dict] = {}
+        for root in scan_roots:
+            root_path = list(root.get("path_parts") or [])
+            if not root_path and root.get("name"):
+                root_path = [root["name"]]
+            index[root["id"]] = {
+                "id": root["id"],
+                "name": root.get("name") or root["id"],
+                "source": root.get("source") or "ShareFile scan root",
+                "path_parts": root_path,
+                "parent_id": None,
+            }
+        for folder in folder_sink:
+            index.setdefault(folder["id"], folder)
+        return files, index
+
+    def _quick_scan_descend(self, name: str, path_parts: list[str], depth: int) -> bool:
+        """Should the quick scan walk into this subfolder?
+
+        Yes for the first couple of levels (that is how a brand-new client
+        folder or a new filing year is spotted), and yes for the filing
+        structure at any depth. No for everything else - the payroll,
+        correspondence and archive folders under a client are exactly what
+        makes the deep sweep take an hour.
+        """
+        if depth > MAX_SHAREFILE_SCAN_DEPTH:
+            return False
+        if depth <= max(1, get_settings().sharefile_quick_scan_depth):
+            return True
+        return (
+            self._is_5500_filing_folder_segment(name)
+            or self._is_year_filing_segment(name)
+            or self._is_schedule_a_folder_segment(name)
+        )
+
+    def _new_scan_targets(self, folder_index: dict[str, dict], new_folder_ids: list[str]) -> list[dict]:
+        """Reduce the new folders to the outermost ones.
+
+        If a whole new client folder appeared, its child folders are new too -
+        scanning the client folder already covers them, so only the topmost
+        new folder of each branch is worth walking.
+        """
+        new_ids = set(new_folder_ids)
+        targets: list[dict] = []
+        for folder_id in new_folder_ids:
+            node = folder_index.get(folder_id)
+            if not node:
+                continue
+            parent_id = node.get("parent_id")
+            has_new_ancestor = False
+            seen: set[str] = set()
+            while parent_id and parent_id not in seen:
+                seen.add(parent_id)
+                if parent_id in new_ids:
+                    has_new_ancestor = True
+                    break
+                parent = folder_index.get(parent_id)
+                parent_id = parent.get("parent_id") if parent else None
+            if not has_new_ancestor:
+                targets.append(node)
+        return targets
+
+    def _merged_known_folder_ids(self, known_folder_ids: set[str], folder_index: dict[str, dict]) -> list[str]:
+        """Remember every folder we have seen.
+
+        Union rather than replace: if a listing fails on one poll, the folders
+        under it must not silently become "new" again and trigger a redundant
+        deep scan on the next poll.
+        """
+        merged = set(known_folder_ids) | set(folder_index)
+        if len(merged) > MAX_KNOWN_FOLDER_IDS:
+            # Keep the folders we can still see; drop the oldest remembered
+            # ids that no longer exist in ShareFile.
+            keep = set(folder_index)
+            remaining = MAX_KNOWN_FOLDER_IDS - len(keep)
+            if remaining > 0:
+                keep |= set(sorted(merged - keep)[:remaining])
+            merged = keep
+        return sorted(merged)
 
     async def scan_status(self) -> dict:
         """Visibility into the background scan so nobody has to guess whether
@@ -490,10 +697,18 @@ class ShareFileService:
             "scan_scope": state.get("scan_scope"),
             "sniff_total": state.get("sniff_total"),
             "sniff_done": state.get("sniff_done"),
+            "last_scan_mode": state.get("last_scan_mode"),
+            "last_scan_new_folders": state.get("last_scan_new_folders"),
+            "last_deep_scan_at": state.get("last_deep_scan_at"),
+            "last_deep_scan_duration_seconds": state.get("last_deep_scan_duration_seconds"),
+            "last_quick_scan_at": state.get("last_quick_scan_at"),
+            "known_folder_count": len(state.get("known_folder_ids") or []),
+            "deep_scan_interval_hours": get_settings().sharefile_deep_scan_interval_hours,
         }
 
     async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
-        return await self.sync_changes(background_tasks, process_new_files=True)
+        # The manual "Sync ShareFile" button means "look at everything now".
+        return await self.sync_changes(background_tasks, process_new_files=True, scan_mode=SCAN_MODE_DEEP)
 
     async def complete_oauth(
         self,
@@ -612,6 +827,7 @@ class ShareFileService:
         source: str,
         event: str | None = None,
         scan_errors: list[dict] | None = None,
+        partial_scan: bool = False,
     ) -> dict:
         repo = get_repository()
         scanned_files = self._dedupe_scanned_files(scanned_files)
@@ -743,7 +959,10 @@ class ShareFileService:
         duplicate_cleanup_count += await self._cleanup_redundant_waiting_for_schedule_rows(source)
 
         deleted = 0
-        if scan_errors is not None and not scan_errors:
+        # Deletion reconciliation compares what we just saw against everything
+        # on record, so it is only safe after a scan that saw the whole
+        # account with no errors.
+        if not partial_scan and scan_errors is not None and not scan_errors:
             deleted = await self._mark_deleted_sharefile_files(active_sharefile_item_ids)
 
         await repo.add_audit(
@@ -2533,7 +2752,16 @@ class ShareFileService:
         root_folder_id: str | None = None,
         scan_errors: list[dict] | None = None,
         folder_ids_by_depth: dict[int, str] | None = None,
+        descend=None,
+        folder_sink: list[dict] | None = None,
     ) -> list[dict]:
+        """Walk a folder tree and return the files in it.
+
+        ``descend`` lets a caller walk only part of the tree: it is asked, for
+        each subfolder, whether to go into it. The quick scan uses this to
+        visit the filing structure only, instead of every folder a client has.
+        ``folder_sink`` collects every folder seen along the way.
+        """
         if not folder_id or depth > MAX_SHAREFILE_SCAN_DEPTH:
             return []
         root_folder_id = root_folder_id or folder_id
@@ -2573,6 +2801,18 @@ class ShareFileService:
                 continue
             item_path = path_parts + [name]
             if self._is_folder(item):
+                if folder_sink is not None:
+                    folder_sink.append(
+                        {
+                            "id": item_id,
+                            "name": name,
+                            "source": "ShareFile quick scan",
+                            "path_parts": item_path,
+                            "parent_id": folder_id,
+                        }
+                    )
+                if descend is not None and not descend(name, item_path, depth + 1):
+                    continue
                 # Walk sibling subfolders concurrently - a sequential walk of
                 # hundreds of folders took many minutes per scan.
                 subfolder_scans.append(
@@ -2585,6 +2825,8 @@ class ShareFileService:
                         root_folder_id,
                         scan_errors,
                         folder_ids_by_depth,
+                        descend,
+                        folder_sink,
                     )
                 )
                 continue
