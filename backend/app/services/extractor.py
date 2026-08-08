@@ -1289,8 +1289,12 @@ def parse_plan_worksheet_text(text: str) -> list[NormalizedExtractionField]:
 
 def file_type_for_groundx(file_name: str) -> str:
     extension = os.path.splitext(file_name.lower())[1].lstrip(".")
-    if extension in {"pdf", "docx", "doc", "xlsx", "xls", "csv", "txt"}:
+    if extension == "jpeg":
+        extension = "jpg"
+    if extension in {"pdf", "docx", "doc", "xlsx", "xls", "csv", "txt", "png", "jpg", "tiff"}:
         return extension
+    if extension == "tif":
+        return "tiff"
     return "pdf"
 
 
