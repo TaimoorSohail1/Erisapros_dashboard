@@ -1323,7 +1323,128 @@ def extract_fields_from_pdf_text(file_bytes: bytes) -> list[NormalizedExtraction
     if full_text:
         fields.extend(parse_schedule_a_text(full_text, None))
         fields.extend(extract_bcbsma_commission_breakdown_fields(full_text, None))
-    return dedupe_fields(fields)
+    # The broker compensation table is where items 3a-3d actually live on a
+    # carrier statement. Reading the table and reading the labelled fields are
+    # separate passes, so feed the table's values back in as fields - without
+    # this the amounts were parsed and then thrown away.
+    fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
+    fields.extend(extract_commission_fee_total_fields(page_texts))
+    return dedupe_fields([field for field in fields if not _is_column_heading_broker_name(field)])
+
+
+_BROKER_HEADING_TOKENS = (
+    "total",
+    "premium",
+    "covered",
+    "plan #",
+    "policy or contract",
+    "amount of",
+    "name & address",
+    "name and address",
+    "fees paid",
+    "commissions paid",
+    "for which paid",
+)
+
+
+def _is_column_heading_broker_name(field: NormalizedExtractionField) -> bool:
+    """Drop a broker name that is really a run-together column heading.
+
+    Table headers wrap across lines in the PDF text layer, so a careless parse
+    produces values like "Base Plan # Covered Total Premiums". An empty field
+    sends a reviewer to the document; a plausible-looking wrong name can be
+    approved by mistake and sent to FT Williams.
+    """
+    if not field.field_name.startswith("3a."):
+        return False
+    lowered = str(field.value or "").lower()
+    if not lowered:
+        return False
+    return sum(1 for token in _BROKER_HEADING_TOKENS if token in lowered) >= 2
+
+
+def schedule_a_broker_compensation_fields(rows: list[ScheduleABrokerRow]) -> list[NormalizedExtractionField]:
+    """Turn broker table rows into Schedule A items 3a-3d."""
+    if not rows:
+        return []
+    primary = rows[0]
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, confidence: float) -> None:
+        cleaned = clean_extracted_value(str(value)) if value not in (None, "") else ""
+        if cleaned:
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=cleaned,
+                    confidence=confidence,
+                    page=primary.source_page,
+                    source_text="Broker compensation table",
+                )
+            )
+
+    add("3a. Name of Agent/Broker/Person", primary.name, 0.86)
+    # More than one recipient means the filing total is the sum, and a human
+    # needs to split it across rows - flag it by lowering confidence.
+    confidence = 0.86 if len(rows) == 1 else 0.6
+    add("3b. Amount of Commissions", sum_money_values(*(row.commission_total for row in rows)), confidence)
+    add("3c. Amount of Fees", sum_money_values(*(row.fee_total for row in rows)), confidence)
+    purpose = next(
+        (money_row.purpose for row in rows for money_row in row.commission_rows if money_row.purpose),
+        None,
+    )
+    add("3d. Purpose", purpose, 0.8)
+    add("3e. Organizational Code", primary.organization_code, 0.8)
+    return fields
+
+
+# "Total (from below) 6590.57 5555.33" - a commissions/fees totals line.
+_COMMISSION_FEE_TOTALS = re.compile(
+    r"total[^\n\d]{0,24}?\$?\s*(?P<commissions>\d[\d,]*(?:\.\d{2})?)\s+\$?\s*(?P<fees>\d[\d,]*(?:\.\d{2})?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def extract_commission_fee_total_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Read a commissions/fees totals line where no named broker row exists.
+
+    Some carriers (for example Equitable) print a section header of
+    "Commissions Paid / Fees Paid" followed by a totals line, with the named
+    recipients listed separately underneath.
+    """
+    fields: list[NormalizedExtractionField] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        if not normalized:
+            continue
+        lines = [line.strip() for line in normalized.splitlines()]
+        for index, line in enumerate(lines):
+            match = _COMMISSION_FEE_TOTALS.search(line)
+            if not match:
+                continue
+            context = " ".join(lines[max(0, index - 3) : index + 1]).lower()
+            if "commission" not in context or "fee" not in context:
+                continue
+            commissions = money_value(match.group("commissions"))
+            fees = money_value(match.group("fees"))
+            if not commissions and not fees:
+                continue
+            for field_name, value in (
+                ("3b. Amount of Commissions", commissions),
+                ("3c. Amount of Fees", fees),
+            ):
+                if value:
+                    fields.append(
+                        NormalizedExtractionField(
+                            field_name=field_name,
+                            value=value,
+                            confidence=0.8,
+                            page=page,
+                            source_text="Commissions and fees total",
+                        )
+                    )
+            return fields
+    return fields
 
 
 def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[ScheduleABrokerRow]:
@@ -1339,8 +1460,106 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_standard_broker_rows(page_texts),
             *extract_united_omaha_broker_rows(page_texts),
             *extract_summary_table_broker_rows(page_texts),
+            *extract_compensation_table_broker_rows(page_texts),
         ]
     )
+
+
+def extract_compensation_table_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Read the broker compensation table carriers print on their statements.
+
+    Most carrier statements end with the same table, however they word the
+    heading: an optional agent number, the recipient's name and address, then
+    the commissions paid, the fees paid, and the purpose. The amounts and the
+    purpose sit on one line underneath the address block:
+
+        CGI-026821Nth Insurance Agency dba: Alliance 360 I
+        10833 VALLEY VIEW STREET
+        SUITE 550
+        CYPRESS CA 90630
+        $5,810.59 $ 0.00 Standard Commissions
+
+    Those amounts are Schedule A items 3b and 3c, and they were being missed on
+    most statements even though the broker's name was picked up.
+    """
+    rows: list[ScheduleABrokerRow] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        # Only inside a compensation table - "commission" alone appears in the
+        # covering letter of nearly every carrier statement.
+        if not (
+            re.search(r"commissions?\s+paid|amount\s+of\s+commissions?", lowered)
+            and re.search(r"fees?\s+paid|amount\s+of\s+fees?", lowered)
+        ):
+            continue
+
+        lines = [line.strip() for line in normalized.splitlines()]
+        for index, line in enumerate(lines):
+            match = _COMPENSATION_ROW.match(line)
+            if not match:
+                continue
+            commissions = money_value(match.group("commissions"))
+            fees = money_value(match.group("fees"))
+            purpose = clean_extracted_value(match.group("purpose") or "") or None
+            if not commissions and not fees:
+                continue
+            name, address = _compensation_recipient(lines, index)
+            if not name:
+                continue
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    address_line_1=address[0] if address else None,
+                    address_line_2=address[1] if len(address) > 1 else None,
+                    commission_total=commissions or None,
+                    fee_total=fees or None,
+                    commission_rows=(
+                        [ScheduleABrokerMoneyRow(amount=commissions, purpose=purpose)] if commissions else []
+                    ),
+                    fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose=purpose)] if fees else [],
+                    source_page=page,
+                )
+            )
+    return rows
+
+
+# "$5,810.59 $ 0.00 Standard Commissions" - amounts then an optional purpose.
+_COMPENSATION_ROW = re.compile(
+    r"^\$\s*(?P<commissions>[\d,]+(?:\.\d{2})?)\s+\$\s*(?P<fees>[\d,]+(?:\.\d{2})?)\s*(?P<purpose>[A-Za-z][^$]*)?$"
+)
+# Agent/producer numbers are printed hard against the name: "CGI-026821Nth ..."
+_AGENT_NUMBER_PREFIX = re.compile(r"^[A-Z]{2,5}[-/]?\d{4,}\s*")
+_TABLE_HEADING_WORDS = re.compile(
+    r"amount|commission|fees?|purpose|agent\s*$|number\s*$|recipient|name and address|which paid|paid by",
+    re.IGNORECASE,
+)
+
+
+def _compensation_recipient(lines: list[str], amount_index: int) -> tuple[str, list[str]]:
+    """Walk back up from the amounts line to the recipient's name and address."""
+    block: list[str] = []
+    for line in reversed(lines[max(0, amount_index - 6) : amount_index]):
+        if not line:
+            if block:
+                break
+            continue
+        if _COMPENSATION_ROW.match(line) or line.strip() in {"$", "$ "}:
+            break
+        if _TABLE_HEADING_WORDS.search(line):
+            # Reached the column headings - everything collected below them is
+            # the recipient block.
+            break
+        block.append(line)
+    if not block:
+        return "", []
+    block.reverse()
+    name = _AGENT_NUMBER_PREFIX.sub("", block[0]).strip()
+    if not name or not is_probable_person_or_entity_name(name):
+        return "", []
+    return name, block[1:]
 
 
 def extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes: bytes) -> list[ScheduleAWorksheetSummary]:
