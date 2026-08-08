@@ -43,7 +43,7 @@ async def list_filings():
     repo = get_repository()
     filings = [
         filing
-        for filing in await repo.list_filings()
+        for filing in await repo.list_dashboard_filings()
         if filing.status not in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}
     ]
     return {"filings": dedupe_active_sharefile_packages(filings)}
