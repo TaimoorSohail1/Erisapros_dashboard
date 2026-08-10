@@ -8,11 +8,13 @@ never appeared on the dashboard and nobody was told why.
 import email.message
 import unittest
 from io import BytesIO
+from unittest.mock import patch
 
 from app.services.intake_formats import (
     SUPPORTED_INTAKE_EXTENSIONS,
     is_supported_intake_file,
     normalize_intake_document,
+    normalize_intake_documents,
 )
 
 
@@ -82,6 +84,52 @@ class PassThroughTests(unittest.TestCase):
 
 
 class EmailUnwrappingTests(unittest.TestCase):
+    def test_outlook_html_body_is_used_when_the_only_attachment_is_a_logo(self):
+        storage = "__attach_version1.0_#00000000"
+        streams = {
+            "__substg1.0_10130102": b"<html><body><p>Legal Name: Health Advocate Solutions, Inc.</p><p>EIN: 23-3080019</p></body></html>",
+            f"{storage}/__substg1.0_37010102": b"logo bytes",
+            f"{storage}/__substg1.0_3707001F": "image001.png".encode("utf-16-le"),
+        }
+
+        class FakeOle:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return None
+            def listdir(self, **_kwargs):
+                return [[storage], *[key.split("/") for key in streams if "/" in key]]
+            def exists(self, path): return str(path).replace("\\", "/") in streams
+            def openstream(self, path):
+                key = "/".join(path) if isinstance(path, list) else str(path)
+                return BytesIO(streams[key])
+
+        with patch("olefile.OleFileIO", return_value=FakeOle()):
+            results = normalize_intake_documents("Health Advocate.msg", b"fake msg")
+
+        self.assertEqual([item.file_name for item in results], ["Health Advocate email body.txt"])
+        self.assertIn("Health Advocate Solutions, Inc.", results[0].file_bytes.decode("utf-8"))
+
+    def test_email_body_is_kept_and_signature_logo_is_ignored(self):
+        raw = _eml(
+            [("image001.png", b"not-the-schedule-a" * 2000, "image", "png")],
+            body="""Good afternoon,
+Legal Name: Health Advocate Solutions, Inc.
+Address: 3043 Walton Road, Plymouth Meeting, PA 19642
+EIN: 23-3080019
+PEPM Fees Paid (January 2025 through December 2025): $5,134.75
+Approximate employee lives covered at end of calendar year: 490
+There was no indirect compensation for the stated period.
+""",
+        )
+
+        results = normalize_intake_documents("Health Advocate.eml", raw)
+
+        self.assertEqual([item.file_name for item in results], ["Health Advocate email body.txt"])
+        body = results[0].file_bytes.decode("utf-8")
+        self.assertIn("Health Advocate Solutions, Inc.", body)
+        self.assertIn("23-3080019", body)
+        self.assertIn("$5,134.75", body)
+        self.assertNotIn("image001.png", [item.file_name for item in results])
+
     def test_the_attachment_is_filed_not_the_email(self):
         raw = _eml([("AlphaSights Schedule A.pdf", b"%PDF-1.4 schedule a", "application", "pdf")])
         result = normalize_intake_document("4. RE_ [EXT]AlphaSights Schedule A.eml", raw)
@@ -124,6 +172,14 @@ class EmailUnwrappingTests(unittest.TestCase):
         result = normalize_intake_document("carrier.eml", raw)
         self.assertEqual(result.file_name, "carrier.eml")
         self.assertIsNotNone(result.note)
+
+    def test_a_signature_logo_is_never_treated_as_a_schedule_a(self):
+        raw = _eml([("image001.png", b"company-logo" * 2000, "image", "png")])
+
+        result = normalize_intake_document("carrier.eml", raw)
+
+        self.assertEqual(result.file_name, "carrier.eml")
+        self.assertIn("manual", (result.note or "").lower())
 
     def test_a_corrupt_email_does_not_raise(self):
         result = normalize_intake_document("broken.msg", b"this is not an outlook file at all")
