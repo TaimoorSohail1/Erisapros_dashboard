@@ -28,6 +28,7 @@ import {
   testFieldRule,
 } from "../api";
 import type { FieldRule } from "../types";
+import { InlineLoader, Skeleton } from "../ui/Loading";
 
 const PRIORITIES = ["ALL", "HIGH", "MEDIUM", "LOW"] as const;
 const STATUS_TABS = ["ALL", "PUBLISHED", "DRAFT", "DISABLED"] as const;
@@ -136,7 +137,7 @@ export function FieldRulesPage() {
           </div>
           <p className="rules-intro">Control how EyeLevel values are normalized, reviewed, and safely proposed to FT Williams.</p>
           <div className="rules-version-line">
-            <span className="status-dot-live" /> Published rule set <code>{publishedVersion || "loading"}</code>
+            <span className="status-dot-live" /> Published rule set {loading ? <Skeleton className="skeleton-version" /> : <code>{publishedVersion}</code>}
             <span>Changes use a draft, test, and publish workflow.</span>
           </div>
         </div>
@@ -150,10 +151,10 @@ export function FieldRulesPage() {
       </div>
 
       <div className="rules-kpi-grid rules-admin-kpis">
-        <MetricCard icon={<Database size={20} />} label="Active rules" value={activeRules.length} detail="Published mapping inventory" tone="green" />
-        <MetricCard icon={<ShieldCheck size={20} />} label="High priority" value={highCount} detail="Require capture or review" tone="red" />
-        <MetricCard icon={<Edit3 size={20} />} label="Draft changes" value={draftCount} detail={draftCount ? "Awaiting test and publish" : "No unpublished changes"} tone="blue" />
-        <MetricCard icon={<Layers3 size={20} />} label="Update-capable" value={updateCount} detail="May propose FTW changes" tone="amber" />
+        <MetricCard loading={loading} icon={<Database size={20} />} label="Active rules" value={activeRules.length} detail="Published mapping inventory" tone="green" />
+        <MetricCard loading={loading} icon={<ShieldCheck size={20} />} label="High priority" value={highCount} detail="Require capture or review" tone="red" />
+        <MetricCard loading={loading} icon={<Edit3 size={20} />} label="Draft changes" value={draftCount} detail={draftCount ? "Awaiting test and publish" : "No unpublished changes"} tone="blue" />
+        <MetricCard loading={loading} icon={<Layers3 size={20} />} label="Update-capable" value={updateCount} detail="May propose FTW changes" tone="amber" />
       </div>
 
       {notice ? <div className="rules-notice" role="status"><CheckCircle2 size={18} /> {notice}</div> : null}
@@ -178,8 +179,8 @@ export function FieldRulesPage() {
         </div>
       </div>
 
-      <div className="rules-table-summary"><strong>{filteredRules.length}</strong> rules shown <span>•</span> Select a row to inspect mapping details and history.</div>
-      <div className="card table-wrap rules-table-card rules-admin-table-card">
+      <div className="rules-table-summary">{loading ? <InlineLoader label="Loading field rules" /> : <><strong>{filteredRules.length}</strong> rules shown <span>•</span> Select a row to inspect mapping details and history.</>}</div>
+      <div className="card table-wrap rules-table-card rules-admin-table-card" aria-busy={loading}>
         <table className="rules-table rules-admin-table">
           <thead><tr><th>Official FT Williams field</th><th>Applicability</th><th>Priority</th><th>Behavior</th><th>Aliases</th><th>Status</th><th>Updated</th><th /></tr></thead>
           <tbody>
@@ -201,7 +202,7 @@ export function FieldRulesPage() {
               </Fragment>
             ))}
             {!loading && !filteredRules.length ? <tr><td colSpan={8} className="empty-state">No field rules match the current filters.</td></tr> : null}
-            {loading ? <tr><td colSpan={8} className="empty-state">Loading the published mapping inventory…</td></tr> : null}
+            {loading ? Array.from({ length: 6 }, (_, index) => <FieldRuleSkeletonRow key={index} />) : null}
           </tbody>
         </table>
       </div>
@@ -227,8 +228,23 @@ export function FieldRulesPage() {
   );
 }
 
-function MetricCard({ icon, label, value, detail, tone }: { icon: ReactNode; label: string; value: number; detail: string; tone: string }) {
-  return <div className={`metric-card metric-${tone}`}><div className="metric-icon">{icon}</div><div><div className="kpi-label">{label}</div><div className="kpi-value">{value}</div><div className="metric-detail">{detail}</div></div></div>;
+function MetricCard({ icon, label, value, detail, tone, loading = false }: { icon: ReactNode; label: string; value: number; detail: string; tone: string; loading?: boolean }) {
+  return <div className={`metric-card metric-${tone}`}><div className="metric-icon">{icon}</div><div><div className="kpi-label">{label}</div>{loading ? <Skeleton className="skeleton-kpi-value" /> : <div className="kpi-value">{value}</div>}{loading ? <Skeleton className="skeleton-kpi-note" /> : <div className="metric-detail">{detail}</div>}</div></div>;
+}
+
+function FieldRuleSkeletonRow() {
+  return (
+    <tr className="field-rule-skeleton-row">
+      <td><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></td>
+      <td><Skeleton className="skeleton-pill" /></td>
+      <td><Skeleton className="skeleton-pill skeleton-pill-small" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-pill skeleton-pill-small" /></td>
+      <td><Skeleton className="skeleton-pill" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-icon-small" /></td>
+    </tr>
+  );
 }
 
 function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
@@ -266,7 +282,7 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
       <section className="drawer-section"><h3>Mapping identity</h3><Definition label="Stable key" value={rule.key} /><Definition label="FT Williams field" value={rule.ftw_field} /><Definition label="Form section" value={rule.form_section || rule.source} /><Definition label="Field type" value={rule.field_type} /></section>
       <section className="drawer-section"><h3>Aliases used by the agent <span>{rule.aliases.length}</span></h3><div className="alias-chips">{rule.aliases.length ? rule.aliases.map((alias) => <span key={alias}>{alias}</span>) : <em>No aliases configured.</em>}</div></section>
       <section className="drawer-section"><h3>Rule guidance</h3><p>{rule.client_notes || rule.notes || "No guidance has been added."}</p></section>
-      {canManage ? <section className="drawer-section publish-panel"><h3>Controlled change</h3><p>Every publish, disable, or rollback requires a reason and is preserved in history.</p><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is this change required?" />{error ? <div className="form-error">{error}</div> : null}<div className="publish-actions">{rule.status === "DRAFT" ? <button className="button" disabled={busy} onClick={() => void perform("publish")}><Sparkles size={16} /> Publish draft</button> : null}{rule.status === "PUBLISHED" ? <button className="button button-danger-soft" disabled={busy} onClick={() => void perform("disable")}><Archive size={16} /> Disable rule</button> : null}</div></section> : null}
+      {canManage ? <section className="drawer-section publish-panel"><h3>Controlled change</h3><p>Every publish, disable, or rollback requires a reason and is preserved in history.</p><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is this change required?" />{error ? <div className="form-error">{error}</div> : null}<div className="publish-actions">{rule.status === "DRAFT" ? <button className="button" disabled={busy} onClick={() => void perform("publish")}>{busy ? <InlineLoader label="Publishing" /> : <><Sparkles size={16} /> Publish draft</>}</button> : null}{rule.status === "PUBLISHED" ? <button className="button button-danger-soft" disabled={busy} onClick={() => void perform("disable")}>{busy ? <InlineLoader label="Disabling" /> : <><Archive size={16} /> Disable rule</>}</button> : null}</div></section> : null}
       {canManage ? <section className="drawer-section"><h3><History size={17} /> Version history</h3><div className="rule-history-list">{history.map((item) => <div key={item.id || `${item.version}:${item.status}:${item.created_at}`}><div><strong>v{item.version} · {titleCase(item.status)}</strong><span>{item.updated_by || "System"} · {formatDate(item.updated_at)}</span><p>{item.change_reason || "No reason recorded."}</p></div>{item.status === "PUBLISHED" && item.version !== rule.version ? <button type="button" disabled={busy || !reason.trim()} onClick={() => void perform("rollback", item.version)}>Restore</button> : null}</div>)}</div></section> : null}
     </aside>
   </div>;
@@ -334,7 +350,7 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
         </EditorSection>
         <EditorSection number="2" title="EyeLevel aliases" description="Add the names EyeLevel may return, one per line, then test a real example.">
           <Field label="Aliases"><textarea className="aliases-editor" value={aliases} onChange={(event) => { setAliases(event.target.value); setTestResult(null); }} placeholder="Insurance Carrier EIN&#10;Carrier federal EIN" /></Field>
-          <div className="rule-test-box"><div><FlaskConical size={18} /><div><strong>Test the match</strong><span>Paste one field name exactly as EyeLevel returned it.</span></div></div><div className="rule-test-controls"><input value={sample} onChange={(event) => { setSample(event.target.value); setTestResult(null); }} placeholder="Sample EyeLevel field name" /><button type="button" disabled={busy || !sample.trim()} onClick={() => void testCurrentRule()}>Run test</button></div>{testResult ? <div className={`test-result ${testResult.valid && testResult.matched ? "pass" : "fail"}`}>{testResult.valid && testResult.matched ? <CheckCircle2 size={17} /> : <X size={17} />} {testResult.message}</div> : null}</div>
+          <div className="rule-test-box"><div><FlaskConical size={18} /><div><strong>Test the match</strong><span>Paste one field name exactly as EyeLevel returned it.</span></div></div><div className="rule-test-controls"><input value={sample} onChange={(event) => { setSample(event.target.value); setTestResult(null); }} placeholder="Sample EyeLevel field name" /><button type="button" disabled={busy || !sample.trim()} onClick={() => void testCurrentRule()}>{busy ? <InlineLoader label="Testing" /> : "Run test"}</button></div>{testResult ? <div className={`test-result ${testResult.valid && testResult.matched ? "pass" : "fail"}`}>{testResult.valid && testResult.matched ? <CheckCircle2 size={17} /> : <X size={17} />} {testResult.message}</div> : null}</div>
         </EditorSection>
         <EditorSection number="3" title="Review notes" description="Briefly explain when this rule should be used and why it is changing.">
           <Field label="Instructions for reviewers" hint="Optional"><textarea value={rule.client_notes || rule.notes || ""} onChange={(event) => update("client_notes", event.target.value)} placeholder="Explain when reviewers and the agent should use this field." /></Field><Field label="Change reason"><textarea value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
@@ -353,7 +369,7 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
         </details>
         {error ? <div className="form-error editor-error">{error}</div> : null}
       </div>
-      <footer><button type="button" className="button-secondary" onClick={onClose}>Cancel</button><button type="button" className="button" disabled={busy} onClick={() => void save()}><Save size={17} /> {busy ? "Saving…" : "Save draft"}</button></footer>
+      <footer><button type="button" className="button-secondary" onClick={onClose}>Cancel</button><button type="button" className="button" disabled={busy} onClick={() => void save()}>{busy ? <InlineLoader label="Saving draft" /> : <><Save size={17} /> Save draft</>}</button></footer>
     </aside>
   </div>;
 }

@@ -41,6 +41,7 @@ import {
   updateField,
 } from "../api";
 import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import { InlineLoader, Skeleton } from "../ui/Loading";
 import { formatDate, formatFilingDisplayName, percent } from "../utils";
 
 type ReviewTab = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE" | "ALL";
@@ -124,6 +125,9 @@ export function FilingReviewPage() {
   const [pollVersion, setPollVersion] = useState(0);
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
+  const [xmlBusy, setXmlBusy] = useState(false);
+  const [retryBusy, setRetryBusy] = useState(false);
+  const [decisionAction, setDecisionAction] = useState<"approve" | "reject" | "unapprove" | null>(null);
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
   const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
@@ -255,7 +259,8 @@ export function FilingReviewPage() {
   const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
-  const reviewInteractionBusy = ftwInteractionBusy || Boolean(fieldSavingId);
+  const decisionBusy = Boolean(decisionAction);
+  const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
   const ftwSendStatusReady = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
   const ftwReadyToSend = Boolean(
     ftwSendStatusReady &&
@@ -331,7 +336,7 @@ export function FilingReviewPage() {
 
   async function approveAnyway() {
     setShowApproveConfirm(false);
-    setFtwBusy(true);
+    setDecisionAction("approve");
     setToast(null);
     try {
       await decide("approve", { overrideBlockers: approvalBlocked });
@@ -347,7 +352,7 @@ export function FilingReviewPage() {
         message: error instanceof Error ? error.message : "The filing could not be approved.",
       });
     } finally {
-      setFtwBusy(false);
+      setDecisionAction(null);
     }
   }
 
@@ -384,6 +389,7 @@ export function FilingReviewPage() {
   async function confirmUnapprove() {
     if (!id) return;
     setShowUnapproveConfirm(false);
+    setDecisionAction("unapprove");
     try {
       await unapproveFiling(id);
       const updated = await getFiling(id);
@@ -400,6 +406,29 @@ export function FilingReviewPage() {
         title: "Could not remove approval",
         message: error instanceof Error ? error.message : "The filing approval could not be removed.",
       });
+    } finally {
+      setDecisionAction(null);
+    }
+  }
+
+  async function rejectDecision() {
+    setDecisionAction("reject");
+    setToast(null);
+    try {
+      await decide("reject");
+      setToast({
+        tone: "success",
+        title: "Filing rejected",
+        message: `${displayFileName} was returned for correction.`,
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Could not reject filing",
+        message: error instanceof Error ? error.message : "The filing could not be rejected.",
+      });
+    } finally {
+      setDecisionAction(null);
     }
   }
 
@@ -607,15 +636,29 @@ export function FilingReviewPage() {
 
   async function rebuildXml() {
     if (!id || !filing) return;
-    const result = await regenerateXml(id);
-    setFiling({ ...filing, proposed_xml: result.proposed_xml });
+    setXmlBusy(true);
+    try {
+      const result = await regenerateXml(id);
+      setFiling({ ...filing, proposed_xml: result.proposed_xml });
+    } catch (error) {
+      setToast({ tone: "error", title: "XML preview failed", message: error instanceof Error ? error.message : "The XML preview could not be generated." });
+    } finally {
+      setXmlBusy(false);
+    }
   }
 
   async function retryFailedExtraction() {
     if (!id) return;
-    await retryExtraction(id);
-    setFiling(await getFiling(id));
-    setPollVersion((value) => value + 1);
+    setRetryBusy(true);
+    try {
+      await retryExtraction(id);
+      setFiling(await getFiling(id));
+      setPollVersion((value) => value + 1);
+    } catch (error) {
+      setToast({ tone: "error", title: "Extraction retry failed", message: error instanceof Error ? error.message : "Extraction could not be restarted." });
+    } finally {
+      setRetryBusy(false);
+    }
   }
 
   async function reEvaluateWithLatestRules() {
@@ -655,7 +698,7 @@ export function FilingReviewPage() {
   }
 
   if (message && !filing) return <div className="card card-pad">{message}</div>;
-  if (!filing) return <div className="card card-pad">Loading filing...</div>;
+  if (!filing) return <FilingReviewSkeleton />;
 
   return (
     <div className="review-page approval-workspace-page">
@@ -796,31 +839,30 @@ export function FilingReviewPage() {
               </div>
               <div className="approval-table-actions">
                 <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={() => prepareFtw(true)}>
-                  {ftwInteractionBusy ? <RefreshCw size={16} /> : <Search size={16} />}
-                  {ftwInteractionBusy ? "Fetching FTW..." : "Query FTW Current"}
+                  {ftwInteractionBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
                 </button>
-                <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={rebuildXml}>
-                  <RefreshCw size={16} /> Preview XML
+                <button className="button secondary" type="button" disabled={reviewInteractionBusy} onClick={rebuildXml}>
+                  {xmlBusy ? <InlineLoader label="Building XML" /> : <><RefreshCw size={16} /> Preview XML</>}
                 </button>
-                <button className="button secondary" type="button" disabled={ftwInteractionBusy || rulesBusy} onClick={reEvaluateWithLatestRules}>
-                  <Sparkles size={16} /> {rulesBusy ? "Re-evaluating…" : "Re-evaluate Rules"}
+                <button className="button secondary" type="button" disabled={reviewInteractionBusy || rulesBusy} onClick={reEvaluateWithLatestRules}>
+                  {rulesBusy ? <InlineLoader label="Re-evaluating" /> : <><Sparkles size={16} /> Re-evaluate Rules</>}
                 </button>
                 {filing.status === "FAILED" ? (
-                  <button className="button secondary" disabled={ftwInteractionBusy} onClick={retryFailedExtraction}>
-                    <RefreshCw size={16} /> Retry Extraction
+                  <button className="button secondary" disabled={reviewInteractionBusy} onClick={retryFailedExtraction}>
+                    {retryBusy ? <InlineLoader label="Restarting" /> : <><RefreshCw size={16} /> Retry Extraction</>}
                   </button>
                 ) : null}
                 <button
                   className={`button ${filing.status === "APPROVED" ? "button-approved" : approvalBlocked ? "button-warn" : ""}`}
-                  disabled={ftwInteractionBusy || (filing.status !== "APPROVED" && !ftwCurrentLoaded)}
+                  disabled={reviewInteractionBusy || (filing.status !== "APPROVED" && !ftwCurrentLoaded)}
                   title={filing.status !== "APPROVED" && !ftwCurrentLoaded ? "Query FTW Current before approving." : undefined}
                   onClick={handleApproveClick}
                 >
-                  <CheckCircle2 size={16} /> {filing.status === "APPROVED" ? "Approved" : "Approve Filing"}
+                  {decisionAction === "approve" || decisionAction === "unapprove" ? <InlineLoader label="Saving decision" /> : <><CheckCircle2 size={16} /> {filing.status === "APPROVED" ? "Approved" : "Approve Filing"}</>}
                 </button>
-                <button className="button danger" disabled={ftwInteractionBusy} onClick={() => decide("reject")}>Reject</button>
-                <button className="button" disabled={ftwInteractionBusy || !ftwReadyToSend} onClick={sendFtwUpdate}>
-                  <ShieldCheck size={16} /> {ftwSendBusy ? "Sending..." : "Send to FT Williams"}
+                <button className="button danger" disabled={reviewInteractionBusy} onClick={rejectDecision}>{decisionAction === "reject" ? <InlineLoader label="Rejecting" /> : "Reject"}</button>
+                <button className="button" disabled={reviewInteractionBusy || !ftwReadyToSend} onClick={sendFtwUpdate}>
+                  {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send to FT Williams</>}
                 </button>
               </div>
               <div className="field-table-controls">
@@ -1359,7 +1401,7 @@ function ReviewDecisionTableRow({
       <td>
         <div className="decision-actions">
           {saving ? (
-            <button type="button" disabled><RefreshCw size={14} /> Saving...</button>
+            <button type="button" disabled><InlineLoader label="Saving" /></button>
           ) : (
             <>
               {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
@@ -2636,7 +2678,7 @@ function FieldReviewModal({
 
         <div className="field-review-modal-actions">
           <button className="button" disabled={saving || !draft.trim()} onClick={() => save(draft)}>
-            <CheckCircle2 size={16} /> {saving ? "Saving..." : draft === (field.proposed_value ?? "") ? "Accept Proposed" : "Save Value"}
+            {saving ? <InlineLoader label="Saving value" /> : <><CheckCircle2 size={16} /> {draft === (field.proposed_value ?? "") ? "Accept Proposed" : "Save Value"}</>}
           </button>
           <button className="button secondary" disabled={saving} onClick={() => { inputRef.current?.focus(); inputRef.current?.select(); }}>
             <Edit3 size={16} /> Edit Value
@@ -2749,6 +2791,27 @@ function ProcessingPanel({ filing }: { filing: FilingDetail }) {
         </p>
       </div>
     </section>
+  );
+}
+
+function FilingReviewSkeleton() {
+  return (
+    <div className="review-page approval-workspace-page filing-review-skeleton" role="status" aria-live="polite" aria-label="Loading filing review">
+      <main className="approval-workspace">
+        <section className="skeleton-workflow card">
+          {Array.from({ length: 6 }, (_, index) => <div key={index}><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div>)}
+        </section>
+        <section className="skeleton-review-banner"><Skeleton className="skeleton-icon-small" /><div><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></div></section>
+        <section className="approval-summary-strip skeleton-summary-strip">
+          {Array.from({ length: 5 }, (_, index) => <div className="approval-summary-card" key={index}><Skeleton className="skeleton-line skeleton-line-short" /><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></div>)}
+        </section>
+        <section className="approval-decision-table-shell skeleton-review-table card">
+          <div className="skeleton-review-toolbar"><div><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></div><div><Skeleton className="skeleton-button skeleton-button-wide" /><Skeleton className="skeleton-button skeleton-button-wide" /><Skeleton className="skeleton-button" /></div></div>
+          <div className="skeleton-review-tabs">{Array.from({ length: 6 }, (_, index) => <Skeleton className="skeleton-pill" key={index} />)}</div>
+          <div className="skeleton-review-rows">{Array.from({ length: 6 }, (_, index) => <div key={index}>{Array.from({ length: 6 }, (_, column) => <Skeleton className={`skeleton-line ${column === 0 ? "skeleton-line-wide" : "skeleton-line-medium"}`} key={column} />)}</div>)}</div>
+        </section>
+      </main>
+    </div>
   );
 }
 

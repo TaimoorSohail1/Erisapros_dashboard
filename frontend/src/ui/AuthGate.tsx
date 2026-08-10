@@ -6,6 +6,7 @@ import {
   getIdToken,
   signIn,
 } from "../auth";
+import { BrandedLoader, InlineLoader } from "./Loading";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!authenticationEnabled());
@@ -58,7 +59,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (!ready) {
-    return <div className="auth-loading">Checking your secure session…</div>;
+    return <main className="auth-loading"><BrandedLoader label="Preparing your workspace" detail="Checking your secure session…" /></main>;
   }
   if (authenticated) return <>{children}</>;
 
@@ -95,7 +96,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           )}
           {error && <div className="auth-error" role="alert">{error}</div>}
           <button className="button" type="submit" disabled={submitting}>
-            {submitting ? "Please wait…" : requiresNewPassword ? "Set password" : "Sign in"}
+            {submitting ? <InlineLoader label={requiresNewPassword ? "Setting password" : "Signing in"} /> : requiresNewPassword ? "Set password" : "Sign in"}
           </button>
         </form>
       </section>
