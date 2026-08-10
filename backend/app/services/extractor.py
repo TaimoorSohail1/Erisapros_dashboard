@@ -1,6 +1,7 @@
 import asyncio
 import calendar
-from io import BytesIO
+import csv
+from io import BytesIO, StringIO
 import json
 import os
 import re
@@ -1324,8 +1325,10 @@ def extract_document_text_pages(file_bytes: bytes, file_name: str | None = None)
     name = str(file_name or "").lower()
     if name.endswith((".xlsx", ".xlsm")):
         return _spreadsheet_text_pages(file_bytes)
-    if name.endswith((".csv", ".txt")):
+    if name.endswith(".csv"):
         return [(1, _delimited_text(file_bytes.decode("utf-8", errors="ignore")))]
+    if name.endswith(".txt"):
+        return [(1, normalize_ocr_text(file_bytes.decode("utf-8-sig", errors="ignore")))]
     if name.endswith((".doc", ".docx")):
         text = extract_docx_text(file_bytes)
         return [(1, text)] if text else []
@@ -1360,8 +1363,8 @@ def _spreadsheet_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
 def _delimited_text(text: str) -> str:
     """Turn "Label,Value" rows into "Label: Value" lines."""
     lines: list[str] = []
-    for raw_line in text.splitlines():
-        parts = [part.strip().strip('"') for part in raw_line.split(",")]
+    for row in csv.reader(StringIO(text.lstrip("\ufeff"))):
+        parts = [str(part).strip() for part in row]
         parts = [part for part in parts if part]
         if not parts:
             continue
@@ -1374,9 +1377,93 @@ def extract_fields_from_document_text(file_bytes: bytes, file_name: str | None =
     fields = [
         *_extract_fields_from_pages(pages),
         *extract_labelled_schedule_a_fields(pages),
+        *(extract_email_schedule_a_fields(pages) if str(file_name or "").lower().endswith("email body.txt") else []),
         *schedule_a_broker_compensation_fields(extract_tabular_broker_rows(pages)),
     ]
     return dedupe_fields(fields)
+
+
+def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract carrier values supplied as prose in an email response."""
+    text = "\n".join(value for _, value in page_texts)
+    normalized = normalize_ocr_text(text)
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, confidence: float = 0.92) -> None:
+        clean = clean_extracted_value(value or "")
+        if not clean:
+            return
+        fields.append(
+            NormalizedExtractionField(
+                field_name=field_name,
+                value=clean,
+                confidence=confidence,
+                page=1,
+                source_text="Email body",
+            )
+        )
+
+    add(
+        "1a. Name of Insurance Company",
+        regex_first(normalized, [r"^\s*Legal\s+Name\s*:\s*(.+?)\s*$"], flags=re.IGNORECASE | re.MULTILINE),
+    )
+    add(
+        "1b. Insurance Carrier EIN",
+        regex_first(normalized, [r"^\s*(?:Carrier\s+)?EIN\s*:\s*([0-9]{2}-[0-9]{7})\b"], flags=re.IGNORECASE | re.MULTILINE),
+        0.96,
+    )
+    add(
+        "1e. Persons Covered (End of Policy Year)",
+        regex_first(
+            normalized,
+            [
+                r"Approximate\s+(?:employee\s+)?lives?\s+covered[^:\n]*:\s*(?:[A-Za-z][A-Za-z &/.-]*\s+)?([0-9,]+)\b",
+                r"(?:employee\s+)?lives?\s+covered\s*:\s*([0-9,]+)\b",
+            ],
+            flags=re.IGNORECASE | re.DOTALL,
+        ),
+        0.94,
+    )
+    add(
+        "3c. Amount of Fees",
+        regex_first(
+            normalized,
+            [r"(?:PEPM\s+)?Fees?\s+Paid(?:\s*\([^)]*\))?\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+            flags=re.IGNORECASE,
+        ),
+        0.95,
+    )
+
+    start_date, end_date = extract_email_coverage_dates(normalized)
+    add("1f. Policy Year Beginning Date", start_date, 0.93)
+    add("1g. Policy Year Ending Date", end_date, 0.93)
+    return fields
+
+
+def extract_email_coverage_dates(text: str) -> tuple[str | None, str | None]:
+    explicit = re.search(
+        r"\b([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4})\s*(?:through|thru|to|-)\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if explicit:
+        return explicit.group(1), explicit.group(2)
+
+    months = "|".join(calendar.month_name[1:])
+    month_range = re.search(
+        rf"\b({months})\s+([0-9]{{4}})\s*(?:through|thru|to|-)\s*({months})\s+([0-9]{{4}})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not month_range:
+        return None, None
+    month_numbers = {name.lower(): index for index, name in enumerate(calendar.month_name) if name}
+    start_month = month_numbers[month_range.group(1).lower()]
+    start_year = int(month_range.group(2))
+    end_month = month_numbers[month_range.group(3).lower()]
+    end_year = int(month_range.group(4))
+    end_day = calendar.monthrange(end_year, end_month)[1]
+    return f"{start_month:02d}/01/{start_year}", f"{end_month:02d}/{end_day:02d}/{end_year}"
 
 
 # Spreadsheets and exports state the same values as a carrier statement, but as

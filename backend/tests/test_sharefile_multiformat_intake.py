@@ -48,6 +48,26 @@ def _eml_with_pdf() -> bytes:
     return message.as_bytes()
 
 
+def _eml_with_values_and_pdf() -> bytes:
+    message = email.message.EmailMessage()
+    message["Subject"] = "Schedule A values and supporting statement"
+    message["From"] = "carrier@example.com"
+    message["To"] = "filings@erisapros.com"
+    message.set_content(
+        "Legal Name: Health Advocate Solutions, Inc.\n"
+        "EIN: 23-3080019\n"
+        "Persons covered: 490\n"
+        "Fees paid: $5,134.75\n"
+    )
+    message.add_attachment(
+        b"%PDF-1.4 supporting Schedule A",
+        maintype="application",
+        subtype="pdf",
+        filename="Health Advocate Schedule A.pdf",
+    )
+    return message.as_bytes()
+
+
 def _legacy_xls() -> bytes:
     import xlwt
 
@@ -65,11 +85,6 @@ def _legacy_xls() -> bytes:
 
 class MultiFormatIntakeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        try:
-            import xlwt  # noqa: F401
-        except ImportError:
-            self.skipTest("xlwt is only needed to author the .xls fixture")
-
         self.repo = MemoryRepository()
         self.repo_patch = patch("app.services.sharefile.get_repository", return_value=self.repo)
         self.repo_patch.start()
@@ -133,6 +148,11 @@ class MultiFormatIntakeTests(unittest.IsolatedAsyncioTestCase):
         return filings[0].package_documents or []
 
     async def test_legacy_xls_schedule_a_becomes_a_filing_as_xlsx(self):
+        try:
+            import xlwt  # noqa: F401
+        except ImportError:
+            self.skipTest("xlwt is only needed to author the .xls fixture")
+
         service = ShareFileService()
         await self._baseline(service)
 
@@ -167,6 +187,23 @@ class MultiFormatIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(schedule["file_name"], "Health Advocate Schedule A.pdf")
         self.assertEqual(schedule["source_file_name"], name)
         self.assertEqual(schedule["content_type"], "application/pdf")
+
+    async def test_email_body_and_real_attachment_are_both_filed(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        name = "Health Advocate Schedule A values.eml"
+        self.tree["f_sa"].append(_file("d_email_values", name))
+        self.payloads["d_email_values"] = _eml_with_values_and_pdf()
+
+        result = await service.sync_changes(BackgroundTasks(), process_new_files=True)
+        self.assertEqual(result.get("synced"), 1)
+
+        documents = await self._documents_for_latest_filing()
+        self.assertEqual(
+            {document["file_name"] for document in documents if document["document_type"] == DocumentType.SCHEDULE_A.value},
+            {"Health Advocate Schedule A.pdf", "Health Advocate Schedule A values email body.txt"},
+        )
 
     async def test_spreadsheet_and_scan_in_a_schedule_a_folder_are_classified(self):
         service = ShareFileService()

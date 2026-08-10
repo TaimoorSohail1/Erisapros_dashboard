@@ -25,6 +25,7 @@ import os
 import re
 from dataclasses import dataclass
 from email import policy
+from html.parser import HTMLParser
 from io import BytesIO
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,15 @@ SUPPORTED_INTAKE_EXTENSIONS = EXTRACTABLE_EXTENSIONS | CONVERTIBLE_EXTENSIONS
 
 EMAIL_EXTENSIONS = {".msg", ".eml"}
 _SCHEDULE_A_NAME = re.compile(r"sched\w*\s*a\b|schedulea", re.IGNORECASE)
+_EMAIL_FIELD_HINT = re.compile(
+    r"\b(?:ein|naic|legal\s+name|policy|contract|premium|commission|fees?|persons?\s+covered|"
+    r"employee\s+lives?|coverage\s+period|plan\s+year|indirect\s+compensation)\b",
+    re.IGNORECASE,
+)
+_BRANDING_IMAGE_NAME = re.compile(
+    r"^(?:image\d+|logo|signature|banner|spacer|facebook|linkedin|twitter)(?:[-_ ].*)?\.(?:png|jpe?g|gif|tiff?)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -78,44 +88,82 @@ def is_supported_intake_file(file_name: str) -> bool:
 
 def normalize_intake_document(file_name: str, file_bytes: bytes) -> IntakeDocument:
     """Return the file the extractor should actually receive."""
+    return normalize_intake_documents(file_name, file_bytes)[0]
+
+
+def normalize_intake_documents(file_name: str, file_bytes: bytes) -> list[IntakeDocument]:
+    """Return every useful document represented by one intake file.
+
+    Most files produce one document. An email may produce its substantive
+    body plus one or more real attachments; keeping both prevents a signature
+    logo from replacing filing values written directly in the message.
+    """
     extension = file_extension(file_name)
 
     if extension in EMAIL_EXTENSIONS:
-        return _unwrap_email(file_name, file_bytes, extension)
+        return _unwrap_email_documents(file_name, file_bytes, extension)
     if extension == ".xls":
-        return _convert_xls(file_name, file_bytes)
-    return IntakeDocument(file_name=file_name, file_bytes=file_bytes)
+        return [_convert_xls(file_name, file_bytes)]
+    return [IntakeDocument(file_name=file_name, file_bytes=file_bytes)]
 
 
 # --- email ------------------------------------------------------------------
 
 
 def _unwrap_email(file_name: str, file_bytes: bytes, extension: str) -> IntakeDocument:
+    return _unwrap_email_documents(file_name, file_bytes, extension)[0]
+
+
+def _unwrap_email_documents(file_name: str, file_bytes: bytes, extension: str) -> list[IntakeDocument]:
     try:
-        attachments = _read_eml_attachments(file_bytes) if extension == ".eml" else _read_msg_attachments(file_bytes)
+        if extension == ".eml":
+            attachments = _read_eml_attachments(file_bytes)
+            body = _read_eml_body(file_bytes)
+        else:
+            attachments = _read_msg_attachments(file_bytes)
+            body = _read_msg_body(file_bytes)
     except Exception as exc:  # a malformed email must not break intake
         logger.warning("Could not read attachments from %s: %s", file_name, exc)
-        return IntakeDocument(
-            file_name=file_name,
-            file_bytes=file_bytes,
-            note=f"Email could not be opened ({type(exc).__name__}); needs manual handling.",
+        return [
+            IntakeDocument(
+                file_name=file_name,
+                file_bytes=file_bytes,
+                note=f"Email could not be opened ({type(exc).__name__}); needs manual handling.",
+            )
+        ]
+
+    meaningful_body = _clean_email_body(body)
+    useful_attachments = _useful_email_attachments(attachments)
+    documents = [
+        IntakeDocument(
+            file_name=name,
+            file_bytes=data,
+            original_file_name=file_name,
+            conversion=f"Attachment taken from email {file_name}",
+        )
+        for name, data in useful_attachments
+    ]
+
+    if meaningful_body:
+        stem = os.path.splitext(_clean_name(file_name))[0]
+        documents.append(
+            IntakeDocument(
+                file_name=f"{stem} email body.txt",
+                file_bytes=meaningful_body.encode("utf-8"),
+                original_file_name=file_name,
+                conversion=f"Relevant message body taken from email {file_name}",
+            )
         )
 
-    best = _best_attachment(attachments)
-    if not best:
-        return IntakeDocument(
+    if documents:
+        return documents
+    return [
+        IntakeDocument(
             file_name=file_name,
             file_bytes=file_bytes,
-            note="Email has no attachment that can be extracted; needs manual handling.",
+            note="Email has no relevant body and no attachment that can be extracted; needs manual handling.",
         )
-
-    attachment_name, attachment_bytes = best
-    return IntakeDocument(
-        file_name=attachment_name,
-        file_bytes=attachment_bytes,
-        original_file_name=file_name,
-        conversion=f"Attachment taken from email {file_name}",
-    )
+    ]
 
 
 def _read_eml_attachments(file_bytes: bytes) -> list[tuple[str, bytes]]:
@@ -131,6 +179,19 @@ def _read_eml_attachments(file_bytes: bytes) -> list[tuple[str, bytes]]:
         if payload:
             attachments.append((_clean_name(name), payload))
     return attachments
+
+
+def _read_eml_body(file_bytes: bytes) -> str:
+    message = email.message_from_bytes(file_bytes, policy=policy.default)
+    body = message.get_body(preferencelist=("plain", "html"))
+    if body is None:
+        return ""
+    try:
+        content = body.get_content()
+    except Exception:
+        payload = body.get_payload(decode=True) or b""
+        content = payload.decode(body.get_content_charset() or "utf-8", errors="ignore")
+    return _html_to_text(content) if body.get_content_type() == "text/html" else str(content)
 
 
 def _read_msg_attachments(file_bytes: bytes) -> list[tuple[str, bytes]]:
@@ -163,6 +224,26 @@ def _read_msg_attachments(file_bytes: bytes) -> list[tuple[str, bytes]]:
             )
             attachments.append((_clean_name(name), data))
     return attachments
+
+
+def _read_msg_body(file_bytes: bytes) -> str:
+    """Read the plain or HTML message body from an Outlook MSG container."""
+    import olefile
+
+    with olefile.OleFileIO(BytesIO(file_bytes)) as ole:
+        plain = (
+            _read_msg_text(ole, ["__substg1.0_1000001F"])
+            or _read_msg_text(ole, ["__substg1.0_1000001E"])
+        )
+        if plain:
+            return plain
+        html = _read_msg_stream(ole, ["__substg1.0_10130102"])
+        if not html:
+            return ""
+        decoded = html.decode("utf-8", errors="ignore")
+        if "<html" not in decoded.lower():
+            decoded = html.decode("cp1252", errors="ignore")
+        return _html_to_text(decoded)
 
 
 def _read_msg_stream(ole, path: list[str]) -> bytes | None:
@@ -202,6 +283,75 @@ def _best_attachment(attachments: list[tuple[str, bytes]]) -> tuple[str, bytes] 
     named = [item for item in usable if _SCHEDULE_A_NAME.search(item[0])]
     pool = named or usable
     return max(pool, key=lambda item: len(item[1]))
+
+
+def _useful_email_attachments(
+    attachments: list[tuple[str, bytes]],
+) -> list[tuple[str, bytes]]:
+    usable = [
+        (_clean_name(name), data)
+        for name, data in attachments
+        if file_extension(name) in SUPPORTED_INTAKE_EXTENSIONS
+        and data
+        and not _BRANDING_IMAGE_NAME.match(_clean_name(name))
+    ]
+    return sorted(
+        usable,
+        key=lambda item: (
+            0 if _SCHEDULE_A_NAME.search(item[0]) else 1,
+            0 if file_extension(item[0]) not in {".png", ".jpg", ".jpeg", ".tif", ".tiff"} else 1,
+            -len(item[1]),
+        ),
+    )
+
+
+class _VisibleHTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in {"style", "script", "head"}:
+            self.hidden_depth += 1
+        elif not self.hidden_depth and tag in {"br", "p", "div", "tr", "li"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"style", "script", "head"} and self.hidden_depth:
+            self.hidden_depth -= 1
+        elif not self.hidden_depth and tag in {"p", "div", "tr", "li", "table"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def _html_to_text(value: str) -> str:
+    parser = _VisibleHTMLText()
+    try:
+        parser.feed(str(value or ""))
+        return "".join(parser.parts)
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", str(value or ""))
+
+
+def _clean_email_body(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Values in a reply belong to the current response. Quoted history can
+    # contain a different plan or year and must not be treated as current data.
+    text = re.split(
+        r"\n\s*(?:-{2,}\s*Original Message\s*-{2,}|From:\s|On .+? wrote:\s*)",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
+    if len(text) < 40 or not _EMAIL_FIELD_HINT.search(text):
+        return ""
+    return text
 
 
 def _clean_name(name: str) -> str:

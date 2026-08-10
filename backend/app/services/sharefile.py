@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.models import AuditLog, DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.repositories import get_repository
 from app.services.extractor import extract_docx_text, extract_pdf_text_pages
-from app.services.intake_formats import is_supported_intake_file, normalize_intake_document
+from app.services.intake_formats import is_supported_intake_file, normalize_intake_documents
 from app.services.filing_pipeline import process_package_extraction_job
 from app.services.storage import StorageService
 
@@ -2546,51 +2546,51 @@ class ShareFileService:
             # An email is a wrapper around the real document, and legacy .xls
             # is a format the extractor cannot read - resolve both here so
             # everything downstream sees an ordinary readable file.
-            intake = normalize_intake_document(file_item["name"], downloaded_bytes)
-            file_bytes = intake.file_bytes
-            content_type = self._content_type_for(intake.file_name)
-            storage = StorageService().save_file(intake.file_name, content_type, file_bytes)
-            document_type = file_item["document_type"]
-            total_size += len(file_bytes)
-            package_document = {
-                "file_name": intake.file_name,
-                "source_file_name": file_item["name"],
-                "intake_conversion": intake.conversion,
-                "intake_note": intake.note,
-                "content_type": content_type,
-                "file_size": len(file_bytes),
-                "document_type": document_type.value,
-                "s3_key": storage["key"],
-                "s3_bucket": storage.get("bucket"),
-                "storage_path": storage.get("local_path"),
-                "intake_source": "SHAREFILE",
-                "sharefile_item_id": file_item["id"],
-                "sharefile_parent_id": file_item["parent_id"],
-                "sharefile_path": file_item["path"],
-                "sharefile_modified_at": file_item.get("modified_at"),
-                "sharefile_created_at": file_item.get("created_at"),
-                "sharefile_downloaded_at": datetime.utcnow().isoformat(),
-                "package_key": package_key,
-                "package_root_key": self._package_root_key(file_item),
-                "client_name": self._client_name_for(file_item),
-                "filing_year": self._filing_year_for(file_item),
-                "metadata_signature": self._sharefile_metadata_signature(file_item),
-            }
-            package_documents.append(package_document)
-            processing_documents.append(
-                {
-                    "file_bytes": file_bytes,
-                    # The extractor keys off the file name, so it must be the
-                    # resolved one (the attachment, or the converted workbook).
+            for intake in normalize_intake_documents(file_item["name"], downloaded_bytes):
+                file_bytes = intake.file_bytes
+                content_type = self._content_type_for(intake.file_name)
+                storage = StorageService().save_file(intake.file_name, content_type, file_bytes)
+                document_type = file_item["document_type"]
+                total_size += len(file_bytes)
+                package_document = {
                     "file_name": intake.file_name,
                     "source_file_name": file_item["name"],
-                    "file_size": len(file_bytes),
+                    "intake_conversion": intake.conversion,
+                    "intake_note": intake.note,
                     "content_type": content_type,
-                    "document_type": document_type,
+                    "file_size": len(file_bytes),
+                    "document_type": document_type.value,
+                    "s3_key": storage["key"],
+                    "s3_bucket": storage.get("bucket"),
+                    "storage_path": storage.get("local_path"),
+                    "intake_source": "SHAREFILE",
                     "sharefile_item_id": file_item["id"],
+                    "sharefile_parent_id": file_item["parent_id"],
                     "sharefile_path": file_item["path"],
+                    "sharefile_modified_at": file_item.get("modified_at"),
+                    "sharefile_created_at": file_item.get("created_at"),
+                    "sharefile_downloaded_at": datetime.utcnow().isoformat(),
+                    "package_key": package_key,
+                    "package_root_key": self._package_root_key(file_item),
+                    "client_name": self._client_name_for(file_item),
+                    "filing_year": self._filing_year_for(file_item),
+                    "metadata_signature": self._sharefile_metadata_signature(file_item),
                 }
-            )
+                package_documents.append(package_document)
+                processing_documents.append(
+                    {
+                        "file_bytes": file_bytes,
+                        # The extractor keys off the file name, so it must be
+                        # the resolved attachment/body/converted workbook.
+                        "file_name": intake.file_name,
+                        "source_file_name": file_item["name"],
+                        "file_size": len(file_bytes),
+                        "content_type": content_type,
+                        "document_type": document_type,
+                        "sharefile_item_id": file_item["id"],
+                        "sharefile_path": file_item["path"],
+                    }
+                )
 
         primary_file = next(
             (item for item in package_files if item["document_type"] == DocumentType.SCHEDULE_A),
