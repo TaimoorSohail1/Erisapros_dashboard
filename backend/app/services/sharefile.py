@@ -903,7 +903,7 @@ class ShareFileService:
             for record in existing_records
             if record.get("item_id")
         }
-        existing_filings = await repo.list_filings_by_sharefile_item_ids(scanned_item_ids)
+        existing_filings = await repo.list_waiting_sharefile_filings()
         filing_by_item_id: dict[str, Filing] = {}
         for filing in existing_filings:
             if filing.sharefile_item_id:
@@ -924,9 +924,15 @@ class ShareFileService:
 
             if not is_supported:
                 ignored_files.append(self._sharefile_file_summary(file_item, "IGNORED"))
-                index_updates[item_id] = self._sharefile_index_record(
-                    file_item, status="IGNORED", change_type="IGNORED", source=source
-                )
+                if (
+                    not existing
+                    or existing.get("status") != "IGNORED"
+                    or str(existing.get("metadata_signature") or "")
+                    != self._sharefile_metadata_signature(file_item)
+                ):
+                    index_updates[item_id] = self._sharefile_index_record(
+                        file_item, status="IGNORED", change_type="IGNORED", source=source
+                    )
                 continue
 
             change_type = self._sharefile_change_type(existing, file_item)
@@ -939,9 +945,10 @@ class ShareFileService:
             else:
                 unchanged_count += 1
 
-            index_updates[item_id] = self._sharefile_index_record(
-                file_item, status=change_type, change_type=change_type, source=source
-            )
+            if change_type != "UNCHANGED":
+                index_updates[item_id] = self._sharefile_index_record(
+                    file_item, status=change_type, change_type=change_type, source=source
+                )
 
             summary = self._sharefile_file_summary(file_item, change_type)
             if change_type in {"NEW", "UPDATED", FilingStatus.WAITING_FOR_WORKSHEET.value, FilingStatus.WAITING_FOR_SCHEDULE_A.value} and process_new_files:
