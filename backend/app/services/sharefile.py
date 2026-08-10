@@ -896,17 +896,36 @@ class ShareFileService:
         updated_count = 0
         unchanged_count = 0
 
+        scanned_item_ids = {str(item["id"]) for item in scanned_files if item.get("id")}
+        existing_records = await repo.list_sharefile_files_by_item_ids(scanned_item_ids)
+        existing_by_item_id = {
+            str(record.get("item_id")): record
+            for record in existing_records
+            if record.get("item_id")
+        }
+        existing_filings = await repo.list_filings_by_sharefile_item_ids(scanned_item_ids)
+        filing_by_item_id: dict[str, Filing] = {}
+        for filing in existing_filings:
+            if filing.sharefile_item_id:
+                filing_by_item_id.setdefault(str(filing.sharefile_item_id), filing)
+            for document in filing.package_documents:
+                item_id = document.get("sharefile_item_id")
+                if item_id:
+                    filing_by_item_id.setdefault(str(item_id), filing)
+
+        index_updates: dict[str, dict] = {}
+
         for file_item in scanned_files:
             document_type = file_item.get("document_type")
             is_supported = document_type in SUPPORTED_SHAREFILE_DOCUMENT_TYPES
-            existing = await repo.get_sharefile_file(file_item["id"])
-            existing_filing = await repo.get_filing_by_sharefile_item_id(file_item["id"])
+            item_id = str(file_item["id"])
+            existing = existing_by_item_id.get(item_id)
+            existing_filing = filing_by_item_id.get(item_id)
 
             if not is_supported:
                 ignored_files.append(self._sharefile_file_summary(file_item, "IGNORED"))
-                await repo.upsert_sharefile_file(
-                    file_item["id"],
-                    self._sharefile_index_record(file_item, status="IGNORED", change_type="IGNORED", source=source),
+                index_updates[item_id] = self._sharefile_index_record(
+                    file_item, status="IGNORED", change_type="IGNORED", source=source
                 )
                 continue
 
@@ -920,9 +939,8 @@ class ShareFileService:
             else:
                 unchanged_count += 1
 
-            await repo.upsert_sharefile_file(
-                file_item["id"],
-                self._sharefile_index_record(file_item, status=change_type, change_type=change_type, source=source),
+            index_updates[item_id] = self._sharefile_index_record(
+                file_item, status=change_type, change_type=change_type, source=source
             )
 
             summary = self._sharefile_file_summary(file_item, change_type)
@@ -930,6 +948,8 @@ class ShareFileService:
                 changed_files.append(file_item)
             else:
                 skipped_files.append(summary)
+
+        await repo.upsert_sharefile_files(index_updates)
 
         packages = await self._resolve_package_candidates(client, token, changed_files)
         synced: list[dict] = []
@@ -1290,11 +1310,7 @@ class ShareFileService:
         source: str,
     ) -> tuple[int, list[dict], list[dict], list[dict]]:
         repo = get_repository()
-        waiting_filings = [
-            filing
-            for filing in await repo.list_filings()
-            if filing.status in {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}
-        ]
+        waiting_filings = await repo.list_waiting_sharefile_filings()
         if not waiting_filings:
             return 0, [], [], []
 
@@ -1309,9 +1325,16 @@ class ShareFileService:
             return 0, [], [], []
 
         packages_by_root: dict[str, dict[str, dict]] = defaultdict(dict)
-        waiting_roots: set[str] = set()
+        waiting_records = await repo.list_sharefile_files_by_item_ids(waiting_item_ids)
+        waiting_roots = {
+            str(record.get("package_root_key") or "")
+            for record in waiting_records
+            if record.get("package_root_key")
+        }
+        if not waiting_roots:
+            return 0, [], [], []
         skipped: list[dict] = []
-        for record in await repo.list_sharefile_files():
+        for record in await repo.list_sharefile_files_by_package_roots(waiting_roots):
             item_id = str(record.get("item_id") or "")
             if not item_id:
                 continue
@@ -1326,8 +1349,6 @@ class ShareFileService:
             if not root_key:
                 continue
             packages_by_root[root_key][item_id] = file_item
-            if item_id in waiting_item_ids:
-                waiting_roots.add(root_key)
 
         repair_packages: dict[str, list[dict]] = {}
         for root_key in sorted(waiting_roots):
@@ -1569,9 +1590,26 @@ class ShareFileService:
             return {}
 
         repo = get_repository()
-        indexed_files = await repo.list_sharefile_files()
+        package_root_keys = {
+            self._package_root_key_from_package_key(package_key)
+            for package_key in packages
+        }
+        indexed_files = await repo.list_sharefile_files_by_package_roots(package_root_keys)
         indexed_by_id = {str(record.get("item_id")): record for record in indexed_files if record.get("item_id")}
-        active_schedule_item_ids = self._active_schedule_item_ids(await repo.list_filings())
+        relevant_item_ids = {
+            str(record.get("item_id"))
+            for record in indexed_files
+            if record.get("item_id")
+        }
+        relevant_item_ids.update(
+            str(file_item.get("id"))
+            for package_files in packages.values()
+            for file_item in package_files
+            if file_item.get("id")
+        )
+        active_schedule_item_ids = self._active_schedule_item_ids(
+            await repo.list_filings_by_sharefile_item_ids(relevant_item_ids)
+        )
         resolved_packages: dict[str, list[dict]] = {}
         for package_key, package_files in list(packages.items()):
             by_id = {file_item["id"]: file_item for file_item in package_files if file_item.get("id")}
@@ -1706,7 +1744,8 @@ class ShareFileService:
     async def _find_package_siblings_from_index(self, package_key: str) -> list[dict]:
         repo = get_repository()
         siblings = []
-        for record in await repo.list_sharefile_files():
+        root_key = self._package_root_key_from_package_key(package_key)
+        for record in await repo.list_sharefile_files_by_package_roots({root_key}):
             if record.get("package_key") != package_key:
                 continue
             if record.get("status") in {"DELETED", "IGNORED"}:
@@ -1798,18 +1837,17 @@ class ShareFileService:
 
     async def _index_scanned_files(self, files: list[dict], baseline: bool = False) -> None:
         repo = get_repository()
+        records: dict[str, dict] = {}
         for file_item in files:
             document_type = file_item.get("document_type")
             status = "INDEXED" if document_type in SUPPORTED_SHAREFILE_DOCUMENT_TYPES else "IGNORED"
-            await repo.upsert_sharefile_file(
-                file_item["id"],
-                self._sharefile_index_record(
-                    file_item,
-                    status=status,
-                    change_type="BASELINE" if baseline else status,
-                    source="SHAREFILE_BASELINE_SCAN" if baseline else "SHAREFILE_SCAN",
-                ),
+            records[str(file_item["id"])] = self._sharefile_index_record(
+                file_item,
+                status=status,
+                change_type="BASELINE" if baseline else status,
+                source="SHAREFILE_BASELINE_SCAN" if baseline else "SHAREFILE_SCAN",
             )
+        await repo.upsert_sharefile_files(records)
 
     async def _resolve_deferred_content_sniffs(
         self,
@@ -1826,22 +1864,27 @@ class ShareFileService:
         reuse the document type recorded in the ShareFile index.
         """
         repo = get_repository()
-        candidates: list[dict] = []
+        sniffable_files: list[dict] = []
         for file_item in scanned_files:
             if file_item.get("document_type") or not file_item.get("needs_content_sniff"):
                 continue
             if not self._sniff_path_is_relevant(file_item.get("path_parts") or []):
-                # Only files inside a filing structure (a Schedule A folder, a
-                # year folder, or a 5500 filing folder) can ever join a filing
-                # package. Random client documents elsewhere are classified by
-                # name only - never downloaded. This keeps even the very first
-                # baseline scan fast.
                 continue
             if int(file_item.get("size") or 0) > MAX_CONTENT_SNIFF_BYTES:
-                # Oversized files are never real Schedule A / worksheet
-                # documents; downloading and parsing them made scans crawl.
                 continue
-            existing = await repo.get_sharefile_file(file_item["id"])
+            sniffable_files.append(file_item)
+
+        existing_records = await repo.list_sharefile_files_by_item_ids(
+            {str(item["id"]) for item in sniffable_files if item.get("id")}
+        )
+        existing_by_item_id = {
+            str(record.get("item_id")): record
+            for record in existing_records
+            if record.get("item_id")
+        }
+        candidates: list[dict] = []
+        for file_item in sniffable_files:
+            existing = existing_by_item_id.get(str(file_item["id"]))
             if existing and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
                 indexed_type = existing.get("document_type")
                 if indexed_type:
@@ -2006,7 +2049,7 @@ class ShareFileService:
     async def _mark_deleted_sharefile_files(self, active_sharefile_item_ids: set[str]) -> int:
         repo = get_repository()
         deleted = 0
-        for record in await repo.list_sharefile_files():
+        for record in await repo.list_active_sharefile_file_summaries():
             item_id = str(record.get("item_id") or "")
             if not item_id or item_id in active_sharefile_item_ids:
                 continue

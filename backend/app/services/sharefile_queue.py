@@ -36,9 +36,20 @@ class ShareFileWorkQueue:
             QueueUrl=self.queue_url,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
-            VisibilityTimeout=43_200,
+            VisibilityTimeout=900,
+            AttributeNames=["SentTimestamp", "ApproximateReceiveCount"],
         )
         return response.get("Messages", [])
+
+    async def change_visibility(self, receipt_handle: str, visibility_timeout: int = 900) -> None:
+        if not self.configured:
+            raise RuntimeError("SHAREFILE_WORK_QUEUE_URL is not configured.")
+        await asyncio.to_thread(
+            self.client.change_message_visibility,
+            QueueUrl=self.queue_url,
+            ReceiptHandle=receipt_handle,
+            VisibilityTimeout=visibility_timeout,
+        )
 
     async def delete(self, receipt_handle: str) -> None:
         if not self.configured:

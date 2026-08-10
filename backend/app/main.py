@@ -9,7 +9,7 @@ from pymongo.errors import PyMongoError
 from app.api import field_rules, filings, ftwilliams, sharefile
 from app.auth import AuthenticationError, verify_cognito_id_token
 from app.config import get_settings
-from app.repositories import reset_repository
+from app.repositories import get_repository, reset_repository
 from app.services.sharefile_processes import (
     start_sharefile_poll_process,
     start_sharefile_webhook_registration_process,
@@ -43,6 +43,7 @@ async def sharefile_webhook_auto_register_loop(interval_seconds: int) -> None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.validate_runtime()
+    await get_repository().ensure_indexes()
     poll_task = None
     webhook_auto_register_task = None
     # With SQS configured, a dedicated worker owns all ShareFile work. These

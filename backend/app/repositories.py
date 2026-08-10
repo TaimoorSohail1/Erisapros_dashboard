@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 from uuid import uuid4
 from bson import ObjectId
-from pymongo import ReturnDocument
+from pymongo import ReturnDocument, UpdateOne
 from pymongo.errors import PyMongoError
 from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -37,6 +37,7 @@ def from_mongo(data: dict, model):
 
 
 class Repository:
+    async def ensure_indexes(self) -> None: ...
     async def create_filing(self, filing: Filing) -> Filing: ...
     async def list_filings(self) -> list[Filing]: ...
     async def list_dashboard_filings(self) -> list[Filing]: ...
@@ -71,10 +72,16 @@ class Repository:
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None: ...
     async def upsert_sharefile_token(self, token: ShareFileOAuthToken) -> ShareFileOAuthToken: ...
     async def get_filing_by_sharefile_item_id(self, item_id: str) -> Filing | None: ...
+    async def list_filings_by_sharefile_item_ids(self, item_ids: set[str]) -> list[Filing]: ...
+    async def list_waiting_sharefile_filings(self) -> list[Filing]: ...
     async def get_sharefile_file(self, item_id: str) -> dict | None: ...
     async def upsert_sharefile_file(self, item_id: str, values: dict) -> dict: ...
+    async def upsert_sharefile_files(self, records: dict[str, dict]) -> None: ...
     async def mark_sharefile_file_deleted(self, item_id: str, reason: str | None = None) -> dict | None: ...
     async def list_sharefile_files(self) -> list[dict]: ...
+    async def list_sharefile_files_by_item_ids(self, item_ids: set[str]) -> list[dict]: ...
+    async def list_sharefile_files_by_package_roots(self, package_root_keys: set[str]) -> list[dict]: ...
+    async def list_active_sharefile_file_summaries(self) -> list[dict]: ...
     async def get_sharefile_state(self, key: str) -> dict | None: ...
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
@@ -98,6 +105,24 @@ class MongoRepository(Repository):
         )
         db_name = uri.rsplit("/", 1)[-1].split("?", 1)[0] or "erisapros_dashboard"
         self.db = self.client[db_name]
+
+    async def ensure_indexes(self) -> None:
+        await self.db.sharefile_file_index.create_index(
+            "item_id", name="sharefile_item_id_idx"
+        )
+        await self.db.sharefile_file_index.create_index(
+            "package_root_key", name="sharefile_package_root_idx"
+        )
+        await self.db.sharefile_file_index.create_index(
+            "package_key", name="sharefile_package_idx"
+        )
+        await self.db.filings.create_index(
+            "sharefile_item_id", name="filing_sharefile_item_idx"
+        )
+        await self.db.filings.create_index(
+            "package_documents.sharefile_item_id",
+            name="filing_package_sharefile_item_idx",
+        )
 
     async def create_filing(self, filing: Filing) -> Filing:
         result = await self.db.filings.insert_one(to_mongo(filing))
@@ -332,6 +357,29 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, Filing) if doc else None
 
+    async def list_filings_by_sharefile_item_ids(self, item_ids: set[str]) -> list[Filing]:
+        if not item_ids:
+            return []
+        values = sorted(item_ids)
+        docs = await self.db.filings.find(
+            {
+                "$or": [
+                    {"sharefile_item_id": {"$in": values}},
+                    {"package_documents.sharefile_item_id": {"$in": values}},
+                ]
+            }
+        ).sort("created_at", -1).to_list(5000)
+        return [from_mongo(doc, Filing) for doc in docs]
+
+    async def list_waiting_sharefile_filings(self) -> list[Filing]:
+        docs = await self.db.filings.find(
+            {
+                "intake_source": "SHAREFILE",
+                "status": {"$in": ["WAITING_FOR_WORKSHEET", "WAITING_FOR_SCHEDULE_A"]},
+            }
+        ).sort("created_at", -1).to_list(5000)
+        return [from_mongo(doc, Filing) for doc in docs]
+
     async def get_sharefile_file(self, item_id: str) -> dict | None:
         doc = await self.db.sharefile_file_index.find_one({"item_id": item_id})
         return self._plain_mongo_doc(doc) if doc else None
@@ -347,6 +395,24 @@ class MongoRepository(Repository):
             return_document=ReturnDocument.AFTER,
         )
         return self._plain_mongo_doc(doc)
+
+    async def upsert_sharefile_files(self, records: dict[str, dict]) -> None:
+        if not records:
+            return
+        now = datetime.utcnow()
+        operations = []
+        for item_id, values in records.items():
+            payload = self._mongo_safe_value(dict(values))
+            payload["item_id"] = item_id
+            payload["updated_at"] = now
+            operations.append(
+                UpdateOne(
+                    {"item_id": item_id},
+                    {"$set": payload, "$setOnInsert": {"created_at": now}},
+                    upsert=True,
+                )
+            )
+        await self.db.sharefile_file_index.bulk_write(operations, ordered=False)
 
     async def mark_sharefile_file_deleted(self, item_id: str, reason: str | None = None) -> dict | None:
         doc = await self.db.sharefile_file_index.find_one_and_update(
@@ -365,6 +431,32 @@ class MongoRepository(Repository):
 
     async def list_sharefile_files(self) -> list[dict]:
         docs = await self.db.sharefile_file_index.find().to_list(10000)
+        return [self._plain_mongo_doc(doc) for doc in docs]
+
+    async def list_sharefile_files_by_item_ids(self, item_ids: set[str]) -> list[dict]:
+        if not item_ids:
+            return []
+        docs = await self.db.sharefile_file_index.find(
+            {"item_id": {"$in": sorted(item_ids)}}
+        ).to_list(len(item_ids))
+        return [self._plain_mongo_doc(doc) for doc in docs]
+
+    async def list_sharefile_files_by_package_roots(self, package_root_keys: set[str]) -> list[dict]:
+        if not package_root_keys:
+            return []
+        docs = await self.db.sharefile_file_index.find(
+            {"package_root_key": {"$in": sorted(package_root_keys)}}
+        ).to_list(10000)
+        return [self._plain_mongo_doc(doc) for doc in docs]
+
+    async def list_active_sharefile_file_summaries(self) -> list[dict]:
+        docs = await self.db.sharefile_file_index.find(
+            {
+                "status": {"$nin": ["DELETED", "IGNORED"]},
+                "document_type": {"$in": ["SCHEDULE_A", "PLAN_WORKSHEET"]},
+            },
+            {"item_id": 1, "status": 1, "document_type": 1},
+        ).to_list(10000)
         return [self._plain_mongo_doc(doc) for doc in docs]
 
     async def get_sharefile_state(self, key: str) -> dict | None:
@@ -403,6 +495,9 @@ class MongoRepository(Repository):
 
 
 class MemoryRepository(Repository):
+    async def ensure_indexes(self) -> None:
+        return None
+
     def __init__(self):
         self.filings: dict[str, Filing] = {}
         self.fields: dict[str, ExtractedField] = {}
@@ -580,6 +675,24 @@ class MemoryRepository(Repository):
             None,
         )
 
+    async def list_filings_by_sharefile_item_ids(self, item_ids: set[str]) -> list[Filing]:
+        if not item_ids:
+            return []
+        return [
+            filing
+            for filing in self.filings.values()
+            if str(filing.sharefile_item_id or "") in item_ids
+            or any(str(document.get("sharefile_item_id") or "") in item_ids for document in filing.package_documents)
+        ]
+
+    async def list_waiting_sharefile_filings(self) -> list[Filing]:
+        return [
+            filing
+            for filing in self.filings.values()
+            if filing.intake_source == "SHAREFILE"
+            and filing.status.value in {"WAITING_FOR_WORKSHEET", "WAITING_FOR_SCHEDULE_A"}
+        ]
+
     async def get_sharefile_file(self, item_id: str) -> dict | None:
         return self.sharefile_files.get(item_id)
 
@@ -597,6 +710,19 @@ class MemoryRepository(Repository):
         self.sharefile_files[item_id] = record
         return record
 
+    async def upsert_sharefile_files(self, records: dict[str, dict]) -> None:
+        now = datetime.utcnow()
+        for item_id, values in records.items():
+            existing = self.sharefile_files.get(item_id, {})
+            self.sharefile_files[item_id] = {
+                **existing,
+                **values,
+                "id": existing.get("id") or str(uuid4()),
+                "item_id": item_id,
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+            }
+
     async def mark_sharefile_file_deleted(self, item_id: str, reason: str | None = None) -> dict | None:
         record = self.sharefile_files.get(item_id)
         if not record:
@@ -613,6 +739,37 @@ class MemoryRepository(Repository):
 
     async def list_sharefile_files(self) -> list[dict]:
         return list(self.sharefile_files.values())
+
+    async def list_sharefile_files_by_item_ids(self, item_ids: set[str]) -> list[dict]:
+        if not item_ids:
+            return []
+        return [
+            record
+            for item_id, record in self.sharefile_files.items()
+            if str(item_id) in item_ids
+        ]
+
+    async def list_sharefile_files_by_package_roots(self, package_root_keys: set[str]) -> list[dict]:
+        if not package_root_keys:
+            return []
+        return [
+            record
+            for record in self.sharefile_files.values()
+            if str(record.get("package_root_key") or "") in package_root_keys
+        ]
+
+    async def list_active_sharefile_file_summaries(self) -> list[dict]:
+        return [
+            {
+                "id": record.get("id"),
+                "item_id": record.get("item_id"),
+                "status": record.get("status"),
+                "document_type": record.get("document_type"),
+            }
+            for record in self.sharefile_files.values()
+            if record.get("status") not in {"DELETED", "IGNORED"}
+            and record.get("document_type") in {"SCHEDULE_A", "PLAN_WORKSHEET"}
+        ]
 
     async def get_sharefile_state(self, key: str) -> dict | None:
         return self.sharefile_sync_state.get(key)
