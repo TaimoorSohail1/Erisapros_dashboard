@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -436,10 +437,30 @@ class MongoRepository(Repository):
     async def list_sharefile_files_by_item_ids(self, item_ids: set[str]) -> list[dict]:
         if not item_ids:
             return []
-        docs = await self.db.sharefile_file_index.find(
-            {"item_id": {"$in": sorted(item_ids)}}
-        ).to_list(len(item_ids))
-        return [self._plain_mongo_doc(doc) for doc in docs]
+        values = sorted(item_ids)
+        projection = {
+            "item_id": 1,
+            "status": 1,
+            "metadata_signature": 1,
+            "document_type": 1,
+            "package_root_key": 1,
+            "package_key": 1,
+            "filing_id": 1,
+        }
+        chunks = [values[offset : offset + 500] for offset in range(0, len(values), 500)]
+        semaphore = asyncio.Semaphore(8)
+
+        async def read_chunk(chunk: list[str]) -> list[dict]:
+            async with semaphore:
+                docs = await self.db.sharefile_file_index.find(
+                    {"item_id": {"$in": chunk}}, projection
+                ).to_list(len(chunk))
+                return [self._plain_mongo_doc(doc) for doc in docs]
+
+        records: list[dict] = []
+        for chunk_records in await asyncio.gather(*(read_chunk(chunk) for chunk in chunks)):
+            records.extend(chunk_records)
+        return records
 
     async def list_sharefile_files_by_package_roots(self, package_root_keys: set[str]) -> list[dict]:
         if not package_root_keys:

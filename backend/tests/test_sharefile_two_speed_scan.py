@@ -183,6 +183,9 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         service = ShareFileService()
         await self._baseline(service)
 
+        original_bulk_upsert = self.repo.upsert_sharefile_files
+        bulk_upsert = AsyncMock(wraps=original_bulk_upsert)
+
         with (
             patch.object(
                 self.repo,
@@ -199,11 +202,13 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
                 "upsert_sharefile_file",
                 new=AsyncMock(side_effect=AssertionError("per-file index writes are forbidden")),
             ),
+            patch.object(self.repo, "upsert_sharefile_files", new=bulk_upsert),
         ):
             result = await service.sync_changes(BackgroundTasks(), process_new_files=False)
 
         self.assertEqual(result.get("scan_mode"), "quick")
         self.assertEqual(result.get("updated"), 0)
+        bulk_upsert.assert_awaited_once_with({})
 
     async def test_quick_poll_walks_the_filing_structure_but_not_the_rest(self):
         service = ShareFileService()
