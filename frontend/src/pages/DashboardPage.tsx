@@ -17,6 +17,7 @@ import { Link } from "../router";
 import { deleteFiling, listFilings, listFTWilliamsFailureQueue } from "../api";
 import type { Filing, FilingStatus, FTWilliamsFailureQueueItem, ScheduleAContractType } from "../types";
 import { StatusBadge } from "../ui/StatusBadge";
+import { InlineLoader, Skeleton } from "../ui/Loading";
 import { formatFilingDisplayName, percent } from "../utils";
 
 type StatusFilter = "ALL" | FilingStatus;
@@ -32,6 +33,7 @@ const DASHBOARD_POLL_MS = 30000;
 
 export function DashboardPage() {
   const [filings, setFilings] = useState<Filing[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
@@ -75,6 +77,7 @@ export function DashboardPage() {
         }
       } finally {
         requestInFlight = false;
+        if (active) setInitialLoading(false);
       }
     }
 
@@ -177,10 +180,10 @@ export function DashboardPage() {
         />
       ) : null}
       <section className="dashboard-kpi-grid">
-        <DashboardKpi icon={<FileText size={24} />} value={filings.length} label="Total Filings" tone="info" note="Tracked packages" />
-        <DashboardKpi icon={<HelpCircle size={24} />} value={needsReview.length} label="Needs Review" tone="warn" note={filings.length ? `${Math.round((needsReview.length / filings.length) * 100)}% of total` : "0% of total"} />
-        <DashboardKpi icon={<CheckCircle2 size={24} />} value={readyToSend.length} label="Ready to Send" tone="ready" note={filings.length ? `${Math.round((readyToSend.length / filings.length) * 100)}% of total` : "0% of total"} />
-        <DashboardKpi icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
+        <DashboardKpi loading={initialLoading} icon={<FileText size={24} />} value={filings.length} label="Total Filings" tone="info" note="Tracked packages" />
+        <DashboardKpi loading={initialLoading} icon={<HelpCircle size={24} />} value={needsReview.length} label="Needs Review" tone="warn" note={filings.length ? `${Math.round((needsReview.length / filings.length) * 100)}% of total` : "0% of total"} />
+        <DashboardKpi loading={initialLoading} icon={<CheckCircle2 size={24} />} value={readyToSend.length} label="Ready to Send" tone="ready" note={filings.length ? `${Math.round((readyToSend.length / filings.length) * 100)}% of total` : "0% of total"} />
+        <DashboardKpi loading={initialLoading} icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
       </section>
 
       {message ? <div className="dashboard-message card">{message}</div> : null}
@@ -190,7 +193,7 @@ export function DashboardPage() {
           <div className="dashboard-table-head">
             <div>
               <h2>All Filings</h2>
-              <p>{filings.length} ShareFile package{filings.length === 1 ? "" : "s"} tracked for review.</p>
+              <p>{initialLoading ? "Loading ShareFile packages…" : `${filings.length} ShareFile package${filings.length === 1 ? "" : "s"} tracked for review.`}</p>
             </div>
             <div className="dashboard-table-controls">
               <label className="dashboard-search">
@@ -249,7 +252,7 @@ export function DashboardPage() {
             </div>
           </div>
 
-          <div className="dashboard-table-wrap">
+          <div className="dashboard-table-wrap" aria-busy={initialLoading}>
             <table className="dashboard-filings-table">
               <thead>
                 <tr>
@@ -264,21 +267,21 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {visibleFilings.map((filing) => (
-                  <DashboardFilingRow key={filing.id} filing={filing} onDeleteRequest={setDeleteTarget} />
-                ))}
+                {initialLoading
+                  ? Array.from({ length: 6 }, (_, index) => <DashboardSkeletonRow key={index} />)
+                  : visibleFilings.map((filing) => (
+                    <DashboardFilingRow key={filing.id} filing={filing} onDeleteRequest={setDeleteTarget} />
+                  ))}
               </tbody>
             </table>
           </div>
 
-          {!visibleFilings.length ? (
+          {!initialLoading && !visibleFilings.length ? (
             <div className="empty-state"><FileText size={18} /> No filings match this view.</div>
           ) : null}
 
           <div className="dashboard-table-footer">
-            <span>
-              Showing {filteredFilings.length ? pageStartIndex + 1 : 0}-{pageEndIndex} of {filteredFilings.length} filing{filteredFilings.length === 1 ? "" : "s"}
-            </span>
+            <span>{initialLoading ? <InlineLoader label="Loading filings" /> : <>Showing {filteredFilings.length ? pageStartIndex + 1 : 0}-{pageEndIndex} of {filteredFilings.length} filing{filteredFilings.length === 1 ? "" : "s"}</>}</span>
             <div>
               <button
                 className="button secondary"
@@ -384,8 +387,7 @@ function DeleteFilingModal({
             Cancel
           </button>
           <button className="button dashboard-delete-confirm" type="button" disabled={isDeleting} onClick={onConfirm}>
-            <Trash2 size={17} />
-            {isDeleting ? "Deleting..." : "Delete from dashboard"}
+            {isDeleting ? <InlineLoader label="Deleting filing" /> : <><Trash2 size={17} /> Delete from dashboard</>}
           </button>
         </div>
       </section>
@@ -400,6 +402,7 @@ function DashboardKpi({
   tone,
   featured,
   note,
+  loading = false,
 }: {
   icon: ReactNode;
   value: number;
@@ -407,17 +410,33 @@ function DashboardKpi({
   tone: "ready" | "warn" | "danger" | "info";
   featured?: boolean;
   note?: string;
+  loading?: boolean;
 }) {
   return (
     <div className={`dashboard-kpi card dashboard-kpi-${tone} ${featured ? "featured" : ""}`}>
       <span>{icon}</span>
       <div>
         <small>{label}</small>
-        <strong>{value}</strong>
-        {note ? <em>{note}</em> : null}
+        {loading ? <Skeleton className="skeleton-kpi-value" /> : <strong>{value}</strong>}
+        {loading ? <Skeleton className="skeleton-kpi-note" /> : note ? <em>{note}</em> : null}
       </div>
       <i />
     </div>
+  );
+}
+
+function DashboardSkeletonRow() {
+  return (
+    <tr className="dashboard-skeleton-row">
+      <td><div className="dashboard-skeleton-file"><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div></td>
+      <td><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-pill" /><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-progress" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-short" /><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-line skeleton-line-short" /></td>
+      <td><Skeleton className="skeleton-button" /></td>
+      <td><Skeleton className="skeleton-icon-small" /></td>
+    </tr>
   );
 }
 

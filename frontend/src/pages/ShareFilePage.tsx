@@ -1,6 +1,7 @@
 import { FolderSync } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getShareFileAuthorizationUrl, getShareFileStatus, syncShareFileFolder } from "../api";
+import { InlineLoader, Skeleton } from "../ui/Loading";
 
 type ShareFileStatusView = Awaited<ReturnType<typeof getShareFileStatus>>;
 
@@ -59,7 +60,7 @@ export function ShareFilePage() {
       {message ? <div className="card card-pad">{message}</div> : null}
       <div className="card card-pad">
         <h2 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 10 }}><FolderSync size={22} /> Connector Status</h2>
-        {!status ? <div className="subtle">Loading ShareFile status...</div> : (
+        {!status ? <ShareFileStatusSkeleton /> : (
           <>
             <p style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <span className={status.configured ? "badge ready" : "badge warn"}>{status.configured ? "Configured" : "Not configured"}</span>
@@ -79,8 +80,7 @@ export function ShareFilePage() {
               <dd>{status.shared_root_folder_id || "-"}</dd>
             </dl>
             <button className="button" disabled={!status.configured || !status.connected || syncing} onClick={handleSync}>
-              <FolderSync size={18} />
-              {syncing ? "Syncing..." : "Sync ShareFile"}
+              {syncing ? <InlineLoader label="Syncing ShareFile" /> : <><FolderSync size={18} /> Sync ShareFile</>}
             </button>
             {!status.connected && authorizationUrl ? (
               <p>
@@ -119,5 +119,20 @@ export function ShareFilePage() {
         )}
       </div>
     </>
+  );
+}
+
+function ShareFileStatusSkeleton() {
+  return (
+    <div className="sharefile-status-skeleton" role="status" aria-live="polite" aria-label="Loading ShareFile connector status">
+      <div className="sharefile-skeleton-badges"><Skeleton className="skeleton-pill" /><Skeleton className="skeleton-pill" /></div>
+      <Skeleton className="skeleton-line skeleton-line-wide" />
+      <div className="sharefile-skeleton-details">
+        {Array.from({ length: 5 }, (_, index) => (
+          <div key={index}><Skeleton className="skeleton-line skeleton-line-short" /><Skeleton className="skeleton-line skeleton-line-medium" /></div>
+        ))}
+      </div>
+      <Skeleton className="skeleton-button skeleton-button-wide" />
+    </div>
   );
 }
