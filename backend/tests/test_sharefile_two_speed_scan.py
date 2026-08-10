@@ -140,6 +140,71 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         # filings.
         self.assertNotIn("f_a_junk_q1", self.listed)
 
+    async def test_new_upload_does_not_require_a_full_index_read(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        self._add_new_client()
+        with patch.object(
+            self.repo,
+            "list_sharefile_files",
+            new=AsyncMock(side_effect=AssertionError("full ShareFile index read is forbidden")),
+        ):
+            result = await service.sync_changes(BackgroundTasks(), process_new_files=True)
+
+        self.assertEqual(result.get("synced"), 1)
+        filings = await self.repo.list_filings()
+        names = " ".join(f.file_name or "" for f in filings)
+        self.assertIn("BrandNew_Schedule_A", names)
+
+    async def test_waiting_package_repair_does_not_require_a_full_index_read(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        self.tree["f_b_2024"].append(
+            _pdf("d_b_ws", "5500 Plan Worksheet - Client B 5500 - PY24 (501).docx")
+        )
+        await service.sync_changes(BackgroundTasks(), process_new_files=True)
+
+        self.tree["f_b_sa"].append(_pdf("d_b_sa", "ClientB_Schedule_A.pdf"))
+        with patch.object(
+            self.repo,
+            "list_sharefile_files",
+            new=AsyncMock(side_effect=AssertionError("full ShareFile index read is forbidden")),
+        ):
+            result = await service.sync_changes(BackgroundTasks(), process_new_files=True)
+
+        self.assertGreaterEqual(result.get("synced", 0), 1)
+        filings = await self.repo.list_filings()
+        names = " ".join(f.file_name or "" for f in filings)
+        self.assertIn("ClientB_Schedule_A", names)
+
+    async def test_unchanged_poll_uses_bulk_repository_access(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        with (
+            patch.object(
+                self.repo,
+                "get_sharefile_file",
+                new=AsyncMock(side_effect=AssertionError("per-file index reads are forbidden")),
+            ),
+            patch.object(
+                self.repo,
+                "get_filing_by_sharefile_item_id",
+                new=AsyncMock(side_effect=AssertionError("per-file filing reads are forbidden")),
+            ),
+            patch.object(
+                self.repo,
+                "upsert_sharefile_file",
+                new=AsyncMock(side_effect=AssertionError("per-file index writes are forbidden")),
+            ),
+        ):
+            result = await service.sync_changes(BackgroundTasks(), process_new_files=False)
+
+        self.assertEqual(result.get("scan_mode"), "quick")
+        self.assertEqual(result.get("updated"), 0)
+
     async def test_quick_poll_walks_the_filing_structure_but_not_the_rest(self):
         service = ShareFileService()
         await self._baseline(service)
@@ -162,6 +227,20 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         self.listed.clear()
         await service.sync_folder(BackgroundTasks())
         self.assertIn("f_a_junk_q1", self.listed)
+
+    async def test_deep_sweep_deletion_reconciliation_uses_lightweight_query(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        with patch.object(
+            self.repo,
+            "list_sharefile_files",
+            new=AsyncMock(side_effect=AssertionError("full ShareFile index read is forbidden")),
+        ):
+            result = await service.sync_folder(BackgroundTasks())
+
+        self.assertEqual(result.get("scan_mode"), "deep")
+        self.assertEqual(result.get("deleted"), 0)
 
     async def test_quick_poll_picks_up_a_new_file_in_an_existing_folder(self):
         service = ShareFileService()

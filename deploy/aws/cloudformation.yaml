@@ -154,7 +154,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: erisapros-production-sharefile-work
-      VisibilityTimeout: 43200
+      VisibilityTimeout: 900
       ReceiveMessageWaitTimeSeconds: 20
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt ShareFileWorkDeadLetterQueue.Arn

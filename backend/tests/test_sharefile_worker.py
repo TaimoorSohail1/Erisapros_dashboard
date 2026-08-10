@@ -1,8 +1,9 @@
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.sharefile_worker import dispatch_sharefile_work, process_sqs_message
+from app.sharefile_worker import _visibility_heartbeat, dispatch_sharefile_work, process_sqs_message
 
 
 class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -42,6 +43,41 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await process_sqs_message(queue, message)
         queue.delete.assert_not_awaited()
+
+    async def test_stale_scheduled_poll_is_deleted_without_running(self):
+        queue = AsyncMock()
+        message = {
+            "Body": json.dumps({"type": "poll"}),
+            "ReceiptHandle": "receipt-stale",
+            "Attributes": {"SentTimestamp": str(int((time.time() - 900) * 1000))},
+        }
+        with patch("app.sharefile_worker.dispatch_sharefile_work", new=AsyncMock()) as dispatch:
+            await process_sqs_message(queue, message)
+
+        dispatch.assert_not_awaited()
+        queue.delete.assert_awaited_once_with("receipt-stale")
+
+    async def test_old_webhook_is_never_discarded_as_a_stale_poll(self):
+        queue = AsyncMock()
+        payload = {"EventType": "FileUploaded", "ItemId": "item-1"}
+        message = {
+            "Body": json.dumps({"type": "webhook", "payload": payload}),
+            "ReceiptHandle": "receipt-webhook",
+            "Attributes": {"SentTimestamp": str(int((time.time() - 3600) * 1000))},
+        }
+        with patch("app.sharefile_worker.dispatch_sharefile_work", new=AsyncMock()) as dispatch:
+            await process_sqs_message(queue, message)
+
+        dispatch.assert_awaited_once()
+        queue.delete.assert_awaited_once_with("receipt-webhook")
+
+    async def test_visibility_heartbeat_extends_long_running_work(self):
+        queue = AsyncMock()
+        queue.change_visibility.side_effect = RuntimeError("stop after first heartbeat")
+        with patch("app.sharefile_worker.asyncio.sleep", new=AsyncMock()):
+            with self.assertRaisesRegex(RuntimeError, "stop after first heartbeat"):
+                await _visibility_heartbeat(queue, "receipt-long")
+        queue.change_visibility.assert_awaited_once_with("receipt-long")
 
 
 if __name__ == "__main__":
