@@ -28,14 +28,16 @@ class ShareFileWorkQueue:
         )
         return True
 
-    async def receive(self) -> list[dict]:
+    async def receive(self, max_messages: int = 10, wait_time_seconds: int = 20) -> list[dict]:
         if not self.configured:
             raise RuntimeError("SHAREFILE_WORK_QUEUE_URL is not configured.")
+        max_messages = min(10, max(1, max_messages))
+        wait_time_seconds = min(20, max(0, wait_time_seconds))
         response = await asyncio.to_thread(
             self.client.receive_message,
             QueueUrl=self.queue_url,
-            MaxNumberOfMessages=1,
-            WaitTimeSeconds=20,
+            MaxNumberOfMessages=max_messages,
+            WaitTimeSeconds=wait_time_seconds,
             VisibilityTimeout=900,
             AttributeNames=["SentTimestamp", "ApproximateReceiveCount"],
         )

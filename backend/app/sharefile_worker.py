@@ -3,9 +3,12 @@ import json
 import logging
 import time
 from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import Callable
 
 from app.config import get_settings
 from app.repositories import get_repository, reset_repository
+from app.services.filing_pipeline import process_extraction_batch
 from app.services.sharefile import ShareFileService
 from app.services.sharefile_queue import ShareFileWorkQueue, get_sharefile_work_queue
 
@@ -14,9 +17,31 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 STALE_POLL_SECONDS = 10 * 60
 VISIBILITY_HEARTBEAT_SECONDS = 5 * 60
+MAX_RECEIVE_MESSAGES = 10
+BURST_DRAIN_WAIT_SECONDS = 2
+MAX_BURST_WINDOW_SECONDS = 6
 
 
-async def dispatch_sharefile_work(message: dict, service: ShareFileService | None = None) -> dict:
+@dataclass
+class ExtractionBatchCollector:
+    """Collect ShareFile extraction tasks without starting them immediately."""
+
+    packages: list[tuple[str, str, list[dict]]] = field(default_factory=list)
+
+    def add_task(self, func: Callable, *args, **kwargs) -> None:
+        if getattr(func, "__name__", "") != "process_extraction_batch" or not args:
+            raise RuntimeError("Unexpected ShareFile worker background task.")
+        packages = args[0]
+        if not isinstance(packages, list):
+            raise RuntimeError("ShareFile extraction batch must be a list.")
+        self.packages.extend(packages)
+
+
+async def dispatch_sharefile_work(
+    message: dict,
+    service: ShareFileService | None = None,
+    background_tasks=None,
+) -> dict:
     service = service or ShareFileService()
     work_type = message.get("type")
     if work_type == "poll":
@@ -26,7 +51,7 @@ async def dispatch_sharefile_work(message: dict, service: ShareFileService | Non
     if work_type == "auto_register":
         return await service.auto_register_relevant_webhooks()
     if work_type == "webhook":
-        return await service.handle_webhook(message.get("payload") or {}, None)
+        return await service.handle_webhook(message.get("payload") or {}, background_tasks)
     raise ValueError(f"Unsupported ShareFile work type: {work_type!r}")
 
 
@@ -51,6 +76,106 @@ async def process_sqs_message(queue: ShareFileWorkQueue, message: dict) -> None:
             await heartbeat
 
 
+async def process_webhook_batch(queue: ShareFileWorkQueue, messages: list[dict]) -> None:
+    """Register a burst of webhooks, then extract all queued packages together.
+
+    SQS messages are acknowledged only after their associated extraction batch
+    finishes. A failed registration or extraction therefore remains available
+    for the queue retry/DLQ policy.
+    """
+    heartbeats = {
+        message["ReceiptHandle"]: asyncio.create_task(
+            _visibility_heartbeat(queue, message["ReceiptHandle"])
+        )
+        for message in messages
+    }
+    extraction_receipts: list[str] = []
+    immediate_receipts: list[str] = []
+    packages: list[tuple[str, str, list[dict]]] = []
+
+    try:
+        for message in messages:
+            receipt_handle = message["ReceiptHandle"]
+            try:
+                body = json.loads(message.get("Body") or "{}")
+                collector = ExtractionBatchCollector()
+                await dispatch_sharefile_work(body, background_tasks=collector)
+                if collector.packages:
+                    packages.extend(collector.packages)
+                    extraction_receipts.append(receipt_handle)
+                else:
+                    immediate_receipts.append(receipt_handle)
+            except Exception:
+                reset_repository()
+                logger.exception(
+                    "ShareFile webhook registration failed; SQS will retry receipt %s.",
+                    receipt_handle,
+                )
+
+        for receipt_handle in immediate_receipts:
+            await queue.delete(receipt_handle)
+
+        if packages:
+            try:
+                await process_extraction_batch(packages)
+            except Exception:
+                reset_repository()
+                logger.exception("ShareFile webhook extraction batch failed; SQS will retry it.")
+            else:
+                for receipt_handle in extraction_receipts:
+                    await queue.delete(receipt_handle)
+    finally:
+        for heartbeat in heartbeats.values():
+            heartbeat.cancel()
+        for heartbeat in heartbeats.values():
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+
+
+async def process_sqs_messages(queue: ShareFileWorkQueue, messages: list[dict]) -> None:
+    webhook_messages: list[dict] = []
+    other_messages: list[dict] = []
+    for message in messages:
+        try:
+            body = json.loads(message.get("Body") or "{}")
+        except (TypeError, ValueError):
+            other_messages.append(message)
+            continue
+        if body.get("type") == "webhook":
+            webhook_messages.append(message)
+        else:
+            other_messages.append(message)
+
+    if webhook_messages:
+        await process_webhook_batch(queue, webhook_messages)
+
+    for message in other_messages:
+        try:
+            await process_sqs_message(queue, message)
+        except Exception:
+            reset_repository()
+            logger.exception("ShareFile work failed; SQS will retry it.")
+
+
+async def receive_message_burst(queue: ShareFileWorkQueue) -> list[dict]:
+    """Coalesce upload notifications that arrive within the same short burst."""
+    messages = await queue.receive(max_messages=MAX_RECEIVE_MESSAGES)
+    burst_started = time.monotonic()
+    while (
+        messages
+        and len(messages) < MAX_RECEIVE_MESSAGES
+        and time.monotonic() - burst_started < MAX_BURST_WINDOW_SECONDS
+    ):
+        more = await queue.receive(
+            max_messages=MAX_RECEIVE_MESSAGES - len(messages),
+            wait_time_seconds=BURST_DRAIN_WAIT_SECONDS,
+        )
+        if not more:
+            break
+        messages.extend(more)
+    return messages
+
+
 async def _visibility_heartbeat(queue: ShareFileWorkQueue, receipt_handle: str) -> None:
     while True:
         await asyncio.sleep(VISIBILITY_HEARTBEAT_SECONDS)
@@ -66,15 +191,9 @@ async def run_worker() -> None:
     await get_repository().ensure_indexes()
     logger.info("ShareFile worker started.")
     while True:
-        messages = await queue.receive()
-        for message in messages:
-            try:
-                await process_sqs_message(queue, message)
-            except Exception:
-                # Discard a potentially stale Mongo pool before SQS retries
-                # the message. The message remains visible for retry/DLQ.
-                reset_repository()
-                logger.exception("ShareFile work failed; SQS will retry it.")
+        messages = await receive_message_burst(queue)
+        if messages:
+            await process_sqs_messages(queue, messages)
 
 
 if __name__ == "__main__":
