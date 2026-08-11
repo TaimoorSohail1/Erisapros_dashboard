@@ -42,8 +42,16 @@ class FilingsApiTests(unittest.TestCase):
                     sharefile_parent_id="sf-folder-1",
                     error_message="Previous failure",
                     package_documents=[
-                        {"sharefile_item_id": "sf-item-1", "file_name": "Delete Me Schedule A.pdf"},
-                        {"sharefile_item_id": "sf-worksheet-1", "file_name": "Plan Worksheet.docx"},
+                        {
+                            "sharefile_item_id": "sf-item-1",
+                            "file_name": "Delete Me Schedule A.pdf",
+                            "document_type": "SCHEDULE_A",
+                        },
+                        {
+                            "sharefile_item_id": "sf-worksheet-1",
+                            "file_name": "Plan Worksheet.docx",
+                            "document_type": "PLAN_WORKSHEET",
+                        },
                     ],
                 )
             )
@@ -68,8 +76,8 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(audits[-1].event, "DASHBOARD_DELETE")
         self.assertEqual(audits[-1].details["sharefile_item_id"], "sf-item-1")
         self.assertEqual(visible["filings"], [])
-        self.assertEqual(set(suppressions), {"sf-item-1", "sf-worksheet-1"})
-        self.assertTrue(all(record and record["reason"] == "DASHBOARD_DELETE" for record in suppressions.values()))
+        self.assertEqual(suppressions["sf-item-1"]["reason"], "DASHBOARD_DELETE")
+        self.assertIsNone(suppressions["sf-worksheet-1"])
 
     def test_preview_xml_is_repeatable_and_does_not_mutate_the_filing(self):
         async def scenario():

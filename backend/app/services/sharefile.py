@@ -1055,12 +1055,24 @@ class ShareFileService:
                 continue
             try:
                 package_files = self._select_package_files_for_processing(package_files, prefer_changed=prefer_changed)
+                package_has_schedule_a = any(
+                    file_item.get("document_type") == DocumentType.SCHEDULE_A
+                    for file_item in package_files
+                )
                 suppressed_items = [
                     (file_item, await repo.get_sharefile_suppression(str(file_item.get("id") or "")))
                     for file_item in package_files
                     if file_item.get("id")
                 ]
                 suppressed_items = [(item, record) for item, record in suppressed_items if record]
+                if package_has_schedule_a:
+                    # Legacy dashboard deletes also suppressed the shared worksheet.
+                    # Keep that worksheet eligible when a new Schedule A needs it.
+                    suppressed_items = [
+                        (item, record)
+                        for item, record in suppressed_items
+                        if item.get("document_type") != DocumentType.PLAN_WORKSHEET
+                    ]
                 if suppressed_items:
                     for file_item, suppression in suppressed_items:
                         await repo.upsert_sharefile_file(
@@ -1084,6 +1096,13 @@ class ShareFileService:
                             "message": "Previously deleted ShareFile items were ignored. New source items remain eligible for intake.",
                         }
                     )
+                    if any(
+                        item.get("document_type") == DocumentType.SCHEDULE_A
+                        for item, _ in suppressed_items
+                    ):
+                        # This is the deleted filing's own Schedule A package. Do
+                        # not turn its remaining shared worksheet into a new row.
+                        continue
                     if not package_files:
                         continue
                 completeness = self._package_completeness(package_files)
