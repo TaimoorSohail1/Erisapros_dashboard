@@ -18,6 +18,7 @@ import { deleteFiling, listFilings, listFTWilliamsFailureQueue } from "../api";
 import type { Filing, FilingStatus, FTWilliamsFailureQueueItem, ScheduleAContractType } from "../types";
 import { StatusBadge } from "../ui/StatusBadge";
 import { InlineLoader, Skeleton } from "../ui/Loading";
+import { useDialogFocus } from "../ui/useDialogFocus";
 import { formatFilingDisplayName, percent } from "../utils";
 
 type StatusFilter = "ALL" | FilingStatus;
@@ -348,9 +349,13 @@ function DeleteFilingModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onCancel);
   return (
     <div className="dashboard-delete-backdrop" role="presentation" onMouseDown={onCancel}>
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         aria-labelledby="delete-filing-title"
         aria-modal="true"
         className="dashboard-delete-modal"

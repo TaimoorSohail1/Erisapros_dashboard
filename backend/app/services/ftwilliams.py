@@ -303,8 +303,16 @@ class FTWilliamsService:
 
     async def _post_xml(self, endpoint_url: str, request_xml: str) -> httpx.Response:
         last_error: httpx.HTTPError | None = None
+        shared_client = await self._get_client(endpoint_url)
         for attempt in range(3):
-            client = await self._get_client(endpoint_url, reset=attempt > 0)
+            retry_client = None
+            client = shared_client
+            if attempt > 0:
+                # A retry must not close the process-wide pooled client: other
+                # concurrent FTW slot queries may still be using it. Give only
+                # the failed request a fresh, short-lived connection instead.
+                retry_client = httpx.AsyncClient(timeout=30)
+                client = retry_client
             try:
                 return await client.post(
                     endpoint_url,
@@ -316,6 +324,9 @@ class FTWilliamsService:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(0.2 * (attempt + 1))
+            finally:
+                if retry_client is not None:
+                    await retry_client.aclose()
         if last_error:
             raise last_error
         raise httpx.ConnectError("FT Williams request failed without a response.")

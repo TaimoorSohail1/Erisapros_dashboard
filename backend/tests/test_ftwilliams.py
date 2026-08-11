@@ -227,7 +227,7 @@ class FTWilliamsServiceTests(unittest.TestCase):
         self.assertEqual(len(clients), 1)
         self.assertEqual(clients[0].post_calls, 2)
 
-    def test_run_query_retries_connect_errors_with_new_client(self):
+    def test_run_query_retries_connect_errors_without_closing_shared_client(self):
         class FakeAsyncClient:
             def __init__(self, behavior):
                 self.behavior = behavior
@@ -281,7 +281,8 @@ class FTWilliamsServiceTests(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(len(clients), 2)
-        self.assertTrue(clients[0].closed)
+        self.assertFalse(clients[0].closed)
+        self.assertTrue(clients[1].closed)
 
 
 if __name__ == "__main__":

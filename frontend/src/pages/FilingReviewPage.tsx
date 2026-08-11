@@ -24,6 +24,7 @@ import {
 import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
+import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   approveFiling,
   getFiling,
@@ -1505,9 +1506,11 @@ function FullFieldReviewDrawer({
   totalPages: number;
   willUpdateRows: ReviewDecisionRow[];
 }) {
+  const drawerRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, drawerRef, onClose);
   return (
-    <div className="field-drawer-backdrop" role="dialog" aria-modal="true" aria-label="All fields review table">
-      <section className="field-drawer">
+    <div className="field-drawer-backdrop" role="presentation">
+      <section ref={drawerRef} tabIndex={-1} className="field-drawer" role="dialog" aria-modal="true" aria-label="All fields review table">
         <header className="field-drawer-header">
           <div>
             <span className="eyebrow">Full Field Review</span>
@@ -1776,9 +1779,11 @@ function ApproveConfirmationModal({
   unresolvedRows: ReviewDecisionRow[];
 }) {
   const previewRows = unresolvedRows.slice(0, 3);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
   return (
     <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="approve-confirm-title">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="approve-confirm-title">
         <header className="approve-confirm-header">
           <div>
             <span className="eyebrow">{hasBlockers ? "Approval override" : "Approval confirmation"}</span>
@@ -1875,9 +1880,11 @@ function UnapproveConfirmationModal({
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
   return (
     <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section className="approve-confirm-modal unapprove-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="unapprove-confirm-title">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal unapprove-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="unapprove-confirm-title">
         <header className="approve-confirm-header">
           <div>
             <span className="eyebrow">Approval status</span>
@@ -2572,7 +2579,7 @@ function FieldTableRow({ field, selected, onSelect }: { field: ExtractedField; s
   const title = field.mapped_label || field.source_field_name;
   const subtitle = fieldSubtitle(field, title);
   return (
-    <tr className={selected ? "selected" : ""} onClick={onSelect}>
+    <tr className={selected ? "selected" : ""} tabIndex={0} onClick={onSelect} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}>
       <td>
         <strong>{title}</strong>
         {subtitle ? <small>{subtitle}</small> : null}
@@ -2613,6 +2620,8 @@ function FieldReviewModal({
 }) {
   const [draft, setDraft] = useState(field?.proposed_value ?? "");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
 
   useEffect(() => {
     setDraft(field?.proposed_value ?? "");
@@ -2624,9 +2633,9 @@ function FieldReviewModal({
   }
 
   return (
-    <div className="field-modal-layer" role="dialog" aria-modal="true" aria-label="Field review details">
+    <div className="field-modal-layer" role="presentation">
       <button className="field-modal-scrim" type="button" onClick={onClose} aria-label="Close field review" />
-      <section className="field-review-modal card">
+      <section ref={dialogRef} tabIndex={-1} className="field-review-modal card" role="dialog" aria-modal="true" aria-label="Field review details">
         <div className="field-review-modal-head">
           <div>
             <span className="eyebrow">Field Review</span>

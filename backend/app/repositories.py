@@ -85,6 +85,8 @@ class Repository:
     async def list_active_sharefile_file_summaries(self) -> list[dict]: ...
     async def get_sharefile_state(self, key: str) -> dict | None: ...
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
+    async def get_sharefile_suppression(self, item_id: str) -> dict | None: ...
+    async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict: ...
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
     async def save_field_rule_version(self, rule: FieldRule) -> FieldRule: ...
 
@@ -110,6 +112,9 @@ class MongoRepository(Repository):
     async def ensure_indexes(self) -> None:
         await self.db.sharefile_file_index.create_index(
             "item_id", name="sharefile_item_id_idx"
+        )
+        await self.db.sharefile_suppressions.create_index(
+            "item_id", name="sharefile_suppression_item_idx", unique=True
         )
         await self.db.sharefile_file_index.create_index(
             "package_root_key", name="sharefile_package_root_idx"
@@ -496,6 +501,22 @@ class MongoRepository(Repository):
         )
         return self._plain_mongo_doc(doc)
 
+    async def get_sharefile_suppression(self, item_id: str) -> dict | None:
+        doc = await self.db.sharefile_suppressions.find_one({"item_id": item_id})
+        return self._plain_mongo_doc(doc) if doc else None
+
+    async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict:
+        payload = dict(values)
+        payload["item_id"] = item_id
+        payload["updated_at"] = datetime.utcnow()
+        doc = await self.db.sharefile_suppressions.find_one_and_update(
+            {"item_id": item_id},
+            {"$set": payload, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return self._plain_mongo_doc(doc)
+
     def _plain_mongo_doc(self, doc: dict) -> dict:
         payload = dict(doc)
         payload["id"] = str(payload.pop("_id"))
@@ -530,6 +551,7 @@ class MemoryRepository(Repository):
         self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
+        self.sharefile_suppressions: dict[str, dict] = {}
         self.field_rule_versions: dict[str, FieldRule] = {}
 
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
@@ -808,6 +830,23 @@ class MemoryRepository(Repository):
         }
         self.sharefile_sync_state[key] = record
         return record
+
+    async def get_sharefile_suppression(self, item_id: str) -> dict | None:
+        record = self.sharefile_suppressions.get(item_id)
+        return dict(record) if record else None
+
+    async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict:
+        now = datetime.utcnow()
+        record = {
+            **self.sharefile_suppressions.get(item_id, {}),
+            **values,
+            "item_id": item_id,
+            "updated_at": now,
+        }
+        record.setdefault("created_at", now)
+        record.setdefault("id", str(uuid4()))
+        self.sharefile_suppressions[item_id] = record
+        return dict(record)
 
 
 _repository: Repository | None = None

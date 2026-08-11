@@ -10,10 +10,11 @@ from app.api.filings import (
     delete_filing_from_dashboard,
     get_ftwilliams_bring_forward_link,
     list_filings,
+    regenerate_xml,
     unapprove_filing,
     update_field,
 )
-from app.models import ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FTWilliamsReview
+from app.models import ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FormType, FTWilliamsReview
 
 
 def run_async(coro):
@@ -40,6 +41,10 @@ class FilingsApiTests(unittest.TestCase):
                     sharefile_item_id="sf-item-1",
                     sharefile_parent_id="sf-folder-1",
                     error_message="Previous failure",
+                    package_documents=[
+                        {"sharefile_item_id": "sf-item-1", "file_name": "Delete Me Schedule A.pdf"},
+                        {"sharefile_item_id": "sf-worksheet-1", "file_name": "Plan Worksheet.docx"},
+                    ],
                 )
             )
 
@@ -48,9 +53,13 @@ class FilingsApiTests(unittest.TestCase):
             events = await repo.list_events(filing.id)
             audits = await repo.list_audit_logs(filing.id)
             visible = await list_filings()
-            return response, updated, events, audits, visible
+            suppressions = {
+                item_id: await repo.get_sharefile_suppression(item_id)
+                for item_id in ("sf-item-1", "sf-worksheet-1")
+            }
+            return response, updated, events, audits, visible, suppressions
 
-        response, updated, events, audits, visible = run_async(scenario())
+        response, updated, events, audits, visible, suppressions = run_async(scenario())
 
         self.assertEqual(response["status"], FilingStatus.DELETED)
         self.assertEqual(updated.status, FilingStatus.DELETED)
@@ -59,6 +68,47 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(audits[-1].event, "DASHBOARD_DELETE")
         self.assertEqual(audits[-1].details["sharefile_item_id"], "sf-item-1")
         self.assertEqual(visible["filings"], [])
+        self.assertEqual(set(suppressions), {"sf-item-1", "sf-worksheet-1"})
+        self.assertTrue(all(record and record["reason"] == "DASHBOARD_DELETE" for record in suppressions.values()))
+
+    def test_preview_xml_is_repeatable_and_does_not_mutate_the_filing(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Preview Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/preview",
+                    proposed_xml="<Existing />",
+                )
+            )
+            await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="Carrier",
+                        normalized_field_name="Carrier",
+                        mapped_rule_key="carrier",
+                        mapped_label="Carrier",
+                        ftw_field="Carrier",
+                        xml_tag="Carrier",
+                        proposed_value="Example Carrier",
+                        form_type=FormType.SCHEDULE_A,
+                    )
+                ]
+            )
+            first = await regenerate_xml(filing.id)
+            second = await regenerate_xml(filing.id)
+            stored = await repo.get_filing(filing.id)
+            return first, second, stored, await repo.list_events(filing.id), await repo.list_audit_logs(filing.id)
+
+        first, second, stored, events, audits = run_async(scenario())
+        self.assertEqual(first, second)
+        self.assertIn("Example Carrier", first["proposed_xml"])
+        self.assertEqual(stored.proposed_xml, "<Existing />")
+        self.assertEqual(events, [])
+        self.assertEqual(audits, [])
 
     def test_unapprove_filing_clears_approval_and_locks_send_flow(self):
         async def scenario():

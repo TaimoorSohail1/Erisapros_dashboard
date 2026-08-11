@@ -12,7 +12,7 @@ from app.models import AuditLog, DocumentType, ExtractionJob, Filing, FilingStat
 from app.repositories import get_repository
 from app.services.extractor import extract_docx_text, extract_pdf_text_pages
 from app.services.intake_formats import is_supported_intake_file, normalize_intake_documents
-from app.services.filing_pipeline import process_package_extraction_job
+from app.services.filing_pipeline import process_extraction_batch
 from app.services.storage import StorageService
 
 
@@ -1048,12 +1048,44 @@ class ShareFileService:
         synced: list[dict] = []
         skipped: list[dict] = []
         failed: list[dict] = []
+        pending_extractions: list[tuple[str, str, list[dict]]] = []
 
         for package_key, package_files in packages.items():
             if not package_files:
                 continue
             try:
                 package_files = self._select_package_files_for_processing(package_files, prefer_changed=prefer_changed)
+                suppressed_items = [
+                    (file_item, await repo.get_sharefile_suppression(str(file_item.get("id") or "")))
+                    for file_item in package_files
+                    if file_item.get("id")
+                ]
+                suppressed_items = [(item, record) for item, record in suppressed_items if record]
+                if suppressed_items:
+                    for file_item, suppression in suppressed_items:
+                        await repo.upsert_sharefile_file(
+                            file_item["id"],
+                            self._sharefile_index_record(
+                                file_item,
+                                status="SUPPRESSED",
+                                change_type="DASHBOARD_DELETE_SUPPRESSED",
+                                source=source,
+                                filing_id=suppression.get("filing_id"),
+                                package_key=package_key,
+                            ),
+                        )
+                    suppressed_ids = {str(item.get("id")) for item, _ in suppressed_items}
+                    package_files = [item for item in package_files if str(item.get("id")) not in suppressed_ids]
+                    skipped.append(
+                        {
+                            "package_key": package_key,
+                            "reason": "DASHBOARD_DELETE_SUPPRESSED",
+                            "item_ids": sorted(suppressed_ids),
+                            "message": "Previously deleted ShareFile items were ignored. New source items remain eligible for intake.",
+                        }
+                    )
+                    if not package_files:
+                        continue
                 completeness = self._package_completeness(package_files)
                 if not completeness["complete"]:
                     filing = await self._upsert_waiting_filing_package(
@@ -1190,12 +1222,7 @@ class ShareFileService:
                     )
                 )
 
-                if background_tasks is not None:
-                    background_tasks.add_task(process_package_extraction_job, filing.id, job.id, processing_documents)
-                else:
-                    # The dedicated worker must not acknowledge the SQS
-                    # message until extraction and persistence have finished.
-                    await process_package_extraction_job(filing.id, job.id, processing_documents)
+                pending_extractions.append((filing.id, job.id, processing_documents))
 
                 synced.append(
                     {
@@ -1226,6 +1253,17 @@ class ShareFileService:
                         "error": str(exc),
                     }
                 )
+
+        # All dashboard rows are persisted as QUEUED before any extractor is
+        # started. Four packages then advance to EXTRACTING while the rest stay
+        # visibly queued and begin automatically as capacity becomes available.
+        if pending_extractions:
+            if background_tasks is not None:
+                background_tasks.add_task(process_extraction_batch, pending_extractions)
+            else:
+                # The dedicated worker must not acknowledge the SQS message
+                # until every package in this batch has finished persistence.
+                await process_extraction_batch(pending_extractions)
 
         return synced, skipped, failed
 

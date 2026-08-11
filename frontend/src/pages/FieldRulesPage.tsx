@@ -17,7 +17,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   disableFieldRule,
   getFieldRuleHistory,
@@ -27,6 +27,7 @@ import {
   saveFieldRuleDraft,
   testFieldRule,
 } from "../api";
+import { useDialogFocus } from "../ui/useDialogFocus";
 import type { FieldRule } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
@@ -188,7 +189,7 @@ export function FieldRulesPage() {
               <Fragment key={groupName}>
                 <tr className="section-row"><td colSpan={8}><span>{groupName}</span><strong>{groupRules.length} fields</strong></td></tr>
                 {groupRules.map((rule) => (
-                  <tr key={`${rule.key}:${rule.version}:${rule.status}`} className={`clickable-row row-${rule.priority.toLowerCase()}`} onClick={() => setSelectedRule(rule)}>
+                  <tr key={`${rule.key}:${rule.version}:${rule.status}`} className={`clickable-row row-${rule.priority.toLowerCase()}`} tabIndex={0} onClick={() => setSelectedRule(rule)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedRule(rule); } }}>
                     <td><div className="field-title-line"><span className={`priority-dot dot-${rule.priority.toLowerCase()}`} /><strong>{rule.label}</strong></div><code className="field-code">{rule.xml_tag || rule.key}</code></td>
                     <td><span className={`applicability-chip applicability-${rule.applicability.toLowerCase()}`}>{applicabilityLabel(rule.applicability)}</span></td>
                     <td><span className={`badge priority-${rule.priority.toLowerCase()}`}>{rule.priority}</span></td>
@@ -254,6 +255,8 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const drawerRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, drawerRef, onClose);
 
   useEffect(() => {
     if (!canManage) return;
@@ -273,9 +276,9 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
     } finally { setBusy(false); }
   }
 
-  return <div className="drawer-layer" role="dialog" aria-modal="true">
+  return <div className="drawer-layer" role="presentation">
     <button className="drawer-scrim" type="button" onClick={onClose} aria-label="Close field details" />
-    <aside className="rule-drawer rule-admin-drawer">
+    <aside ref={drawerRef} tabIndex={-1} className="rule-drawer rule-admin-drawer" role="dialog" aria-modal="true" aria-label="Field rule details">
       <div className={`drawer-head drawer-${rule.priority.toLowerCase()}`}><div><div className="drawer-status-line"><RuleStatus status={rule.status} /><span>Version {rule.version}</span></div><h2>{rule.label}</h2><code className="field-code">{rule.xml_tag || rule.key}</code></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></div>
       {canManage ? <div className="drawer-action-bar"><button type="button" onClick={onEdit}><Edit3 size={16} /> Edit</button><button type="button" onClick={onClone}><Copy size={16} /> Clone</button></div> : null}
       <div className="drawer-grid"><Info label="Priority" value={rule.priority} /><Info label="Applicability" value={applicabilityLabel(rule.applicability)} /><Info label="Existing record" value={rule.existing_behavior || "—"} /><Info label="New record" value={rule.new_behavior || "—"} /></div>
@@ -297,6 +300,8 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const isNewIdentity = state.mode !== "edit";
+  const editorRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, editorRef, onClose);
 
   function update<K extends keyof FieldRule>(key: K, value: FieldRule[K]) { setRule((current) => ({ ...current, [key]: value })); }
   function updateLabel(label: string) {
@@ -340,9 +345,9 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
     finally { setBusy(false); }
   }
 
-  return <div className="drawer-layer editor-layer" role="dialog" aria-modal="true">
+  return <div className="drawer-layer editor-layer" role="presentation">
     <button className="drawer-scrim" type="button" onClick={onClose} aria-label="Close editor" />
-    <aside className="rule-editor-panel">
+    <aside ref={editorRef} tabIndex={-1} className="rule-editor-panel" role="dialog" aria-modal="true" aria-label="Field rule editor">
       <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Add the field name and aliases, test the match, then save the rule as a draft.</p></div><button className="icon-button" type="button" onClick={onClose}><X size={20} /></button></header>
       <div className="rule-editor-body">
         <EditorSection number="1" title="Field setup" description="Choose what the field is called and where it applies.">

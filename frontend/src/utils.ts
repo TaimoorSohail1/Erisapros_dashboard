@@ -29,3 +29,24 @@ export function formatFilingDisplayName(fileName: string) {
     .trim();
   return `${readableName || nameWithoutExtension}${extension}`;
 }
+
+export function summarizeFTWilliamsMessage(message: string) {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  const lowered = normalized.toLowerCase();
+
+  if (lowered.includes("getaddrinfo") || lowered.includes("name resolution")) {
+    return "Could not reach FT Williams. Try again shortly.";
+  }
+  if (lowered.includes("timeout") || lowered.includes("timed out")) {
+    return "FT Williams did not respond in time.";
+  }
+  if (
+    (lowered.includes("company id") && lowered.includes("not valid")) ||
+    lowered.includes("did not find a matching plan")
+  ) {
+    return "No matching FT Williams plan was found.";
+  }
+
+  const firstMessage = normalized.split(/;|\n/)[0]?.trim() || normalized;
+  return firstMessage.length > 110 ? `${firstMessage.slice(0, 107).trimEnd()}...` : firstMessage;
+}

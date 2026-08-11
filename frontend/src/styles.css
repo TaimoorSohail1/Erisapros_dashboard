@@ -4034,16 +4034,8 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   margin: 6px 0 0;
 }
 
-.ftw-failure-reason-cell strong,
 .ftw-failure-reason-cell small {
   display: block;
-}
-
-.ftw-failure-reason-cell strong {
-  color: #991b1b;
-  font-size: 13px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 
 .ftw-failure-reason-cell small {
@@ -4111,15 +4103,56 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   color: #4f46e5;
 }
 
-.ftw-history-error {
+.ftw-diagnostic {
   color: #b91c1c;
-  display: block;
   font-size: 12px;
   font-weight: 750;
   line-height: 1.35;
   margin-top: 7px;
-  max-width: 280px;
+  max-width: 290px;
   overflow-wrap: anywhere;
+}
+
+.ftw-diagnostic p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ftw-diagnostic details {
+  margin-top: 6px;
+}
+
+.ftw-diagnostic summary {
+  color: #475569;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+  list-style-position: inside;
+  width: fit-content;
+}
+
+.ftw-diagnostic summary:hover,
+.ftw-diagnostic summary:focus-visible {
+  color: #0f7a4f;
+}
+
+.ftw-diagnostic-details {
+  background: #fff7f7;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #7f1d1d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin-top: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 
 .ftw-history-plan,
@@ -7416,6 +7449,113 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .ftw-side-activity-item time {
     text-align: left;
   }
+}
+
+/* QA hardening: explicit warnings, keyboard focus, compact mobile shell, and 404. */
+.ftw-history-status.status-warning {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+
+.ftw-history-loading {
+  height: 180px;
+  text-align: center;
+}
+
+.clickable-row:focus-visible,
+.field-review-table tr:focus-visible,
+.field-rules-table tr:focus-visible {
+  outline: 3px solid rgba(5, 150, 105, 0.35);
+  outline-offset: -3px;
+}
+
+.not-found-page {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 8vh auto 0;
+  max-width: 680px;
+  padding: 54px 32px;
+  text-align: center;
+}
+
+.not-found-page > span {
+  align-items: center;
+  background: #ecfdf5;
+  border-radius: 18px;
+  color: #047857;
+  display: inline-flex;
+  height: 64px;
+  justify-content: center;
+  width: 64px;
+}
+
+.not-found-page h1,
+.not-found-page p { margin: 0; }
+.not-found-page .button { margin-top: 12px; }
+
+@media (max-width: 620px) {
+  .topbar {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .topbar-brand {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .topbar .nav {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+    padding: 5px;
+  }
+
+  .topbar .nav a {
+    flex: initial;
+    font-size: 12px;
+    gap: 5px;
+    justify-content: center;
+    min-width: 0;
+    padding: 7px 4px;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .topbar .nav a svg { flex: 0 0 auto; }
+
+  .topbar-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin: 0 0 2px;
+    width: 100%;
+  }
+
+  .topbar-status { display: none; }
+  .topbar-actions .button { min-height: 40px; }
+
+  .dashboard-ops .dashboard-kpi-grid,
+  .dashboard-v3 .dashboard-kpi-grid,
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-ops .dashboard-kpi,
+  .dashboard-v3 .dashboard-kpi {
+    border-bottom: 1px solid #e2e8f0;
+    border-right: 1px solid #e2e8f0;
+    min-height: 132px;
+    padding: 16px 12px;
+  }
+
+  .dashboard-v3 .dashboard-kpi strong { font-size: 28px; }
+  .main { padding: 12px; }
+  .not-found-page { margin-top: 20px; padding: 40px 20px; }
 }
 
 /* Professional loading states */

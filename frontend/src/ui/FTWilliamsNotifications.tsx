@@ -1,9 +1,10 @@
 import { Activity, AlertTriangle, Bell, CheckCircle2, Eye, X, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Link } from "../router";
 import { listFTWilliamsFailureQueue, listFTWilliamsHistory } from "../api";
 import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
+import { useDialogFocus } from "./useDialogFocus";
 
 type FTWPanelTab = "failures" | "activity";
 
@@ -16,6 +17,9 @@ export function FTWilliamsNotifications() {
   const [history, setHistory] = useState<FTWilliamsHistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<FTWPanelTab>("failures");
   const [isOpen, setIsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const warningCount = useMemo(() => history.filter((item) => item.status === "warning").length, [history]);
+  const issueCount = failures.length + warningCount;
 
   useEffect(() => {
     let active = true;
@@ -62,6 +66,7 @@ export function FTWilliamsNotifications() {
   return (
     <>
       <button
+        ref={triggerRef}
         className="ftw-notification-trigger topbar-ftw-notification"
         type="button"
         onClick={() => setIsOpen(true)}
@@ -70,9 +75,9 @@ export function FTWilliamsNotifications() {
       >
         <Bell size={18} />
         <span>FT Williams</span>
-        {failures.length ? <strong>{failures.length}</strong> : <em>{history.length}</em>}
+        {issueCount ? <strong title={`${failures.length} failures, ${warningCount} warnings`}>{issueCount}</strong> : <em>{history.length}</em>}
       </button>
-      <FTWilliamsSidePanel
+      {isOpen ? <FTWilliamsSidePanel
         activeTab={activeTab}
         failureMessage={failureMessage}
         failures={failures}
@@ -81,7 +86,8 @@ export function FTWilliamsNotifications() {
         isOpen={isOpen}
         onClose={() => setIsOpen(false)}
         onTabChange={setActiveTab}
-      />
+        returnFocusRef={triggerRef}
+      /> : null}
     </>
   );
 }
@@ -95,6 +101,7 @@ function FTWilliamsSidePanel({
   isOpen,
   onClose,
   onTabChange,
+  returnFocusRef,
 }: {
   activeTab: FTWPanelTab;
   failureMessage: string;
@@ -104,11 +111,14 @@ function FTWilliamsSidePanel({
   isOpen: boolean;
   onClose: () => void;
   onTabChange: (tab: FTWPanelTab) => void;
+  returnFocusRef: RefObject<HTMLElement | null>;
 }) {
   const previewFailures = failures.slice(0, 3);
   const previewHistory = history.slice(0, 5);
+  const panelRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(isOpen, panelRef, onClose, returnFocusRef);
   return (
-    <aside className={`ftw-side-panel ftw-notification-drawer card ${isOpen ? "open" : ""}`} aria-hidden={!isOpen} aria-label="FT Williams notifications">
+    <aside ref={panelRef} tabIndex={-1} className={`ftw-side-panel ftw-notification-drawer card ${isOpen ? "open" : ""}`} role="dialog" aria-modal="true" aria-label="FT Williams notifications">
       <div className="ftw-side-head">
         <div>
           <h2>FT Williams Notifications</h2>
@@ -211,7 +221,7 @@ function FTWilliamsActivityItem({ item }: { item: FTWilliamsHistoryItem }) {
   return (
     <Link className="ftw-side-activity-item" to={`/filings/${item.filing_id}`}>
       <span className={`ftw-side-activity-icon status-${item.status}`}>
-        {item.status === "failed" ? <XCircle size={16} /> : item.status === "success" ? <CheckCircle2 size={16} /> : <Activity size={16} />}
+        {item.status === "failed" ? <XCircle size={16} /> : item.status === "warning" ? <AlertTriangle size={16} /> : item.status === "success" ? <CheckCircle2 size={16} /> : <Activity size={16} />}
       </span>
       <div>
         <strong>{item.action_label}</strong>

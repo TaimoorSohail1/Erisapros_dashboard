@@ -93,6 +93,27 @@ async def delete_filing_from_dashboard(filing_id: str):
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
 
+    source_items = {
+        str(item_id): str(file_name or filing.file_name)
+        for item_id, file_name in [
+            (filing.sharefile_item_id, filing.file_name),
+            *[
+                (document.get("sharefile_item_id"), document.get("file_name"))
+                for document in filing.package_documents
+            ],
+        ]
+        if item_id
+    }
+    for item_id, file_name in source_items.items():
+        await repo.upsert_sharefile_suppression(
+            item_id,
+            {
+                "filing_id": filing_id,
+                "file_name": file_name,
+                "reason": "DASHBOARD_DELETE",
+            },
+        )
+
     updated = await repo.update_filing(
         filing_id,
         {
@@ -343,14 +364,10 @@ async def reject_filing(filing_id: str, payload: RejectRequest):
 @router.post("/{filing_id}/regenerate-xml")
 async def regenerate_xml(filing_id: str):
     repo = get_repository()
+    if not await repo.get_filing(filing_id):
+        raise HTTPException(status_code=404, detail="Filing not found")
     fields = await repo.list_fields(filing_id)
     proposed_xml = build_proposed_ftw_xml(fields)
-    await repo.update_filing(filing_id, {"proposed_xml": proposed_xml})
-    try:
-        await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
-    except ValueError:
-        pass
-    await repo.add_event(ReviewEvent(filing_id=filing_id, type="XML_REGENERATED"))
     return {"proposed_xml": proposed_xml}
 
 
