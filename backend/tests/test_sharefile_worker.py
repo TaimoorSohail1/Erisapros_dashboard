@@ -1,4 +1,5 @@
 import json
+import asyncio
 import time
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from app.sharefile_worker import (
     dispatch_sharefile_work,
     process_sqs_message,
     process_sqs_messages,
+    process_next_extraction_batch,
     receive_message_burst,
 )
 
@@ -125,6 +127,61 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
             queue.receive.await_args_list[1].kwargs,
             {"max_messages": 9, "wait_time_seconds": 2},
         )
+
+    async def test_late_webhooks_register_while_prior_extraction_is_running(self):
+        """A slow extraction must not stop the worker from registering later uploads."""
+        queue = AsyncMock()
+        extraction_queue = asyncio.Queue()
+        first = {
+            "Body": json.dumps({"type": "webhook", "payload": {"ItemId": "item-1"}}),
+            "ReceiptHandle": "receipt-1",
+        }
+        second = {
+            "Body": json.dumps({"type": "webhook", "payload": {"ItemId": "item-2"}}),
+            "ReceiptHandle": "receipt-2",
+        }
+        extraction_started = asyncio.Event()
+        release_extraction = asyncio.Event()
+        registered = []
+
+        async def register(message, service=None, background_tasks=None):
+            item_id = message["payload"]["ItemId"]
+            registered.append(item_id)
+            background_tasks.add_task(
+                pipeline_extraction_batch,
+                [(f"filing-{item_id}", f"job-{item_id}", [])],
+            )
+            return {"queued": 1}
+
+        async def extract(_packages):
+            extraction_started.set()
+            await release_extraction.wait()
+
+        with (
+            patch("app.sharefile_worker.dispatch_sharefile_work", new=AsyncMock(side_effect=register)),
+            patch("app.sharefile_worker.process_extraction_batch", new=AsyncMock(side_effect=extract)),
+            patch("app.sharefile_worker._visibility_heartbeat", new=AsyncMock()),
+        ):
+            await process_sqs_messages(queue, [first], extraction_queue=extraction_queue)
+            extraction_task = asyncio.create_task(
+                process_next_extraction_batch(queue, extraction_queue)
+            )
+            await asyncio.wait_for(extraction_started.wait(), timeout=1)
+
+            # This is the production failure mode: a second upload arrives while
+            # the first document is still inside GroundX/FT Williams processing.
+            await asyncio.wait_for(
+                process_sqs_messages(queue, [second], extraction_queue=extraction_queue),
+                timeout=1,
+            )
+
+            self.assertEqual(registered, ["item-1", "item-2"])
+            self.assertEqual(extraction_queue.qsize(), 1)
+            release_extraction.set()
+            await extraction_task
+            await process_next_extraction_batch(queue, extraction_queue)
+
+        self.assertEqual(queue.delete.await_count, 2)
 
     async def test_message_is_deleted_only_after_success(self):
         queue = AsyncMock()

@@ -37,6 +37,15 @@ class ExtractionBatchCollector:
         self.packages.extend(packages)
 
 
+@dataclass
+class PendingWebhookExtraction:
+    """Registered webhook work waiting for the single extraction consumer."""
+
+    packages: list[tuple[str, str, list[dict]]]
+    receipt_handles: list[str]
+    heartbeats: list[asyncio.Task]
+
+
 async def dispatch_sharefile_work(
     message: dict,
     service: ShareFileService | None = None,
@@ -76,7 +85,11 @@ async def process_sqs_message(queue: ShareFileWorkQueue, message: dict) -> None:
             await heartbeat
 
 
-async def process_webhook_batch(queue: ShareFileWorkQueue, messages: list[dict]) -> None:
+async def process_webhook_batch(
+    queue: ShareFileWorkQueue,
+    messages: list[dict],
+    extraction_queue: asyncio.Queue[PendingWebhookExtraction] | None = None,
+) -> None:
     """Register a burst of webhooks, then extract all queued packages together.
 
     SQS messages are acknowledged only after their associated extraction batch
@@ -91,7 +104,9 @@ async def process_webhook_batch(queue: ShareFileWorkQueue, messages: list[dict])
     }
     extraction_receipts: list[str] = []
     immediate_receipts: list[str] = []
+    failed_receipts: list[str] = []
     packages: list[tuple[str, str, list[dict]]] = []
+    queued_for_extraction = False
 
     try:
         for message in messages:
@@ -106,6 +121,7 @@ async def process_webhook_batch(queue: ShareFileWorkQueue, messages: list[dict])
                 else:
                     immediate_receipts.append(receipt_handle)
             except Exception:
+                failed_receipts.append(receipt_handle)
                 reset_repository()
                 logger.exception(
                     "ShareFile webhook registration failed; SQS will retry receipt %s.",
@@ -114,25 +130,87 @@ async def process_webhook_batch(queue: ShareFileWorkQueue, messages: list[dict])
 
         for receipt_handle in immediate_receipts:
             await queue.delete(receipt_handle)
+            await _cancel_heartbeat(heartbeats[receipt_handle])
+
+        for receipt_handle in failed_receipts:
+            await _cancel_heartbeat(heartbeats[receipt_handle])
 
         if packages:
-            try:
-                await process_extraction_batch(packages)
-            except Exception:
-                reset_repository()
-                logger.exception("ShareFile webhook extraction batch failed; SQS will retry it.")
+            pending = PendingWebhookExtraction(
+                packages=packages,
+                receipt_handles=extraction_receipts,
+                heartbeats=[heartbeats[receipt] for receipt in extraction_receipts],
+            )
+            if extraction_queue is not None:
+                await extraction_queue.put(pending)
+                queued_for_extraction = True
             else:
-                for receipt_handle in extraction_receipts:
-                    await queue.delete(receipt_handle)
+                await _run_pending_extractions(queue, [pending])
     finally:
-        for heartbeat in heartbeats.values():
-            heartbeat.cancel()
-        for heartbeat in heartbeats.values():
-            with suppress(asyncio.CancelledError):
-                await heartbeat
+        if not queued_for_extraction:
+            for heartbeat in heartbeats.values():
+                await _cancel_heartbeat(heartbeat)
 
 
-async def process_sqs_messages(queue: ShareFileWorkQueue, messages: list[dict]) -> None:
+async def _cancel_heartbeat(heartbeat: asyncio.Task) -> None:
+    if not heartbeat.done():
+        heartbeat.cancel()
+    with suppress(asyncio.CancelledError):
+        await heartbeat
+
+
+async def _run_pending_extractions(
+    queue: ShareFileWorkQueue,
+    batches: list[PendingWebhookExtraction],
+) -> None:
+    packages = [package for batch in batches for package in batch.packages]
+    receipt_handles = [receipt for batch in batches for receipt in batch.receipt_handles]
+    heartbeats = [heartbeat for batch in batches for heartbeat in batch.heartbeats]
+    try:
+        await process_extraction_batch(packages)
+    except Exception:
+        reset_repository()
+        logger.exception("ShareFile webhook extraction batch failed; SQS will retry it.")
+    else:
+        for receipt_handle in receipt_handles:
+            await queue.delete(receipt_handle)
+    finally:
+        for heartbeat in heartbeats:
+            await _cancel_heartbeat(heartbeat)
+
+
+async def process_next_extraction_batch(
+    queue: ShareFileWorkQueue,
+    extraction_queue: asyncio.Queue[PendingWebhookExtraction],
+) -> None:
+    """Process one queued extraction group while intake continues independently."""
+    first = await extraction_queue.get()
+    batches = [first]
+    try:
+        while True:
+            try:
+                batches.append(extraction_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        await _run_pending_extractions(queue, batches)
+    finally:
+        for _batch in batches:
+            extraction_queue.task_done()
+
+
+async def run_extraction_worker(
+    queue: ShareFileWorkQueue,
+    extraction_queue: asyncio.Queue[PendingWebhookExtraction],
+) -> None:
+    while True:
+        await process_next_extraction_batch(queue, extraction_queue)
+
+
+async def process_sqs_messages(
+    queue: ShareFileWorkQueue,
+    messages: list[dict],
+    extraction_queue: asyncio.Queue[PendingWebhookExtraction] | None = None,
+) -> None:
     webhook_messages: list[dict] = []
     other_messages: list[dict] = []
     for message in messages:
@@ -147,7 +225,7 @@ async def process_sqs_messages(queue: ShareFileWorkQueue, messages: list[dict]) 
             other_messages.append(message)
 
     if webhook_messages:
-        await process_webhook_batch(queue, webhook_messages)
+        await process_webhook_batch(queue, webhook_messages, extraction_queue)
 
     for message in other_messages:
         try:
@@ -190,10 +268,17 @@ async def run_worker() -> None:
         raise RuntimeError("SHAREFILE_WORK_QUEUE_URL is required for the ShareFile worker.")
     await get_repository().ensure_indexes()
     logger.info("ShareFile worker started.")
-    while True:
-        messages = await receive_message_burst(queue)
-        if messages:
-            await process_sqs_messages(queue, messages)
+    extraction_queue: asyncio.Queue[PendingWebhookExtraction] = asyncio.Queue()
+    extraction_worker = asyncio.create_task(run_extraction_worker(queue, extraction_queue))
+    try:
+        while True:
+            messages = await receive_message_burst(queue)
+            if messages:
+                await process_sqs_messages(queue, messages, extraction_queue)
+    finally:
+        extraction_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await extraction_worker
 
 
 if __name__ == "__main__":
