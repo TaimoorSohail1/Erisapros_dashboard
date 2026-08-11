@@ -586,6 +586,48 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(active[0].sharefile_item_id, "new-schedule")
         self.assertTrue(any(item["reason"] == "DASHBOARD_DELETE_SUPPRESSED" for item in skipped))
 
+    def test_new_schedule_can_reuse_legacy_suppressed_shared_worksheet(self):
+        new_schedule = sharefile_file(
+            "new-schedule",
+            "New Schedule A.pdf",
+            ["Client", "5500", "2025 Filing", "Schedule A's", "New Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        shared_worksheet = sharefile_file(
+            "shared-worksheet",
+            "5500 Plan Worksheet.docx",
+            ["Client", "5500", "2025 Filing", "5500 Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+        )
+
+        async def scenario():
+            repo = repositories.get_repository()
+            await repo.upsert_sharefile_suppression(
+                "shared-worksheet",
+                {"reason": "DASHBOARD_DELETE", "filing_id": "legacy-deleted-filing"},
+            )
+            self.stub_package_creation()
+            return await self.service._queue_sharefile_packages(
+                client=None,
+                token=ShareFileOAuthToken(subdomain="example", access_token="token"),
+                packages={"new-package": [new_schedule, shared_worksheet]},
+                background_tasks=DummyBackgroundTasks(),
+                source="TEST_SHARED_WORKSHEET",
+                prefer_changed=False,
+            )
+
+        synced, skipped, failed = run_async(scenario())
+        active = [
+            filing
+            for filing in run_async(repositories.get_repository().list_filings())
+            if filing.status not in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}
+        ]
+        self.assertEqual(failed, [])
+        self.assertEqual(len(synced), 1)
+        self.assertFalse(any(item["reason"] == "DASHBOARD_DELETE_SUPPRESSED" for item in skipped))
+        self.assertEqual(active[0].status, FilingStatus.QUEUED)
+        self.assertEqual(active[0].package_document_count, 2)
+
     def test_cleanup_supersedes_redundant_worksheet_waiting_row(self):
         worksheet = sharefile_file(
             "worksheet",

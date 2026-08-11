@@ -93,17 +93,20 @@ async def delete_filing_from_dashboard(filing_id: str):
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
 
-    source_items = {
-        str(item_id): str(file_name or filing.file_name)
-        for item_id, file_name in [
-            (filing.sharefile_item_id, filing.file_name),
-            *[
-                (document.get("sharefile_item_id"), document.get("file_name"))
-                for document in filing.package_documents
-            ],
-        ]
-        if item_id
-    }
+    primary_item_id = str(filing.sharefile_item_id or "")
+    source_items: dict[str, str] = {}
+    if primary_item_id:
+        source_items[primary_item_id] = filing.file_name
+    for document in filing.package_documents:
+        item_id = str(document.get("sharefile_item_id") or "")
+        document_type = document.get("document_type")
+        if isinstance(document_type, DocumentType):
+            document_type = document_type.value
+        # A Plan Worksheet is shared by every Schedule A in the same client/year.
+        # Deleting one filing must not suppress that shared companion document.
+        if not item_id or (document_type == DocumentType.PLAN_WORKSHEET.value and item_id != primary_item_id):
+            continue
+        source_items[item_id] = str(document.get("file_name") or filing.file_name)
     for item_id, file_name in source_items.items():
         await repo.upsert_sharefile_suppression(
             item_id,
