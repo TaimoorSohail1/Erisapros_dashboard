@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertTriangle,
   Calendar,
   Check,
   CheckCircle2,
@@ -15,8 +16,10 @@ import { Link } from "../router";
 import { listFTWilliamsHistory } from "../api";
 import type { FTWilliamsHistoryItem, FTWilliamsHistoryRange } from "../types";
 import { formatFilingDisplayName } from "../utils";
+import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
+import { InlineLoader } from "../ui/Loading";
 
-type HistoryStatusFilter = "ALL" | "success" | "failed" | "info";
+type HistoryStatusFilter = "ALL" | "success" | "warning" | "failed" | "info";
 type HistoryActionFilter =
   | "ALL"
   | "PREVIEW"
@@ -29,16 +32,18 @@ type HistoryActionFilter =
 export function FTWilliamsActivityPage() {
   const [history, setHistory] = useState<FTWilliamsHistoryItem[]>([]);
   const [message, setMessage] = useState("");
-  const [range, setRange] = useState<FTWilliamsHistoryRange>("7d");
+  const [range, setRange] = useState<FTWilliamsHistoryRange>("30d");
   const [statusFilter, setStatusFilter] = useState<HistoryStatusFilter>("ALL");
   const [actionFilter, setActionFilter] = useState<HistoryActionFilter>("ALL");
   const [search, setSearch] = useState("");
   const [rowsLimit, setRowsLimit] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
     async function load() {
+      setLoading(true);
       try {
         const result = await listFTWilliamsHistory(range);
         if (!active) return;
@@ -46,6 +51,8 @@ export function FTWilliamsActivityPage() {
         setMessage("");
       } catch (error) {
         if (active) setMessage(error instanceof Error ? error.message : "Could not load FT Williams activity");
+      } finally {
+        if (active) setLoading(false);
       }
     }
     load();
@@ -108,7 +115,7 @@ export function FTWilliamsActivityPage() {
         <div className="dashboard-table-head ftw-activity-head">
           <div>
             <h2>Activity History</h2>
-            <p>{filteredHistory.length} matching action{filteredHistory.length === 1 ? "" : "s"} in the selected range.</p>
+            <p>{loading ? "Loading FT Williams activity..." : `${filteredHistory.length} matching action${filteredHistory.length === 1 ? "" : "s"} in the selected range.`}</p>
           </div>
           <div className="dashboard-table-controls">
             <label className="dashboard-search ftw-activity-search">
@@ -133,6 +140,7 @@ export function FTWilliamsActivityPage() {
               options={[
                 { value: "ALL", label: "All statuses" },
                 { value: "success", label: "Success" },
+                { value: "warning", label: "Warnings" },
                 { value: "failed", label: "Failed" },
                 { value: "info", label: "Info" },
               ]}
@@ -173,7 +181,7 @@ export function FTWilliamsActivityPage() {
           </div>
         </div>
 
-        <div className="dashboard-table-wrap">
+        <div className="dashboard-table-wrap" aria-busy={loading}>
           <table className="dashboard-filings-table ftw-history-table ftw-activity-table">
             <thead>
               <tr>
@@ -187,6 +195,7 @@ export function FTWilliamsActivityPage() {
               </tr>
             </thead>
             <tbody>
+              {loading ? <tr><td colSpan={7} className="ftw-history-loading"><InlineLoader label="Loading activity" /></td></tr> : null}
               {visibleHistory.map((item) => (
                 <FTWilliamsActivityRow item={item} key={item.id || `${item.filing_id}-${item.created_at}-${item.action}`} />
               ))}
@@ -194,7 +203,7 @@ export function FTWilliamsActivityPage() {
           </table>
         </div>
 
-        {!visibleHistory.length ? (
+        {!loading && !visibleHistory.length ? (
           <div className="empty-state ftw-history-empty">
             <Activity size={18} /> No FT Williams activity matches these filters.
           </div>
@@ -261,10 +270,10 @@ function FTWilliamsActivityRow({ item }: { item: FTWilliamsHistoryItem }) {
       </td>
       <td>
         <span className={`ftw-history-status status-${item.status}`}>
-          {item.status === "failed" ? <XCircle size={14} /> : item.status === "success" ? <CheckCircle2 size={14} /> : <Activity size={14} />}
+          {item.status === "failed" ? <XCircle size={14} /> : item.status === "warning" ? <AlertTriangle size={14} /> : item.status === "success" ? <CheckCircle2 size={14} /> : <Activity size={14} />}
           {item.action_label}
         </span>
-        {item.error_message ? <small className="ftw-history-error">{item.error_message}</small> : null}
+        <FTWilliamsDiagnostic message={item.error_message} />
       </td>
       <td>
         <div className="ftw-history-plan">

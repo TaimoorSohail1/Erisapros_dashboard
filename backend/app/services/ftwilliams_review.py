@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from datetime import datetime
 import re
+import time
 from urllib.parse import quote, urlsplit
 
 from app.config import get_settings
@@ -50,11 +53,31 @@ from app.services.schedule_a_classification import (
 from app.services.xml_builder import build_single_document_update_xml, build_schedule_a_records_update_xml, combine_ftw_update_xml
 
 
+_CURRENT_DATA_SNAPSHOT_CACHE: dict[tuple[str, ...], tuple[float, dict]] = {}
+_CURRENT_DATA_SNAPSHOT_INFLIGHT: dict[tuple[str, ...], asyncio.Task] = {}
+_PLAN_LOOKUP_CACHE: dict[tuple[str, ...], tuple[float, FTWilliamsPlanLookup]] = {}
+_PLAN_LOOKUP_INFLIGHT: dict[tuple[str, ...], asyncio.Task] = {}
+
+
+def clear_ftw_current_snapshot_cache() -> None:
+    """Clear process-local FT Williams plan and current-data snapshots."""
+    _CURRENT_DATA_SNAPSHOT_CACHE.clear()
+    _CURRENT_DATA_SNAPSHOT_INFLIGHT.clear()
+    _PLAN_LOOKUP_CACHE.clear()
+    _PLAN_LOOKUP_INFLIGHT.clear()
+
+
 class FTWilliamsReviewService:
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
         self.ftwilliams = ftwilliams or FTWilliamsService()
 
-    async def prepare_review(self, filing_id: str, send_queries: bool = False) -> FTWilliamsReview:
+    async def prepare_review(
+        self,
+        filing_id: str,
+        send_queries: bool = False,
+        *,
+        reuse_current_snapshot: bool = False,
+    ) -> FTWilliamsReview:
         repo = get_repository()
         published_rules = await FieldRuleService(repo).published_rules()
         filing = await repo.get_filing(filing_id)
@@ -65,7 +88,19 @@ class FTWilliamsReviewService:
 
         query_payload_base = self._query_payload_base()
         configured = bool(self.ftwilliams.status()["configured"])
-        plan_lookup = await self._prepare_plan_lookup(filing, fields, send_queries=send_queries, configured=configured)
+        if reuse_current_snapshot and send_queries:
+            plan_lookup = await self._shared_plan_lookup(
+                filing,
+                fields,
+                configured=configured,
+            )
+        else:
+            plan_lookup = await self._prepare_plan_lookup(
+                filing,
+                fields,
+                send_queries=send_queries,
+                configured=configured,
+            )
         review_identity_base = self._merge_plan_lookup_identity(query_payload_base, plan_lookup)
         current_query_payload_base = self._current_query_payload_identity(query_payload_base, plan_lookup)
         query_request_xmls: list[str] = []
@@ -112,6 +147,7 @@ class FTWilliamsReviewService:
                     fields,
                     current_query_payload_base,
                     existing_review,
+                    reuse_current_snapshot=reuse_current_snapshot,
                 )
                 query_request_xmls.extend(query_result["query_request_xmls"])
                 query_response_xmls.extend(query_result["query_response_xmls"])
@@ -754,6 +790,49 @@ class FTWilliamsReviewService:
         lookup.error_message = "PlanData lookup succeeded, but FT Williams did not return usable plan identifiers."
         return lookup
 
+    async def _shared_plan_lookup(
+        self,
+        filing,
+        fields: list[ExtractedField],
+        *,
+        configured: bool,
+    ) -> FTWilliamsPlanLookup:
+        """Single-flight identical plan lookups during bulk automatic intake."""
+        identifiers = self._extract_plan_lookup_identifiers(fields, filing)
+        settings = get_settings()
+        key = (
+            str(settings.ftwlink_endpoint_url or ""),
+            str(identifiers.get("company_employer_id") or ""),
+            str(identifiers.get("plan_number") or ""),
+            str(identifiers.get("year") or ""),
+        )
+        now = time.monotonic()
+        ttl = max(0, settings.ftw_snapshot_ttl_seconds)
+        cached = _PLAN_LOOKUP_CACHE.get(key)
+        if cached and now - cached[0] <= ttl:
+            return deepcopy(cached[1])
+
+        if key in _PLAN_LOOKUP_INFLIGHT:
+            return deepcopy(await _PLAN_LOOKUP_INFLIGHT[key])
+
+        task = asyncio.create_task(
+            self._prepare_plan_lookup(
+                filing,
+                fields,
+                send_queries=True,
+                configured=configured,
+            )
+        )
+        _PLAN_LOOKUP_INFLIGHT[key] = task
+        try:
+            lookup = await task
+            if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
+                _PLAN_LOOKUP_CACHE[key] = (time.monotonic(), deepcopy(lookup))
+            return deepcopy(lookup)
+        finally:
+            if _PLAN_LOOKUP_INFLIGHT.get(key) is task:
+                _PLAN_LOOKUP_INFLIGHT.pop(key, None)
+
     async def _try_same_customer_plan_lookup(
         self,
         lookup: FTWilliamsPlanLookup,
@@ -939,9 +1018,16 @@ class FTWilliamsReviewService:
         fields: list[ExtractedField],
         query_payload_base: dict,
         existing_review: FTWilliamsReview | None,
+        *,
+        reuse_current_snapshot: bool = False,
     ) -> dict:
         target_year = str(query_payload_base.get("year") or "").strip()
-        result = await self._run_current_queries_for_year(fields, query_payload_base, existing_review)
+        result = await self._run_current_queries_for_year(
+            fields,
+            query_payload_base,
+            existing_review,
+            reuse_current_snapshot=reuse_current_snapshot,
+        )
         expects_form_5500 = any(field.form_type == FormType.FORM_5500 for field in fields)
         expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
         missing_required_record = (
@@ -971,32 +1057,23 @@ class FTWilliamsReviewService:
         fields: list[ExtractedField],
         query_payload_base: dict,
         existing_review: FTWilliamsReview | None,
+        *,
+        reuse_current_snapshot: bool = False,
     ) -> dict:
-        query_request_xmls: list[str] = []
-        query_response_xmls: list[str] = []
-        form_5500_current: dict[str, str] = {}
+        snapshot = await self._current_data_snapshot(
+            query_payload_base,
+            reuse=reuse_current_snapshot,
+        )
+        query_request_xmls: list[str] = list(snapshot["query_request_xmls"])
+        query_response_xmls: list[str] = list(snapshot["query_response_xmls"])
+        form_5500_current: dict[str, str] = dict(snapshot["form_5500_current"])
         schedule_a_current: dict[str, str] = {}
         matched_schedule_a: FTWilliamsStatusItem | None = None
         schedule_a_candidates: list[dict] = []
         schedule_a_records: list[dict] = []
-        error_message: str | None = None
-
-        query_5500 = await self.ftwilliams.run_query(
-            FTWilliamsQueryRequest(operation="query_5500", send=True, **query_payload_base)
-        )
-        query_request_xmls.append(query_5500.request_xml)
-        if query_5500.raw_response:
-            query_response_xmls.append(query_5500.raw_response)
-        if query_5500.success and query_5500.statuses:
-            form_5500_current = query_5500.statuses[0].query_results
-        else:
-            error_message = query_5500.error or self._status_error(query_5500.statuses) or "Form 5500 query did not succeed."
-
-        schedule_statuses, schedule_request_xmls, schedule_response_xmls, schedule_a_error = await self._query_schedule_a_statuses(
-            query_payload_base
-        )
-        query_request_xmls.extend(schedule_request_xmls)
-        query_response_xmls.extend(schedule_response_xmls)
+        error_message: str | None = snapshot["form_5500_error"]
+        schedule_statuses = deepcopy(snapshot["schedule_statuses"])
+        schedule_a_error = snapshot["schedule_a_error"]
         if schedule_statuses:
             schedule_a_candidates = self._schedule_candidate_payloads(schedule_statuses, fields)
             schedule_a_records = self._schedule_record_payloads(schedule_statuses)
@@ -1033,6 +1110,74 @@ class FTWilliamsReviewService:
             "current_query_complete": has_required_current,
         }
 
+    async def _current_data_snapshot(self, query_payload_base: dict, *, reuse: bool) -> dict:
+        key = self._current_data_snapshot_key(query_payload_base)
+        now = time.monotonic()
+        ttl = max(0, get_settings().ftw_snapshot_ttl_seconds)
+        cached = _CURRENT_DATA_SNAPSHOT_CACHE.get(key)
+        if reuse and cached and now - cached[0] <= ttl:
+            return deepcopy(cached[1])
+
+        if reuse and key in _CURRENT_DATA_SNAPSHOT_INFLIGHT:
+            return deepcopy(await _CURRENT_DATA_SNAPSHOT_INFLIGHT[key])
+
+        task = asyncio.create_task(self._fetch_current_data_snapshot(query_payload_base))
+        if reuse:
+            _CURRENT_DATA_SNAPSHOT_INFLIGHT[key] = task
+        try:
+            snapshot = await task
+            _CURRENT_DATA_SNAPSHOT_CACHE[key] = (time.monotonic(), deepcopy(snapshot))
+            return deepcopy(snapshot)
+        finally:
+            if reuse and _CURRENT_DATA_SNAPSHOT_INFLIGHT.get(key) is task:
+                _CURRENT_DATA_SNAPSHOT_INFLIGHT.pop(key, None)
+
+    async def _fetch_current_data_snapshot(self, query_payload_base: dict) -> dict:
+        query_request_xmls: list[str] = []
+        query_response_xmls: list[str] = []
+        form_5500_current: dict[str, str] = {}
+
+        query_5500 = await self.ftwilliams.run_query(
+            FTWilliamsQueryRequest(operation="query_5500", send=True, **query_payload_base)
+        )
+        query_request_xmls.append(query_5500.request_xml)
+        if query_5500.raw_response:
+            query_response_xmls.append(query_5500.raw_response)
+        if query_5500.success and query_5500.statuses:
+            form_5500_current = query_5500.statuses[0].query_results
+            form_5500_error = None
+        else:
+            form_5500_error = (
+                query_5500.error
+                or self._status_error(query_5500.statuses)
+                or "Form 5500 query did not succeed."
+            )
+
+        schedule_statuses, schedule_request_xmls, schedule_response_xmls, schedule_a_error = (
+            await self._query_schedule_a_statuses(query_payload_base)
+        )
+        query_request_xmls.extend(schedule_request_xmls)
+        query_response_xmls.extend(schedule_response_xmls)
+        return {
+            "query_request_xmls": query_request_xmls,
+            "query_response_xmls": query_response_xmls,
+            "form_5500_current": form_5500_current,
+            "form_5500_error": form_5500_error,
+            "schedule_statuses": schedule_statuses,
+            "schedule_a_error": schedule_a_error,
+        }
+
+    def _current_data_snapshot_key(self, query_payload_base: dict) -> tuple[str, ...]:
+        settings = get_settings()
+        return (
+            str(settings.ftwlink_endpoint_url or ""),
+            str(query_payload_base.get("ftw_customer_id") or ""),
+            str(query_payload_base.get("ftw_plan_id") or ""),
+            str(query_payload_base.get("customer_id") or ""),
+            str(query_payload_base.get("plan_id") or ""),
+            str(query_payload_base.get("year") or ""),
+        )
+
     async def _query_schedule_a_statuses(self, query_payload_base: dict) -> tuple[list[FTWilliamsStatusItem], list[str], list[str], str | None]:
         request_xmls: list[str] = []
         response_xmls: list[str] = []
@@ -1040,7 +1185,9 @@ class FTWilliamsReviewService:
         errors: list[str] = []
         fatal_plan_error = False
 
-        for sequence in range(1, 21):
+        concurrency = max(1, min(20, get_settings().ftw_slot_query_concurrency))
+
+        async def query_sequence(sequence: int):
             response = await self.ftwilliams.run_query(
                 FTWilliamsQueryRequest(
                     operation="query_schedule_a",
@@ -1049,19 +1196,29 @@ class FTWilliamsReviewService:
                     **query_payload_base,
                 )
             )
-            request_xmls.append(response.request_xml)
-            if response.raw_response:
-                response_xmls.append(response.raw_response)
-            for status in response.statuses:
-                if str(status.error_code or "") == "0":
-                    if not status.ftw_seq_no:
-                        status.ftw_seq_no = str(sequence)
-                    statuses.append(status)
-            error = response.error or self._status_error(response.statuses, ignore_error_codes={"59"})
-            if error:
-                errors.append(error)
-            if self._has_fatal_plan_query_error(response.statuses):
-                fatal_plan_error = True
+            return sequence, response
+
+        # Use deterministic batches. A fatal plan-level response stops the
+        # next batch, preserving the old early-exit behavior while allowing
+        # independent slots within each batch to overlap.
+        for batch_start in range(1, 21, concurrency):
+            batch = range(batch_start, min(21, batch_start + concurrency))
+            responses = await asyncio.gather(*(query_sequence(sequence) for sequence in batch))
+            for sequence, response in responses:
+                request_xmls.append(response.request_xml)
+                if response.raw_response:
+                    response_xmls.append(response.raw_response)
+                for status in response.statuses:
+                    if str(status.error_code or "") == "0":
+                        if not status.ftw_seq_no:
+                            status.ftw_seq_no = str(sequence)
+                        statuses.append(status)
+                error = response.error or self._status_error(response.statuses, ignore_error_codes={"59"})
+                if error:
+                    errors.append(error)
+                if self._has_fatal_plan_query_error(response.statuses):
+                    fatal_plan_error = True
+            if fatal_plan_error:
                 break
 
         if fatal_plan_error:
@@ -1188,6 +1345,11 @@ class FTWilliamsReviewService:
         review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
         review.error_message = None if success else "; ".join(filter(None, [response.error or self._status_error(response.statuses) for response in responses]))
         review.client_error = self._normalize_review_error(review.error_message, review.fields)
+
+        if success:
+            # The just-sent values make every cached FTW current snapshot
+            # potentially stale. The next automatic comparison must reload.
+            clear_ftw_current_snapshot_cache()
 
         if success and run_edit_checks:
             edit_checks = await self.ftwilliams.run_query(

@@ -9,7 +9,7 @@
     "mongo:dev": "powershell -ExecutionPolicy Bypass -File scripts/start-mongo-dev.ps1",
     "backend:dev": "npm run mongo:dev && backend\\.venv\\Scripts\\python -m uvicorn app.main:app --reload --app-dir backend --host 0.0.0.0 --port 8001",
     "backend:check": "python -m compileall backend/app",
-    "backend:test": "backend\\.venv\\Scripts\\python -m unittest discover -s backend/tests",
+    "backend:test": "set PYTHONPATH=backend&& backend\\.venv\\Scripts\\python -m unittest discover -s backend/tests",
     "check": "npm run frontend:typecheck && npm run frontend:build && npm --prefix frontend run smoke:build && npm run backend:check && npm run backend:test"
   }
 }

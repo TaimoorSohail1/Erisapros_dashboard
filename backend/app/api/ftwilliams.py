@@ -116,7 +116,7 @@ def _history_item(audit: AuditLog, filing: Filing, review: FTWilliamsReview | No
     action_label, status = _history_action(audit)
     lookup = review.plan_lookup if review and review.plan_lookup else None
     updated_count = _history_updated_field_count(audit, review)
-    error_message = str(details.get("error") or "") or (review.error_message if status == "failed" and review else None)
+    error_message = str(details.get("error") or "") or (review.error_message if status in {"failed", "warning"} and review else None)
     return FTWilliamsHistoryItem(
         id=audit.id,
         filing_id=filing.id or audit.filing_id or "",
@@ -145,7 +145,11 @@ def _history_action(audit: AuditLog) -> tuple[str, str]:
     details = audit.details or {}
     if audit.event == "FTWILLIAMS_REVIEW_PREPARED":
         if details.get("send_queries"):
-            return "Current data queried", "success" if details.get("current_query_success") else "failed"
+            if not details.get("current_query_success"):
+                return "Current data queried", "failed"
+            if details.get("error"):
+                return "Current data queried", "warning"
+            return "Current data queried", "success"
         return "Preview prepared", "success"
     if audit.event == "FTWILLIAMS_MANUAL_MATCH_SAVED":
         return "Plan match saved", "success"

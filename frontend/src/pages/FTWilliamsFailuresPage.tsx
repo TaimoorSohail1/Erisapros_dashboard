@@ -20,6 +20,7 @@ import {
 } from "../ftwFailures";
 import type { FTWilliamsFailureQueueItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
+import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 
 type FailureTypeFilter = "ALL" | FTWilliamsFailureType;
 type DateFilter = "ALL" | "TODAY" | "LAST_7" | "LAST_30";
@@ -302,7 +303,7 @@ function FTWilliamsFailureQueueRow({ item }: { item: FTWilliamsFailureQueueItem 
       </td>
       <td>
         <div className="ftw-failure-reason-cell">
-          <strong>{item.failure_reason}</strong>
+          <FTWilliamsDiagnostic message={item.failure_reason} />
           {item.next_action ? <small>Next: {item.next_action}</small> : null}
         </div>
       </td>

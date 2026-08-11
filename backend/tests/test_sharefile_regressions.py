@@ -532,6 +532,60 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertIn("Housing Life Schedule A.pdf", active[0].file_name)
         self.assertFalse(any(filing.status == FilingStatus.WAITING_FOR_SCHEDULE_A for filing in active))
 
+    def test_deleted_sharefile_items_stay_suppressed_but_new_items_can_import(self):
+        deleted_schedule = sharefile_file(
+            "deleted-schedule",
+            "Deleted Schedule A.pdf",
+            ["Client", "5500", "2025 Filing", "Schedule A's", "Deleted Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        deleted_worksheet = sharefile_file(
+            "deleted-worksheet",
+            "Deleted Plan Worksheet.docx",
+            ["Client", "5500", "2025 Filing", "Deleted Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+        )
+        new_schedule = sharefile_file(
+            "new-schedule",
+            "New Schedule A.pdf",
+            ["Other Client", "5500", "2025 Filing", "Schedule A's", "New Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        new_worksheet = sharefile_file(
+            "new-worksheet",
+            "New Plan Worksheet.docx",
+            ["Other Client", "5500", "2025 Filing", "New Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+        )
+
+        async def scenario():
+            repo = repositories.get_repository()
+            await repo.upsert_sharefile_suppression("deleted-schedule", {"reason": "DASHBOARD_DELETE"})
+            await repo.upsert_sharefile_suppression("deleted-worksheet", {"reason": "DASHBOARD_DELETE"})
+            self.stub_package_creation()
+            return await self.service._queue_sharefile_packages(
+                client=None,
+                token=ShareFileOAuthToken(subdomain="example", access_token="token"),
+                packages={
+                    "deleted-package": [deleted_schedule, deleted_worksheet],
+                    "new-package": [new_schedule, new_worksheet],
+                },
+                background_tasks=DummyBackgroundTasks(),
+                source="TEST_SUPPRESSION",
+                prefer_changed=False,
+            )
+
+        synced, skipped, failed = run_async(scenario())
+        active = [
+            filing
+            for filing in run_async(repositories.get_repository().list_filings())
+            if filing.status not in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}
+        ]
+        self.assertEqual(failed, [])
+        self.assertEqual(len(synced), 1)
+        self.assertEqual(active[0].sharefile_item_id, "new-schedule")
+        self.assertTrue(any(item["reason"] == "DASHBOARD_DELETE_SUPPRESSED" for item in skipped))
+
     def test_cleanup_supersedes_redundant_worksheet_waiting_row(self):
         worksheet = sharefile_file(
             "worksheet",

@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 
+from app.config import get_settings
 from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FilingStatus, FormType, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
 from app.repositories import get_repository
 from app.services.extractor import ExtractionService
@@ -228,6 +229,40 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             await asyncio.sleep(5 * attempt)
 
 
+async def process_extraction_batch(packages: list[tuple[str, str, list[dict]]]) -> None:
+    """Process a bulk intake with a bounded number of active packages."""
+    concurrency = max(1, get_settings().filing_extraction_concurrency)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def run_package(item: tuple[str, str, list[dict]]):
+        filing_id, job_id, documents = item
+        async with semaphore:
+            return await process_package_extraction_job(filing_id, job_id, documents)
+
+    results = await asyncio.gather(*(run_package(item) for item in packages), return_exceptions=True)
+    repo = get_repository()
+    for (filing_id, job_id, _documents), result in zip(packages, results):
+        if not isinstance(result, Exception):
+            continue
+        error = str(result)
+        await repo.update_extraction_job(
+            job_id,
+            {
+                "status": ExtractionJobStatus.FAILED,
+                "last_error": error,
+                "next_retry_at": None,
+            },
+        )
+        await repo.update_filing(filing_id, {"status": FilingStatus.FAILED, "error_message": error})
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="EXTRACTION_BATCH_FAILED",
+                message=error,
+            )
+        )
+
+
 async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsReviewService | None = None) -> None:
     repo = get_repository()
     filing = await repo.get_filing(filing_id)
@@ -242,7 +277,16 @@ async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsRevie
         )
     )
     try:
-        review = await (review_service or FTWilliamsReviewService()).prepare_review(filing_id, send_queries=True)
+        if review_service is not None:
+            # Test doubles and explicit callers keep the original two-argument
+            # service contract. Production auto-query enables snapshot reuse.
+            review = await review_service.prepare_review(filing_id, send_queries=True)
+        else:
+            review = await FTWilliamsReviewService().prepare_review(
+                filing_id,
+                send_queries=True,
+                reuse_current_snapshot=True,
+            )
         await repo.update_filing(filing_id, {"status": previous_status})
         if review.current_query_success:
             await repo.add_audit(

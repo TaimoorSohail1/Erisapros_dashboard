@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     ftwlink_sandbox_ftw_customer_id: str | None = None
     ftwlink_sandbox_ftw_plan_id: str | None = None
     ftwlink_sandbox_year_end: str | None = None
+    # FT Williams Schedule A slots are independent. Query a small batch in
+    # parallel to reduce latency without flooding the upstream service.
+    ftw_slot_query_concurrency: int = 5
+    # Current-data snapshots are identical for every filing that belongs to
+    # the same FT Williams plan and year.
+    ftw_snapshot_ttl_seconds: int = 300
+    # Keep extraction bounded so bulk ShareFile uploads remain responsive.
+    filing_extraction_concurrency: int = 4
     ftw_plan_page_url_template: str = (
         "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
         "CommonField={ftw_customer_id}&ChildField={ftw_plan_id}&Year={year}&OnePlan=Y"

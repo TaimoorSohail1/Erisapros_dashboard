@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from pathlib import Path
 import sys
@@ -8,7 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
 from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FormType, FTWilliamsReview
-from app.services.filing_pipeline import auto_query_ftw_current, harmonize_schedule_a_business_rule_fields, harmonize_schedule_a_reference_fields
+from app.services.filing_pipeline import (
+    auto_query_ftw_current,
+    harmonize_schedule_a_business_rule_fields,
+    harmonize_schedule_a_reference_fields,
+    process_extraction_batch,
+)
 
 
 def run_async(coro):
@@ -168,6 +174,28 @@ class FilingPipelineTests(unittest.TestCase):
         repo = repositories.get_repository()
         failed = next(audit for audit in repo.audit if audit.event == "FTWILLIAMS_CURRENT_AUTO_QUERY_FAILED")
         self.assertEqual(failed.details["error"], "FT Williams timeout")
+
+    def test_bulk_extraction_processes_at_most_four_packages_at_once(self):
+        active = 0
+        max_active = 0
+        started = []
+
+        async def fake_processor(filing_id, job_id, documents):
+            nonlocal active, max_active
+            started.append(filing_id)
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                active -= 1
+
+        batch = [(f"filing-{index}", f"job-{index}", []) for index in range(10)]
+        with patch("app.services.filing_pipeline.process_package_extraction_job", side_effect=fake_processor):
+            run_async(process_extraction_batch(batch))
+
+        self.assertEqual(len(started), 10)
+        self.assertEqual(max_active, 4)
 
 
 if __name__ == "__main__":

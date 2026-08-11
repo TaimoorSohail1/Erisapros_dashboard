@@ -143,6 +143,36 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(response.items[0].status, "failed")
         self.assertEqual(response.items[0].updated_field_count, 12)
 
+    def test_history_labels_partial_current_query_as_warning(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Partial Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/partial",
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_REVIEW_PREPARED",
+                    message="FT Williams comparison prepared with a partial plan lookup.",
+                    details={
+                        "send_queries": True,
+                        "current_query_success": True,
+                        "field_count": 8,
+                        "error": "Plan error 18: company identifier was not valid.",
+                    },
+                )
+            )
+            return await history("1d")
+
+        response = run_async(scenario())
+        self.assertEqual(response.items[0].status, "warning")
+        self.assertIn("Plan error 18", response.items[0].error_message)
+
     def test_failure_queue_returns_only_active_unresolved_ftw_failures(self):
         async def scenario():
             repo = repositories.get_repository()
