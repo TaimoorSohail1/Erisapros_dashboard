@@ -176,6 +176,8 @@ class MongoRepository(Repository):
             "schedule_a_contract_type": 1,
             "schedule_a_contract_type_reason": 1,
             "schedule_a_contract_type_confirmed": 1,
+            "schedule_a_contract_type_confidence": 1,
+            "schedule_a_contract_type_evidence": 1,
             "ftw_schedule_a_contract_type": 1,
             "ftw_schedule_a_contract_type_reason": 1,
             "proposed_xml": 1,
