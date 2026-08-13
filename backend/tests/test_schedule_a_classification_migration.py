@@ -5,7 +5,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import DocumentType, ExtractedField, Filing, FormType
+from app.models import (
+    DocumentType,
+    ExtractedField,
+    Filing,
+    FormType,
+    FTWilliamsReview,
+    ScheduleAContractType,
+)
 from app.repositories import MemoryRepository
 from app.services.schedule_a_classification_migration import reclassify_active_filings
 
@@ -95,16 +102,30 @@ class ScheduleAClassificationMigrationTests(unittest.TestCase):
                     ),
                 ]
             )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+                    schedule_a_contract_type_reason="Legacy stored review classification.",
+                )
+            )
 
             await reclassify_active_filings(repo, apply_changes=True)
-            return await repo.get_filing(filing.id), await repo.list_fields(filing.id), await repo.list_audit_logs(filing.id)
+            return (
+                await repo.get_filing(filing.id),
+                await repo.list_fields(filing.id),
+                await repo.list_audit_logs(filing.id),
+                await repo.get_ftwilliams_review(filing.id),
+            )
 
-        filing, fields, audit = asyncio.run(scenario())
+        filing, fields, audit, review = asyncio.run(scenario())
 
         self.assertEqual(filing.schedule_a_contract_type.value, "EXPERIENCE_RATED")
         self.assertEqual(filing.status.value, "UPLOADED")
         self.assertEqual(next(field for field in fields if field.mapped_rule_key == LINE_10A).proposed_value, "0")
         self.assertEqual(audit[-1].event, "SCHEDULE_A_AUTO_CLASSIFICATION_MIGRATED")
+        self.assertEqual(review.schedule_a_contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+        self.assertEqual(review.schedule_a_contract_type_reason, filing.schedule_a_contract_type_reason)
 
 
 if __name__ == "__main__":

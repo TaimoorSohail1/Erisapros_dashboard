@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from app.models import AuditLog, FieldRule, FieldRuleStatus, FilingStatus
+from app.models import (
+    AuditLog,
+    ExtractedField,
+    FieldRule,
+    FieldRuleStatus,
+    FilingStatus,
+    FTWilliamsComparisonField,
+    ScheduleAContractType,
+)
 from app.repositories import Repository
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.filing_pipeline import summarize_mapped_fields
@@ -90,6 +98,36 @@ async def reclassify_active_filings(
             "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
         }
         await repository.update_filing(filing.id, filing_updates)
+        stored_review = await repository.get_ftwilliams_review(filing.id)
+        if stored_review:
+            relevant_field_ids = {field.id for field in relevant_fields if field.id}
+            fields_by_id = {field.id: field for field in fields if field.id}
+            fields_by_rule = {field.mapped_rule_key: field for field in fields if field.mapped_rule_key}
+            stored_review.schedule_a_contract_type = classification.contract_type
+            stored_review.schedule_a_contract_type_reason = classification.reason
+            stored_review.schedule_a_contract_type_confirmed = True
+            stored_review.schedule_a_contract_type_confidence = classification.confidence
+            stored_review.schedule_a_contract_type_evidence = list(classification.evidence)
+            known_types = {
+                ScheduleAContractType.EXPERIENCE_RATED,
+                ScheduleAContractType.NONEXPERIENCE_RATED,
+            }
+            stored_review.schedule_a_contract_type_mismatch = bool(
+                stored_review.ftw_schedule_a_contract_type in known_types
+                and stored_review.ftw_schedule_a_contract_type != classification.contract_type
+            )
+            for comparison in stored_review.fields:
+                source_field = (
+                    fields_by_id.get(comparison.field_id)
+                    if comparison.field_id
+                    else fields_by_rule.get(comparison.rule_key)
+                )
+                if not source_field:
+                    continue
+                _refresh_comparison_from_field(comparison, source_field)
+                if source_field.id not in relevant_field_ids:
+                    comparison.update_included = False
+            await repository.upsert_ftwilliams_review(stored_review)
         await repository.add_audit(
             AuditLog(
                 filing_id=filing.id,
@@ -100,6 +138,15 @@ async def reclassify_active_filings(
         )
 
     return report
+
+
+def _refresh_comparison_from_field(comparison: FTWilliamsComparisonField, field: ExtractedField) -> None:
+    comparison.extracted_value = str(field.value or "")
+    comparison.proposed_value = str(field.proposed_value or field.value or "")
+    comparison.confidence = field.confidence
+    comparison.priority = field.priority
+    comparison.extraction_status = field.status
+    comparison.changed = comparison.current_value.strip() != comparison.proposed_value.strip()
 
 
 async def _published_rules_without_seeding(repository: Repository) -> list[FieldRule]:
