@@ -45,8 +45,8 @@ from app.services.ftwilliams_tags import (
 )
 from app.services.schedule_a_classification import (
     ScheduleAClassification,
+    apply_schedule_a_classification,
     classify_schedule_a_current,
-    classify_schedule_a_fields,
     filter_schedule_a_fields_for_contract_type,
     schedule_a_contract_type_allows_rule,
 )
@@ -184,7 +184,12 @@ class FTWilliamsReviewService:
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
         safe_form_5500_fields = [] if form_5500_block_reason else self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
-        computed_contract_classification = classify_schedule_a_fields(fields)
+        automatic_field_state = self._automatic_field_state(fields)
+        computed_contract_classification = apply_schedule_a_classification(
+            fields,
+            filing.schedule_a_classification_signals,
+        )
+        await self._persist_automatic_field_changes(repo, filing_id, automatic_field_state, fields)
         extracted_contract_classification = self._effective_schedule_a_classification(filing, computed_contract_classification)
         ftw_contract_classification = classify_schedule_a_current(schedule_a_current) if schedule_a_current else None
         contract_type_mismatch = bool(
@@ -271,7 +276,9 @@ class FTWilliamsReviewService:
             schedule_a_worksheet_summaries=schedule_a_worksheet_summaries,
             schedule_a_contract_type=extracted_contract_classification.contract_type,
             schedule_a_contract_type_reason=extracted_contract_classification.reason,
-            schedule_a_contract_type_confirmed=bool(filing.schedule_a_contract_type_confirmed),
+            schedule_a_contract_type_confirmed=True,
+            schedule_a_contract_type_confidence=extracted_contract_classification.confidence,
+            schedule_a_contract_type_evidence=list(extracted_contract_classification.evidence),
             ftw_schedule_a_contract_type=ftw_contract_classification.contract_type if ftw_contract_classification else filing.ftw_schedule_a_contract_type,
             ftw_schedule_a_contract_type_reason=ftw_contract_classification.reason if ftw_contract_classification else filing.ftw_schedule_a_contract_type_reason,
             schedule_a_contract_type_mismatch=contract_type_mismatch,
@@ -289,8 +296,16 @@ class FTWilliamsReviewService:
         filing_contract_updates = {
             "schedule_a_contract_type": extracted_contract_classification.contract_type,
             "schedule_a_contract_type_reason": extracted_contract_classification.reason,
-            "schedule_a_contract_type_confirmed": bool(filing.schedule_a_contract_type_confirmed),
+            "schedule_a_contract_type_confirmed": True,
+            "schedule_a_contract_type_confidence": extracted_contract_classification.confidence,
+            "schedule_a_contract_type_evidence": list(extracted_contract_classification.evidence),
         }
+        classification_relevant_fields = filter_schedule_a_fields_for_contract_type(
+            fields,
+            extracted_contract_classification.contract_type,
+            rules=published_rules,
+        )
+        filing_contract_updates |= self._review_field_count_updates(fields, classification_relevant_fields)
         if ftw_contract_classification:
             filing_contract_updates |= {
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type,
@@ -457,7 +472,12 @@ class FTWilliamsReviewService:
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
         safe_form_5500_fields = [] if form_5500_block_reason else self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
-        computed_contract_classification = classify_schedule_a_fields(fields)
+        automatic_field_state = self._automatic_field_state(fields)
+        computed_contract_classification = apply_schedule_a_classification(
+            fields,
+            filing.schedule_a_classification_signals,
+        )
+        await self._persist_automatic_field_changes(repo, filing_id, automatic_field_state, fields)
         extracted_contract_classification = self._effective_schedule_a_classification(filing, computed_contract_classification)
         ftw_contract_classification = classify_schedule_a_current(schedule_a_current) if schedule_a_current else None
         contract_type_mismatch = bool(
@@ -521,7 +541,9 @@ class FTWilliamsReviewService:
                 "schedule_a_worksheet_summaries": schedule_a_worksheet_summaries,
                 "schedule_a_contract_type": extracted_contract_classification.contract_type,
                 "schedule_a_contract_type_reason": extracted_contract_classification.reason,
-                "schedule_a_contract_type_confirmed": bool(filing.schedule_a_contract_type_confirmed),
+                "schedule_a_contract_type_confirmed": True,
+                "schedule_a_contract_type_confidence": extracted_contract_classification.confidence,
+                "schedule_a_contract_type_evidence": list(extracted_contract_classification.evidence),
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type if ftw_contract_classification else review.ftw_schedule_a_contract_type,
                 "ftw_schedule_a_contract_type_reason": ftw_contract_classification.reason if ftw_contract_classification else review.ftw_schedule_a_contract_type_reason,
                 "schedule_a_contract_type_mismatch": contract_type_mismatch,
@@ -542,8 +564,16 @@ class FTWilliamsReviewService:
         filing_updates = {
             "schedule_a_contract_type": extracted_contract_classification.contract_type,
             "schedule_a_contract_type_reason": extracted_contract_classification.reason,
-            "schedule_a_contract_type_confirmed": bool(filing.schedule_a_contract_type_confirmed),
+            "schedule_a_contract_type_confirmed": True,
+            "schedule_a_contract_type_confidence": extracted_contract_classification.confidence,
+            "schedule_a_contract_type_evidence": list(extracted_contract_classification.evidence),
         }
+        classification_relevant_fields = filter_schedule_a_fields_for_contract_type(
+            fields,
+            extracted_contract_classification.contract_type,
+            rules=published_rules,
+        )
+        filing_updates |= self._review_field_count_updates(fields, classification_relevant_fields)
         if ftw_contract_classification:
             filing_updates |= {
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type,
@@ -647,6 +677,35 @@ class FTWilliamsReviewService:
             "low_confidence_count": low_confidence,
             "unmapped_count": unmapped,
         }
+
+    @staticmethod
+    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, tuple[str, ExtractedFieldStatus, str | None]]:
+        return {
+            field.id: (field.proposed_value, field.status, field.status_reason)
+            for field in fields
+            if field.id
+        }
+
+    @staticmethod
+    async def _persist_automatic_field_changes(
+        repo,
+        filing_id: str,
+        before: dict[str, tuple[str, ExtractedFieldStatus, str | None]],
+        fields: list[ExtractedField],
+    ) -> None:
+        for field in fields:
+            if not field.id:
+                continue
+            current = (field.proposed_value, field.status, field.status_reason)
+            if before.get(field.id) == current:
+                continue
+            await repo.update_field(
+                filing_id,
+                field.id,
+                field.proposed_value,
+                status=field.status,
+                status_reason=field.status_reason,
+            )
 
     async def send_approved_update(self, filing_id: str, payload: FTWilliamsSendUpdateRequest) -> FTWilliamsReview | None:
         repo = get_repository()
@@ -1411,15 +1470,7 @@ class FTWilliamsReviewService:
         filing,
         computed: ScheduleAClassification,
     ) -> ScheduleAClassification:
-        if (
-            bool(getattr(filing, "schedule_a_contract_type_confirmed", False))
-            and filing.schedule_a_contract_type
-            and filing.schedule_a_contract_type != ScheduleAContractType.UNKNOWN
-        ):
-            return ScheduleAClassification(
-                filing.schedule_a_contract_type,
-                filing.schedule_a_contract_type_reason or "Reviewer confirmed Schedule A contract type.",
-            )
+        del filing
         return computed
 
     def _schedule_a_contract_type_block_reason(

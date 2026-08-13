@@ -8,7 +8,7 @@ from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
-from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
+from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
 from app.services.xml_builder import build_proposed_ftw_xml
 
 
@@ -56,6 +56,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             raw_items: list[dict] = []
             schedule_a_broker_rows: list[ScheduleABrokerRow] = []
             schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
+            schedule_a_classification_signals: list[str] = []
 
             for document in documents:
                 file_name = str(document["file_name"])
@@ -67,6 +68,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                 if document_type == DocumentType.SCHEDULE_A:
                     schedule_a_broker_rows.extend(extraction.schedule_a_broker_rows)
                     schedule_a_worksheet_summaries.extend(extraction.schedule_a_worksheet_summaries)
+                    schedule_a_classification_signals.extend(extraction.classification_signals)
                 raw_items.append(
                     {
                         "file_name": file_name,
@@ -75,6 +77,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         "raw": extraction.raw,
                         "schedule_a_broker_row_count": len(extraction.schedule_a_broker_rows),
                         "schedule_a_worksheet_summary_count": len(extraction.schedule_a_worksheet_summaries),
+                        "classification_signals": extraction.classification_signals,
                     }
                 )
 
@@ -89,6 +92,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                             "raw": extraction.raw,
                             "schedule_a_broker_rows": [row.model_dump(mode="json") for row in extraction.schedule_a_broker_rows],
                             "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in extraction.schedule_a_worksheet_summaries],
+                            "classification_signals": extraction.classification_signals,
                         },
                     )
                 )
@@ -115,7 +119,11 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             mapped_fields = harmonize_schedule_a_reference_fields(mapped_fields)
             mapped_fields = harmonize_schedule_a_business_rule_fields(mapped_fields)
             mapped_fields = apply_schedule_a_sanity_checks(mapped_fields)
-            contract_classification = classify_schedule_a_fields(mapped_fields)
+            schedule_a_classification_signals = sorted(set(schedule_a_classification_signals))
+            contract_classification = apply_schedule_a_classification(
+                mapped_fields,
+                schedule_a_classification_signals,
+            )
             relevant_fields = filter_schedule_a_fields_for_contract_type(
                 mapped_fields,
                 contract_classification.contract_type,
@@ -144,7 +152,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "excluded_field_count": max(0, len(mapped_fields) - len(relevant_fields)),
                     "schedule_a_contract_type": contract_classification.contract_type,
                     "schedule_a_contract_type_reason": contract_classification.reason,
-                    "schedule_a_contract_type_confirmed": False,
+                    "schedule_a_contract_type_confirmed": True,
+                    "schedule_a_contract_type_confidence": contract_classification.confidence,
+                    "schedule_a_contract_type_evidence": list(contract_classification.evidence),
+                    "schedule_a_classification_signals": schedule_a_classification_signals,
                     "schedule_a_broker_rows": [row.model_dump(mode="json") for row in schedule_a_broker_rows],
                     "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in schedule_a_worksheet_summaries],
                     "proposed_xml": proposed_xml,
@@ -173,6 +184,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         "schedule_a_worksheet_summary_count": len(schedule_a_worksheet_summaries),
                         "documents": [{"file_name": item["file_name"], "document_type": item["document_type"], "provider": item["provider"]} for item in raw_items],
                         "field_rule_set_version": rule_snapshot.version,
+                        "schedule_a_contract_type": contract_classification.contract_type,
+                        "schedule_a_contract_type_reason": contract_classification.reason,
+                        "schedule_a_contract_type_confidence": contract_classification.confidence,
+                        "schedule_a_contract_type_evidence": list(contract_classification.evidence),
                     },
                 )
             )

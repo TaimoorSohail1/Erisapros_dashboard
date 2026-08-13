@@ -7,7 +7,6 @@ import type {
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
   FTWilliamsReview,
-  ScheduleAContractType,
 } from "./types";
 import { getIdToken } from "./auth";
 
@@ -133,17 +132,6 @@ export async function selectFTWilliamsScheduleAMatch(
   },
 ): Promise<{ ftw_review: FTWilliamsReview }> {
   return request("/filings/" + filingId + "/ftw/schedule-a-match", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-}
-
-export async function setScheduleAContractType(
-  filingId: string,
-  payload: { contract_type: ScheduleAContractType; reason?: string },
-): Promise<{ ftw_review: FTWilliamsReview }> {
-  return request("/filings/" + filingId + "/ftw/schedule-a-contract-type", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

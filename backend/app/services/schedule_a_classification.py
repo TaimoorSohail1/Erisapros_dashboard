@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import re
 
-from app.models import ExtractedField, FieldRule, FieldRuleApplicability, FormType, ScheduleAContractType
+from app.models import ExtractedField, ExtractedFieldStatus, FieldRule, FieldRuleApplicability, FormType, ScheduleAContractType
 
 
 EXPERIENCE_PREMIUM_RULES = {
@@ -43,6 +44,11 @@ EXPERIENCE_OTHER_RULES = {
 NONEXPERIENCE_PREMIUM_RULE = "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier"
 EXPERIENCE_RULES = EXPERIENCE_PREMIUM_RULES | EXPERIENCE_CLAIM_RULES | EXPERIENCE_ADMIN_RULES | EXPERIENCE_OTHER_RULES
 NONEXPERIENCE_RULES = {NONEXPERIENCE_PREMIUM_RULE}
+NONEXPERIENCE_ZERO_RULES = {
+    "schedule_a_part_iii_9a_4_earned_1_2_3",
+    "schedule_a_part_iii_9b_3_incurred_claims_add_1_and_2",
+    "schedule_a_part_iii_9c_1_h_total_retention",
+}
 
 CURRENT_TAGS_BY_RULE = {
     "schedule_a_part_iii_9a_premiums_1_amount_received": "WlfrPremiumRcvdAmt",
@@ -74,15 +80,33 @@ CURRENT_TAGS_BY_RULE = {
 class ScheduleAClassification:
     contract_type: ScheduleAContractType
     reason: str
+    confidence: float = 1.0
+    evidence: tuple[str, ...] = ()
 
 
-def classify_schedule_a_fields(fields: list[ExtractedField]) -> ScheduleAClassification:
+def classification_signals_from_text(text: str | None) -> list[str]:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower())
+    signals: set[str] = set()
+    nonexperience_pattern = r"\bnon\s*experience\s*rated\b"
+    if re.search(nonexperience_pattern, normalized):
+        signals.add("EXPLICIT_NONEXPERIENCE_RATED")
+    without_nonexperience = re.sub(nonexperience_pattern, " ", normalized)
+    if re.search(r"\bexperience\s*rated\b", without_nonexperience):
+        signals.add("EXPLICIT_EXPERIENCE_RATED")
+    return sorted(signals)
+
+
+def classify_schedule_a_fields(
+    fields: list[ExtractedField],
+    classification_signals: list[str] | None = None,
+) -> ScheduleAClassification:
     values = {
         str(field.mapped_rule_key or ""): str(field.proposed_value or field.value or "")
         for field in fields
         if field.form_type == FormType.SCHEDULE_A and field.mapped_rule_key
     }
-    return classify_schedule_a_values(values)
+    signals = [*(classification_signals or []), *_classification_signals_from_fields(fields)]
+    return classify_schedule_a_values(values, signals)
 
 
 def classify_schedule_a_current(current_values: dict[str, str]) -> ScheduleAClassification:
@@ -90,41 +114,158 @@ def classify_schedule_a_current(current_values: dict[str, str]) -> ScheduleAClas
     return classify_schedule_a_values(values)
 
 
-def classify_schedule_a_values(values_by_rule_key: dict[str, str]) -> ScheduleAClassification:
+def apply_schedule_a_classification(
+    fields: list[ExtractedField],
+    classification_signals: list[str] | None = None,
+) -> ScheduleAClassification:
+    for field in fields:
+        if not str(field.status_reason or "").startswith("Automatically derived"):
+            continue
+        original_value = str(field.value or "").strip()
+        field.proposed_value = original_value
+        field.status = ExtractedFieldStatus.MATCHED if original_value else ExtractedFieldStatus.MISSING
+        field.status_reason = (
+            "Restored the extracted value before automatic Schedule A classification."
+            if original_value
+            else "No extracted value was available before automatic Schedule A classification."
+        )
+
+    classification = classify_schedule_a_fields(fields, classification_signals)
+    if classification.contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
+        line_10a = next((field for field in fields if field.mapped_rule_key == NONEXPERIENCE_PREMIUM_RULE), None)
+        premium_source = _premium_amount_source(fields)
+        if line_10a and premium_source and not _has_meaningful_amount(line_10a.proposed_value or line_10a.value):
+            line_10a.proposed_value = str(premium_source.proposed_value or premium_source.value or "").strip()
+            line_10a.status = ExtractedFieldStatus.MATCHED
+            line_10a.status_reason = (
+                f"Automatically derived from premium evidence in {premium_source.source_field_name}."
+            )
+            line_10a.source_text = premium_source.source_text or premium_source.source_field_name
+            line_10a.updated_at = datetime.utcnow()
+
+    zero_rules = (
+        {NONEXPERIENCE_PREMIUM_RULE}
+        if classification.contract_type == ScheduleAContractType.EXPERIENCE_RATED
+        else NONEXPERIENCE_ZERO_RULES
+    )
+    for field in fields:
+        if field.form_type != FormType.SCHEDULE_A or field.mapped_rule_key not in zero_rules:
+            continue
+        field.proposed_value = "0"
+        field.status = ExtractedFieldStatus.MATCHED
+        rating_label = (
+            "experience-rated"
+            if classification.contract_type == ScheduleAContractType.EXPERIENCE_RATED
+            else "nonexperience-rated"
+        )
+        field.status_reason = f"Automatically derived as zero for a {rating_label} Schedule A."
+        field.updated_at = datetime.utcnow()
+    return classification
+
+
+def _premium_amount_source(fields: list[ExtractedField]) -> ExtractedField | None:
+    candidates: list[ExtractedField] = []
+    for field in fields:
+        value = str(field.proposed_value or field.value or "")
+        if not _has_meaningful_amount(value):
+            continue
+        text = " ".join(
+            str(item or "")
+            for item in (field.source_field_name, field.mapped_label, field.source_text)
+        ).lower()
+        if re.search(r"\bpremiums?\b|\bsubscription\s+charges?\b", text):
+            candidates.append(field)
+    return max(candidates, key=lambda field: field.confidence, default=None)
+
+
+def classify_schedule_a_values(
+    values_by_rule_key: dict[str, str],
+    classification_signals: list[str] | None = None,
+) -> ScheduleAClassification:
+    signals = set(classification_signals or [])
     has_premium = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_PREMIUM_RULES)
     has_claims = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_CLAIM_RULES)
-    has_admin = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_ADMIN_RULES)
-    has_other = any(_has_meaningful_amount(values_by_rule_key.get(rule)) for rule in EXPERIENCE_OTHER_RULES)
     has_10a = _has_meaningful_amount(values_by_rule_key.get(NONEXPERIENCE_PREMIUM_RULE))
-    has_any_experience = has_premium or has_claims or has_admin or has_other
+    has_generic_premium = has_10a or "PREMIUM_AMOUNT_PRESENT" in signals
+    has_generic_claims = "CLAIM_AMOUNT_PRESENT" in signals
 
-    if has_any_experience and not has_10a:
+    if has_premium:
         return ScheduleAClassification(
             ScheduleAContractType.EXPERIENCE_RATED,
-            "Experience-rated because Schedule A line 9 values are present.",
+            "Experience-rated because a meaningful Schedule A line 9a premium value is present.",
+            0.99,
+            ("LINE_9A_AMOUNT_PRESENT",),
         )
-    if has_10a and not has_any_experience:
+    if "EXPLICIT_EXPERIENCE_RATED" in signals:
+        return ScheduleAClassification(
+            ScheduleAContractType.EXPERIENCE_RATED,
+            "Experience-rated because the Schedule A explicitly labels the premiums as experience rated.",
+            0.98,
+            ("EXPLICIT_EXPERIENCE_RATED",),
+        )
+    if has_generic_premium and (has_claims or has_generic_claims):
+        return ScheduleAClassification(
+            ScheduleAContractType.EXPERIENCE_RATED,
+            "Experience-rated because the Schedule A contains both premium and claim amounts.",
+            0.95,
+            ("PREMIUM_AMOUNT_PRESENT", "CLAIM_AMOUNT_PRESENT"),
+        )
+    if "EXPLICIT_NONEXPERIENCE_RATED" in signals:
         return ScheduleAClassification(
             ScheduleAContractType.NONEXPERIENCE_RATED,
-            "Nonexperience-rated because line 10a premium is present and line 9 values are blank or zero.",
+            "Nonexperience-rated because the Schedule A explicitly labels the premiums as nonexperience rated.",
+            0.98,
+            ("EXPLICIT_NONEXPERIENCE_RATED",),
         )
-    if has_any_experience and has_10a:
+    if has_10a or has_generic_premium:
         return ScheduleAClassification(
-            ScheduleAContractType.NEEDS_REVIEW,
-            "Both experience-rated line 9 values and nonexperience-rated line 10a are present.",
+            ScheduleAContractType.NONEXPERIENCE_RATED,
+            "Nonexperience-rated because premium amounts are present without claim amounts or experience-rated evidence.",
+            0.9,
+            ("PREMIUM_AMOUNT_PRESENT",),
         )
     return ScheduleAClassification(
-        ScheduleAContractType.UNKNOWN,
-        "No experience-rated line 9 values or nonexperience-rated line 10a premium were found.",
+        ScheduleAContractType.NONEXPERIENCE_RATED,
+        "Nonexperience-rated by the default rule because the available evidence does not clearly establish experience rating.",
+        0.6,
+        ("DEFAULT_NONEXPERIENCE",),
     )
+
+
+def _classification_signals_from_fields(fields: list[ExtractedField]) -> list[str]:
+    signals: set[str] = set()
+    for field in fields:
+        if field.form_type not in {None, FormType.SCHEDULE_A}:
+            continue
+        text = " ".join(
+            str(value or "")
+            for value in (
+                field.source_field_name,
+                field.mapped_label,
+                field.source_text,
+            )
+        ).lower()
+        compact = re.sub(r"[^a-z0-9]+", " ", text)
+        signals.update(classification_signals_from_text(compact))
+
+        value = str(field.proposed_value or field.value or "")
+        if not _has_meaningful_amount(value):
+            continue
+        if re.search(r"\bpremiums?\b|\bsubscription\s+charges?\b", compact):
+            signals.add("PREMIUM_AMOUNT_PRESENT")
+        if re.search(r"\bclaims?\b|\bbenefit\s+charges?\b", compact):
+            signals.add("CLAIM_AMOUNT_PRESENT")
+    return sorted(signals)
 
 
 def schedule_a_contract_type_allows_rule(contract_type: ScheduleAContractType, rule_key: str | None) -> bool:
     key = str(rule_key or "")
     if contract_type == ScheduleAContractType.EXPERIENCE_RATED:
+        if key == NONEXPERIENCE_PREMIUM_RULE:
+            return True
         return key not in NONEXPERIENCE_RULES
     if contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
-        return key not in EXPERIENCE_RULES
+        return key in NONEXPERIENCE_ZERO_RULES or key not in EXPERIENCE_RULES
     if key in EXPERIENCE_RULES or key in NONEXPERIENCE_RULES:
         return False
     return True
@@ -138,6 +279,12 @@ def filter_schedule_a_fields_for_contract_type(
     applicability_by_key = {rule.key: rule.applicability for rule in (rules or [])}
 
     def is_allowed(field: ExtractedField) -> bool:
+        key = str(field.mapped_rule_key or "")
+        derived_zero = _is_zero_amount(field.proposed_value) and str(field.status_reason or "").startswith("Automatically derived")
+        if contract_type == ScheduleAContractType.EXPERIENCE_RATED and key == NONEXPERIENCE_PREMIUM_RULE:
+            return derived_zero
+        if contract_type == ScheduleAContractType.NONEXPERIENCE_RATED and key in NONEXPERIENCE_ZERO_RULES:
+            return derived_zero
         applicability = applicability_by_key.get(str(field.mapped_rule_key or ""))
         if applicability == FieldRuleApplicability.EXPERIENCE:
             return contract_type == ScheduleAContractType.EXPERIENCE_RATED
@@ -150,6 +297,11 @@ def filter_schedule_a_fields_for_contract_type(
         for field in fields
         if is_allowed(field)
     ]
+
+
+def _is_zero_amount(value: str | None) -> bool:
+    number = _decimal_from_text(str(value or ""))
+    return number == 0 if number is not None else False
 
 
 def _has_meaningful_amount(value: str | None) -> bool:

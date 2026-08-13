@@ -37,7 +37,6 @@ import {
   saveManualFTWilliamsMatch,
   selectFTWilliamsScheduleAMatch,
   sendApprovedFTWilliamsUpdate,
-  setScheduleAContractType,
   unapproveFiling,
   updateField,
 } from "../api";
@@ -86,6 +85,11 @@ const EXPERIENCE_SCHEDULE_A_RULES = new Set([
 ]);
 const NONEXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+]);
+const NONEXPERIENCE_DERIVED_ZERO_RULES = new Set([
+  "schedule_a_part_iii_9a_4_earned_1_2_3",
+  "schedule_a_part_iii_9b_3_incurred_claims_add_1_and_2",
+  "schedule_a_part_iii_9c_1_h_total_retention",
 ]);
 
 interface ReviewDecisionRow {
@@ -173,9 +177,6 @@ export function FilingReviewPage() {
   const fields = filing?.fields ?? [];
   const ftwReview = filing?.ftw_review || null;
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
-  const ftwScheduleAContractType = ftwReview?.ftw_schedule_a_contract_type || filing?.ftw_schedule_a_contract_type || "UNKNOWN";
-  const scheduleAContractConfirmed = Boolean(ftwReview?.schedule_a_contract_type_confirmed || filing?.schedule_a_contract_type_confirmed);
-  const scheduleAContractMismatch = Boolean(ftwReview?.schedule_a_contract_type_mismatch);
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
   const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
@@ -360,17 +361,6 @@ export function FilingReviewPage() {
   function handleApproveClick() {
     if (filing?.status === "APPROVED") {
       setShowUnapproveConfirm(true);
-      return;
-    }
-    if (
-      expectsScheduleACurrent &&
-      (!scheduleAContractConfirmed || scheduleAContractType === "UNKNOWN" || scheduleAContractType === "NEEDS_REVIEW")
-    ) {
-      setToast({
-        tone: "error",
-        title: "Confirm Schedule A type",
-        message: "Choose Experience or Nonexperience in the Schedule A Type card before approving this filing.",
-      });
       return;
     }
     if (!ftwCurrentLoaded) {
@@ -571,34 +561,6 @@ export function FilingReviewPage() {
     }
   }
 
-  async function confirmScheduleAContractType(contractType: ScheduleAContractType) {
-    if (!id) return;
-    setFtwBusy(true);
-    setMessage("");
-    try {
-      await setScheduleAContractType(id, {
-        contract_type: contractType,
-        reason: `Reviewer confirmed ${contractTypeLabel(contractType).toLowerCase()}.`,
-      });
-      const updated = await getFiling(id);
-      setFiling(updated);
-      previousFilingRef.current = updated;
-      setToast({
-        tone: "success",
-        title: "Schedule A type confirmed",
-        message: `This filing is marked ${contractTypeLabel(contractType).toLowerCase()}.`,
-      });
-    } catch (error) {
-      setToast({
-        tone: "error",
-        title: "Could not confirm Schedule A type",
-        message: error instanceof Error ? error.message : "The Schedule A type could not be updated.",
-      });
-    } finally {
-      setFtwBusy(false);
-    }
-  }
-
   async function sendFtwUpdate() {
     if (!id) return;
     setFtwBusy(true);
@@ -774,6 +736,9 @@ export function FilingReviewPage() {
                   ? `${missingHigh.length} high-priority missing, ${unmapped.length} unmapped, ${lowConfidence.length} low confidence.`
                   : "All blocking field issues are resolved. Review the proposed values before approving."}
               </small>
+              <small>
+                Schedule A automatically classified as {contractTypeLabel(scheduleAContractType).toLowerCase()}: {ftwReview?.schedule_a_contract_type_reason || filing.schedule_a_contract_type_reason || "defaulted from the available evidence"}
+              </small>
             </span>
           </div>
         </section>
@@ -799,35 +764,6 @@ export function FilingReviewPage() {
               <span>FTW Match</span>
               <strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong>
               <small>{lookup?.company_employer_id && lookup?.plan_number ? `${lookup.company_employer_id} / ${lookup.plan_number}` : "Current values required"}</small>
-            </div>
-            <div className={`approval-summary-card contract-card ${scheduleAContractMismatch || scheduleAContractType === "NEEDS_REVIEW" || scheduleAContractType === "UNKNOWN" ? "warn" : ""}`}>
-              <span>Schedule A Type</span>
-              <strong>{contractTypeLabel(scheduleAContractType)}</strong>
-              <small>
-                {scheduleAContractMismatch
-                  ? `FTW shows ${contractTypeLabel(ftwScheduleAContractType)}`
-                  : scheduleAContractConfirmed
-                    ? "Reviewer confirmed"
-                    : ftwReview?.schedule_a_contract_type_reason || "Classified from extracted fields"}
-              </small>
-              <div className="contract-type-actions">
-                <button
-                  className={scheduleAContractType === "EXPERIENCE_RATED" && scheduleAContractConfirmed ? "active" : ""}
-                  disabled={ftwInteractionBusy}
-                  type="button"
-                  onClick={() => confirmScheduleAContractType("EXPERIENCE_RATED")}
-                >
-                  Experience
-                </button>
-                <button
-                  className={scheduleAContractType === "NONEXPERIENCE_RATED" && scheduleAContractConfirmed ? "active" : ""}
-                  disabled={ftwInteractionBusy}
-                  type="button"
-                  onClick={() => confirmScheduleAContractType("NONEXPERIENCE_RATED")}
-                >
-                  Nonexperience
-                </button>
-              </div>
             </div>
           </div>
 
@@ -2718,7 +2654,11 @@ function filterOptionLabel(option: string) {
 
 function fieldAllowedForContractType(field: ExtractedField, contractType: ScheduleAContractType) {
   if (field.form_type !== "SCHEDULE_A") return true;
-  return ruleAllowedForContractType(fieldRuleKey(field), contractType);
+  const ruleKey = fieldRuleKey(field);
+  const derivedZero = isAutomaticallyDerivedZero(field);
+  if (contractType === "EXPERIENCE_RATED" && NONEXPERIENCE_SCHEDULE_A_RULES.has(ruleKey)) return derivedZero;
+  if (contractType === "NONEXPERIENCE_RATED" && NONEXPERIENCE_DERIVED_ZERO_RULES.has(ruleKey)) return derivedZero;
+  return ruleAllowedForContractType(ruleKey, contractType);
 }
 
 function comparisonAllowedForContractType(
@@ -2727,7 +2667,13 @@ function comparisonAllowedForContractType(
   contractType: ScheduleAContractType,
 ) {
   if (comparison.form_type !== "SCHEDULE_A") return true;
+  if (field) return fieldAllowedForContractType(field, contractType);
   return ruleAllowedForContractType(comparison.rule_key || (field ? fieldRuleKey(field) : ""), contractType);
+}
+
+function isAutomaticallyDerivedZero(field: ExtractedField) {
+  const numericValue = Number(String(field.proposed_value || "").replace(/[$,]/g, ""));
+  return numericValue === 0 && field.status_reason?.startsWith("Automatically derived") === true;
 }
 
 function ruleAllowedForContractType(ruleKey: string, contractType: ScheduleAContractType) {

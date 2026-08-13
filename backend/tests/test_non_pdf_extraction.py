@@ -13,6 +13,7 @@ import zipfile
 from app.services.extractor import (
     extract_document_text_pages,
     extract_fields_from_document_text,
+    extract_schedule_a_classification_signals,
     extract_tabular_broker_rows,
 )
 
@@ -151,6 +152,14 @@ class WordExtractionTests(unittest.TestCase):
 
 
 class DelimitedExportTests(unittest.TestCase):
+    def test_explicit_rating_wording_is_captured_even_when_it_is_not_a_field(self):
+        document = b"Premium basis,Non-experience rated\nTotal premiums,45230.10\n"
+
+        self.assertEqual(
+            extract_schedule_a_classification_signals(document, "rating.csv"),
+            ["EXPLICIT_NONEXPERIENCE_RATED"],
+        )
+
     def test_quoted_commas_in_csv_values_are_preserved(self):
         csv_bytes = b'Field,Value\n"Name of Insurance Carrier","Health Advocate Solutions, Inc."\n"Amount of Fees","5,134.75"\n'
 

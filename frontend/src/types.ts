@@ -107,6 +107,9 @@ export interface Filing {
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_confirmed?: boolean;
+  schedule_a_contract_type_confidence?: number;
+  schedule_a_contract_type_evidence?: string[];
+  schedule_a_classification_signals?: string[];
   ftw_schedule_a_contract_type?: ScheduleAContractType;
   ftw_schedule_a_contract_type_reason?: string | null;
   schedule_a_broker_rows?: ScheduleABrokerRow[];
@@ -211,6 +214,8 @@ export interface FTWilliamsReview {
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_confirmed?: boolean;
+  schedule_a_contract_type_confidence?: number;
+  schedule_a_contract_type_evidence?: string[];
   ftw_schedule_a_contract_type?: ScheduleAContractType;
   ftw_schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_mismatch?: boolean;

@@ -30,7 +30,7 @@ from app.services.filing_pipeline import (
 )
 from app.services.field_rule_admin import FieldRuleService
 from app.services.mapping import map_extraction_to_rules
-from app.services.schedule_a_classification import classify_schedule_a_fields, filter_schedule_a_fields_for_contract_type
+from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml
@@ -205,7 +205,7 @@ async def re_evaluate_filing_rules(
     mapped = map_extraction_to_rules(filing_id, stored_values, rules=snapshot.rules)
     fields = harmonize_schedule_a_reference_fields(mapped["fields"])
     fields = harmonize_schedule_a_business_rule_fields(fields)
-    classification = classify_schedule_a_fields(fields)
+    classification = apply_schedule_a_classification(fields, filing.schedule_a_classification_signals)
     relevant_fields = filter_schedule_a_fields_for_contract_type(fields, classification.contract_type, rules=snapshot.rules)
     summary = summarize_mapped_fields(relevant_fields)
     saved_fields = await repo.replace_fields(filing_id, fields)
@@ -228,6 +228,9 @@ async def re_evaluate_filing_rules(
             "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
             "schedule_a_contract_type": classification.contract_type,
             "schedule_a_contract_type_reason": classification.reason,
+            "schedule_a_contract_type_confirmed": True,
+            "schedule_a_contract_type_confidence": classification.confidence,
+            "schedule_a_contract_type_evidence": list(classification.evidence),
             "proposed_xml": proposed_xml,
         },
     )
@@ -244,6 +247,10 @@ async def re_evaluate_filing_rules(
                 "field_rule_set_version": snapshot.version,
                 "actor": claims.get("email") or claims.get("sub"),
                 "eyelevel_rerun": False,
+                "schedule_a_contract_type": classification.contract_type,
+                "schedule_a_contract_type_reason": classification.reason,
+                "schedule_a_contract_type_confidence": classification.confidence,
+                "schedule_a_contract_type_evidence": list(classification.evidence),
             },
         )
     )
@@ -257,6 +264,9 @@ async def re_evaluate_filing_rules(
 @router.patch("/{filing_id}/fields/{field_id}")
 async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest):
     repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
     existing_fields = await repo.list_fields(filing_id)
     before = next((field.proposed_value for field in existing_fields if field.id == field_id), None)
     field_status = ExtractedFieldStatus.MISSING if payload.mark_missing else ExtractedFieldStatus.EDITED
@@ -271,8 +281,52 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     fields = await repo.list_fields(filing_id)
-    proposed_xml = build_proposed_ftw_xml(fields)
-    await repo.update_filing(filing_id, {"proposed_xml": proposed_xml})
+    before_automatic = {
+        item.id: (item.proposed_value, item.status, item.status_reason)
+        for item in fields
+        if item.id
+    }
+    classification = apply_schedule_a_classification(fields, filing.schedule_a_classification_signals)
+    for item in fields:
+        if not item.id or before_automatic.get(item.id) == (item.proposed_value, item.status, item.status_reason):
+            continue
+        await repo.update_field(
+            filing_id,
+            item.id,
+            item.proposed_value,
+            status=item.status,
+            status_reason=item.status_reason,
+        )
+    fields = await repo.list_fields(filing_id)
+    published_rules = await FieldRuleService(repo).published_rules()
+    relevant_fields = filter_schedule_a_fields_for_contract_type(
+        fields,
+        classification.contract_type,
+        rules=published_rules,
+    )
+    summary = summarize_mapped_fields(relevant_fields)
+    proposed_xml = build_proposed_ftw_xml(relevant_fields)
+    await repo.update_filing(
+        filing_id,
+        {
+            "proposed_xml": proposed_xml,
+            "schedule_a_contract_type": classification.contract_type,
+            "schedule_a_contract_type_reason": classification.reason,
+            "schedule_a_contract_type_confirmed": True,
+            "schedule_a_contract_type_confidence": classification.confidence,
+            "schedule_a_contract_type_evidence": list(classification.evidence),
+            "overall_confidence": summary["overall_confidence"],
+            "missing_high_priority_count": summary["missing_high_priority_count"],
+            "missing_medium_priority_count": summary["missing_medium_priority_count"],
+            "missing_low_priority_count": summary["missing_low_priority_count"],
+            "low_confidence_count": summary["low_confidence_count"],
+            "unmapped_count": summary["unmapped_count"],
+            "review_field_count": summary["review_field_count"],
+            "found_field_count": summary["found_field_count"],
+            "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
+        },
+    )
+    field = next((item for item in fields if item.id == field_id), field)
     ftw_review = None
     try:
         ftw_review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)

@@ -5827,10 +5827,6 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   color: #b45309;
 }
 
-.contract-card {
-  align-content: start;
-}
-
 .contract-type-badge {
   align-self: start;
   background: #f8fafc;
@@ -5868,36 +5864,6 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   background: #fffbeb;
   border-color: #fde68a;
   color: #b45309;
-}
-
-.contract-type-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.contract-type-actions button {
-  background: #fff;
-  border: 1px solid #dce3ea;
-  border-radius: 8px;
-  color: #334155;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 900;
-  padding: 7px 9px;
-}
-
-.contract-type-actions button:hover:not(:disabled),
-.contract-type-actions button.active {
-  background: #ecfdf5;
-  border-color: #047857;
-  color: #047857;
-}
-
-.contract-type-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .approval-preview-shell {

@@ -204,6 +204,7 @@ class NormalizedExtractionResult(BaseModel):
     provider: str
     fields: list[NormalizedExtractionField]
     raw: dict | list | str | None = None
+    classification_signals: list[str] = Field(default_factory=list)
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
 
@@ -263,6 +264,9 @@ class Filing(BaseModel):
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False
+    schedule_a_contract_type_confidence: float = 0
+    schedule_a_contract_type_evidence: list[str] = Field(default_factory=list)
+    schedule_a_classification_signals: list[str] = Field(default_factory=list)
     ftw_schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     ftw_schedule_a_contract_type_reason: str | None = None
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
@@ -545,6 +549,8 @@ class FTWilliamsReview(BaseModel):
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False
+    schedule_a_contract_type_confidence: float = 0
+    schedule_a_contract_type_evidence: list[str] = Field(default_factory=list)
     ftw_schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     ftw_schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_mismatch: bool = False

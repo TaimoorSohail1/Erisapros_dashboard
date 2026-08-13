@@ -26,6 +26,7 @@ from app.models import (
     ScheduleAWorksheetValue,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
+from app.services.schedule_a_classification import classification_signals_from_text
 
 
 SCHEDULE_A_EXPERIENCE_RATED_FIELDS = (
@@ -99,11 +100,15 @@ class ExtractionService:
 
     async def extract_schedule_a(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
         settings = get_settings()
+        document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
             try:
-                return await self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A")
+                result = await self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A")
+                result.classification_signals = sorted(set(result.classification_signals) | set(document_signals))
+                return result
             except Exception as exc:
                 local_result = local_schedule_a_pdf_result(file_bytes, file_name, provider=f"Local PDF parser fallback ({safe_error_summary(exc)})")
+                local_result.classification_signals = document_signals
                 if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
                     return local_result
                 # Unrecognized layout: degrade gracefully instead of crashing the
@@ -113,13 +118,17 @@ class ExtractionService:
                     provider=f"Unrecognized layout - manual review required (AI extraction failed: {safe_error_summary(exc)})",
                     fields=[],
                     raw={"file_name": file_name, "error": safe_error_summary(exc), "source": "unrecognized_layout_fallback"},
+                    classification_signals=document_signals,
                 )
 
         if not settings.eyelevel_api_key or not settings.eyelevel_extract_url:
             local_result = local_schedule_a_pdf_result(file_bytes, file_name)
+            local_result.classification_signals = document_signals
             if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
                 return local_result
-            return self._mock_extraction(file_name)
+            mock_result = self._mock_extraction(file_name)
+            mock_result.classification_signals = document_signals
+            return mock_result
 
         files = {"file": (file_name, file_bytes, "application/pdf")}
         headers = {"Authorization": f"Bearer {settings.eyelevel_api_key}"}
@@ -132,6 +141,7 @@ class ExtractionService:
         result.fields = merge_schedule_a_fields(result.fields, pdf_text_fields)
         result.schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
         result.schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
+        result.classification_signals = document_signals
         return result
 
     async def _extract_with_groundx(self, file_bytes: bytes, file_name: str, form_type: FormType, document_label: str) -> NormalizedExtractionResult:
@@ -202,10 +212,12 @@ class ExtractionService:
         elif not fields:
             provider = "GroundX X-Ray not ready"
         deduped = dedupe_fields(fields)
+        classification_signals = classification_signals_from_text("\n".join(extract_xray_item_text(raw_payloads)))
         return NormalizedExtractionResult(
             provider=provider,
             fields=deduped,
             raw={"ingest": ingest_raw, "process": poll_raw, "outputs": raw_payloads[2:]},
+            classification_signals=classification_signals,
             schedule_a_broker_rows=schedule_a_broker_rows,
             schedule_a_worksheet_summaries=schedule_a_worksheet_summaries,
         )
@@ -1333,6 +1345,11 @@ def extract_document_text_pages(file_bytes: bytes, file_name: str | None = None)
         text = extract_docx_text(file_bytes)
         return [(1, text)] if text else []
     return extract_pdf_text_pages(file_bytes)
+
+
+def extract_schedule_a_classification_signals(file_bytes: bytes, file_name: str | None = None) -> list[str]:
+    text = "\n\n".join(value for _, value in extract_document_text_pages(file_bytes, file_name))
+    return classification_signals_from_text(text)
 
 
 def _spreadsheet_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
