@@ -217,6 +217,47 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("Charlotte Tallon", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
+    def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="12. Total Participants at End of Year",
+                normalized_field_name="total_participants_end",
+                mapped_rule_key="form_5500_part_ii_12_total_participants_at_end_of_year",
+                mapped_label="12. Total Participants at End of Year",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="156",
+                proposed_value="156",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="13. Active Participants at Beginning",
+                normalized_field_name="active_participants_beginning",
+                mapped_rule_key="form_5500_part_ii_13_active_participants_at_beginning",
+                mapped_label="13. Active Participants at Beginning",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="160",
+                proposed_value="160",
+            ),
+        ]
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            fields,
+            FormType.FORM_5500,
+            transaction_type="1",
+            ftw_customer_id="748817358",
+            ftw_plan_id="920031353",
+            year="2025",
+            current_values={"SubtlActRtdSepCnt": "148", "TotActPartcpBoyCnt": "157"},
+        )
+
+        self.assertIn("<SubtlActRtdSepCnt>156</SubtlActRtdSepCnt>", xml)
+        self.assertIn("<TotActPartcpBoyCnt>160</TotActPartcpBoyCnt>", xml)
+        self.assertNotIn("PartcpAccountBalCnt", xml)
+
     def test_schedule_a_full_replace_preserves_current_values_and_overlays_changes(self):
         fields = [
             ExtractedField(
