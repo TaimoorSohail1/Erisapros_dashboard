@@ -1360,7 +1360,7 @@ class FTWilliamsReviewService:
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
         if not review.current_query_success:
-            error_message = "Current FT Williams data must be queried successfully before sending approved updates."
+            error_message = review.error_message or "Current FT Williams data must be queried successfully before sending approved updates."
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
         if not review.current_year_exists or review.bring_forward_required:

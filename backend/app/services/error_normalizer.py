@@ -40,7 +40,7 @@ def _rejected_fields_from_text(text: str) -> list[ClientRejectedField]:
             )
         )
 
-    for match in re.finditer(r"invalid field req:\s*([A-Za-z][A-Za-z0-9_]*)", text, flags=re.IGNORECASE):
+    for match in re.finditer(r"invalid field re(?:q|g):\s*([A-Za-z][A-Za-z0-9_]*)", text, flags=re.IGNORECASE):
         add(match.group(1), reason="This XML tag is not accepted by ftwLink for this form/year.")
 
     for match in re.finditer(
@@ -123,7 +123,7 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             code="FTW_5500_NOT_FOUND",
         )
 
-    if "error 60" in lowered or "invalid field req" in lowered:
+    if "error 60" in lowered or "invalid field req" in lowered or "invalid field reg" in lowered:
         return build(
             "FT Williams rejected an XML field",
             "One or more generated XML tags are not accepted by ftwLink for this update.",
