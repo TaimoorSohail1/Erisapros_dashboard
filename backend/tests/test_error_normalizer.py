@@ -24,6 +24,13 @@ class ErrorNormalizerTests(unittest.TestCase):
         self.assertIn("XML", error.title)
         self.assertEqual(error.rejected_fields[0].tag, "FTWSeqNo")
 
+    def test_invalid_xml_field_accepts_ftw_reg_wording(self):
+        error = normalize_client_error("DOL5500Data error 60: ; invalid field reg: ADMIN_NAME0")
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "FTW_INVALID_XML_FIELD")
+        self.assertEqual(error.rejected_fields[0].tag, "ADMIN_NAME0")
+
     def test_rejected_field_value_gets_specific_details(self):
         error = normalize_client_error("DOLScheduleAData error 62: InsCarrierNAICCode:000-69019")
 

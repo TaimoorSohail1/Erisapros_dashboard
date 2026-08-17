@@ -2240,6 +2240,19 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.customer_id, "33-0574214")
         self.assertEqual(review.plan_id, "33-0574214501")
 
+        with self.assertRaisesRegex(ValueError, "Could not locate existing plan"):
+            run_async(
+                FTWilliamsReviewService(fake_ftw).approve_and_update(
+                    filing.id,
+                    send_to_ftw=True,
+                    refresh_current_before_update=True,
+                )
+            )
+
+        failed_review = run_async(repo.get_ftwilliams_review(filing.id))
+        self.assertEqual(failed_review.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertIn("Could not locate existing plan", failed_review.error_message or "")
+
     def test_prepare_review_falls_back_to_archive_lookup_and_saves_ftw_ids(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))

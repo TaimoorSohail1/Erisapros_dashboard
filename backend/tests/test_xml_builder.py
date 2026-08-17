@@ -176,6 +176,47 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
 
+    def test_5500_rejected_plan_administrator_tag_is_omitted_without_dropping_valid_fields(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="2a. Plan Administrator Name",
+                normalized_field_name="plan_administrator_name",
+                mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+                mapped_label="2a. Plan Administrator Name",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="Charlotte Tallon",
+                proposed_value="Charlotte Tallon",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="14. Active Participants at End",
+                normalized_field_name="active_participants_end",
+                mapped_rule_key="form_5500_part_ii_14_active_participants_at_end",
+                mapped_label="14. Active Participants at End",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="125",
+                proposed_value="125",
+            ),
+        ]
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            fields,
+            FormType.FORM_5500,
+            transaction_type="1",
+            ftw_customer_id="748817358",
+            ftw_plan_id="920031353",
+            year="2025",
+            current_values={"ADMINName": "AMERICAN SECURITIES LLC", "TotActivePartcpCnt": "120"},
+        )
+
+        self.assertNotIn("ADMIN_NAME0", xml)
+        self.assertNotIn("Charlotte Tallon", xml)
+        self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
+
     def test_schedule_a_full_replace_preserves_current_values_and_overlays_changes(self):
         fields = [
             ExtractedField(
