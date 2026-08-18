@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import re
 import time
 from urllib.parse import quote, urlsplit
+import xml.etree.ElementTree as ET
 
 from app.config import get_settings
 from app.models import (
@@ -35,7 +37,12 @@ from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
+from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
 from app.services.ftwilliams_tags import (
+    FORM_5500_CURRENT_TAGS_BY_RULE,
+    FORM_5500_UPDATE_TAGS_BY_RULE,
+    SCHEDULE_A_CURRENT_TAGS_BY_RULE,
+    SCHEDULE_A_TAGS_BY_RULE,
     normalize_compare_value,
     resolve_ftw_current_tag,
     resolve_ftw_current_value,
@@ -101,6 +108,13 @@ class FTWilliamsReviewService:
                 send_queries=send_queries,
                 configured=configured,
             )
+        if (
+            not send_queries
+            and existing_review
+            and existing_review.plan_lookup
+            and self._should_preserve_authoritative_plan_lookup(plan_lookup, existing_review.plan_lookup)
+        ):
+            plan_lookup = deepcopy(existing_review.plan_lookup)
         review_identity_base = self._merge_plan_lookup_identity(query_payload_base, plan_lookup)
         current_query_payload_base = self._current_query_payload_identity(query_payload_base, plan_lookup)
         query_request_xmls: list[str] = []
@@ -110,7 +124,7 @@ class FTWilliamsReviewService:
         matched_schedule_a: FTWilliamsStatusItem | None = None
         schedule_a_candidates: list[dict] = []
         schedule_a_records: list[dict] = []
-        error_message: str | None = None
+        error_message: str | None = self._authoritative_plan_lookup_error(plan_lookup)
         current_query_success = False
         current_year_exists = False
         bring_forward_required = False
@@ -177,6 +191,31 @@ class FTWilliamsReviewService:
             ).strip()
         fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
 
+        ftw_editability = self._ftw_editability_status(form_5500_current)
+        if ftw_editability["editable"] is None and existing_review and not send_queries:
+            ftw_editability = {
+                "editable": existing_review.ftw_editable,
+                "locked_status": existing_review.ftw_locked_status,
+                "signed_status": existing_review.ftw_signed_status,
+                "filing_status": existing_review.ftw_filing_status,
+            }
+        if ftw_editability["editable"] is False:
+            status_summary = ", ".join(
+                filter(
+                    None,
+                    [
+                        f"lock status: {ftw_editability['locked_status']}" if ftw_editability["locked_status"] else None,
+                        f"signed status: {ftw_editability['signed_status']}" if ftw_editability["signed_status"] else None,
+                        f"filing status: {ftw_editability['filing_status']}" if ftw_editability["filing_status"] else None,
+                    ],
+                )
+            )
+            lock_message = (
+                "FT Williams reports this Form 5500 as locked and not editable"
+                f" ({status_summary}). Use Amend Filing in FT Williams, then query current data again."
+            )
+            error_message = "; ".join(filter(None, [error_message, lock_message]))
+
         form_5500_block_reason = self._form_5500_update_block_reason(fields, form_5500_current)
         schedule_a_block_reason = self._schedule_a_update_block_reason(fields, schedule_a_current)
         if form_5500_block_reason:
@@ -227,24 +266,36 @@ class FTWilliamsReviewService:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
         ftw_plan_url = self._ftw_plan_page_url(identity, query_payload_base.get("year")) if bring_forward_required else None
-        update_xml_5500 = build_single_document_update_xml(
-            "DOL5500Data",
-            safe_form_5500_fields if include_5500_update else [],
-            FormType.FORM_5500,
-            transaction_type="1",
-            current_values=form_5500_current,
-            **identity,
-        )
-        update_xml_schedule_a = "" if bring_forward_required else self._build_schedule_a_update_xml(
-            safe_schedule_a_fields if include_schedule_a_update else [],
-            schedule_a_records,
-            identity.get("ftw_seq_no"),
-            identity,
-            schedule_update_blocked=bool(schedule_a_block_reason),
-            add_new_schedule_a=create_new_schedule_a,
-            new_schedule_desc=new_schedule_desc,
-            schedule_a_broker_rows=schedule_a_broker_rows,
-        )
+        payload_validation_issues: list[FTWFieldValidationIssue] = []
+        try:
+            update_xml_5500 = build_single_document_update_xml(
+                "DOL5500Data",
+                safe_form_5500_fields if include_5500_update else [],
+                FormType.FORM_5500,
+                transaction_type="1",
+                current_values=form_5500_current,
+                **identity,
+            )
+        except FTWPayloadValidationError as exc:
+            payload_validation_issues.extend(exc.issues)
+            update_xml_5500 = ""
+        try:
+            update_xml_schedule_a = "" if bring_forward_required else self._build_schedule_a_update_xml(
+                safe_schedule_a_fields if include_schedule_a_update else [],
+                schedule_a_records,
+                identity.get("ftw_seq_no"),
+                identity,
+                schedule_update_blocked=bool(schedule_a_block_reason),
+                add_new_schedule_a=create_new_schedule_a,
+                new_schedule_desc=new_schedule_desc,
+                schedule_a_broker_rows=schedule_a_broker_rows,
+            )
+        except FTWPayloadValidationError as exc:
+            payload_validation_issues.extend(exc.issues)
+            update_xml_schedule_a = ""
+        if payload_validation_issues:
+            validation_message = str(FTWPayloadValidationError(payload_validation_issues))
+            error_message = "; ".join(filter(None, [error_message, validation_message]))
         proposed_xml = combine_ftw_update_xml(update_xml_5500, update_xml_schedule_a)
         await repo.update_filing(filing_id, {"proposed_xml": proposed_xml})
 
@@ -262,6 +313,10 @@ class FTWilliamsReviewService:
             current_query_success=current_query_success,
             current_year_exists=current_year_exists,
             bring_forward_required=bring_forward_required,
+            ftw_editable=ftw_editability["editable"],
+            ftw_locked_status=ftw_editability["locked_status"],
+            ftw_signed_status=ftw_editability["signed_status"],
+            ftw_filing_status=ftw_editability["filing_status"],
             ftw_plan_url=ftw_plan_url,
             comparison_year=comparison_year,
             comparison_year_source=comparison_year_source,
@@ -312,7 +367,13 @@ class FTWilliamsReviewService:
                 "ftw_schedule_a_contract_type_reason": ftw_contract_classification.reason,
             }
         await repo.update_filing(filing_id, filing_contract_updates)
-        if existing_review and existing_review.status == FTWilliamsReviewStatus.UPDATE_FAILED:
+        if (
+            existing_review
+            and existing_review.status == FTWilliamsReviewStatus.UPDATE_FAILED
+            and send_queries
+            and review.current_query_success
+            and not review.error_message
+        ):
             clear_values = {"error_message": None}
             if filing.status == FilingStatus.FAILED:
                 clear_values["status"] = FilingStatus.APPROVED
@@ -508,24 +569,36 @@ class FTWilliamsReviewService:
         include_schedule_a_update = self._should_build_update_payload(review.current_query_sent, schedule_a_current) or (
             payload.create_new and review.current_query_sent and bool(schedule_a_records)
         )
-        update_xml_5500 = build_single_document_update_xml(
-            "DOL5500Data",
-            safe_form_5500_fields if include_5500_update else [],
-            FormType.FORM_5500,
-            transaction_type="1",
-            current_values=form_5500_current,
-            **update_identity,
-        )
-        update_xml_schedule_a = self._build_schedule_a_update_xml(
-            safe_schedule_a_fields if include_schedule_a_update else [],
-            schedule_a_records,
-            payload.ftw_seq_no,
-            update_identity,
-            schedule_update_blocked=bool(schedule_a_block_reason),
-            add_new_schedule_a=payload.create_new,
-            new_schedule_desc=new_schedule_desc,
-            schedule_a_broker_rows=schedule_a_broker_rows,
-        )
+        payload_validation_issues: list[FTWFieldValidationIssue] = []
+        try:
+            update_xml_5500 = build_single_document_update_xml(
+                "DOL5500Data",
+                safe_form_5500_fields if include_5500_update else [],
+                FormType.FORM_5500,
+                transaction_type="1",
+                current_values=form_5500_current,
+                **update_identity,
+            )
+        except FTWPayloadValidationError as exc:
+            payload_validation_issues.extend(exc.issues)
+            update_xml_5500 = ""
+        try:
+            update_xml_schedule_a = self._build_schedule_a_update_xml(
+                safe_schedule_a_fields if include_schedule_a_update else [],
+                schedule_a_records,
+                payload.ftw_seq_no,
+                update_identity,
+                schedule_update_blocked=bool(schedule_a_block_reason),
+                add_new_schedule_a=payload.create_new,
+                new_schedule_desc=new_schedule_desc,
+                schedule_a_broker_rows=schedule_a_broker_rows,
+            )
+        except FTWPayloadValidationError as exc:
+            payload_validation_issues.extend(exc.issues)
+            update_xml_schedule_a = ""
+        if payload_validation_issues:
+            validation_message = str(FTWPayloadValidationError(payload_validation_issues))
+            error_message = "; ".join(filter(None, [error_message, validation_message]))
         proposed_xml = combine_ftw_update_xml(update_xml_5500, update_xml_schedule_a)
         await repo.update_filing(filing_id, {"proposed_xml": proposed_xml})
 
@@ -848,6 +921,40 @@ class FTWilliamsReviewService:
         lookup.status = FTWilliamsPlanLookupStatus.FOUND_NO_FTW_IDS
         lookup.error_message = "PlanData lookup succeeded, but FT Williams did not return usable plan identifiers."
         return lookup
+
+    def _should_preserve_authoritative_plan_lookup(
+        self,
+        prepared: FTWilliamsPlanLookup,
+        existing: FTWilliamsPlanLookup,
+    ) -> bool:
+        authoritative_statuses = {
+            FTWilliamsPlanLookupStatus.MATCHED,
+            FTWilliamsPlanLookupStatus.FOUND_NO_FTW_IDS,
+            FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES,
+            FTWilliamsPlanLookupStatus.NOT_FOUND,
+            FTWilliamsPlanLookupStatus.FAILED,
+        }
+        if prepared.status != FTWilliamsPlanLookupStatus.REQUEST_READY:
+            return False
+        if existing.status not in authoritative_statuses:
+            return False
+        return (
+            self._normalize_ein_digits(prepared.company_employer_id)
+            == self._normalize_ein_digits(existing.company_employer_id)
+            and self._normalize_plan_number(prepared.plan_number)
+            == self._normalize_plan_number(existing.plan_number)
+            and self._normalize_year(prepared.year) == self._normalize_year(existing.year)
+        )
+
+    def _authoritative_plan_lookup_error(self, lookup: FTWilliamsPlanLookup) -> str | None:
+        if lookup.status in {
+            FTWilliamsPlanLookupStatus.FOUND_NO_FTW_IDS,
+            FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES,
+            FTWilliamsPlanLookupStatus.NOT_FOUND,
+            FTWilliamsPlanLookupStatus.FAILED,
+        }:
+            return lookup.error_message
+        return None
 
     async def _shared_plan_lookup(
         self,
@@ -1370,6 +1477,13 @@ class FTWilliamsReviewService:
             )
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
+        if review.ftw_editable is False:
+            error_message = (
+                "FT Williams reports this filing as locked and not editable. "
+                "Use Amend Filing in FT Williams, then query current data again before sending."
+            )
+            await self._record_update_failure(repo, filing_id, review, error_message)
+            raise ValueError(error_message)
         contract_type_error = self._review_contract_type_block_reason(review)
         if contract_type_error:
             await self._record_update_failure(repo, filing_id, review, contract_type_error)
@@ -1399,16 +1513,34 @@ class FTWilliamsReviewService:
             responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
 
         response_xml = "\n\n".join(response.raw_response or response.error or "" for response in responses if response.raw_response or response.error)
-        success = bool(responses) and all(response.success for response in responses)
+        ftw_accepted = bool(responses) and all(response.success for response in responses)
+        success = ftw_accepted
         review.update_response_xml = response_xml or None
-        review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
-        review.error_message = None if success else "; ".join(filter(None, [response.error or self._status_error(response.statuses) for response in responses]))
-        review.client_error = self._normalize_review_error(review.error_message, review.fields)
+        review.error_message = None if ftw_accepted else "; ".join(filter(None, [response.error or self._status_error(response.statuses) for response in responses]))
 
-        if success:
+        if ftw_accepted:
             # The just-sent values make every cached FTW current snapshot
             # potentially stale. The next automatic comparison must reload.
             clear_ftw_current_snapshot_cache()
+            verification = await self._verify_update_readback(review)
+            review.update_verification_attempted = True
+            review.update_verification_success = verification["success"]
+            review.update_verification_mismatches = verification["mismatches"]
+            review.update_verification_request_xml = verification["request_xml"]
+            review.update_verification_response_xml = verification["response_xml"]
+            success = bool(verification["success"])
+            if not success:
+                mismatch_fields = ", ".join(
+                    str(item.get("tag") or item.get("form") or "field")
+                    for item in verification["mismatches"][:8]
+                )
+                review.error_message = (
+                    "FT Williams accepted the update, but read-back verification did not match the sent values"
+                    f" ({mismatch_fields or 'updated fields'}). Query current data and review the highlighted fields."
+                )
+
+        review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
+        review.client_error = self._normalize_review_error(review.error_message, review.fields)
 
         if success and run_edit_checks:
             edit_checks = await self.ftwilliams.run_query(
@@ -1442,10 +1574,331 @@ class FTWilliamsReviewService:
                     "error": review.error_message,
                     "run_edit_checks": run_edit_checks,
                     "updated_field_count": len([field for field in review.fields if field.changed and field.update_included]),
+                    "ftw_accepted": ftw_accepted,
+                    "verification_attempted": review.update_verification_attempted,
+                    "verification_success": review.update_verification_success,
+                    "verification_mismatch_count": len(review.update_verification_mismatches),
                 },
             )
         )
         return review
+
+    async def _verify_update_readback(self, review: FTWilliamsReview) -> dict:
+        all_request_xmls: list[str] = []
+        all_response_xmls: list[str] = []
+        latest_mismatches: list[dict] = []
+        for attempt in range(3):
+            result = await self._verify_update_readback_once(review)
+            all_request_xmls.extend(result["request_xmls"])
+            all_response_xmls.extend(result["response_xmls"])
+            latest_mismatches = result["mismatches"]
+            if not latest_mismatches:
+                return {
+                    "success": True,
+                    "mismatches": [],
+                    "request_xml": "\n\n".join(all_request_xmls) or None,
+                    "response_xml": "\n\n".join(all_response_xmls) or None,
+                }
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (attempt + 1))
+        return {
+            "success": False,
+            "mismatches": latest_mismatches,
+            "request_xml": "\n\n".join(all_request_xmls) or None,
+            "response_xml": "\n\n".join(all_response_xmls) or None,
+        }
+
+    async def _verify_update_readback_once(self, review: FTWilliamsReview) -> dict:
+        identity = self._current_query_identity_from_review(review)
+        request_xmls: list[str] = []
+        response_xmls: list[str] = []
+        mismatches: list[dict] = []
+        form_documents = self._update_documents(review.update_xml_5500, "DOL5500Data")
+        schedule_documents = self._update_documents(review.update_xml_schedule_a, "DOLScheduleAData")
+
+        if form_documents:
+            response = await self.ftwilliams.run_query(
+                FTWilliamsQueryRequest(operation="query_5500", send=True, **identity)
+            )
+            request_xmls.append(response.request_xml)
+            if response.raw_response:
+                response_xmls.append(response.raw_response)
+            status = next(
+                (
+                    item
+                    for item in response.statuses
+                    if str(item.error_code or "") == "0" and item.query_results
+                ),
+                None,
+            )
+            if not response.success or not status:
+                mismatches.append(
+                    {
+                        "form": "DOL5500Data",
+                        "tag": "DOL5500Data",
+                        "reason": response.error or self._status_error(response.statuses) or "Current Form 5500 could not be read back.",
+                    }
+                )
+            else:
+                mismatches.extend(
+                    self._compare_readback_document(
+                        FormType.FORM_5500,
+                        form_documents[0],
+                        status.query_results,
+                    )
+                )
+
+        if schedule_documents:
+            statuses, schedule_requests, schedule_responses, schedule_error = await self._query_schedule_a_readback(
+                review,
+                identity,
+                require_full_scan=len(schedule_documents) > len(review.schedule_a_records or []),
+            )
+            request_xmls.extend(schedule_requests)
+            response_xmls.extend(schedule_responses)
+            unused_statuses = list(statuses)
+            for document in schedule_documents:
+                matched = self._match_readback_schedule_status(document, unused_statuses)
+                if not matched:
+                    mismatches.append(
+                        {
+                            "form": "DOLScheduleAData",
+                            "tag": "DOLScheduleAData",
+                            "expected": document.get("InsContractNum") or document.get("InsCarrierName") or "Schedule A",
+                            "reason": schedule_error or "The sent Schedule A record could not be found during read-back.",
+                        }
+                    )
+                    continue
+                unused_statuses.remove(matched)
+                mismatches.extend(
+                    self._compare_readback_document(
+                        FormType.SCHEDULE_A,
+                        document,
+                        matched.query_results,
+                    )
+                )
+
+        if not form_documents and not schedule_documents:
+            mismatches.append(
+                {
+                    "form": "FTW",
+                    "tag": "DataBatch",
+                    "reason": "No sent FT Williams documents were available for read-back verification.",
+                }
+            )
+        return {
+            "mismatches": mismatches,
+            "request_xmls": request_xmls,
+            "response_xmls": response_xmls,
+        }
+
+    async def _query_schedule_a_readback(
+        self,
+        review: FTWilliamsReview,
+        identity: dict,
+        *,
+        require_full_scan: bool,
+    ) -> tuple[list[FTWilliamsStatusItem], list[str], list[str], str | None]:
+        known_sequences = sorted(
+            {
+                str(record.get("ftw_seq_no") or "").strip()
+                for record in review.schedule_a_records or []
+                if str(record.get("ftw_seq_no") or "").strip()
+            },
+            key=self._sequence_sort_key,
+        )
+        if require_full_scan or not known_sequences:
+            return await self._query_schedule_a_statuses(identity)
+
+        responses = await asyncio.gather(
+            *(
+                self.ftwilliams.run_query(
+                    FTWilliamsQueryRequest(
+                        operation="query_schedule_a",
+                        send=True,
+                        ftw_seq_no=sequence,
+                        **identity,
+                    )
+                )
+                for sequence in known_sequences
+            )
+        )
+        statuses: list[FTWilliamsStatusItem] = []
+        request_xmls: list[str] = []
+        response_xmls: list[str] = []
+        errors: list[str] = []
+        for sequence, response in zip(known_sequences, responses):
+            request_xmls.append(response.request_xml)
+            if response.raw_response:
+                response_xmls.append(response.raw_response)
+            if response.success:
+                for status in response.statuses:
+                    if not status.ftw_seq_no:
+                        status.ftw_seq_no = sequence
+                    if str(status.error_code or "") == "0" and status.query_results:
+                        statuses.append(status)
+            else:
+                error = response.error or self._status_error(response.statuses, ignore_error_codes={"59"})
+                if error:
+                    errors.append(error)
+        return statuses, request_xmls, response_xmls, "; ".join(errors) or None
+
+    def _update_documents(self, xml: str | None, data_tag: str) -> list[dict[str, str]]:
+        if not xml:
+            return []
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            return []
+        metadata = {
+            "TransactionType",
+            "EditCheck",
+            "CustomerID",
+            "PlanID",
+            "FTWCustomerID",
+            "FTWPlanID",
+            "FTWSeqNo",
+            "Year",
+        }
+        documents: list[dict[str, str]] = []
+        for element in root.findall(f".//{data_tag}"):
+            values = {
+                child.tag: str(child.text or "").strip()
+                for child in list(element)
+                if child.tag not in metadata and str(child.text or "").strip()
+            }
+            if values:
+                documents.append(values)
+        return documents
+
+    def _match_readback_schedule_status(
+        self,
+        expected: dict[str, str],
+        statuses: list[FTWilliamsStatusItem],
+    ) -> FTWilliamsStatusItem | None:
+        if not statuses:
+            return None
+        scored: list[tuple[int, int, FTWilliamsStatusItem]] = []
+        identity_tags = [
+            ("InsContractNum", 8),
+            ("InsCarrierEIN", 7),
+            ("InsCarrierNAICCode", 6),
+            ("InsCarrierName", 4),
+            ("ScheduleDesc", 3),
+        ]
+        for status in statuses:
+            score = 0
+            conflicts = 0
+            for tag, weight in identity_tags:
+                expected_value = expected.get(tag)
+                actual_value = self._readback_value(status.query_results, FormType.SCHEDULE_A, tag)
+                if not expected_value or not actual_value:
+                    continue
+                if self._readback_values_equal(expected_value, actual_value):
+                    score += weight
+                elif tag in {"InsContractNum", "InsCarrierEIN", "InsCarrierNAICCode"}:
+                    conflicts += 1
+            scored.append((conflicts, -score, status))
+        scored.sort(key=lambda item: (item[0], item[1], self._sequence_sort_key(item[2].ftw_seq_no)))
+        conflicts, negative_score, status = scored[0]
+        if conflicts or (-negative_score <= 0 and len(statuses) > 1):
+            return None
+        return status
+
+    def _compare_readback_document(
+        self,
+        form_type: FormType,
+        expected: dict[str, str],
+        actual: dict[str, str],
+    ) -> list[dict]:
+        mismatches: list[dict] = []
+        for tag, expected_value in expected.items():
+            actual_value = self._readback_value(actual, form_type, tag)
+            if actual_value is None:
+                mismatches.append(
+                    {
+                        "form": form_type.value,
+                        "tag": tag,
+                        "expected": expected_value,
+                        "actual": None,
+                        "reason": "FT Williams did not return this sent field during read-back.",
+                    }
+                )
+                continue
+            if not self._readback_values_equal(expected_value, actual_value):
+                mismatches.append(
+                    {
+                        "form": form_type.value,
+                        "tag": tag,
+                        "expected": expected_value,
+                        "actual": actual_value,
+                        "reason": "FT Williams returned a different value after the update.",
+                    }
+                )
+        return mismatches
+
+    def _readback_value(
+        self,
+        actual: dict[str, str],
+        form_type: FormType,
+        update_tag: str,
+    ) -> str | None:
+        candidates = self._readback_tag_candidates(form_type, update_tag)
+        actual_by_key = {str(key or "").casefold(): str(value or "").strip() for key, value in actual.items()}
+        for candidate in candidates:
+            value = actual_by_key.get(candidate.casefold())
+            if value is not None:
+                return value
+        return None
+
+    def _readback_tag_candidates(self, form_type: FormType, update_tag: str) -> list[str]:
+        if form_type == FormType.FORM_5500:
+            mapped = next(
+                (
+                    FORM_5500_CURRENT_TAGS_BY_RULE.get(rule_key)
+                    for rule_key, tag in FORM_5500_UPDATE_TAGS_BY_RULE.items()
+                    if tag == update_tag
+                ),
+                None,
+            )
+        else:
+            mapped = next(
+                (
+                    SCHEDULE_A_CURRENT_TAGS_BY_RULE.get(rule_key)
+                    for rule_key, tag in SCHEDULE_A_TAGS_BY_RULE.items()
+                    if tag == update_tag
+                ),
+                None,
+            )
+        candidates = [update_tag]
+        if mapped and mapped not in candidates:
+            candidates.append(mapped)
+        dynamic = re.fullmatch(r"(CommPdAmt|FeesPdAmt|FeesPdText|Code)(\d+)", update_tag)
+        if dynamic:
+            indexed = f"{dynamic.group(1)}0{dynamic.group(2)}"
+            if indexed not in candidates:
+                candidates.append(indexed)
+        return candidates
+
+    def _readback_values_equal(self, expected: object, actual: object) -> bool:
+        expected_text = str(expected or "").strip()
+        actual_text = str(actual or "").strip()
+        expected_number = self._readback_decimal(expected_text)
+        actual_number = self._readback_decimal(actual_text)
+        if expected_number is not None and actual_number is not None:
+            return expected_number == actual_number
+        return normalize_compare_value(expected_text) == normalize_compare_value(actual_text)
+
+    def _readback_decimal(self, value: str) -> Decimal | None:
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        if cleaned.startswith("(") and cleaned.endswith(")"):
+            cleaned = f"-{cleaned[1:-1]}"
+        if not re.fullmatch(r"-?\d+(?:\.\d+)?", cleaned):
+            return None
+        try:
+            return Decimal(cleaned)
+        except InvalidOperation:
+            return None
 
     def _approval_blocking_error(self, fields: list[ExtractedField]) -> str | None:
         high_missing = len(
@@ -1954,6 +2407,27 @@ class FTWilliamsReviewService:
             return True
         return bool(current_values)
 
+    def _ftw_editability_status(self, current_values: dict[str, str]) -> dict[str, object]:
+        values_by_key = {
+            str(key or "").strip().casefold(): str(value or "").strip()
+            for key, value in (current_values or {}).items()
+        }
+        locked_status = values_by_key.get("lockedstatus") or None
+        signed_status = values_by_key.get("signedstatus") or None
+        filing_status = values_by_key.get("filingstatus") or None
+        normalized_lock = str(locked_status or "").strip().casefold()
+        editable: bool | None = None
+        if normalized_lock in {"locked", "1", "yes", "y", "true"}:
+            editable = False
+        elif normalized_lock in {"unlocked", "0", "no", "n", "false"}:
+            editable = True
+        return {
+            "editable": editable,
+            "locked_status": locked_status,
+            "signed_status": signed_status,
+            "filing_status": filing_status,
+        }
+
     def _match_schedule_a_status(
         self,
         fields: list[ExtractedField],
@@ -1963,10 +2437,6 @@ class FTWilliamsReviewService:
         candidates = [status for status in statuses if status.query_results]
         if not candidates:
             return statuses[0] if statuses else None
-        if preferred_ftw_seq_no:
-            preferred = next((status for status in candidates if str(status.ftw_seq_no or "") == str(preferred_ftw_seq_no)), None)
-            if preferred:
-                return preferred
         if len(candidates) == 1:
             return candidates[0]
         scored = sorted(
@@ -1975,6 +2445,24 @@ class FTWilliamsReviewService:
             reverse=True,
         )
         top_match, top_status = scored[0]
+        if preferred_ftw_seq_no:
+            preferred_item = next(
+                (
+                    (details, status)
+                    for details, status in scored
+                    if str(status.ftw_seq_no or "") == str(preferred_ftw_seq_no)
+                ),
+                None,
+            )
+            if preferred_item:
+                preferred_match, preferred_status = preferred_item
+                preferred_is_current_best = (
+                    preferred_match["score"] >= top_match["score"]
+                    and preferred_match["strong_matches"] >= top_match["strong_matches"]
+                    and not self._schedule_identity_conflicts(fields, preferred_status)
+                )
+                if preferred_is_current_best:
+                    return preferred_status
         if top_match["score"] <= 0:
             return None
         if (
@@ -1984,6 +2472,38 @@ class FTWilliamsReviewService:
         ):
             return None
         return top_status
+
+    def _schedule_identity_conflicts(
+        self,
+        fields: list[ExtractedField],
+        status: FTWilliamsStatusItem,
+    ) -> bool:
+        extracted_by_tag = {
+            resolve_ftw_tag(field): field.proposed_value or field.value
+            for field in fields
+            if field.form_type == FormType.SCHEDULE_A
+        }
+        query_results = status.query_results or {}
+        identity_pairs = [
+            (
+                self._normalize_contract(extracted_by_tag.get("InsContractNum")),
+                self._normalize_contract(query_results.get("InsContractNum") or query_results.get("INS_CONTRACT_NUM")),
+            ),
+            (
+                self._normalize_ein_digits(extracted_by_tag.get("InsCarrierEIN")),
+                self._normalize_ein_digits(query_results.get("InsCarrierEIN") or query_results.get("INS_CARRIER_EIN")),
+            ),
+            (
+                self._normalize_identifier_digits(extracted_by_tag.get("InsCarrierNAICCode")),
+                self._normalize_identifier_digits(
+                    query_results.get("InsCarrierNAICCode")
+                    or query_results.get("INS_CARRIER_NAIC_CODE")
+                    or query_results.get("NAICCode")
+                    or query_results.get("NAIC_CODE")
+                ),
+            ),
+        ]
+        return any(extracted and current and extracted != current for extracted, current in identity_pairs)
 
     def _merge_schedule_statuses(
         self,

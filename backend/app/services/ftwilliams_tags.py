@@ -142,6 +142,7 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
 
 FORM_5500_UNSUPPORTED_UPDATE_RULES = {
     "form_5500_part_i_1a_plan_name",
+    "form_5500_part_i_1e_plan_sponsor_ein",
     "form_5500_part_i_1f_plan_sponsor_address",
     "form_5500_part_i_2a_plan_administrator_name",
 }
@@ -227,8 +228,8 @@ def resolve_ftw_update_tag(field: ExtractedField) -> str | None:
     if field.form_type == FormType.FORM_5500:
         return FORM_5500_UPDATE_TAGS_BY_RULE.get(str(field.mapped_rule_key or ""))
     if field.form_type == FormType.SCHEDULE_A:
-        return SCHEDULE_A_TAGS_BY_RULE.get(str(field.mapped_rule_key or "")) or existing_real_tag(field)
-    return existing_real_tag(field)
+        return SCHEDULE_A_TAGS_BY_RULE.get(str(field.mapped_rule_key or ""))
+    return None
 
 
 def resolve_ftw_current_tag(field: ExtractedField) -> str | None:

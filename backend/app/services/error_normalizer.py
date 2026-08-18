@@ -50,6 +50,17 @@ def _rejected_fields_from_text(text: str) -> list[ClientRejectedField]:
     ):
         add(match.group(1), match.group(2))
 
+    validation_match = re.search(
+        r"FT Williams pre-send validation failed:\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if validation_match:
+        for item in re.split(r";\s*(?=[A-Za-z][A-Za-z0-9_]*:)", validation_match.group(1)):
+            parsed = re.fullmatch(r"([A-Za-z][A-Za-z0-9_]*):(.*?)\s+\(([^()]*)\)", item.strip())
+            if parsed:
+                add(parsed.group(1), parsed.group(2), parsed.group(3))
+
     return fields
 
 
@@ -81,6 +92,23 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             code=code,
             technical_details=text,
             rejected_fields=rejected or [],
+        )
+
+    if "ft williams pre-send validation failed" in lowered:
+        return build(
+            "FT Williams data needs correction",
+            "One or more proposed values do not match FT Williams' required field format.",
+            next_action="Correct the highlighted fields, regenerate the preview, then send again.",
+            code="FTW_PRE_SEND_VALIDATION",
+            rejected=rejected_fields,
+        )
+
+    if "read-back verification" in lowered and "did not match" in lowered:
+        return build(
+            "FT Williams update could not be verified",
+            "FT Williams accepted the request, but the values returned afterward did not match the sent update.",
+            next_action="Click Query FTW Current and review the returned values before retrying the update.",
+            code="FTW_UPDATE_VERIFICATION_FAILED",
         )
 
     if "endpoint and keyid" in lowered or "must be configured" in lowered:

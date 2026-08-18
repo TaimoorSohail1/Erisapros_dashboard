@@ -538,6 +538,10 @@ class FTWilliamsReview(BaseModel):
     current_query_success: bool = False
     current_year_exists: bool = False
     bring_forward_required: bool = False
+    ftw_editable: bool | None = None
+    ftw_locked_status: str | None = None
+    ftw_signed_status: str | None = None
+    ftw_filing_status: str | None = None
     ftw_plan_url: str | None = None
     comparison_year: str | None = None
     comparison_year_source: str | None = None
@@ -566,6 +570,11 @@ class FTWilliamsReview(BaseModel):
     update_xml_5500: str | None = None
     update_xml_schedule_a: str | None = None
     update_response_xml: str | None = None
+    update_verification_attempted: bool = False
+    update_verification_success: bool | None = None
+    update_verification_mismatches: list[dict] = Field(default_factory=list)
+    update_verification_request_xml: str | None = None
+    update_verification_response_xml: str | None = None
     edit_check_request_xml: str | None = None
     edit_check_response_xml: str | None = None
     error_message: str | None = None

@@ -268,6 +268,7 @@ export function FilingReviewPage() {
     ftwSendStatusReady &&
     ftwReview?.configured &&
     ftwReview.current_query_success &&
+    ftwReview.ftw_editable !== false &&
     form5500SafetyReady &&
     scheduleASafetyReady,
   );
@@ -568,20 +569,28 @@ export function FilingReviewPage() {
     setMessage("");
     setToast(null);
     try {
-      await sendApprovedFTWilliamsUpdate(id, {
+      const sendResult = await sendApprovedFTWilliamsUpdate(id, {
         reason,
         refresh_current_before_update: true,
         run_edit_checks: false,
       });
+      const sentReview = sendResult.ftw_review;
       const updatedFiling = await getFiling(id);
       setFiling(updatedFiling);
+      if (!sentReview || sentReview.status !== "UPDATE_SENT") {
+        throw new Error(
+          sentReview?.client_error?.message
+          || sentReview?.error_message
+          || "FT Williams accepted the request, but the updated values could not be verified.",
+        );
+      }
       const updateCount = updatedFiling.ftw_review?.fields.filter((field) => field.changed && field.update_included).length ?? 0;
       setToast({
         tone: "success",
         title: "FT Williams updated",
         message: updateCount
-          ? `${updateCount} approved field${updateCount === 1 ? "" : "s"} sent successfully.`
-          : "Approved XML was sent successfully.",
+          ? `${updateCount} approved field${updateCount === 1 ? "" : "s"} sent and verified successfully.`
+          : "Approved XML was sent and verified successfully.",
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
@@ -1169,6 +1178,7 @@ function sendLockReason(
 ) {
   const retryingFailedFtwUpdate = filing?.status === "FAILED" && filing.ftw_review?.status === "UPDATE_FAILED";
   if (filing?.status !== "APPROVED" && !retryingFailedFtwUpdate) return "Requires approval";
+  if (filing?.ftw_review?.ftw_editable === false) return "Filing is locked in FT Williams";
   if (!ftwCurrentLoaded) return "Query FTW current data first";
   if (!form5500SafetyReady) return "Form 5500 current data missing";
   if (!scheduleASafetyReady) return "Schedule A match or current data missing";
@@ -2151,7 +2161,7 @@ function FTWilliamsComparisonPanel({
               <strong>{updateSent ? "FT Williams update completed" : "Last FT Williams update failed"}</strong>
               <small>
                 {updateSent
-                  ? `Approved data was sent to FT Williams${review?.updated_at ? ` on ${formatDate(review.updated_at)}` : ""}.`
+                  ? `Approved data was sent and verified in FT Williams${review?.updated_at ? ` on ${formatDate(review.updated_at)}` : ""}.`
                   : `Review the error details and retry${review?.updated_at ? ` after ${formatDate(review.updated_at)}` : ""}.`}
               </small>
             </span>

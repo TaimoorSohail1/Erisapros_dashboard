@@ -97,10 +97,10 @@ class FilingsApiTests(unittest.TestCase):
                         filing_id=filing.id,
                         source_field_name="Carrier",
                         normalized_field_name="Carrier",
-                        mapped_rule_key="carrier",
+                        mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
                         mapped_label="Carrier",
-                        ftw_field="Carrier",
-                        xml_tag="Carrier",
+                        ftw_field="InsCarrierName",
+                        xml_tag="InsCarrierName",
                         proposed_value="Example Carrier",
                         form_type=FormType.SCHEDULE_A,
                     )
