@@ -29,6 +29,7 @@ from app.services.filing_pipeline import (
     summarize_mapped_fields,
 )
 from app.services.field_rule_admin import FieldRuleService
+from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -424,7 +425,10 @@ async def regenerate_xml(filing_id: str):
     if not await repo.get_filing(filing_id):
         raise HTTPException(status_code=404, detail="Filing not found")
     fields = await repo.list_fields(filing_id)
-    proposed_xml = build_proposed_ftw_xml(fields)
+    try:
+        proposed_xml = build_proposed_ftw_xml(fields)
+    except FTWPayloadValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"proposed_xml": proposed_xml}
 
 
