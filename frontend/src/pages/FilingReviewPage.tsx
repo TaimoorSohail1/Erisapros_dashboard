@@ -687,7 +687,7 @@ export function FilingReviewPage() {
           needsDecisionCount={needsDecisionRows.length}
         />
 
-        {message && !ftwUpdateFailed ? (
+        {message && !ftwUpdateFailed && !bringForwardRequired ? (
           <ClientErrorBanner
             error={{
               title: "Action could not complete",
@@ -699,7 +699,7 @@ export function FilingReviewPage() {
           />
         ) : null}
 
-        {clientError && !ftwUpdateFailed ? <ClientErrorBanner error={clientError} /> : filingClientError && !ftwUpdateFailed ? <ClientErrorBanner error={filingClientError} /> : null}
+        {clientError && !ftwUpdateFailed && !bringForwardRequired ? <ClientErrorBanner error={clientError} /> : filingClientError && !ftwUpdateFailed && !bringForwardRequired ? <ClientErrorBanner error={filingClientError} /> : null}
 
         {ftwUpdateFailed ? (
           <FTWilliamsFailureBanner
