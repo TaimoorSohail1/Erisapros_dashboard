@@ -280,7 +280,7 @@ export function FilingReviewPage() {
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.client_error || null;
   const filingClientError = filing?.status === "FAILED" && filing.error_message ? clientErrorFromRaw(filing.error_message, "Processing") : null;
-  const ftwFailed = Boolean(clientError || filing?.ftw_review?.status === "UPDATE_FAILED");
+  const ftwFailed = !bringForwardRequired && Boolean(clientError || filing?.ftw_review?.status === "UPDATE_FAILED");
 
   useEffect(() => {
     setCurrentPage(1);
@@ -905,7 +905,7 @@ export function FilingReviewPage() {
             <ReadinessStep done={Boolean(filing.ftw_review?.schedule_a_match)} label="Schedule A selected" detail={scheduleMatch} />
             <ReadinessStep done={!approvalBlocked} active={approvalBlocked} label="Fields reviewed" detail={approvalBlocked ? `${needsDecisionRows.length} unresolved` : "No blockers"} />
             <ReadinessStep done={Boolean(filing.proposed_xml)} label="XML preview ready" detail={filing.proposed_xml ? "Prepared from proposed values" : "Generate after extraction"} />
-            <ReadinessStep done={ftwReadyToSend && !ftwFailed} failed={ftwFailed} locked={!ftwReadyToSend && !ftwFailed} label="Send to FT Williams" detail={ftwFailed ? clientError?.title || "Last FTW action failed" : ftwReadyToSend ? "Unlocked" : sendLockReason(filing, form5500SafetyReady, scheduleASafetyReady, ftwCurrentLoaded)} />
+            <ReadinessStep done={ftwReadyToSend && !ftwFailed} failed={ftwFailed} locked={!ftwReadyToSend && !ftwFailed} label="Send to FT Williams" detail={bringForwardRequired ? "Bring Forward required" : ftwFailed ? "Review the FT Williams issue above" : ftwReadyToSend ? "Unlocked" : sendLockReason(filing, form5500SafetyReady, scheduleASafetyReady, ftwCurrentLoaded)} />
           </section>
 
           <ScheduleAWorksheetSummaryPanel summaries={scheduleAWorksheetSummaries} />

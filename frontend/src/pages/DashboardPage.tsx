@@ -709,7 +709,7 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
   }
   if (filing.status === "FAILED" || filing.status === "REJECTED") {
     return {
-      detail: filing.error_message || "Needs operator review before continuing.",
+      detail: dashboardFailureDetail(filing.error_message),
       pendingMetrics: false,
       tone: "danger",
     };
@@ -719,6 +719,28 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
     pendingMetrics: false,
     tone: "info",
   };
+}
+
+function dashboardFailureDetail(errorMessage?: string | null) {
+  const normalized = String(errorMessage || "").trim().toLowerCase();
+  if (!normalized) return "Needs review before continuing.";
+  if (normalized.includes("locked") || normalized.includes("not currently editable")) {
+    return "FT Williams filing is locked. Unlock or amend it, then refresh.";
+  }
+  if (normalized.includes("bring forward") || normalized.includes("current-year")) {
+    return "Current-year FT Williams data is missing. Complete Bring Forward, then refresh.";
+  }
+  if (
+    normalized.includes("ft williams")
+    || normalized.includes("ftwlink")
+    || normalized.includes("xml")
+    || normalized.includes("tag")
+    || normalized.includes("dolschedule")
+    || normalized.includes("dol5500")
+  ) {
+    return "FT Williams needs attention. Open the filing to review the affected field.";
+  }
+  return "Processing needs attention. Open the filing for details.";
 }
 
 function dashboardFieldMetrics(
