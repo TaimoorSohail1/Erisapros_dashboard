@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
+from fastapi import HTTPException
 from app.api.filings import (
     delete_filing_from_dashboard,
     get_ftwilliams_bring_forward_link,
@@ -117,6 +118,39 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(stored.proposed_xml, "<Existing />")
         self.assertEqual(events, [])
         self.assertEqual(audits, [])
+
+    def test_preview_xml_returns_actionable_validation_error_for_invalid_value(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Invalid Date Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/invalid-date",
+                )
+            )
+            await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="Policy from date",
+                        normalized_field_name="Policy from date",
+                        mapped_rule_key="schedule_a_part_i_1f_policy_year_beginning_date",
+                        mapped_label="Policy from date",
+                        proposed_value="202501",
+                        form_type=FormType.SCHEDULE_A,
+                    )
+                ]
+            )
+            with self.assertRaises(HTTPException) as raised:
+                await regenerate_xml(filing.id)
+            return raised.exception
+
+        error = run_async(scenario())
+        self.assertEqual(error.status_code, 400)
+        self.assertIn("InsPolicyFromDate:202501", str(error.detail))
+        self.assertIn("expected a valid date", str(error.detail))
 
     def test_unapprove_filing_clears_approval_and_locks_send_flow(self):
         async def scenario():
