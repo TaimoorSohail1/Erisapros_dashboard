@@ -19,6 +19,17 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertIn("OriginReadTimeout: 60", contents)
         self.assertIn("OriginKeepaliveTimeout: 60", contents)
 
+    def test_production_uses_plan_specific_ftw_deep_link_template(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+        expected = (
+            'Value: "https://ftwilliam.com/cgi-bin/index.cgi?'
+            '#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&'
+            'plan={ftw_customer_id},{ftw_plan_id}&Year={year}"'
+        )
+
+        self.assertEqual(contents.count(expected), 2)
+
     def test_production_container_does_not_log_webhook_query_secrets(self):
         dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
 
