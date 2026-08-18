@@ -79,8 +79,9 @@ class Settings(BaseSettings):
     # Keep extraction bounded so bulk ShareFile uploads remain responsive.
     filing_extraction_concurrency: int = 4
     ftw_plan_page_url_template: str = (
-        "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
-        "CommonField={ftw_customer_id}&ChildField={ftw_plan_id}&Year={year}&OnePlan=Y"
+        "https://ftwilliam.com/cgi-bin/index.cgi?"
+        "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
+        "plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
     )
 
     @property

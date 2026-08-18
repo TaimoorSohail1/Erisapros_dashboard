@@ -453,7 +453,12 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
     review = await repo.get_ftwilliams_review(filing_id)
     if not review or not review.bring_forward_required:
         raise HTTPException(status_code=409, detail="FT Williams Bring Forward is not required for this filing.")
-    url = str(review.ftw_plan_url or "").strip()
+    url = FTWilliamsReviewService().plan_page_url_for_review(review)
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="A plan-specific FT Williams URL cannot be created without FTW customer ID, plan ID, and year.",
+        )
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -467,7 +472,7 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
     except ValueError:
         safe_url = False
     if not safe_url:
-        raise HTTPException(status_code=400, detail="A safe FT Williams plan URL is not configured.")
+        raise HTTPException(status_code=400, detail="A safe plan-specific FT Williams URL is not configured.")
     await repo.add_audit(
         AuditLog(
             filing_id=filing_id,

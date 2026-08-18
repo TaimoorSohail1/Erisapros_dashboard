@@ -260,10 +260,9 @@ class FilingsApiTests(unittest.TestCase):
                     current_year_exists=False,
                     bring_forward_required=True,
                     year="2025",
-                    ftw_plan_url=(
-                        "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
-                        "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y"
-                    ),
+                    ftw_customer_id="1822236451",
+                    ftw_plan_id="2196092986",
+                    ftw_plan_url="https://www.ftwilliam.com/",
                 )
             )
             response = await get_ftwilliams_bring_forward_link(filing.id)
@@ -274,13 +273,47 @@ class FilingsApiTests(unittest.TestCase):
 
         self.assertEqual(
             response["url"],
-            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
-            "CommonField=900000001&ChildField=900000002&Year=2025&OnePlan=Y",
+            "https://ftwilliam.com/cgi-bin/index.cgi?"
+            "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
+            "plan=1822236451,2196092986&Year=2025",
         )
         self.assertEqual(response["target_year"], "2025")
         self.assertIsNone(response["prior_year"])
         self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
         self.assertFalse(audits[-1].details["mutation_requested"])
+
+    def test_bring_forward_link_rejects_generic_homepage_when_ftw_ids_are_missing(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Missing FTW IDs Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/missing-ftw-ids",
+                    intake_source="SHAREFILE",
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_year_exists=False,
+                    bring_forward_required=True,
+                    year="2025",
+                    ftw_plan_url="https://www.ftwilliam.com/",
+                )
+            )
+            with self.assertRaises(HTTPException) as raised:
+                await get_ftwilliams_bring_forward_link(filing.id)
+            return raised.exception, await repo.list_audit_logs(filing.id)
+
+        error, audits = run_async(scenario())
+        self.assertEqual(error.status_code, 400)
+        self.assertIn("plan-specific", str(error.detail))
+        self.assertEqual(audits, [])
 
 
 if __name__ == "__main__":

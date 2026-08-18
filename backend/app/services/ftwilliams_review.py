@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import re
 import time
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
@@ -3282,10 +3282,10 @@ class FTWilliamsReviewService:
         )
 
     def _ftw_plan_page_url(self, identity: dict, target_year: str | None) -> str:
-        fallback_url = "https://www.ftwilliam.com/"
         default_template = (
-            "https://www.ftwilliam.com/cgi-bin/Update5500E2Batch.cgi?"
-            "CommonField={ftw_customer_id}&ChildField={ftw_plan_id}&Year={year}&OnePlan=Y"
+            "https://ftwilliam.com/cgi-bin/index.cgi?"
+            "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
+            "plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
         )
         template = (get_settings().ftw_plan_page_url_template or default_template).strip()
         values = {
@@ -3295,23 +3295,37 @@ class FTWilliamsReviewService:
             "ftw_plan_id": quote(str(identity.get("ftw_plan_id") or ""), safe=""),
             "year": quote(str(target_year or identity.get("year") or ""), safe=""),
         }
-        if template == default_template and not (values["ftw_customer_id"] and values["ftw_plan_id"] and values["year"]):
-            return fallback_url
+        required_placeholders = {"{ftw_customer_id}", "{ftw_plan_id}", "{year}"}
+        if not required_placeholders.issubset(set(re.findall(r"\{[^{}]+\}", template))):
+            return ""
+        if not (values["ftw_customer_id"] and values["ftw_plan_id"] and values["year"]):
+            return ""
         try:
             url = template.format(**values)
             parsed = urlsplit(url)
             host = (parsed.hostname or "").lower().rstrip(".")
+            fragment = parse_qs(parsed.fragment, keep_blank_values=True)
+            expected_plan = f"{values['ftw_customer_id']},{values['ftw_plan_id']}"
             if (
                 parsed.scheme != "https"
                 or (host != "ftwilliam.com" and not host.endswith(".ftwilliam.com"))
                 or parsed.username
                 or parsed.password
                 or parsed.port not in {None, 443}
+                or parsed.path != "/cgi-bin/index.cgi"
+                or fragment.get("go") != ["iframe"]
+                or fragment.get("page") != ["/cgi-bin/PlanDoc2.cgi"]
+                or fragment.get("PerformDoc5500") != ["1"]
+                or fragment.get("plan") != [expected_plan]
+                or fragment.get("Year") != [values["year"]]
             ):
-                return fallback_url
+                return ""
             return url
         except (KeyError, ValueError):
-            return fallback_url
+            return ""
+
+    def plan_page_url_for_review(self, review: FTWilliamsReview) -> str:
+        return self._ftw_plan_page_url(self._identity_from_review(review), review.year)
 
     def _query_payload_base(self) -> dict:
         settings = get_settings()
