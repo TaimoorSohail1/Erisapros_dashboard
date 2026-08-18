@@ -15,6 +15,7 @@ from app.models import (
     FilingStatus,
     FormType,
     FTWilliamsManualMatchRequest,
+    FTWilliamsComparisonField,
     FTWilliamsPlanLookupStatus,
     FTWilliamsQueryResponse,
     FTWilliamsReview,
@@ -1967,6 +1968,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(review.update_verification_attempted)
         self.assertTrue(review.update_verification_success)
         self.assertEqual(review.update_verification_mismatches, [])
+        self.assertEqual(review.update_attempted_count, 2)
+        self.assertEqual(review.update_confirmed_count, 2)
+        self.assertEqual(review.update_remaining_count, 0)
 
         mismatched = run_async(
             FTWilliamsReviewService(VerifyingFTWilliamsService(reflect_updates=False)).approve_and_update(
@@ -1981,6 +1985,133 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(mismatched.update_verification_success)
         self.assertGreater(len(mismatched.update_verification_mismatches), 0)
         self.assertIn("read-back verification", mismatched.error_message or "")
+
+    def test_partial_form_success_is_refreshed_and_only_remaining_form_is_retried(self):
+        class PartialUpdateFTWilliamsService(FakeFTWilliamsService):
+            def __init__(self):
+                super().__init__()
+                self.form_updated = False
+                self.schedule_updated = False
+                self.schedule_send_count = 0
+                self.send_operations = []
+
+            async def run_query(self, payload):
+                response = await super().run_query(payload)
+                if payload.operation == "query_5500" and response.statuses:
+                    response.statuses[0].query_results.update(
+                        {
+                            "TotActivePartcpCnt": "101" if self.form_updated else "100",
+                            "SponsDfePlanNum": "501",
+                            "PlanYearEndDate": "12/31/2025",
+                            "LockedStatus": "Unlocked",
+                        }
+                    )
+                if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2" and response.statuses:
+                    response.statuses[0].query_results["WlfrTotChargesPaidAmt"] = "100" if self.schedule_updated else "90"
+                return response
+
+            async def send_xml(self, operation, request_xml):
+                self.send_operations.append(operation)
+                if operation == "update_5500":
+                    self.form_updated = True
+                    return FTWilliamsQueryResponse(
+                        operation=operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                        statuses=[FTWilliamsStatusItem(type=operation, error_code="0")],
+                    )
+                self.schedule_send_count += 1
+                if self.schedule_send_count == 1:
+                    return FTWilliamsQueryResponse(
+                        operation=operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=False,
+                        error="DOLScheduleAData error 60: invalid field req: LegacyUnsupportedTag",
+                        raw_response="<ftwLinkResponse><Status><ErrorCode>60</ErrorCode></Status></ftwLinkResponse>",
+                        statuses=[FTWilliamsStatusItem(type=operation, error_code="60", error_desc="Invalid field")],
+                    )
+                self.schedule_updated = True
+                return FTWilliamsQueryResponse(
+                    operation=operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    success=True,
+                    raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                    statuses=[FTWilliamsStatusItem(type=operation, error_code="0")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        run_async(
+            repo.add_fields(
+                [
+                    field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "73-0759701", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "12/31/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_ii_14_active_participants_at_end", "14. Active Participants at End", "101", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "BlueCross BlueShield of Oklahoma", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. Insurance Carrier EIN", "36-1236610", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract", "Y00979", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier", "10a. Total premiums", "100", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                ]
+            )
+        )
+
+        fake_ftw = PartialUpdateFTWilliamsService()
+        review = run_async(
+            FTWilliamsReviewService(fake_ftw).approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+            )
+        )
+
+        self.assertEqual(review.status, FTWilliamsReviewStatus.UPDATE_SENT)
+        self.assertEqual(fake_ftw.send_operations, ["update_5500", "update_schedule_a", "update_schedule_a"])
+        self.assertEqual(review.update_retry_count, 1)
+        self.assertEqual(review.update_attempted_count, 2)
+        self.assertEqual(review.update_confirmed_count, 2)
+        self.assertEqual(review.update_remaining_count, 0)
+        self.assertFalse(any(field.changed and field.update_included for field in review.fields))
+
+    def test_rejected_internal_tag_is_mapped_to_a_client_facing_field_label(self):
+        error = FTWilliamsReviewService()._normalize_review_error(
+            "DOL5500Data error 60: invalid field req: SPONS_DFE_NAME0",
+            [
+                FTWilliamsComparisonField(
+                    rule_key="form_5500_part_i_1d_plan_sponsor_name",
+                    label="1d. Plan Sponsor Name",
+                    form_type=FormType.FORM_5500,
+                    ftw_tag="SDName",
+                    proposed_value="Example Sponsor",
+                    changed=True,
+                )
+            ],
+        )
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.rejected_fields[0].label, "1d. Plan Sponsor Name")
 
     def test_schedule_match_stays_pending_when_identifier_match_is_ambiguous(self):
         service = FTWilliamsReviewService()

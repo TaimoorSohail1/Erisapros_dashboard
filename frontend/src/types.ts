@@ -240,6 +240,10 @@ export interface FTWilliamsReview {
   update_verification_mismatches?: Array<Record<string, unknown>>;
   update_verification_request_xml?: string | null;
   update_verification_response_xml?: string | null;
+  update_attempted_count?: number;
+  update_confirmed_count?: number;
+  update_remaining_count?: number;
+  update_retry_count?: number;
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
   error_message?: string | null;
@@ -347,11 +351,13 @@ export interface FilingDetail extends Filing {
 }
 
 export interface FieldRule {
-    id?: string | null;
+  id?: string | null;
   key: string;
   label: string;
   ftw_field: string;
   xml_tag?: string | null;
+  update_supported?: boolean;
+  approved_update_tag?: string | null;
   priority: FieldPriority;
   source: string;
   form_section?: string | null;
@@ -363,12 +369,12 @@ export interface FieldRule {
   client_notes?: string | null;
   aliases: string[];
   required: boolean;
-    order: number;
-    applicability: "BOTH" | "EXPERIENCE" | "NONEXPERIENCE" | "FORM_5500";
-    status: "DRAFT" | "PUBLISHED" | "DISABLED" | "SUPERSEDED";
-    version: number;
-    updated_by?: string | null;
-    change_reason?: string | null;
-    created_at?: string;
-    updated_at?: string;
-  }
+  order: number;
+  applicability: "BOTH" | "EXPERIENCE" | "NONEXPERIENCE" | "FORM_5500";
+  status: "DRAFT" | "PUBLISHED" | "DISABLED" | "SUPERSEDED";
+  version: number;
+  updated_by?: string | null;
+  change_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

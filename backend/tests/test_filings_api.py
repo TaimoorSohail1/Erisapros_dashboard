@@ -282,6 +282,39 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
         self.assertFalse(audits[-1].details["mutation_requested"])
 
+    def test_bring_forward_link_uses_the_selected_2026_filing_year(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="2026 Missing Current Year Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/bring-forward-2026",
+                    intake_source="SHAREFILE",
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_year_exists=False,
+                    bring_forward_required=True,
+                    year="2026",
+                    ftw_customer_id="1822236451",
+                    ftw_plan_id="2196092986",
+                )
+            )
+            return await get_ftwilliams_bring_forward_link(filing.id)
+
+        response = run_async(scenario())
+
+        self.assertIn("PerformDoc5500=1", response["url"])
+        self.assertIn("Year=2026", response["url"])
+        self.assertEqual(response["target_year"], "2026")
+
     def test_bring_forward_link_rejects_generic_homepage_when_ftw_ids_are_missing(self):
         async def scenario():
             repo = repositories.get_repository()
