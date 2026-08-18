@@ -15,7 +15,7 @@ from app.models import (
     FTWilliamsComparisonField,
     FTWilliamsReview,
 )
-from app.services.field_rule_admin import FieldRuleService
+from app.services.field_rule_admin import FieldRuleService, FieldRuleValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.models import NormalizedExtractionField
 from app.auth import has_field_rule_admin_access
@@ -40,21 +40,9 @@ class FieldRuleAdminTests(unittest.TestCase):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
             baseline = await service.list_rules()
+            approved = next(rule for rule in baseline if rule.key == "schedule_a_part_i_1a_name_of_insurance_company")
             draft = await service.create_draft(
-                FieldRule(
-                    key="schedule_a_test_admin_rule",
-                    label="Test admin field",
-                    ftw_field="Test admin field",
-                    xml_tag="TestAdminField",
-                    priority="MEDIUM",
-                    source="Schedule A",
-                    form_section="Schedule A - Part I",
-                    field_type="Dynamic",
-                    existing_behavior="Review Only",
-                    new_behavior="Add",
-                    applicability=FieldRuleApplicability.BOTH,
-                    aliases=["Test admin alias"],
-                ),
+                approved.model_copy(update={"aliases": [*approved.aliases, "Test admin alias"]}),
                 actor="admin@example.com",
                 reason="Validate the rule lifecycle",
             )
@@ -72,10 +60,36 @@ class FieldRuleAdminTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(baseline), 62)
         self.assertEqual(draft.status, FieldRuleStatus.DRAFT)
-        self.assertNotIn(draft.key, {rule.key for rule in before_publish})
+        before_rule = next(rule for rule in before_publish if rule.key == draft.key)
+        self.assertNotIn("Test admin alias", before_rule.aliases)
         self.assertEqual(published.status, FieldRuleStatus.PUBLISHED)
-        self.assertIn(published.key, {rule.key for rule in after_publish})
-        self.assertEqual([record.status for record in history], [FieldRuleStatus.PUBLISHED, FieldRuleStatus.DRAFT])
+        after_rule = next(rule for rule in after_publish if rule.key == published.key)
+        self.assertIn("Test admin alias", after_rule.aliases)
+        self.assertEqual([record.status for record in history[:2]], [FieldRuleStatus.PUBLISHED, FieldRuleStatus.DRAFT])
+
+    def test_update_capable_rule_must_use_an_approved_ftw_mapping(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            await service.create_draft(
+                FieldRule(
+                    key="schedule_a_unapproved_client_field",
+                    label="Unapproved client field",
+                    ftw_field="Unapproved client field",
+                    xml_tag="ClientInventedTag",
+                    priority="MEDIUM",
+                    source="Schedule A",
+                    form_section="Schedule A - Part I",
+                    field_type="Dynamic",
+                    existing_behavior="Update",
+                    new_behavior="Add",
+                    aliases=["Client supplied heading"],
+                ),
+                actor="admin@example.com",
+                reason="Must not publish arbitrary FTW mappings",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "approved FT Williams field"):
+            run_async(scenario())
 
     def test_mapping_can_use_the_published_rule_snapshot(self):
         rule = FieldRule(
@@ -103,17 +117,13 @@ class FieldRuleAdminTests(unittest.TestCase):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
             before = await service.published_snapshot()
+            approved = next(
+                rule
+                for rule in await service.published_rules()
+                if rule.key == "schedule_a_part_i_1b_insurance_carrier_ein"
+            )
             draft = await service.create_draft(
-                FieldRule(
-                    key="schedule_a_versioned_rule",
-                    label="Versioned rule",
-                    ftw_field="Versioned rule",
-                    xml_tag="VersionedRule",
-                    priority="LOW",
-                    source="Schedule A",
-                    field_type="Dynamic",
-                    aliases=["Version source"],
-                ),
+                approved.model_copy(update={"aliases": [*approved.aliases, "Version source"]}),
                 actor="admin@example.com",
                 reason="Test versioning",
             )
@@ -124,7 +134,7 @@ class FieldRuleAdminTests(unittest.TestCase):
         before, after = run_async(scenario())
 
         self.assertNotEqual(before.version, after.version)
-        self.assertIn("schedule_a_versioned_rule", {rule.key for rule in after.rules})
+        self.assertIn("schedule_a_part_i_1b_insurance_carrier_ein", {rule.key for rule in after.rules})
 
     def test_admin_access_requires_an_allowed_email_or_cognito_group(self):
         settings = Settings(auth_enabled=True, field_rules_admin_emails="support@highlandtech.ai")
@@ -158,17 +168,13 @@ class FieldRuleAdminTests(unittest.TestCase):
                 )
             )
             service = FieldRuleService(repo)
+            approved = next(
+                rule
+                for rule in await service.published_rules()
+                if rule.key == "schedule_a_part_i_1a_name_of_insurance_company"
+            )
             draft = await service.create_draft(
-                FieldRule(
-                    key="schedule_a_re_evaluate",
-                    label="Re-evaluated field",
-                    ftw_field="Re-evaluated field",
-                    xml_tag="ReEvaluatedField",
-                    priority="HIGH",
-                    source="Schedule A",
-                    field_type="Dynamic",
-                    aliases=["Client custom heading"],
-                ),
+                approved.model_copy(update={"aliases": [*approved.aliases, "Client custom heading"]}),
                 actor="admin@example.com",
                 reason="Add client alias",
             )
@@ -181,7 +187,7 @@ class FieldRuleAdminTests(unittest.TestCase):
         response, fields, jobs, review = run_async(scenario())
 
         self.assertEqual(response["status"], "re-evaluated")
-        self.assertIn("schedule_a_re_evaluate", {field.mapped_rule_key for field in fields})
+        self.assertIn("schedule_a_part_i_1a_name_of_insurance_company", {field.mapped_rule_key for field in fields})
         self.assertEqual(jobs, [])
         self.assertNotIn("Stale comparison field", {field.label for field in review.fields})
         self.assertGreater(response["field_count"], 0)

@@ -4817,16 +4817,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 .ftw-failure-banner {
-  align-items: flex-start;
+  align-items: center;
   background: #fff7f7;
   border: 1px solid #fca5a5;
   border-radius: 12px;
-  box-shadow: 0 16px 34px rgba(220, 38, 38, 0.08);
+  box-shadow: 0 10px 24px rgba(220, 38, 38, 0.06);
   color: #991b1b;
   display: grid;
-  gap: 14px;
-  grid-template-columns: 46px minmax(0, 1fr);
-  padding: 16px 18px;
+  gap: 12px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  padding: 12px 14px;
 }
 
 .ftw-failure-banner-icon {
@@ -4834,16 +4834,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   background: #fee2e2;
   border-radius: 999px;
   display: inline-flex;
-  height: 42px;
+  height: 34px;
   justify-content: center;
-  width: 42px;
+  width: 34px;
 }
 
 .ftw-failure-banner h2 {
   color: #7f1d1d;
-  font-size: 20px;
+  font-size: 15px;
   line-height: 1.2;
-  margin: 3px 0 0;
+  margin: 0;
 }
 
 .ftw-failure-banner p,
@@ -4854,9 +4854,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 .ftw-failure-banner p {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 750;
-  margin: 6px 0 0;
+  margin: 2px 0 0;
 }
 
 .ftw-failure-banner small {
@@ -4868,8 +4868,28 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .ftw-failure-banner-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
-  margin-top: 12px;
+  gap: 7px;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .ftw-failure-banner {
+    align-items: start;
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .ftw-failure-banner-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 620px) {
+  .ftw-failure-banner-actions .button {
+    justify-content: center;
+    width: 100%;
+  }
 }
 
 .ftw-rejected-fields {
@@ -4884,8 +4904,8 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   border: 1px solid rgba(239, 68, 68, 0.28);
   border-radius: 10px;
   display: grid;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 8px 10px;
 }
 
 .ftw-rejected-field-card > div:first-child {

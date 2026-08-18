@@ -22,7 +22,14 @@ async def list_field_rules(request: Request):
 
     rules, snapshot = await retry_repository_read(load)
     return {
-        "field_rules": rules,
+        "field_rules": [
+            rule.model_dump()
+            | {
+                "update_supported": bool(FieldRuleService.approved_update_tag(rule.key)),
+                "approved_update_tag": FieldRuleService.approved_update_tag(rule.key),
+            }
+            for rule in rules
+        ],
         "published_version": snapshot.version,
         "can_manage": has_field_rule_admin_access(getattr(request.state, "user", None), get_settings()),
     }

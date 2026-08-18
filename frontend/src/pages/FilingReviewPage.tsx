@@ -578,26 +578,30 @@ export function FilingReviewPage() {
       const updatedFiling = await getFiling(id);
       setFiling(updatedFiling);
       if (!sentReview || sentReview.status !== "UPDATE_SENT") {
-        throw new Error(
-          sentReview?.client_error?.message
-          || sentReview?.error_message
-          || "FT Williams accepted the request, but the updated values could not be verified.",
-        );
+        const confirmed = sentReview?.update_confirmed_count || 0;
+        const remaining = sentReview?.update_remaining_count || 0;
+        setToast({
+          tone: "error",
+          title: confirmed ? "FT Williams partially updated" : "FT Williams needs attention",
+          message: confirmed
+            ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated. ${remaining} still need${remaining === 1 ? "s" : ""} correction.`
+            : sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+        });
+        return;
       }
-      const updateCount = updatedFiling.ftw_review?.fields.filter((field) => field.changed && field.update_included).length ?? 0;
+      const updateCount = sentReview.update_confirmed_count || sentReview.update_attempted_count || 0;
       setToast({
         tone: "success",
         title: "FT Williams updated",
         message: updateCount
-          ? `${updateCount} approved field${updateCount === 1 ? "" : "s"} sent and verified successfully.`
-          : "Approved XML was sent and verified successfully.",
+          ? `${updateCount} approved field${updateCount === 1 ? "" : "s"} updated and verified. Current FTW values are now refreshed.`
+          : "Current FTW values were refreshed and verified successfully.",
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
-      setMessage(errorMessage);
       setToast({
         tone: "error",
-        title: "FT Williams update failed",
+        title: "FT Williams needs attention",
         message: errorMessage,
       });
     } finally {
@@ -683,7 +687,7 @@ export function FilingReviewPage() {
           needsDecisionCount={needsDecisionRows.length}
         />
 
-        {message ? (
+        {message && !ftwUpdateFailed ? (
           <ClientErrorBanner
             error={{
               title: "Action could not complete",
@@ -702,7 +706,7 @@ export function FilingReviewPage() {
             busy={ftwInteractionBusy}
             canRetry={ftwReadyToSend}
             error={clientError}
-            rawError={filing.ftw_review?.error_message || filing.error_message}
+            review={ftwReview}
             onEditFields={editAllFields}
             onQueryCurrent={() => prepareFtw(true)}
             onRetry={sendFtwUpdate}
@@ -1586,27 +1590,9 @@ function RejectedFieldsList({ fields }: { fields: ClientRejectedField[] }) {
       {fields.map((field, index) => (
         <div className="ftw-rejected-field-card" key={`${field.tag}-${field.field_id || index}`}>
           <div>
-            <strong>{field.label || field.tag}</strong>
-            <span>{field.form_type ? field.form_type.replace("_", " ") : "FT Williams field"}</span>
+            <strong>{field.label || "FT Williams field"}</strong>
+            <span>Needs correction</span>
           </div>
-          <dl>
-            <div>
-              <dt>Tag</dt>
-              <dd>{field.tag}</dd>
-            </div>
-            {field.value ? (
-              <div>
-                <dt>Sent value</dt>
-                <dd>{field.value}</dd>
-              </div>
-            ) : null}
-            {field.suggested_value ? (
-              <div>
-                <dt>Suggested</dt>
-                <dd>{field.suggested_value}</dd>
-              </div>
-            ) : null}
-          </dl>
           {field.reason ? <small>{field.reason}</small> : null}
         </div>
       ))}
@@ -1618,42 +1604,46 @@ function FTWilliamsFailureBanner({
   busy,
   canRetry,
   error,
+  review,
   onEditFields,
   onQueryCurrent,
   onRetry,
-  rawError,
 }: {
   busy: boolean;
   canRetry: boolean;
   error: ClientFacingError | null;
+  review: FTWilliamsReview | null;
   onEditFields: () => void;
   onQueryCurrent: () => void;
   onRetry: () => void;
-  rawError?: string | null;
 }) {
-  const message = error?.message || rawError || "FT Williams rejected the latest update attempt.";
+  const confirmed = review?.update_confirmed_count || 0;
+  const remaining = review?.update_remaining_count || 0;
+  const rejectedLabels = (error?.rejected_fields || []).map((field) => field.label).filter(Boolean);
+  const message = confirmed
+    ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated; ${remaining} still need${remaining === 1 ? "s" : ""} correction.`
+    : rejectedLabels.length
+      ? `${rejectedLabels.join(", ")} ${rejectedLabels.length === 1 ? "needs" : "need"} correction before retrying.`
+      : error?.message || "FT Williams could not verify the remaining update.";
   return (
-    <section className="ftw-failure-banner">
+    <section className="ftw-failure-banner" role="alert">
       <div className="ftw-failure-banner-icon">
         <AlertTriangle size={22} />
       </div>
-      <div>
-        <span className="eyebrow">Operator Review Required</span>
-        <h2>FT Williams update failed</h2>
+      <div className="ftw-failure-banner-copy">
+        <h2>FT Williams needs attention</h2>
         <p>{message}</p>
-        {error?.next_action ? <small>Next step: {error.next_action}</small> : null}
-        <RejectedFieldsList fields={error?.rejected_fields || []} />
-        <div className="ftw-failure-banner-actions">
-          <button className="button" type="button" disabled={busy || !canRetry} onClick={onRetry}>
-            <ShieldCheck size={16} /> Retry Send
-          </button>
-          <button className="button secondary" type="button" disabled={busy} onClick={onQueryCurrent}>
-            <Search size={16} /> Query FTW Current
-          </button>
-          <button className="button secondary" type="button" onClick={onEditFields}>
-            <Edit3 size={16} /> Edit Fields
-          </button>
-        </div>
+      </div>
+      <div className="ftw-failure-banner-actions">
+        <button className="button" type="button" disabled={busy || !canRetry} onClick={onRetry}>
+          <ShieldCheck size={16} /> Retry Remaining
+        </button>
+        <button className="button secondary" type="button" disabled={busy} onClick={onQueryCurrent}>
+          <Search size={16} /> Refresh FTW
+        </button>
+        <button className="button secondary" type="button" onClick={onEditFields}>
+          <Edit3 size={16} /> Review Fields
+        </button>
       </div>
     </section>
   );

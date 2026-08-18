@@ -40,6 +40,7 @@ from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
 from app.services.ftwilliams_tags import (
     FORM_5500_CURRENT_TAGS_BY_RULE,
+    FORM_5500_TAGS_BY_RULE,
     FORM_5500_UPDATE_TAGS_BY_RULE,
     SCHEDULE_A_CURRENT_TAGS_BY_RULE,
     SCHEDULE_A_TAGS_BY_RULE,
@@ -265,7 +266,7 @@ class FTWilliamsReviewService:
         if existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
-        ftw_plan_url = self._ftw_plan_page_url(identity, query_payload_base.get("year")) if bring_forward_required else None
+        ftw_plan_url = self._ftw_plan_page_url(identity, identity.get("year")) if bring_forward_required else None
         payload_validation_issues: list[FTWFieldValidationIssue] = []
         try:
             update_xml_5500 = build_single_document_update_xml(
@@ -1506,39 +1507,91 @@ class FTWilliamsReviewService:
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
 
-        responses = []
-        if review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500:
-            responses.append(await self.ftwilliams.send_xml("update_5500", review.update_xml_5500))
-        if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
-            responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
+        attempted_field_keys = self._changed_field_keys(review)
+        attempted_count = len(attempted_field_keys)
+        response_parts: list[str] = []
+        retry_count = 0
+        success = False
+        ftw_accepted = False
+        error_message: str | None = None
+        verification_attempted = False
+        verification_success: bool | None = None
+        verification_mismatches: list[dict] = []
+        verification_request_xml: str | None = None
+        verification_response_xml: str | None = None
+        working_review = review
 
-        response_xml = "\n\n".join(response.raw_response or response.error or "" for response in responses if response.raw_response or response.error)
-        ftw_accepted = bool(responses) and all(response.success for response in responses)
-        success = ftw_accepted
-        review.update_response_xml = response_xml or None
-        review.error_message = None if ftw_accepted else "; ".join(filter(None, [response.error or self._status_error(response.statuses) for response in responses]))
+        for attempt in range(2):
+            payload_fingerprint = self._update_payload_fingerprint(working_review)
+            responses = await self._send_update_payload(working_review)
+            response_parts.extend(
+                response.raw_response or response.error or ""
+                for response in responses
+                if response.raw_response or response.error
+            )
+            ftw_accepted = bool(responses) and all(response.success for response in responses)
+            error_message = None if ftw_accepted else "; ".join(
+                filter(None, [response.error or self._status_error(response.statuses) for response in responses])
+            )
 
-        if ftw_accepted:
-            # The just-sent values make every cached FTW current snapshot
-            # potentially stale. The next automatic comparison must reload.
-            clear_ftw_current_snapshot_cache()
-            verification = await self._verify_update_readback(review)
-            review.update_verification_attempted = True
-            review.update_verification_success = verification["success"]
-            review.update_verification_mismatches = verification["mismatches"]
-            review.update_verification_request_xml = verification["request_xml"]
-            review.update_verification_response_xml = verification["response_xml"]
-            success = bool(verification["success"])
-            if not success:
+            if ftw_accepted:
+                clear_ftw_current_snapshot_cache()
+                verification = await self._verify_update_readback(working_review)
+                verification_attempted = True
+                verification_success = bool(verification["success"])
+                verification_mismatches = verification["mismatches"]
+                verification_request_xml = verification["request_xml"]
+                verification_response_xml = verification["response_xml"]
+                if verification_success:
+                    success = True
+                    break
                 mismatch_fields = ", ".join(
                     str(item.get("tag") or item.get("form") or "field")
-                    for item in verification["mismatches"][:8]
+                    for item in verification_mismatches[:8]
                 )
-                review.error_message = (
+                error_message = (
                     "FT Williams accepted the update, but read-back verification did not match the sent values"
-                    f" ({mismatch_fields or 'updated fields'}). Query current data and review the highlighted fields."
+                    f" ({mismatch_fields or 'updated fields'})."
                 )
 
+            clear_ftw_current_snapshot_cache()
+            refreshed = await self.prepare_review(filing_id, send_queries=True)
+            refreshed_fingerprint = self._update_payload_fingerprint(refreshed)
+            can_retry_remaining = bool(
+                attempt == 0
+                and refreshed.current_query_success
+                and self._has_update_payload(refreshed)
+                and refreshed_fingerprint != payload_fingerprint
+            )
+            working_review = refreshed
+            if can_retry_remaining:
+                retry_count = 1
+                continue
+            break
+
+        clear_ftw_current_snapshot_cache()
+        reconciled = await self.prepare_review(filing_id, send_queries=True)
+        remaining_count = self._remaining_attempted_count(attempted_field_keys, reconciled)
+        confirmed_count = max(0, attempted_count - remaining_count)
+        if attempted_count and remaining_count == 0 and reconciled.current_query_success:
+            success = True
+            error_message = None
+            verification_attempted = True
+            verification_success = True
+            verification_mismatches = []
+
+        review = reconciled
+        review.update_response_xml = "\n\n".join(response_parts) or None
+        review.update_verification_attempted = verification_attempted
+        review.update_verification_success = verification_success
+        review.update_verification_mismatches = verification_mismatches
+        review.update_verification_request_xml = verification_request_xml
+        review.update_verification_response_xml = verification_response_xml
+        review.update_attempted_count = attempted_count
+        review.update_confirmed_count = confirmed_count
+        review.update_remaining_count = remaining_count
+        review.update_retry_count = retry_count
+        review.error_message = error_message
         review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
         review.client_error = self._normalize_review_error(review.error_message, review.fields)
 
@@ -1573,8 +1626,12 @@ class FTWilliamsReviewService:
                 details={
                     "error": review.error_message,
                     "run_edit_checks": run_edit_checks,
-                    "updated_field_count": len([field for field in review.fields if field.changed and field.update_included]),
+                    "updated_field_count": confirmed_count,
                     "ftw_accepted": ftw_accepted,
+                    "update_attempted_count": attempted_count,
+                    "update_confirmed_count": confirmed_count,
+                    "update_remaining_count": remaining_count,
+                    "update_retry_count": retry_count,
                     "verification_attempted": review.update_verification_attempted,
                     "verification_success": review.update_verification_success,
                     "verification_mismatch_count": len(review.update_verification_mismatches),
@@ -1582,6 +1639,53 @@ class FTWilliamsReviewService:
             )
         )
         return review
+
+    async def _send_update_payload(self, review: FTWilliamsReview) -> list:
+        responses = []
+        if review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500:
+            responses.append(await self.ftwilliams.send_xml("update_5500", review.update_xml_5500))
+        if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
+            responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
+        return responses
+
+    @staticmethod
+    def _has_update_payload(review: FTWilliamsReview) -> bool:
+        return bool(
+            (review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500)
+            or (review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
+        )
+
+    @staticmethod
+    def _update_payload_fingerprint(review: FTWilliamsReview) -> tuple[str, str]:
+        return (str(review.update_xml_5500 or ""), str(review.update_xml_schedule_a or ""))
+
+    @staticmethod
+    def _comparison_field_key(field: FTWilliamsComparisonField) -> str:
+        return str(
+            field.field_id
+            or field.rule_key
+            or f"{field.form_type}:{field.ftw_tag}:{field.label}"
+        )
+
+    def _changed_field_keys(self, review: FTWilliamsReview) -> set[str]:
+        return {
+            self._comparison_field_key(field)
+            for field in review.fields
+            if field.changed and field.update_included
+        }
+
+    def _remaining_attempted_count(self, attempted_keys: set[str], review: FTWilliamsReview) -> int:
+        refreshed_by_key = {
+            self._comparison_field_key(field): field
+            for field in review.fields
+        }
+        return len(
+            [
+                key
+                for key in attempted_keys
+                if key not in refreshed_by_key or refreshed_by_key[key].changed
+            ]
+        )
 
     async def _verify_update_readback(self, review: FTWilliamsReview) -> dict:
         all_request_xmls: list[str] = []
@@ -1970,6 +2074,19 @@ class FTWilliamsReviewService:
 
         by_tag = {field.ftw_tag: field for field in fields if field.ftw_tag}
         by_field_id = {field.field_id: field for field in fields if field.field_id}
+        for field in fields:
+            if not field.rule_key:
+                continue
+            for mapping in (
+                FORM_5500_TAGS_BY_RULE,
+                FORM_5500_CURRENT_TAGS_BY_RULE,
+                FORM_5500_UPDATE_TAGS_BY_RULE,
+                SCHEDULE_A_CURRENT_TAGS_BY_RULE,
+                SCHEDULE_A_TAGS_BY_RULE,
+            ):
+                alias_tag = mapping.get(field.rule_key)
+                if alias_tag:
+                    by_tag.setdefault(alias_tag, field)
         for rejected in error.rejected_fields:
             comparison = by_tag.get(rejected.tag) or by_field_id.get(rejected.field_id)
             if not comparison:

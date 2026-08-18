@@ -6,6 +6,7 @@ import re
 from app.models import FieldRule, FieldRuleApplicability, FieldRuleStatus
 from app.repositories import Repository
 from app.services.field_rules import DEFAULT_FIELD_RULES, normalize_name
+from app.services.ftwilliams_tags import FORM_5500_UPDATE_TAGS_BY_RULE, SCHEDULE_A_TAGS_BY_RULE
 
 
 class FieldRuleValidationError(ValueError):
@@ -23,6 +24,10 @@ class FieldRuleService:
 
     def __init__(self, repository: Repository):
         self.repository = repository
+
+    @staticmethod
+    def approved_update_tag(rule_key: str) -> str | None:
+        return FORM_5500_UPDATE_TAGS_BY_RULE.get(rule_key) or SCHEDULE_A_TAGS_BY_RULE.get(rule_key)
 
     async def ensure_seeded(self) -> None:
         existing = await self.repository.list_field_rule_versions()
@@ -182,6 +187,34 @@ class FieldRuleService:
             errors.append("Official field label is required.")
         if not rule.ftw_field.strip():
             errors.append("FT Williams field is required.")
+        approved_rule = next((item for item in DEFAULT_FIELD_RULES if item.key == rule.key), None)
+        if not approved_rule:
+            errors.append("Select an approved FT Williams field before saving this rule.")
+        else:
+            protected_values = {
+                "official label": (rule.label, approved_rule.label),
+                "FT Williams field": (rule.ftw_field, approved_rule.ftw_field),
+                "XML mapping": (rule.xml_tag or "", approved_rule.xml_tag or ""),
+                "source": (rule.source, approved_rule.source),
+                "form section": (rule.form_section or "", approved_rule.form_section or ""),
+            }
+            changed_protected = [
+                name
+                for name, (actual, expected) in protected_values.items()
+                if str(actual or "").strip() != str(expected or "").strip()
+            ]
+            if changed_protected:
+                errors.append(
+                    "Approved FT Williams technical mappings cannot be changed manually "
+                    f"({', '.join(changed_protected)})."
+                )
+            update_supported = bool(self.approved_update_tag(rule.key))
+            requests_update = str(rule.existing_behavior or "").strip().lower() == "update"
+            requests_add = str(rule.new_behavior or "").strip().lower() in {"add", "update"}
+            if (requests_update or requests_add) and not update_supported:
+                errors.append(
+                    "This approved field is read-only in FT Williams and cannot be configured for updates."
+                )
         normalized_aliases = [normalize_name(alias) for alias in rule.aliases if alias.strip()]
         if len(normalized_aliases) != len(set(normalized_aliases)):
             errors.append("Aliases must be unique within the rule.")

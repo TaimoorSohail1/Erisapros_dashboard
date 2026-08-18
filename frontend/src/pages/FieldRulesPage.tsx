@@ -73,7 +73,7 @@ export function FieldRulesPage() {
   const activeRules = rules.filter((rule) => rule.status === "PUBLISHED");
   const highCount = activeRules.filter((rule) => rule.priority === "HIGH").length;
   const draftCount = rules.filter((rule) => rule.status === "DRAFT").length;
-  const updateCount = activeRules.filter((rule) => [rule.existing_behavior, rule.new_behavior].includes("Update")).length;
+  const updateCount = activeRules.filter((rule) => rule.update_supported).length;
   const sections = useMemo(() => uniqueValues(rules.map((rule) => rule.form_section || rule.source)), [rules]);
   const types = useMemo(() => uniqueValues(rules.map((rule) => rule.field_type)), [rules]);
 
@@ -112,8 +112,6 @@ export function FieldRulesPage() {
     const copy = structuredClone(source);
     if (mode === "clone") {
       copy.id = null;
-      copy.key = `${copy.key}_copy`;
-      copy.label = `${copy.label} (Copy)`;
       copy.status = "DRAFT";
       copy.version = 1;
     }
@@ -221,6 +219,7 @@ export function FieldRulesPage() {
       {editor ? (
         <RuleEditor
           state={editor}
+          approvedRules={rules.filter((rule) => rule.status === "PUBLISHED")}
           onClose={() => setEditor(null)}
           onSaved={async (rule) => { setEditor(null); flash("Draft saved. Test and publish it when ready."); await refresh(rule.key); }}
         />
@@ -291,7 +290,7 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
   </div>;
 }
 
-function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClose: () => void; onSaved: (rule: FieldRule) => Promise<void> }) {
+function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEditorState; approvedRules: FieldRule[]; onClose: () => void; onSaved: (rule: FieldRule) => Promise<void> }) {
   const [rule, setRule] = useState<FieldRule>(state.rule);
   const [reason, setReason] = useState(state.mode === "add" ? "Add a new field mapping." : state.mode === "clone" ? "Clone an existing field mapping." : "Update field mapping guidance.");
   const [aliases, setAliases] = useState(state.rule.aliases.join("\n"));
@@ -304,24 +303,27 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   useDialogFocus(true, editorRef, onClose);
 
   function update<K extends keyof FieldRule>(key: K, value: FieldRule[K]) { setRule((current) => ({ ...current, [key]: value })); }
-  function updateLabel(label: string) {
-    setRule((current) => ({
-      ...current,
-      label,
-      ...(isNewIdentity ? {
-        key: slugKey(label),
-        ftw_field: label,
-        xml_tag: xmlTagFromLabel(label),
-      } : {}),
-    }));
+  function selectApprovedRule(key: string) {
+    const selected = approvedRules.find((item) => item.key === key);
+    if (!selected) return setRule(emptyRule());
+    const prepared = {
+      ...structuredClone(selected),
+      id: null,
+      status: "DRAFT" as const,
+      version: 1,
+      ...(selected.update_supported ? {} : { existing_behavior: "Review Only", new_behavior: "Keep FTW" }),
+    };
+    setRule(prepared);
+    setAliases(prepared.aliases.join("\n"));
+    setSample(prepared.aliases[0] || prepared.label);
     setTestResult(null);
   }
   function preparedRule(): FieldRule {
     return {
       ...rule,
-      key: rule.key.trim() || slugKey(rule.label),
-      ftw_field: rule.ftw_field.trim() || rule.label.trim(),
-      xml_tag: rule.xml_tag?.trim() || xmlTagFromLabel(rule.label),
+      key: rule.key.trim(),
+      ftw_field: rule.ftw_field.trim(),
+      xml_tag: rule.xml_tag?.trim() || null,
       aliases: aliases.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
       status: "DRAFT",
     };
@@ -335,6 +337,7 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
   }
 
   async function save() {
+    if (!rule.key.trim()) return setError("Select an approved FT Williams field.");
     if (!rule.label.trim()) return setError("Field name is required.");
     if (!aliases.split(/\r?\n|,/).some((item) => item.trim())) return setError("Add at least one EyeLevel alias.");
     if (isNewIdentity && (!testResult?.valid || !testResult.matched)) return setError("Run a successful mapping test before saving this new rule.");
@@ -351,7 +354,12 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
       <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Add the field name and aliases, test the match, then save the rule as a draft.</p></div><button className="icon-button" type="button" onClick={onClose}><X size={20} /></button></header>
       <div className="rule-editor-body">
         <EditorSection number="1" title="Field setup" description="Choose what the field is called and where it applies.">
-          <div className="form-grid client-rule-grid"><Field label="Field name" hint="Use the official name reviewers expect to see."><input value={rule.label} onChange={(event) => updateLabel(event.target.value)} placeholder="Insurance Carrier EIN" /></Field><Field label="Applies to"><select value={rule.applicability} onChange={(event) => update("applicability", event.target.value as FieldRule["applicability"])}><option value="BOTH">Both contract types</option><option value="EXPERIENCE">Experience rated only</option><option value="NONEXPERIENCE">Nonexperience rated only</option><option value="FORM_5500">Form 5500 only</option></select></Field><Field label="Priority"><select value={rule.priority} onChange={(event) => update("priority", event.target.value as FieldRule["priority"])}><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>IGNORE</option></select></Field></div>
+          <div className="form-grid client-rule-grid">
+            {isNewIdentity ? <Field label="Approved FT Williams field" hint="The technical mapping is filled automatically."><select value={rule.key} onChange={(event) => selectApprovedRule(event.target.value)}><option value="">Select an approved field</option>{approvedRules.map((item) => <option key={item.key} value={item.key}>{item.label}{item.update_supported ? "" : " (read-only)"}</option>)}</select></Field> : null}
+            <Field label="Field name" hint="Official FT Williams label"><input value={rule.label} readOnly placeholder="Select an approved field" /></Field>
+            <Field label="Applies to"><select value={rule.applicability} onChange={(event) => update("applicability", event.target.value as FieldRule["applicability"])}><option value="BOTH">Both contract types</option><option value="EXPERIENCE">Experience rated only</option><option value="NONEXPERIENCE">Nonexperience rated only</option><option value="FORM_5500">Form 5500 only</option></select></Field>
+            <Field label="Priority"><select value={rule.priority} onChange={(event) => update("priority", event.target.value as FieldRule["priority"])}><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>IGNORE</option></select></Field>
+          </div>
         </EditorSection>
         <EditorSection number="2" title="EyeLevel aliases" description="Add the names EyeLevel may return, one per line, then test a real example.">
           <Field label="Aliases"><textarea className="aliases-editor" value={aliases} onChange={(event) => { setAliases(event.target.value); setTestResult(null); }} placeholder="Insurance Carrier EIN&#10;Carrier federal EIN" /></Field>
@@ -363,10 +371,10 @@ function RuleEditor({ state, onClose, onSaved }: { state: RuleEditorState; onClo
         <details className="advanced-rule-settings">
           <summary><div><strong>Advanced settings</strong><span>Technical values are generated automatically. Only change them if instructed by a technical administrator.</span></div><ChevronRight size={18} /></summary>
           <div className="advanced-rule-settings-content form-grid">
-            <Field label="Stable key" hint={isNewIdentity ? "Generated from the field name." : "Locked after creation."}><input value={rule.key} disabled={!isNewIdentity} onChange={(event) => update("key", slugKey(event.target.value))} /></Field>
-            <Field label="FT Williams field"><input value={rule.ftw_field} onChange={(event) => update("ftw_field", event.target.value)} /></Field>
-            <Field label="FT Williams XML tag"><input value={rule.xml_tag || ""} onChange={(event) => update("xml_tag", event.target.value)} /></Field>
-            <Field label="Form section"><input value={rule.form_section || ""} onChange={(event) => update("form_section", event.target.value)} placeholder="Schedule A - Part III" /></Field>
+            <Field label="Stable key" hint="Controlled by the approved FT Williams field."><input value={rule.key} readOnly /></Field>
+            <Field label="FT Williams field"><input value={rule.ftw_field} readOnly /></Field>
+            <Field label="FT Williams update tag"><input value={rule.approved_update_tag || "Read-only field"} readOnly /></Field>
+            <Field label="Form section"><input value={rule.form_section || ""} readOnly /></Field>
             <Field label="Field type"><select value={rule.field_type} onChange={(event) => update("field_type", event.target.value)}><option>Dynamic</option><option>Static</option><option>Calculated</option></select></Field>
             <Field label="Existing FTW value"><select value={rule.existing_behavior || "Review Only"} onChange={(event) => update("existing_behavior", event.target.value)}><option>Update</option><option>Keep FTW</option><option>Review Only</option><option>Add</option></select></Field>
             <Field label="Empty FTW value"><select value={rule.new_behavior || "Add"} onChange={(event) => update("new_behavior", event.target.value)}><option>Add</option><option>Update</option><option>Review Only</option><option>Keep FTW</option></select></Field>
@@ -388,6 +396,4 @@ function uniqueValues(values: string[]) { return Array.from(new Set(values.filte
 function titleCase(value: string) { return value.toLowerCase().replace(/(^|_|\s)\w/g, (letter) => letter.toUpperCase()).replaceAll("_", " "); }
 function applicabilityLabel(value: FieldRule["applicability"]) { return value === "BOTH" ? "Both types" : value === "EXPERIENCE" ? "Experience" : value === "NONEXPERIENCE" ? "Nonexperience" : "Form 5500"; }
 function formatDate(value?: string) { if (!value) return "—"; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)); }
-function slugKey(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
-function xmlTagFromLabel(value: string) { const key = slugKey(value); return key ? `field_${key}` : ""; }
 function emptyRule(): FieldRule { return { key: "", label: "", ftw_field: "", xml_tag: "", priority: "MEDIUM", source: "Schedule A", form_section: "Schedule A - Part I", field_type: "Dynamic", existing_or_new: "BOTH", existing_behavior: "Review Only", new_behavior: "Add", notes: "", client_notes: "", aliases: [], required: false, order: 0, applicability: "BOTH", status: "DRAFT", version: 1 }; }
