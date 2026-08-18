@@ -51,6 +51,15 @@ class ErrorNormalizerTests(unittest.TestCase):
         self.assertEqual(error.severity, "warning")
         self.assertIn("Select", error.next_action)
 
+    def test_readback_mismatch_gets_verification_message(self):
+        error = normalize_client_error(
+            "FT Williams accepted the update, but read-back verification did not match the sent values (TotActivePartcpCnt)."
+        )
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "FTW_UPDATE_VERIFICATION_FAILED")
+        self.assertIn("Query FTW Current", error.next_action)
+
 
 if __name__ == "__main__":
     unittest.main()

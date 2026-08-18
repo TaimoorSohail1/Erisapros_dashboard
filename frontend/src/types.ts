@@ -203,6 +203,10 @@ export interface FTWilliamsReview {
   current_query_success: boolean;
   current_year_exists: boolean;
   bring_forward_required: boolean;
+  ftw_editable?: boolean | null;
+  ftw_locked_status?: string | null;
+  ftw_signed_status?: string | null;
+  ftw_filing_status?: string | null;
   ftw_plan_url?: string | null;
   comparison_year?: string | null;
   comparison_year_source?: string | null;
@@ -231,6 +235,11 @@ export interface FTWilliamsReview {
   update_xml_5500?: string | null;
   update_xml_schedule_a?: string | null;
   update_response_xml?: string | null;
+  update_verification_attempted?: boolean;
+  update_verification_success?: boolean | null;
+  update_verification_mismatches?: Array<Record<string, unknown>>;
+  update_verification_request_xml?: string | null;
+  update_verification_response_xml?: string | null;
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
   error_message?: string | null;

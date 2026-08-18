@@ -3,6 +3,7 @@ from html import escape
 import re
 from app.config import get_settings
 from app.models import ExtractedField, FieldPriority, FormType
+from app.services.ftwilliams_contract import normalize_ftw_update_value
 from app.services.ftwilliams_tags import (
     SCHEDULE_A_CURRENT_TAGS_BY_RULE,
     SCHEDULE_A_TAGS_BY_RULE,
@@ -342,7 +343,7 @@ def update_values_for_form(
         tag = resolve_ftw_update_tag(field)
         if not tag:
             continue
-        proposed = _normalize_ftw_xml_value(tag, field.proposed_value)
+        proposed = normalize_ftw_update_value(form_type, tag, field.proposed_value)
         if not proposed:
             continue
         if current_values is not None:
@@ -359,16 +360,73 @@ def full_replace_values_for_schedule_a(
     *,
     force_current_values: bool = False,
 ) -> dict[str, str]:
-    changed_values = update_values_for_form(fields, FormType.SCHEDULE_A, current_values=current_values)
+    use_canonical_carrier = _schedule_a_identity_matches_current(fields, current_values)
+    overlay_fields = [
+        field
+        for field in fields
+        if not (
+            use_canonical_carrier
+            and str(field.mapped_rule_key or "") == "schedule_a_part_i_1a_name_of_insurance_company"
+        )
+    ]
+    changed_values = update_values_for_form(overlay_fields, FormType.SCHEDULE_A, current_values=current_values)
     if not changed_values and not force_current_values:
         return {}
 
     values = current_values_for_schedule_a_update(current_values)
     if force_current_values and not fields:
         return values
-    proposed_values = update_values_for_form(fields, FormType.SCHEDULE_A)
+    proposed_values = update_values_for_form(overlay_fields, FormType.SCHEDULE_A)
+    if use_canonical_carrier:
+        canonical_carrier = str(
+            current_values.get("InsCarrierName")
+            or current_values.get("INS_CARRIER_NAME")
+            or ""
+        ).strip()
+        if canonical_carrier:
+            proposed_values["InsCarrierName"] = canonical_carrier
     values.update(proposed_values)
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
+
+
+def _schedule_a_identity_matches_current(
+    fields: list[ExtractedField],
+    current_values: dict[str, str],
+) -> bool:
+    proposed_by_rule = {
+        str(field.mapped_rule_key or ""): str(field.proposed_value or field.value or "").strip()
+        for field in fields
+        if field.form_type == FormType.SCHEDULE_A
+    }
+    identity_pairs = [
+        (
+            proposed_by_rule.get("schedule_a_part_i_1b_insurance_carrier_ein"),
+            current_values.get("InsCarrierEIN") or current_values.get("INS_CARRIER_EIN"),
+            lambda value: re.sub(r"\D", "", str(value or "")),
+            True,
+        ),
+        (
+            proposed_by_rule.get("schedule_a_part_i_1c_naic_code"),
+            current_values.get("InsCarrierNAICCode") or current_values.get("INS_CARRIER_NAIC_CODE"),
+            lambda value: re.sub(r"\D", "", str(value or "")).lstrip("0"),
+            True,
+        ),
+        (
+            proposed_by_rule.get("schedule_a_part_i_1d_contract_policy_number"),
+            current_values.get("InsContractNum") or current_values.get("INS_CONTRACT_NUM"),
+            lambda value: re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper().lstrip("0"),
+            False,
+        ),
+    ]
+    has_carrier_identifier_match = False
+    for proposed, current, normalize, carrier_identifier in identity_pairs:
+        if not proposed or not current:
+            continue
+        if normalize(proposed) != normalize(current):
+            return False
+        if carrier_identifier:
+            has_carrier_identifier_match = True
+    return has_carrier_identifier_match
 
 
 def current_values_for_schedule_a_update(current_values: dict[str, str]) -> dict[str, str]:
@@ -419,7 +477,7 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
     }
     normalized: dict[str, str] = {}
     for tag, value in values.items():
-        text = _normalize_ftw_xml_value(tag, value)
+        text = normalize_ftw_update_value(FormType.SCHEDULE_A, tag, value)
         if str(text or "").strip():
             normalized[tag] = str(text)
     return normalized

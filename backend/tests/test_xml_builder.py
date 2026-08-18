@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import ExtractedField, FieldPriority, FormType
+from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.xml_builder import (
     build_ftw_update_xml,
     build_single_document_update_xml,
@@ -175,6 +176,166 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("PLAN_NAME0", xml)
         self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
+
+    def test_5500_sponsor_ein_rejected_by_ftw_is_never_sent(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1e. Plan Sponsor EIN",
+            normalized_field_name="sponsor_ein",
+            mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+            mapped_label="1e. Plan Sponsor EIN",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="12-3456789",
+            proposed_value="12-3456789",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+            current_values={"SDEIN": "98-7654321"},
+        )
+
+        self.assertNotIn("SPONS_DFE_EIN", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
+
+    def test_unknown_schedule_a_tag_is_blocked_by_default(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="Unknown extracted field",
+            normalized_field_name="unknown_field",
+            mapped_rule_key="custom_unknown_rule",
+            mapped_label="Unknown extracted field",
+            xml_tag="UnknownFTWTag",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="123",
+            proposed_value="123",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOLScheduleAData",
+            [field],
+            FormType.SCHEDULE_A,
+            transaction_type="2",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+        )
+
+        self.assertNotIn("UnknownFTWTag", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
+
+    def test_alphabetic_value_for_numeric_ftw_field_is_blocked_before_xml(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="14. Active Participants at End",
+            normalized_field_name="active_participants_end",
+            mapped_rule_key="form_5500_part_ii_14_active_participants_at_end",
+            mapped_label="14. Active Participants at End",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="one hundred",
+            proposed_value="one hundred",
+        )
+
+        with self.assertRaisesRegex(FTWPayloadValidationError, "TotActivePartcpCnt"):
+            build_single_document_update_xml(
+                "DOL5500Data",
+                [field],
+                FormType.FORM_5500,
+                transaction_type="1",
+                customer_id="12-3456789",
+                plan_id="12-3456789501",
+                year="2025",
+                current_values={"TotActivePartcpCnt": "99"},
+            )
+
+    def test_schedule_a_uses_ftw_canonical_carrier_name_when_identity_matches(self):
+        def schedule_field(rule_key: str, label: str, value: str) -> ExtractedField:
+            return ExtractedField(
+                filing_id="filing",
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        fields = [
+            schedule_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                'Cigna Health and Life Insurance Company and affiliates ("Cigna")',
+            ),
+            schedule_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "59-1031071",
+            ),
+            schedule_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "1234567",
+            ),
+            schedule_field(
+                "schedule_a_part_i_3b_amount_of_commissions",
+                "3b. Amount of Commissions",
+                "100",
+            ),
+        ]
+
+        xml = build_single_document_update_xml(
+            "DOLScheduleAData",
+            fields,
+            FormType.SCHEDULE_A,
+            transaction_type="2",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+            current_values={
+                "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                "InsCarrierEIN": "59-1031071",
+                "InsContractNum": "1234567",
+                "CommPdAmt01": "90",
+            },
+            preserve_current_values=True,
+        )
+
+        self.assertIn("<InsCarrierName>CIGNA HEALTH AND LIFE INSURANCE COMPANY</InsCarrierName>", xml)
+        self.assertNotIn("affiliates", xml)
+
+    def test_schedule_a_carrier_alias_text_is_blocked_when_no_ftw_canonical_match_exists(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1a. Name of Insurance Company",
+            normalized_field_name="carrier",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            mapped_label="1a. Name of Insurance Company",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value='Cigna Health and Life Insurance Company and affiliates ("Cigna")',
+            proposed_value='Cigna Health and Life Insurance Company and affiliates ("Cigna")',
+        )
+
+        with self.assertRaisesRegex(FTWPayloadValidationError, "exact legal carrier name"):
+            build_single_document_update_xml(
+                "DOLScheduleAData",
+                [field],
+                FormType.SCHEDULE_A,
+                transaction_type="2",
+                customer_id="12-3456789",
+                plan_id="12-3456789501",
+                year="2025",
+            )
 
     def test_5500_rejected_plan_administrator_tag_is_omitted_without_dropping_valid_fields(self):
         fields = [
