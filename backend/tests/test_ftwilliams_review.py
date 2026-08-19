@@ -393,6 +393,10 @@ class FakeFTWilliamsCurrentTagService(FTWilliamsService):
                             "PlanEffDate": "10/01/2011",
                             "PlanYearEndDate": "09/30/2025",
                             "SDEIN": "73-1185740",
+                            "SDAddressLine1": "750 E MAIN ST",
+                            "SDCity": "STAMFORD",
+                            "SDState": "CT",
+                            "SDZipCode": "06902-3831",
                             "TotPartcpBoyCnt": "315",
                             "SubtlActRtdSepCnt": "298",
                             "TotActPartcpBoyCnt": "249",
@@ -424,8 +428,10 @@ class FakeFTWilliamsCurrentTagService(FTWilliamsService):
                                 "InsCarrierName": "UnitedHealthcare",
                                 "InsCarrierEIN": "36-2739571",
                                 "InsContractNum": "1246876",
+                                "InsFailProvideInfoInd": "2",
                                 "Name1": "NFP LLC",
                                 "CommPdAmt01": "111893",
+                                "FeesPdText01": "COMMISSIONS AND FEES",
                             },
                         )
                     ],
@@ -1332,9 +1338,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "73-1185740", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
                     field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number (PN)", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
                     field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "09/30/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1f_plan_sponsor_address", "1f. Plan Sponsor Address", "750 E MAIN ST STAMFORD CT 069023831", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_ii_9_plan_funding_arrangement", "9. Plan funding arrangement", "Insurance", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_ii_10a_plan_benefit_arrangement", "10a. Plan benefit arrangement", "Insurance", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_ii_10b_schedules_attached", "10b. Schedules attached", "A", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
                     field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "UnitedHealthcare", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
                     field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "1246876", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_iii_11_did_the_insurance_company_fail_to_provide_any_information_necessary_to_complete_schedule_a", "11. Insurance company failed to provide information", "No", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
                     field("schedule_a_part_i_3b_amount_of_commissions", "3b. Amount of Commissions", "111893", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_3d_purpose", "3d. Purpose", "COMMISSIONS & FEES", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
                 ]
             )
         )
@@ -1344,8 +1356,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         queried = run_async(service.prepare_review(filing.id, send_queries=True))
         self.assertTrue(queried.current_query_success)
+        self.assertEqual(queried.form_5500_current_values["SDAddressLine1"], "750 E MAIN ST")
         self.assertEqual(queried.schedule_a_match["ftw_seq_no"], "1")
         self.assertEqual({record["ftw_seq_no"] for record in queried.schedule_a_records}, {"1", "3"})
+
+        # Reviews created before raw current-data snapshots were introduced must
+        # still keep their displayed FTW values after a local field decision.
+        queried.form_5500_current_values = {}
+        run_async(repo.upsert_ftwilliams_review(queried))
 
         call_count = len(fake_ftw.calls)
         run_async(repo.update_field(filing.id, commission_field.id, "112000"))
@@ -1359,9 +1377,20 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.ftw_seq_no, "1")
         self.assertEqual({record["ftw_seq_no"] for record in refreshed.schedule_a_records}, {"1", "3"})
         self.assertEqual(by_label["1e. Plan Sponsor EIN"].current_value, "73-1185740")
+        self.assertEqual(by_label["1f. Plan Sponsor Address"].current_value, "750 E MAIN ST, STAMFORD CT 06902-3831")
+        self.assertEqual(by_label["9. Plan funding arrangement"].current_value, "Insurance")
+        self.assertEqual(by_label["10a. Plan benefit arrangement"].current_value, "Insurance")
+        self.assertEqual(by_label["10b. Schedules attached"].current_value, "A")
+        self.assertFalse(by_label["9. Plan funding arrangement"].changed)
+        self.assertFalse(by_label["10a. Plan benefit arrangement"].changed)
+        self.assertFalse(by_label["10b. Schedules attached"].changed)
         self.assertEqual(by_label["1d. Contract/Policy Number"].current_value, "1246876")
+        self.assertEqual(by_label["11. Insurance company failed to provide information"].current_value, "2")
+        self.assertFalse(by_label["11. Insurance company failed to provide information"].changed)
         self.assertEqual(by_label["3b. Amount of Commissions"].current_value, "111893")
         self.assertEqual(by_label["3b. Amount of Commissions"].proposed_value, "112000")
+        self.assertEqual(by_label["3d. Purpose"].current_value, "COMMISSIONS AND FEES")
+        self.assertFalse(by_label["3d. Purpose"].changed)
 
     def test_blank_extraction_displays_retained_ftw_value_without_sending_it(self):
         field = ExtractedField(

@@ -232,6 +232,8 @@ export interface FTWilliamsReview {
   plan_lookup?: FTWilliamsPlanLookup | null;
   query_request_xml?: string | null;
   query_response_xml?: string | null;
+  form_5500_current_values?: Record<string, string>;
+  schedule_a_current_values?: Record<string, string>;
   update_xml_5500?: string | null;
   update_xml_schedule_a?: string | null;
   update_response_xml?: string | null;

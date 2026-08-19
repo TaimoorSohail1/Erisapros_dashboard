@@ -348,7 +348,7 @@ def update_values_for_form(
             continue
         if current_values is not None:
             current_value = _normalize_ftw_xml_value(tag, resolve_ftw_current_value(field, current_values))
-            if not values_meaningfully_different(current_value, proposed):
+            if not values_meaningfully_different(current_value, proposed, tag=tag):
                 continue
         values[tag] = proposed
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}

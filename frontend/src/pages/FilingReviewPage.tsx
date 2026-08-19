@@ -52,7 +52,7 @@ type ReviewRowGroup = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "L
 type ReviewToast = {
   message: string;
   title: string;
-  tone: "error" | "success";
+  tone: "error" | "success" | "warning";
 } | null;
 type FieldSaveOptions = {
   markMissing?: boolean;
@@ -487,7 +487,11 @@ export function FilingReviewPage() {
         });
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not prepare FT Williams comparison");
+      setToast({
+        tone: "error",
+        title: "FT Williams refresh needs attention",
+        message: error instanceof Error ? error.message : "Current FT Williams data could not be refreshed.",
+      });
     } finally {
       setFtwBusy(false);
     }
@@ -535,7 +539,11 @@ export function FilingReviewPage() {
       await saveManualFTWilliamsMatch(id, payload);
       setFiling(await getFiling(id));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save FT Williams match");
+      setToast({
+        tone: "error",
+        title: "FT Williams match was not saved",
+        message: error instanceof Error ? error.message : "Check the plan identifiers and try again.",
+      });
     } finally {
       setFtwBusy(false);
     }
@@ -556,7 +564,11 @@ export function FilingReviewPage() {
       await selectFTWilliamsScheduleAMatch(id, payload);
       setFiling(await getFiling(id));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not select FT Williams Schedule A");
+      setToast({
+        tone: "error",
+        title: "Schedule A was not selected",
+        message: error instanceof Error ? error.message : "Check the FT Williams Schedule A and try again.",
+      });
     } finally {
       setFtwBusy(false);
     }
@@ -581,10 +593,10 @@ export function FilingReviewPage() {
         const confirmed = sentReview?.update_confirmed_count || 0;
         const remaining = sentReview?.update_remaining_count || 0;
         setToast({
-          tone: "error",
+          tone: confirmed ? "warning" : "error",
           title: confirmed ? "FT Williams partially updated" : "FT Williams needs attention",
           message: confirmed
-            ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated. ${remaining} still need${remaining === 1 ? "s" : ""} correction.`
+            ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need${remaining === 1 ? "s" : ""} review.`
             : sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
         });
         return;
@@ -592,9 +604,9 @@ export function FilingReviewPage() {
       const updateCount = sentReview.update_confirmed_count || sentReview.update_attempted_count || 0;
       setToast({
         tone: "success",
-        title: "FT Williams updated",
+        title: "FT Williams updated successfully",
         message: updateCount
-          ? `${updateCount} approved field${updateCount === 1 ? "" : "s"} updated and verified. Current FTW values are now refreshed.`
+          ? `${updateCount} field${updateCount === 1 ? "" : "s"} verified. Current FTW values are now refreshed.`
           : "Current FTW values were refreshed and verified successfully.",
       });
     } catch (error) {
@@ -652,7 +664,6 @@ export function FilingReviewPage() {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Rules could not be re-evaluated.";
-      setMessage(errorMessage);
       setToast({ tone: "error", title: "Re-evaluation failed", message: errorMessage });
     } finally {
       setRulesBusy(false);
@@ -686,18 +697,6 @@ export function FilingReviewPage() {
           ftwReadyToSend={ftwReadyToSend}
           needsDecisionCount={needsDecisionRows.length}
         />
-
-        {message && !ftwUpdateFailed && !bringForwardRequired ? (
-          <ClientErrorBanner
-            error={{
-              title: "Action could not complete",
-              message,
-              next_action: "Check the details below or retry the action.",
-              severity: "error",
-              source: "ERISAPros",
-            }}
-          />
-        ) : null}
 
         {clientError && !ftwUpdateFailed && !bringForwardRequired ? <ClientErrorBanner error={clientError} /> : filingClientError && !ftwUpdateFailed && !bringForwardRequired ? <ClientErrorBanner error={filingClientError} /> : null}
 
@@ -1619,6 +1618,7 @@ function FTWilliamsFailureBanner({
 }) {
   const confirmed = review?.update_confirmed_count || 0;
   const remaining = review?.update_remaining_count || 0;
+  const partial = confirmed > 0 && remaining > 0;
   const rejectedLabels = (error?.rejected_fields || []).map((field) => field.label).filter(Boolean);
   const message = confirmed
     ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated; ${remaining} still need${remaining === 1 ? "s" : ""} correction.`
@@ -1626,12 +1626,12 @@ function FTWilliamsFailureBanner({
       ? `${rejectedLabels.join(", ")} ${rejectedLabels.length === 1 ? "needs" : "need"} correction before retrying.`
       : error?.message || "FT Williams could not verify the remaining update.";
   return (
-    <section className="ftw-failure-banner" role="alert">
+    <section className={`ftw-failure-banner${partial ? " partial" : ""}`} role={partial ? "status" : "alert"}>
       <div className="ftw-failure-banner-icon">
         <AlertTriangle size={22} />
       </div>
       <div className="ftw-failure-banner-copy">
-        <h2>FT Williams needs attention</h2>
+        <h2>{partial ? "FT Williams partially updated" : "FT Williams needs attention"}</h2>
         <p>{message}</p>
       </div>
       <div className="ftw-failure-banner-actions">
@@ -1649,7 +1649,7 @@ function FTWilliamsFailureBanner({
   );
 }
 
-function clientErrorFromRaw(message: string, source: string): ClientFacingError {
+function clientErrorFromRaw(message: string, source: string): ClientFacingError | null {
   const text = message.trim();
   const lower = text.toLowerCase();
   if (lower.includes("maximum of 5000000 ingested tokens") || lower.includes("subscription limits")) {
@@ -1682,14 +1682,7 @@ function clientErrorFromRaw(message: string, source: string): ClientFacingError 
       technical_details: text,
     };
   }
-  return {
-    title: "Processing failed",
-    message: "The app could not complete this filing step.",
-    next_action: "Review the technical details or retry after checking the uploaded documents and service credentials.",
-    severity: "error",
-    source,
-    technical_details: text,
-  };
+  return null;
 }
 
 function ApproveConfirmationModal({
