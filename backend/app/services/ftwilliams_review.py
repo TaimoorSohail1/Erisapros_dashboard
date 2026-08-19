@@ -139,8 +139,14 @@ class FTWilliamsReviewService:
         if not send_queries and existing_review:
             query_request_xmls.extend([existing_review.query_request_xml] if existing_review.query_request_xml else [])
             query_response_xmls.extend([existing_review.query_response_xml] if existing_review.query_response_xml else [])
-            form_5500_current = self._review_current_values(existing_review, FormType.FORM_5500)
-            schedule_a_current = self._review_current_values(existing_review, FormType.SCHEDULE_A)
+            form_5500_current = dict(existing_review.form_5500_current_values) or self._review_current_values(
+                existing_review,
+                FormType.FORM_5500,
+            )
+            schedule_a_current = dict(existing_review.schedule_a_current_values) or self._review_current_values(
+                existing_review,
+                FormType.SCHEDULE_A,
+            )
             schedule_a_candidates = list(existing_review.schedule_a_candidates or [])
             schedule_a_records = list(existing_review.schedule_a_records or [])
             current_query_success = existing_review.current_query_success
@@ -341,6 +347,8 @@ class FTWilliamsReviewService:
             plan_lookup=plan_lookup,
             query_request_xml="\n\n".join(query_request_xmls) or None,
             query_response_xml="\n\n".join(query_response_xmls) or None,
+            form_5500_current_values=form_5500_current,
+            schedule_a_current_values=schedule_a_current,
             update_xml_5500=update_xml_5500,
             update_xml_schedule_a=update_xml_schedule_a,
             error_message=error_message,
@@ -623,6 +631,8 @@ class FTWilliamsReviewService:
                 "schedule_a_contract_type_mismatch": contract_type_mismatch,
                 "query_request_xml": query_request_xml,
                 "query_response_xml": query_response_xml,
+                "form_5500_current_values": form_5500_current,
+                "schedule_a_current_values": schedule_a_current,
                 "update_xml_5500": update_xml_5500,
                 "update_xml_schedule_a": update_xml_schedule_a,
                 "error_message": error_message,
@@ -2142,7 +2152,7 @@ class FTWilliamsReviewService:
                 or schedule_a_contract_type is None
                 or schedule_a_contract_type_allows_rule(schedule_a_contract_type, field.mapped_rule_key)
             )
-            changed = values_meaningfully_different(current_value, proposed_value) and contract_type_allowed
+            changed = values_meaningfully_different(current_value, proposed_value, tag=tag) and contract_type_allowed
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,
@@ -3265,11 +3275,79 @@ class FTWilliamsReviewService:
         return identity
 
     def _review_current_values(self, review: FTWilliamsReview, form_type: FormType) -> dict[str, str]:
-        return {
+        values = {
             field.ftw_tag: field.current_value
             for field in review.fields
             if field.form_type == form_type and field.ftw_tag and field.current_value
         }
+        if form_type != FormType.FORM_5500:
+            return values
+
+        # Older stored reviews only contain display summaries, not the complete
+        # raw FTW response. Rehydrate the composite Form 5500 values so a local
+        # field decision cannot make current values appear blank or create false
+        # updates before the next explicit FTW refresh.
+        for field in review.fields:
+            if field.form_type != FormType.FORM_5500 or not field.current_value:
+                continue
+            rule_key = str(field.rule_key or "")
+            selected = {
+                item.strip().casefold()
+                for item in str(field.current_value).split(",")
+                if item.strip()
+            }
+            if rule_key == "form_5500_part_i_1f_plan_sponsor_address":
+                values["SDAddressLine1"] = field.current_value
+            elif rule_key == "form_5500_part_ii_9_plan_funding_arrangement":
+                self._restore_indicator_summary(
+                    values,
+                    selected,
+                    [
+                        ("FundingInsuranceInd", "Insurance"),
+                        ("FundingCdSection412Ind", "Code section 412(e)(3) insurance contracts"),
+                        ("FundingTrustInd", "Trust"),
+                        ("FundingGeneralAssetInd", "General assets of the sponsor"),
+                    ],
+                )
+            elif rule_key == "form_5500_part_ii_10a_plan_benefit_arrangement":
+                self._restore_indicator_summary(
+                    values,
+                    selected,
+                    [
+                        ("BenefitInsuranceInd", "Insurance"),
+                        ("BenefitCdSection412Ind", "Code section 412(e)(3) insurance contracts"),
+                        ("BenefitTrustInd", "Trust"),
+                        ("BenefitGeneralAssetInd", "General assets of the sponsor"),
+                    ],
+                )
+            elif rule_key == "form_5500_part_ii_10b_schedules_attached":
+                self._restore_indicator_summary(
+                    values,
+                    selected,
+                    [
+                        ("SchRAttachedInd", "R"),
+                        ("SchMBAttachedInd", "MB"),
+                        ("SchSBAttachedInd", "SB"),
+                        ("SchDCGAttachedInd", "DCG"),
+                        ("SchMEPAttachedInd", "MEP"),
+                        ("SchHAttachedInd", "H"),
+                        ("SchIAttachedInd", "I"),
+                        ("SchAAttachedInd", "A"),
+                        ("SchCAttachedInd", "C"),
+                        ("SchDAttachedInd", "D"),
+                        ("SchGAttachedInd", "G"),
+                    ],
+                )
+        return values
+
+    @staticmethod
+    def _restore_indicator_summary(
+        values: dict[str, str],
+        selected: set[str],
+        indicators: list[tuple[str, str]],
+    ) -> None:
+        for tag, label in indicators:
+            values[tag] = "1" if label.casefold() in selected else "0"
 
     def _preferred_schedule_a_sequence(self, review: FTWilliamsReview | None) -> str | None:
         if not review or not review.schedule_a_match:

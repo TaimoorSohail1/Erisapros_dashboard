@@ -313,18 +313,43 @@ def normalize_compare_value(value: object) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip().lower()
     if _looks_like_date(text):
         return re.sub(r"\D", "", text)
+    text = text.replace("&", " and ")
     return re.sub(r"\s+", " ", re.sub(r"[,\.;:]", " ", text)).strip()
 
 
-def values_meaningfully_different(current_value: object, proposed_value: object) -> bool:
+def values_meaningfully_different(
+    current_value: object,
+    proposed_value: object,
+    *,
+    tag: str | None = None,
+) -> bool:
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
+    if tag == "InsFailProvideInfoInd":
+        current_indicator = _one_two_indicator_value(current)
+        proposed_indicator = _one_two_indicator_value(proposed)
+        if current_indicator and proposed_indicator:
+            return current_indicator != proposed_indicator
     if _looks_numeric(current) and _looks_numeric(proposed):
         current_number = _parse_decimal(current)
         proposed_number = _parse_decimal(proposed)
         if current_number is not None and proposed_number is not None:
             return abs(current_number - proposed_number) >= Decimal("0.5")
     return normalize_compare_value(current) != normalize_compare_value(proposed)
+
+
+def _one_two_indicator_value(value: str) -> str | None:
+    return {
+        "1": "1",
+        "y": "1",
+        "yes": "1",
+        "true": "1",
+        "2": "2",
+        "0": "2",
+        "n": "2",
+        "no": "2",
+        "false": "2",
+    }.get(value.strip().casefold())
 
 
 def _indicator_summary(current_values: dict[str, str], indicators: list[tuple[str, str]]) -> str:

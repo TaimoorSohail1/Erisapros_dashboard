@@ -4829,6 +4829,23 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   padding: 12px 14px;
 }
 
+.ftw-failure-banner.partial {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  box-shadow: 0 10px 24px rgba(217, 119, 6, 0.06);
+  color: #92400e;
+}
+
+.ftw-failure-banner.partial .ftw-failure-banner-icon {
+  background: #fef3c7;
+}
+
+.ftw-failure-banner.partial h2,
+.ftw-failure-banner.partial p,
+.ftw-failure-banner.partial small {
+  color: #92400e;
+}
+
 .ftw-failure-banner-icon {
   align-items: center;
   background: #fee2e2;
@@ -4988,6 +5005,15 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .review-toast.toast-error > svg {
   color: #be123c;
+}
+
+.review-toast.toast-warning {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.review-toast.toast-warning > svg {
+  color: #b45309;
 }
 
 .review-toast strong,
