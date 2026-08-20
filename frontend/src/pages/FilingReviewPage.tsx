@@ -857,8 +857,8 @@ export function FilingReviewPage() {
                 <thead>
                   <tr>
                     <th>Field</th>
-                    <th>Current FTW</th>
                     <th>Extracted</th>
+                    <th>Current FTW</th>
                     <th>Proposed To Send</th>
                     <th>Status</th>
                     <th>Decision</th>
@@ -1341,8 +1341,8 @@ function ReviewDecisionTableRow({
         <strong>{row.label}</strong>
         <small>{row.formLabel} / {row.section}</small>
       </td>
-      <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
       <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
+      <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
       <td>
         <button className="proposed-value-button" type="button" disabled={disabled || !canEdit} onClick={onInspect}>
           <span>{row.proposed || "No proposed value"}</span>
@@ -1505,8 +1505,8 @@ function FullFieldReviewDrawer({
             <thead>
               <tr>
                 <th>Field</th>
-                <th>Current FTW</th>
                 <th>Extracted</th>
+                <th>Current FTW</th>
                 <th>Proposed To Send</th>
                 <th>Status</th>
                 <th>Decision</th>
@@ -1763,8 +1763,8 @@ function ApproveConfirmationModal({
             <thead>
               <tr>
                 <th>Field</th>
-                <th>Current FTW</th>
                 <th>Extracted</th>
+                <th>Current FTW</th>
                 <th>Proposed</th>
                 <th>Status</th>
               </tr>
@@ -1776,8 +1776,8 @@ function ApproveConfirmationModal({
                     <strong>{row.label}</strong>
                     <small>{row.formLabel} / {row.section}</small>
                   </td>
-                  <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
                   <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
+                  <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
                   <td>{row.proposed || <span className="muted-value">No proposed value</span>}</td>
                   <td><span className={`review-issue-pill issue-${row.group.toLowerCase()}`}>{row.statusLabel}</span></td>
                 </tr>
@@ -2644,6 +2644,8 @@ function contractTypeLabel(type: ScheduleAContractType | string | null | undefin
 }
 
 function filterOptionLabel(option: string) {
+  if (option === "SCHEDULE_A") return "ShareFile Schedule A";
+  if (option === "FORM_5500") return "ShareFile Plan Worksheet";
   if (["EXPERIENCE_RATED", "NONEXPERIENCE_RATED", "NEEDS_REVIEW", "UNKNOWN"].includes(option)) {
     return contractTypeLabel(option);
   }

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "smoke:build": "node scripts/smoke-built-app.mjs",
     "test:performance": "node scripts/test-shared-polling-resource.mjs",
+    "test:review-ui": "node scripts/test-review-table-layout.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
