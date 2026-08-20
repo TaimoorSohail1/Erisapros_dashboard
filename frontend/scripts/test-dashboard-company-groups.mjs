@@ -11,6 +11,11 @@ assert.match(
 );
 assert.match(
   page,
+  /if \(normalizedName && clientName !== "Client pending"\) return `name-\$\{normalizedName\}`;\s+if \(normalizedEin\) return `ein-\$\{normalizedEin\}`;/,
+  "Company names should be the primary group identity so stale or missing EINs do not split one client.",
+);
+assert.match(
+  page,
   /sessionStorage\.setItem\(DASHBOARD_EXPANDED_GROUPS_KEY/,
   "Expanded company groups should be remembered for the browser session.",
 );
