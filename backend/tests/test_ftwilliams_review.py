@@ -674,6 +674,16 @@ class FakeFTWilliamsPlanNotFoundService(FTWilliamsService):
                 raw_response="<ftwLinkResponse />",
                 statuses=[FTWilliamsStatusItem(type="Archive5500", error_code="56", error_desc="Could not locate existing plan.")],
             )
+        if payload.operation == "plan_ids_batch":
+            return FTWilliamsQueryResponse(
+                operation=payload.operation,
+                configured=True,
+                sent=True,
+                request_xml=request_xml,
+                success=True,
+                raw_response="<ftwLinkResponse><Status><Type>PlanIDs_Batch</Type><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                statuses=[FTWilliamsStatusItem(type="PlanIDs_Batch", error_code="0")],
+            )
         raise AssertionError(f"Current-data query should not run after failed plan lookup: {payload.operation}")
 
 
@@ -2659,7 +2669,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         fake_ftw = FakeFTWilliamsPlanNotFoundService()
         review = run_async(FTWilliamsReviewService(fake_ftw).prepare_review(filing.id, send_queries=True))
 
-        self.assertEqual([call.operation for call in fake_ftw.calls], ["query_plan", "query_plan", "archive_5500_get_data"])
+        self.assertEqual(
+            [call.operation for call in fake_ftw.calls],
+            ["query_plan", "query_plan", "archive_5500_get_data", "plan_ids_batch"],
+        )
         self.assertEqual(review.plan_lookup.status, FTWilliamsPlanLookupStatus.NOT_FOUND)
         self.assertFalse(review.current_query_success)
         self.assertIn("Could not locate existing plan", review.error_message or "")
@@ -2876,6 +2889,184 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(mapping.ftw_plan_id, "555666777")
         self.assertIn("<FTWCustomerID>222333444</FTWCustomerID>", review.update_xml_5500)
         self.assertNotIn("<CustomerID>04-2382160</CustomerID>", review.update_xml_5500)
+
+    def test_prepare_review_uses_plan_ids_batch_when_user_defined_ids_do_not_match_ein(self):
+        class PlanIdsBatchFTWilliamsService(FTWilliamsService):
+            def __init__(self):
+                self.calls = []
+
+            def status(self) -> dict:
+                return {"configured": True}
+
+            async def run_query(self, payload):
+                self.calls.append(payload)
+                request_xml = self.mask_key_id(self.build_request_xml(payload))
+                if payload.operation == "query_plan" and payload.ftw_plan_id == "987654321":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[
+                            FTWilliamsStatusItem(
+                                type="PlanData",
+                                error_code="0",
+                                customer_id="OHIO-COMPANY",
+                                plan_id="OHIO-PLAN",
+                                ftw_customer_id="387302687",
+                                ftw_plan_id="987654321",
+                                query_results={
+                                    "CompanyEmployerID": "34-1655024",
+                                    "PlanNumber": "501",
+                                    "CompanyName": "OHIO VALLEY STAMPING & ASSOCIATES INC.",
+                                    "PlanLine1": "OHIO VALLEY STAMPING & ASSOCIATES INC. HARTFORD PLAN",
+                                },
+                            )
+                        ],
+                    )
+                if payload.operation == "query_plan":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=False,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[FTWilliamsStatusItem(type="PlanData", error_code="18", error_desc="Company ID is not valid")],
+                    )
+                if payload.operation in {"archive_5500_get_data", "archive_5500_ein_lookup"}:
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=False,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[FTWilliamsStatusItem(type="Archive5500", error_code="18", error_desc="No matching plan")],
+                    )
+                if payload.operation == "plan_ids_batch":
+                    raw_response = """<ftwLinkResponse>
+  <Status><Type>PlanIDs_Batch</Type><ErrorCode>0</ErrorCode><CustomerID>OHIO-COMPANY</CustomerID><PlanID>OHIO-PLAN</PlanID><FTWCustomerID>387302687</FTWCustomerID><FTWPlanID>987654321</FTWPlanID></Status>
+  <Status><Type>PlanIDs_Batch</Type><ErrorCode>0</ErrorCode><CustomerID>OTHER</CustomerID><PlanID>OTHER-PLAN</PlanID><FTWCustomerID>111</FTWCustomerID><FTWPlanID>222</FTWPlanID></Status>
+</ftwLinkResponse>"""
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response=raw_response,
+                        statuses=self.parse_response(raw_response),
+                    )
+                if payload.operation == "query_5500":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[
+                            FTWilliamsStatusItem(
+                                type="DOL5500Data",
+                                error_code="0",
+                                ftw_customer_id=payload.ftw_customer_id,
+                                ftw_plan_id=payload.ftw_plan_id,
+                                query_results={
+                                    "PLAN_NAME0": "OHIO VALLEY STAMPING & ASSOCIATES INC. HARTFORD PLAN",
+                                    "SDEIN": "34-1655024",
+                                    "SponsDfePlanNum": "501",
+                                    "LockedStatus": "Unlocked",
+                                    "SignedStatus": "Not Signed",
+                                    "FilingStatus": "Draft",
+                                },
+                            )
+                        ],
+                    )
+                if payload.operation == "query_schedule_a":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=False,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="59", error_desc="Could not locate form")],
+                    )
+                raise AssertionError(f"Unexpected FT Williams operation: {payload.operation}")
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Plan Sponsor EIN",
+                        normalized_field_name="sponsor_ein",
+                        mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+                        mapped_label="1e. Plan Sponsor EIN",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        value="34-1655024",
+                        proposed_value="34-1655024",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. Plan Number (PN)",
+                        normalized_field_name="plan_number",
+                        mapped_rule_key="form_5500_part_i_1b_plan_number_pn",
+                        mapped_label="1b. Plan Number (PN)",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        value="501",
+                        proposed_value="501",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="7. Plan Year Ending Date",
+                        normalized_field_name="plan_year_end",
+                        mapped_rule_key="form_5500_part_i_7_plan_year_ending_date",
+                        mapped_label="7. Plan Year Ending Date",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        value="12/31/2025",
+                        proposed_value="12/31/2025",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1a. Plan Name",
+                        normalized_field_name="plan_name",
+                        mapped_rule_key="form_5500_part_i_1a_plan_name",
+                        mapped_label="1a. Plan Name",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        value="OHIO VALLEY STAMPING & ASSOCIATES INC. HARTFORD PLAN",
+                        proposed_value="OHIO VALLEY STAMPING & ASSOCIATES INC. HARTFORD PLAN",
+                    ),
+                ]
+            )
+        )
+
+        fake_ftw = PlanIdsBatchFTWilliamsService()
+        review = run_async(FTWilliamsReviewService(fake_ftw).prepare_review(filing.id, send_queries=True))
+        mapping = run_async(repo.get_ftwilliams_plan_mapping("34-1655024", "501"))
+
+        self.assertEqual(review.plan_lookup.status, FTWilliamsPlanLookupStatus.MATCHED)
+        self.assertEqual(review.ftw_customer_id, "387302687")
+        self.assertEqual(review.ftw_plan_id, "987654321")
+        self.assertTrue(review.ftw_editable)
+        self.assertEqual(review.ftw_locked_status, "Unlocked")
+        self.assertIn("<ResultCount>2</ResultCount>", review.plan_lookup.response_xml)
+        self.assertNotIn("OTHER-PLAN", review.plan_lookup.response_xml)
+        self.assertIsNotNone(mapping)
+        self.assertEqual(mapping.source, "PLAN_IDS_BATCH")
+        self.assertEqual(mapping.customer_id, "OHIO-COMPANY")
+        self.assertEqual(mapping.plan_id, "OHIO-PLAN")
+        self.assertEqual(mapping.ftw_customer_id, "387302687")
+        self.assertEqual(mapping.ftw_plan_id, "987654321")
 
     def test_prepare_review_falls_back_to_customer_id_as_plan_id(self):
         repo = repositories.get_repository()
