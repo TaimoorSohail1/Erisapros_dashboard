@@ -358,6 +358,7 @@ export interface FieldRule {
   label: string;
   ftw_field: string;
   xml_tag?: string | null;
+  mapping_mode: "FTW_MAPPED" | "EXTRACTION_ONLY";
   update_supported?: boolean;
   approved_update_tag?: string | null;
   priority: FieldPriority;
@@ -379,4 +380,50 @@ export interface FieldRule {
   change_reason?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface FTWFieldCatalogEntry {
+  key: string;
+  label: string;
+  form_type: FormType;
+  form_section?: string | null;
+  supported_years: string[];
+  value_type: string;
+  format_hint: string;
+  current_tag?: string | null;
+  update_tag?: string | null;
+  update_supported: boolean;
+  read_only_reason?: string | null;
+  contract_version: string;
+  catalog_tier: "VERIFIED" | "DISCOVERED";
+}
+
+export interface FieldRuleQAField {
+  field_name: string;
+  value: string;
+  confidence: number;
+  page?: number | null;
+  source_text?: string | null;
+  matched: boolean;
+  matched_alias?: string | null;
+  mapped_rule_key?: string | null;
+  mapped_label?: string | null;
+  mapping_mode?: "FTW_MAPPED" | "EXTRACTION_ONLY" | null;
+  ftw_field?: string | null;
+  ftw_tag?: string | null;
+  will_send_to_ftw: boolean;
+}
+
+export interface FieldRuleQAResult {
+  provider: string;
+  rule_set_version: string;
+  document_type: "SCHEDULE_A" | "PLAN_WORKSHEET";
+  file_name: string;
+  summary: {
+    extracted: number;
+    matched: number;
+    unmatched: number;
+    extraction_only: number;
+  };
+  fields: FieldRuleQAField[];
 }

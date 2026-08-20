@@ -10,12 +10,14 @@ import unittest
 from io import BytesIO
 import zipfile
 
+from app.models import FieldRule, FieldRuleMappingMode
 from app.services.extractor import (
     extract_document_text_pages,
     extract_fields_from_document_text,
     extract_schedule_a_classification_signals,
     extract_tabular_broker_rows,
 )
+from app.services.field_rules import DEFAULT_FIELD_RULES
 
 CSV_EXPORT = b"""Field,Value
 Name of Insurance Carrier,Guardian Life Insurance Company of America
@@ -152,6 +154,67 @@ class WordExtractionTests(unittest.TestCase):
 
 
 class DelimitedExportTests(unittest.TestCase):
+    def test_an_extraction_only_field_is_captured_from_its_alias(self):
+        custom_rule = FieldRule(
+            key="custom_schedule_a_policy_category",
+            label="Policy Category",
+            ftw_field="",
+            xml_tag=None,
+            mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Custom",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["Carrier Policy Category"],
+        )
+
+        fields = {
+            field.field_name: field.value
+            for field in extract_fields_from_document_text(
+                b"Carrier Policy Category: Fully Insured Dental",
+                "custom-field.txt",
+                rules=[*DEFAULT_FIELD_RULES, custom_rule],
+            )
+        }
+
+        self.assertEqual(fields["Policy Category"], "Fully Insured Dental")
+
+    def test_a_published_alias_drives_deterministic_extraction(self):
+        custom_alias = "Carrier Registry Number"
+        rules = [
+            rule.model_copy(update={"aliases": [*rule.aliases, custom_alias]})
+            if rule.key == "schedule_a_part_i_1c_naic_code"
+            else rule
+            for rule in DEFAULT_FIELD_RULES
+        ]
+
+        fields = {
+            field.field_name: field.value
+            for field in extract_fields_from_document_text(
+                f"{custom_alias}: 98765".encode(),
+                "custom-label.txt",
+                rules=rules,
+            )
+        }
+
+        self.assertEqual(fields["1c. NAIC Code"], "98765")
+
+    def test_numbered_schedule_a_label_is_normalized_before_matching(self):
+        fields = {
+            field.field_name: field.value
+            for field in extract_fields_from_document_text(
+                b"1a. Name of Insurance Company: AMERICAN LIFE INSURANCE COMPANY",
+                "numbered-label.txt",
+            )
+        }
+
+        self.assertEqual(
+            fields["1a. Name of Insurance Company"],
+            "AMERICAN LIFE INSURANCE COMPANY",
+        )
+
     def test_explicit_rating_wording_is_captured_even_when_it_is_not_a_field(self):
         document = b"Premium basis,Non-experience rated\nTotal premiums,45230.10\n"
 

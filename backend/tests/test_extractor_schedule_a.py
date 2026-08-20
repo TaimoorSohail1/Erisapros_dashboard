@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import DocumentType, FormType
+from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType
 from app.services.extractor import (
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
@@ -30,14 +30,59 @@ from app.services.extractor import (
     extract_united_omaha_schedule_a_fields,
     extract_united_omaha_schedule_a_records,
     extract_united_omaha_schedule_a_summaries,
+    build_groundx_schema_query,
     parse_schedule_a_text,
 )
+from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_groundx_query_contains_published_aliases_for_the_relevant_form(self):
+        custom_alias = "Carrier Registry Number"
+        rules = [
+            rule.model_copy(update={"aliases": [*rule.aliases, custom_alias]})
+            if rule.key == "schedule_a_part_i_1c_naic_code"
+            else rule
+            for rule in DEFAULT_FIELD_RULES
+        ]
+
+        query = build_groundx_schema_query(
+            "schedule-a.pdf",
+            rules,
+            form_type=FormType.SCHEDULE_A,
+        )
+
+        self.assertIn(custom_alias, query)
+        self.assertNotIn("Plan Administrator Name", query)
+
+    def test_groundx_query_contains_alias_for_new_discovered_ftw_field(self):
+        rule = FieldRule(
+            key="ftw_discovered_schedule_a_ins_fail_provide_info_text",
+            label="Reason information was not provided",
+            ftw_field="Insurance Carrier Missing Information Explanation",
+            xml_tag="InsFailProvideInfoText",
+            mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Discovered FTW fields",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["Carrier explanation for missing information"],
+        )
+
+        query = build_groundx_schema_query(
+            "schedule-a.pdf",
+            [rule],
+            form_type=FormType.SCHEDULE_A,
+        )
+
+        self.assertIn("Reason information was not provided", query)
+        self.assertIn("Carrier explanation for missing information", query)
+
     def test_groundx_xray_maps_gross_premium_table_to_nonexperience_line_10a(self):
         payload = {
             "chunks": [

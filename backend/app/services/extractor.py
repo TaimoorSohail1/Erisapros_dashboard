@@ -16,6 +16,7 @@ from groundx import Document, GroundX
 from app.config import get_settings
 from app.models import (
     DocumentType,
+    FieldRuleMappingMode,
     FormType,
     NormalizedExtractionField,
     NormalizedExtractionResult,
@@ -83,7 +84,8 @@ class ExtractionService:
         if not context_text and file_name.lower().endswith(".pdf"):
             context_text = "\n\n".join(text for _, text in extract_pdf_text_pages(file_bytes))
 
-        local_fields = parse_plan_worksheet_text(context_text) if context_text else []
+        worksheet_rules = rules_for_form(self.field_rules, FormType.FORM_5500)
+        local_fields = parse_plan_worksheet_text(context_text, rules=worksheet_rules) if context_text else []
         fields = dedupe_fields(local_fields)
         if fields:
             return NormalizedExtractionResult(
@@ -91,6 +93,22 @@ class ExtractionService:
                 fields=fields,
                 raw={"context_preview": context_text[:4000]},
             )
+
+        settings = get_settings()
+        if settings.groundx_api_key and settings.groundx_bucket_id:
+            try:
+                return await self._extract_with_groundx(
+                    file_bytes,
+                    file_name,
+                    FormType.FORM_5500,
+                    "Plan Worksheet",
+                )
+            except Exception as exc:
+                return NormalizedExtractionResult(
+                    provider=f"Plan Worksheet OCR fallback failed ({safe_error_summary(exc)})",
+                    fields=[],
+                    raw={"context_preview": context_text[:4000], "error": safe_error_summary(exc)},
+                )
 
         return NormalizedExtractionResult(
             provider="Plan Worksheet parser",
@@ -107,7 +125,12 @@ class ExtractionService:
                 result.classification_signals = sorted(set(result.classification_signals) | set(document_signals))
                 return result
             except Exception as exc:
-                local_result = local_schedule_a_pdf_result(file_bytes, file_name, provider=f"Local PDF parser fallback ({safe_error_summary(exc)})")
+                local_result = local_schedule_a_pdf_result(
+                    file_bytes,
+                    file_name,
+                    provider=f"Local PDF parser fallback ({safe_error_summary(exc)})",
+                    rules=self.field_rules,
+                )
                 local_result.classification_signals = document_signals
                 if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
                     return local_result
@@ -122,7 +145,7 @@ class ExtractionService:
                 )
 
         if not settings.eyelevel_api_key or not settings.eyelevel_extract_url:
-            local_result = local_schedule_a_pdf_result(file_bytes, file_name)
+            local_result = local_schedule_a_pdf_result(file_bytes, file_name, rules=self.field_rules)
             local_result.classification_signals = document_signals
             if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
                 return local_result
@@ -137,7 +160,7 @@ class ExtractionService:
             response.raise_for_status()
             raw = response.json()
         result = self._normalize_response(raw, "EyeLevel/GroundX")
-        pdf_text_fields = extract_fields_from_pdf_text(file_bytes)
+        pdf_text_fields = extract_fields_from_pdf_text(file_bytes, rules=self.field_rules)
         result.fields = merge_schedule_a_fields(result.fields, pdf_text_fields)
         result.schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
         result.schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
@@ -165,10 +188,23 @@ class ExtractionService:
             xray_payloads = await self._fetch_groundx_xray_payloads(client, base_url, headers, raw_payloads, file_name)
             raw_payloads.extend(xray_payloads)
             if not xray_payloads:
-                bucket_search = await self._search_groundx_with_field_schema(client, base_url, headers, str(settings.groundx_bucket_id), file_name)
+                bucket_search = await self._search_groundx_with_field_schema(
+                    client,
+                    base_url,
+                    headers,
+                    str(settings.groundx_bucket_id),
+                    file_name,
+                    form_type=form_type,
+                )
                 if bucket_search:
                     raw_payloads.append(bucket_search)
-                broad_bucket_search = await self._search_groundx_with_field_schema(client, base_url, headers, str(settings.groundx_bucket_id))
+                broad_bucket_search = await self._search_groundx_with_field_schema(
+                    client,
+                    base_url,
+                    headers,
+                    str(settings.groundx_bucket_id),
+                    form_type=form_type,
+                )
                 if broad_bucket_search:
                     raw_payloads.append(broad_bucket_search)
 
@@ -180,22 +216,35 @@ class ExtractionService:
         schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
         for payload in raw_payloads:
             if is_groundx_xray_payload(payload):
-                xray_fields.extend(extract_fields_from_groundx_xray(payload))
+                xray_fields.extend(extract_fields_from_groundx_xray(payload, rules=self.field_rules))
             elif is_groundx_search_payload(payload):
                 search_fields.extend(self._extract_fields_from_groundx_search(payload))
             else:
                 fallback_fields.extend(self._extract_field_like_items(payload))
+
+        if form_type == FormType.FORM_5500:
+            worksheet_context = build_structured_extraction_context(raw_payloads, file_bytes)
+            fields = parse_plan_worksheet_text(
+                worksheet_context,
+                rules=rules_for_form(self.field_rules, FormType.FORM_5500),
+            )
+            provider = "GroundX Plan Worksheet OCR" if fields else "GroundX Plan Worksheet OCR not ready"
+            return NormalizedExtractionResult(
+                provider=provider,
+                fields=fields,
+                raw={"ingest": ingest_raw, "process": poll_raw, "outputs": raw_payloads[2:]},
+            )
 
         if form_type == FormType.SCHEDULE_A:
             # GroundX is useful, but for Schedule A we also have stable label-driven text
             # parsing that recovers fields GroundX may miss or emit inconsistently. It runs
             # on whatever format the document arrived in, not only PDFs.
             if str(file_name or "").lower().endswith(".pdf"):
-                pdf_text_fields = extract_fields_from_pdf_text(file_bytes)
+                pdf_text_fields = extract_fields_from_pdf_text(file_bytes, rules=self.field_rules)
                 schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
                 schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
             else:
-                pdf_text_fields = extract_fields_from_document_text(file_bytes, file_name)
+                pdf_text_fields = extract_fields_from_document_text(file_bytes, file_name, rules=self.field_rules)
                 schedule_a_broker_rows = extract_schedule_a_broker_rows_from_document(file_bytes, file_name)
 
         fields = merge_schedule_a_fields([*xray_fields, *search_fields], pdf_text_fields)
@@ -404,8 +453,10 @@ class ExtractionService:
         headers: dict[str, str],
         document_id: str,
         file_name: str | None = None,
+        *,
+        form_type: FormType = FormType.SCHEDULE_A,
     ) -> Any | None:
-        query = build_groundx_schema_query(file_name, self.field_rules)
+        query = build_groundx_schema_query(file_name, self.field_rules, form_type=form_type)
         body = {
             "search": {
                 "query": query,
@@ -438,7 +489,7 @@ class ExtractionService:
             if not text:
                 continue
             page = parse_groundx_page(result)
-            fields.extend(parse_schedule_a_text(text, page))
+            fields.extend(parse_schedule_a_text(text, page, rules=self.field_rules))
 
         return dedupe_fields(fields)
 
@@ -644,7 +695,7 @@ def normalize_file_name(value: str) -> str:
     return unquote_plus(value).strip().lower()
 
 
-def extract_fields_from_groundx_xray(raw: Any) -> list[NormalizedExtractionField]:
+def extract_fields_from_groundx_xray(raw: Any, rules=None) -> list[NormalizedExtractionField]:
     fields: list[NormalizedExtractionField] = []
     chunks = raw.get("chunks", []) if isinstance(raw, dict) else []
     for chunk in chunks:
@@ -658,10 +709,10 @@ def extract_fields_from_groundx_xray(raw: Any) -> list[NormalizedExtractionField
             fields.extend(extract_schedule_a_fields_from_xray_json(item, page, source_text))
             item_text = normalize_ocr_text("\n".join(extract_xray_item_text(item)))
             if item_text:
-                fields.extend(parse_schedule_a_text(item_text, page))
+                fields.extend(parse_schedule_a_text(item_text, page, rules=rules))
         text = normalize_ocr_text(chunk.get("suggestedText") or chunk.get("text") or "")
         if text:
-            fields.extend(parse_schedule_a_text(text, page))
+            fields.extend(parse_schedule_a_text(text, page, rules=rules))
     return dedupe_fields(fields)
 
 
@@ -1078,8 +1129,25 @@ def find_money_amounts(text: str) -> list[str]:
     return re.findall(r"\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{2})?\b|\b[0-9]{4,}(?:\.\d{2})?\b", text)
 
 
-def build_groundx_schema_query(file_name: str | None = None, rules=None) -> str:
-    labels = "; ".join(rule.label for rule in (rules if rules is not None else DEFAULT_FIELD_RULES))
+def build_groundx_schema_query(
+    file_name: str | None = None,
+    rules=None,
+    *,
+    form_type: FormType = FormType.SCHEDULE_A,
+) -> str:
+    relevant_rules = rules_for_form(rules if rules is not None else DEFAULT_FIELD_RULES, form_type)
+    field_hints: list[str] = []
+    for rule in relevant_rules:
+        aliases = [
+            alias
+            for alias in rule.aliases
+            if normalize_rule_label(alias) != normalize_rule_label(rule.label)
+        ]
+        hint = rule.label
+        if aliases:
+            hint += f" (also labeled: {', '.join(aliases)})"
+        field_hints.append(hint)
+    labels = "; ".join(field_hints)
     file_hint = f" Prefer content from file named {file_name} when that file is searchable. " if file_name else " "
     return (
         "Using this Schedule A / Form 5500 document, retrieve the text needed to extract these FT Williams fields."
@@ -1087,6 +1155,24 @@ def build_groundx_schema_query(file_name: str | None = None, rules=None) -> str:
         "Focus on exact values near labels, tables, and line numbers. Fields: "
         f"{labels}"
     )
+
+
+def rules_for_form(rules, form_type: FormType):
+    if form_type == FormType.FORM_5500:
+        return [
+            rule
+            for rule in rules
+            if str(getattr(rule.applicability, "value", rule.applicability)) == "FORM_5500"
+            or str(rule.source).lower().startswith("form 5500")
+            or str(rule.form_section or "").lower().startswith("form 5500")
+        ]
+    return [
+        rule
+        for rule in rules
+        if str(getattr(rule.applicability, "value", rule.applicability)) != "FORM_5500"
+        and not str(rule.source).lower().startswith("form 5500")
+        and not str(rule.form_section or "").lower().startswith("form 5500")
+    ]
 
 
 def normalize_ocr_text(value: Any) -> str:
@@ -1118,6 +1204,15 @@ def build_structured_extraction_context(raw_payloads: list[Any], file_bytes: byt
     for payload in raw_payloads:
         if is_groundx_search_payload(payload):
             chunks.extend(extract_text_chunks_from_groundx_search(payload))
+        elif is_groundx_xray_payload(payload):
+            for chunk in payload.get("chunks", []):
+                if not isinstance(chunk, dict):
+                    continue
+                text = build_xray_source_text(chunk)
+                if text:
+                    page = parse_xray_page(chunk)
+                    prefix = f"[GroundX page {page}]\n" if page else "[GroundX]\n"
+                    chunks.append(f"{prefix}{text}")
 
     pages = extract_pdf_text_pages(file_bytes)
     for page_number, text in pages:
@@ -1194,7 +1289,7 @@ def extract_docx_text(file_bytes: bytes) -> str:
         return ""
 
 
-def parse_plan_worksheet_text(text: str) -> list[NormalizedExtractionField]:
+def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtractionField]:
     fields: list[NormalizedExtractionField] = []
     compact = re.sub(r"\s+", " ", text).strip()
 
@@ -1224,6 +1319,7 @@ def parse_plan_worksheet_text(text: str) -> list[NormalizedExtractionField]:
         [
             r"Plan administrator name\s+(.+?)\s+(?:Plan administrator address|E-mail address|Participant Counts:)",
             r"Administrator name\s+(.+?)\s+(?:Administrator address|E-mail address|Participant Counts:)",
+            r"Individual signing as plan administrator\s+(.+?)\s+(?:E-mail address of filing signer|5500 Contact|Additional 5500 Contact|Participant Counts:)",
         ],
         flags=re.IGNORECASE,
     )
@@ -1302,6 +1398,8 @@ def parse_plan_worksheet_text(text: str) -> list[NormalizedExtractionField]:
         add("10a. Plan benefit arrangement", "Insurance", 0.86)
         add("10b. Schedules attached", "A", 0.86)
 
+    fields.extend(extract_configured_custom_fields(text, None, rules=rules))
+
     return dedupe_fields(fields)
 
 
@@ -1316,13 +1414,20 @@ def file_type_for_groundx(file_name: str) -> str:
     return "pdf"
 
 
-def local_schedule_a_pdf_result(file_bytes: bytes, file_name: str, provider: str = "Local PDF parser") -> NormalizedExtractionResult:
+def local_schedule_a_pdf_result(
+    file_bytes: bytes,
+    file_name: str,
+    provider: str = "Local PDF parser",
+    *,
+    rules=None,
+) -> NormalizedExtractionResult:
+    is_pdf = file_name.lower().endswith(".pdf")
     return NormalizedExtractionResult(
-        provider=provider,
-        fields=extract_fields_from_pdf_text(file_bytes),
-        raw={"file_name": file_name, "source": "local_pdf_parser"},
-        schedule_a_broker_rows=extract_schedule_a_broker_rows_from_pdf_text(file_bytes),
-        schedule_a_worksheet_summaries=extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes),
+        provider=provider if is_pdf else "Local document parser",
+        fields=extract_fields_from_document_text(file_bytes, file_name, rules=rules),
+        raw={"file_name": file_name, "source": "local_document_parser"},
+        schedule_a_broker_rows=extract_schedule_a_broker_rows_from_pdf_text(file_bytes) if is_pdf else [],
+        schedule_a_worksheet_summaries=extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes) if is_pdf else [],
     )
 
 
@@ -1389,10 +1494,15 @@ def _delimited_text(text: str) -> str:
     return "\n".join(lines)
 
 
-def extract_fields_from_document_text(file_bytes: bytes, file_name: str | None = None) -> list[NormalizedExtractionField]:
+def extract_fields_from_document_text(
+    file_bytes: bytes,
+    file_name: str | None = None,
+    *,
+    rules=None,
+) -> list[NormalizedExtractionField]:
     pages = extract_document_text_pages(file_bytes, file_name)
     fields = [
-        *_extract_fields_from_pages(pages),
+        *_extract_fields_from_pages(pages, rules=rules),
         *extract_labelled_schedule_a_fields(pages),
         *(extract_email_schedule_a_fields(pages) if str(file_name or "").lower().endswith("email body.txt") else []),
         *schedule_a_broker_compensation_fields(extract_tabular_broker_rows(pages)),
@@ -1536,6 +1646,7 @@ def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
             if not separator:
                 continue
             key = re.sub(r"[^a-z0-9/ ]+", "", label.strip().lower()).strip()
+            key = re.sub(r"^\d+[a-z]?\s+", "", key).strip()
             value = clean_extracted_value(value)
             if not key or not value:
                 continue
@@ -1618,14 +1729,14 @@ def extract_tabular_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sched
     return rows
 
 
-def extract_fields_from_pdf_text(file_bytes: bytes) -> list[NormalizedExtractionField]:
-    return _extract_fields_from_pages(extract_pdf_text_pages(file_bytes))
+def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[NormalizedExtractionField]:
+    return _extract_fields_from_pages(extract_pdf_text_pages(file_bytes), rules=rules)
 
 
-def _extract_fields_from_pages(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None) -> list[NormalizedExtractionField]:
     fields: list[NormalizedExtractionField] = []
     for index, text in page_texts:
-        fields.extend(parse_schedule_a_text(text, index))
+        fields.extend(parse_schedule_a_text(text, index, rules=rules))
         fields.extend(extract_bcbsma_schedule_a_worksheet_fields(text, index))
     fields.extend(extract_bcbs_michigan_schedule_a_fields(page_texts))
     fields.extend(extract_prudential_schedule_a_fields(page_texts))
@@ -1634,7 +1745,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]]) -> list[Normal
     fields.extend(extract_united_omaha_schedule_a_fields(page_texts))
     full_text = "\n\n".join(text for _, text in page_texts)
     if full_text:
-        fields.extend(parse_schedule_a_text(full_text, None))
+        fields.extend(parse_schedule_a_text(full_text, None, rules=rules))
         fields.extend(extract_bcbsma_commission_breakdown_fields(full_text, None))
     # The broker compensation table is where items 3a-3d actually live on a
     # carrier statement. Reading the table and reading the labelled fields are
@@ -1888,7 +1999,7 @@ def extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes: bytes) -> l
     return summaries
 
 
-def parse_schedule_a_text(text: str, page: int | None = None) -> list[NormalizedExtractionField]:
+def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> list[NormalizedExtractionField]:
     normalized_input = normalize_ocr_text(text)
     if is_bcbs_michigan_addendum_page(normalized_input):
         return dedupe_fields(extract_bcbs_michigan_addendum_fields(normalized_input, page))
@@ -2153,7 +2264,8 @@ def parse_schedule_a_text(text: str, page: int | None = None) -> list[Normalized
 
     fields.extend(extract_schedule_a_broker_compensation_fields(text, page))
     fields.extend(extract_schedule_a_fields_from_tables(text, page))
-    fields.extend(extract_schedule_a_fields_from_rule_labels(text, page))
+    fields.extend(extract_schedule_a_fields_from_rule_labels(text, page, rules=rules))
+    fields.extend(extract_configured_custom_fields(text, page, rules=rules))
 
     line_11 = extract_schedule_a_line_11(text)
     if line_11:
@@ -4147,7 +4259,12 @@ def is_valid_contract_identifier(value: str | None, *, allow_numeric: bool = Fal
     return bool(re.search(r"[A-Za-z]", text) and re.search(r"\d", text))
 
 
-def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = None) -> list[NormalizedExtractionField]:
+def extract_schedule_a_fields_from_rule_labels(
+    text: str,
+    page: int | None = None,
+    *,
+    rules=None,
+) -> list[NormalizedExtractionField]:
     fields: list[NormalizedExtractionField] = []
     source_text = normalize_ocr_text(text)[:1200]
 
@@ -4176,6 +4293,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
                 "Insurance Carrier Employer Identification Number",
                 "Insurance Carrier Federal Employer Identification Number",
                 "Carrier Employer Identification Number",
+                rules=rules,
             ),
             r"([0-9]{2}-[0-9]{7})",
         ),
@@ -4190,6 +4308,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
                 "1c. NAIC Code",
                 "Insurance Carrier NAIC Code",
                 "National Association of Insurance Commissioners code",
+                rules=rules,
             ),
             r"([0-9]{4,6})",
         ),
@@ -4203,6 +4322,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
                 "1d. Contract/Policy Number",
                 "Plan Sponsor Contract or Identification Number",
                 "Plan Sponsor Contract Number",
+                rules=rules,
             ),
             r"([A-Za-z0-9][A-Za-z0-9-]{1,})",
         ),
@@ -4215,6 +4335,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
             rule_labels(
                 "1e. Persons Covered (End of Policy Year)",
                 "Approximate number of persons covered at end of policy contract year",
+                rules=rules,
             ),
             r"([0-9,]+)",
         ),
@@ -4228,6 +4349,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
                 "3c. Amount of Fees",
                 "Total Amount of Fees Paid",
                 "Fees and other compensation paid",
+                rules=rules,
             ),
             MONEY_VALUE_PATTERN,
             transform=money_value,
@@ -4254,6 +4376,7 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
                 "Premium applied by",
                 "Premium applied",
                 "Total amount of premiums applied",
+                rules=rules,
             ),
             MONEY_VALUE_PATTERN,
             transform=money_value,
@@ -4270,12 +4393,49 @@ def extract_schedule_a_fields_from_rule_labels(text: str, page: int | None = Non
     return fields
 
 
+def extract_configured_custom_fields(
+    text: str,
+    page: int | None = None,
+    *,
+    rules=None,
+) -> list[NormalizedExtractionField]:
+    if not rules:
+        return []
+    normalized_text = normalize_ocr_text(text)
+    fields: list[NormalizedExtractionField] = []
+    for rule in rules:
+        if rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY:
+            continue
+        labels = rule_labels(rule.label, rules=rules)
+        for label in sorted(labels, key=len, reverse=True):
+            match = re.search(
+                rf"(?im)^\s*{loose_label_pattern(label)}\s*(?::|\t|[-–—])\s*(?P<value>[^\n]+?)\s*$",
+                normalized_text,
+            )
+            if not match:
+                continue
+            value = clean_extracted_value(match.group("value"))
+            if not value or is_blank_extraction_value(value):
+                continue
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=rule.label,
+                    value=value,
+                    confidence=0.9,
+                    page=page,
+                    source_text=match.group(0).strip(),
+                )
+            )
+            break
+    return fields
+
+
 MONEY_VALUE_PATTERN = r"\$?\s*([0-9,]+(?:\.\d{2})?)"
 
 
-def rule_labels(field_label: str, *extra_labels: str) -> list[str]:
+def rule_labels(field_label: str, *extra_labels: str, rules=None) -> list[str]:
     labels: list[str] = []
-    for rule in DEFAULT_FIELD_RULES:
+    for rule in (rules if rules is not None else DEFAULT_FIELD_RULES):
         if rule.label != field_label:
             continue
         labels.extend([rule.label, *rule.aliases])

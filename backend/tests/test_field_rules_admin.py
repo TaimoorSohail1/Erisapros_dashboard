@@ -10,12 +10,15 @@ from app.models import (
     ExtractedField,
     FieldRule,
     FieldRuleApplicability,
+    FieldRuleMappingMode,
     FieldRuleStatus,
     Filing,
     FTWilliamsComparisonField,
     FTWilliamsReview,
 )
 from app.services.field_rule_admin import FieldRuleService, FieldRuleValidationError
+from app.services.ftw_field_catalog import field_catalog_entry
+from app.services.ftwilliams_tags import resolve_ftw_current_value
 from app.services.mapping import map_extraction_to_rules
 from app.models import NormalizedExtractionField
 from app.auth import has_field_rule_admin_access
@@ -91,6 +94,177 @@ class FieldRuleAdminTests(unittest.TestCase):
         with self.assertRaisesRegex(FieldRuleValidationError, "approved FT Williams field"):
             run_async(scenario())
 
+    def test_plan_worksheet_catalog_aliases_are_fixed(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            approved = next(
+                rule
+                for rule in await service.published_rules()
+                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+            )
+            await service.create_draft(
+                approved.model_copy(update={"aliases": [*approved.aliases, "Client-specific administrator"]}),
+                actor="admin@example.com",
+                reason="Attempt to alter a fixed Plan Worksheet label",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "Plan Worksheet labels are fixed"):
+            run_async(scenario())
+
+    def test_extraction_only_fields_are_limited_to_schedule_a(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            await service.create_draft(
+                FieldRule(
+                    key="custom_form_5500_field",
+                    label="Custom worksheet field",
+                    ftw_field="",
+                    mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+                    priority="MEDIUM",
+                    source="Form 5500",
+                    form_section="Form 5500 - Custom",
+                    field_type="Dynamic",
+                    existing_behavior="Review Only",
+                    new_behavior="Keep FTW",
+                    aliases=["Custom worksheet field"],
+                ),
+                actor="admin@example.com",
+                reason="Attempt to add an unnecessary worksheet field",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "Plan Worksheet uses the protected field catalog"):
+            run_async(scenario())
+
+    def test_an_extraction_only_field_can_be_published_without_an_ftw_tag(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            draft = await service.create_draft(
+                FieldRule(
+                    key="custom_schedule_a_policy_category",
+                    label="Policy Category",
+                    ftw_field="",
+                    xml_tag=None,
+                    mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+                    priority="MEDIUM",
+                    source="Schedule A",
+                    form_section="Schedule A - Custom",
+                    field_type="Dynamic",
+                    existing_behavior="Review Only",
+                    new_behavior="Keep FTW",
+                    aliases=["Carrier Policy Category"],
+                ),
+                actor="admin@example.com",
+                reason="Capture a client field without sending it to FT Williams",
+            )
+            return await service.publish(
+                draft.key,
+                actor="admin@example.com",
+                reason="Extraction-only field verified",
+            )
+
+        published = run_async(scenario())
+
+        self.assertEqual(published.mapping_mode, FieldRuleMappingMode.EXTRACTION_ONLY)
+        self.assertIsNone(published.xml_tag)
+        self.assertIsNone(FieldRuleService.approved_update_tag(published.key))
+
+    def test_discovered_ftw_field_can_be_added_with_alias_and_compared_read_only(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            entry = field_catalog_entry("ftw_discovered_schedule_a_ins_fail_provide_info_text")
+            self.assertIsNotNone(entry)
+            draft = await service.create_draft(
+                FieldRule(
+                    key=entry.key,
+                    label="Reason information was not provided",
+                    ftw_field=entry.label,
+                    xml_tag=entry.current_tag,
+                    mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+                    priority="MEDIUM",
+                    source="Schedule A",
+                    form_section=entry.form_section,
+                    field_type="Dynamic",
+                    existing_behavior="Review Only",
+                    new_behavior="Keep FTW",
+                    aliases=["Carrier explanation for missing information"],
+                ),
+                actor="admin@example.com",
+                reason="Add a discovered FTW comparison field",
+            )
+            return await service.publish(
+                draft.key,
+                actor="admin@example.com",
+                reason="Alias extraction and FTW-current comparison verified",
+            )
+
+        published = run_async(scenario())
+        result = map_extraction_to_rules(
+            "filing-1",
+            [
+                NormalizedExtractionField(
+                    field_name="Carrier explanation for missing information",
+                    value="Carrier records were incomplete",
+                    confidence=0.96,
+                )
+            ],
+            rules=[published],
+        )
+        field = result["fields"][0]
+
+        self.assertEqual(field.mapped_rule_key, published.key)
+        self.assertEqual(field.proposed_value, "Carrier records were incomplete")
+        self.assertEqual(
+            resolve_ftw_current_value(field, {"InsFailProvideInfoText": "Prior FTW explanation"}),
+            "Prior FTW explanation",
+        )
+        self.assertIsNone(FieldRuleService.approved_update_tag(published.key))
+
+    def test_discovered_form_5500_field_keeps_its_fixed_catalog_label(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            entry = field_catalog_entry("ftw_discovered_form_5500_admin_address_line_1")
+            self.assertIsNotNone(entry)
+            await service.create_draft(
+                FieldRule(
+                    key=entry.key,
+                    label="Client-specific administrator address",
+                    ftw_field=entry.label,
+                    xml_tag=entry.current_tag,
+                    mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+                    priority="LOW",
+                    source="Form 5500",
+                    form_section=entry.form_section,
+                    field_type="Dynamic",
+                    existing_behavior="Review Only",
+                    new_behavior="Keep FTW",
+                    aliases=["Client-specific administrator address"],
+                    applicability=FieldRuleApplicability.FORM_5500,
+                ),
+                actor="admin@example.com",
+                reason="Attempt to alter a fixed Plan Worksheet field",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "Plan Worksheet labels are fixed"):
+            run_async(scenario())
+
+    def test_publish_requires_a_meaningful_audit_reason(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            approved = next(
+                rule
+                for rule in await service.published_rules()
+                if rule.key == "schedule_a_part_i_1b_insurance_carrier_ein"
+            )
+            draft = await service.create_draft(
+                approved.model_copy(update={"aliases": [*approved.aliases, "Carrier registry EIN"]}),
+                actor="admin@example.com",
+                reason="Add a verified carrier alias",
+            )
+            await service.publish(draft.key, actor="admin@example.com", reason="   ")
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "change reason"):
+            run_async(scenario())
+
     def test_mapping_can_use_the_published_rule_snapshot(self):
         rule = FieldRule(
             key="schedule_a_custom_alias",
@@ -112,6 +286,32 @@ class FieldRuleAdminTests(unittest.TestCase):
 
         self.assertEqual(result["fields"][0].mapped_rule_key, rule.key)
         self.assertEqual(result["fields"][0].proposed_value, "ABC")
+
+    def test_extraction_only_mapping_is_described_as_review_data_not_an_ftw_field(self):
+        rule = FieldRule(
+            key="custom_policy_category",
+            label="Policy Category",
+            ftw_field="",
+            xml_tag=None,
+            mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Custom",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["Carrier Policy Category"],
+        )
+
+        result = map_extraction_to_rules(
+            "filing-1",
+            [NormalizedExtractionField(field_name="Carrier Policy Category", value="Medical", confidence=0.98)],
+            rules=[rule],
+        )
+
+        field = result["fields"][0]
+        self.assertEqual(field.status_reason, "Matched to extraction-only field rule; never sent to FT Williams.")
+        self.assertIsNone(field.ftw_field)
 
     def test_publishing_changes_the_agent_rule_set_version(self):
         async def scenario():
