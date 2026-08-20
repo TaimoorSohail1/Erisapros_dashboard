@@ -1,9 +1,11 @@
 import {
   AlertTriangle,
+  Building2,
   Calendar,
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Eye,
   FileText,
   HelpCircle,
@@ -33,6 +35,13 @@ type DashboardToast = {
 const DASHBOARD_REVIEW_FIELD_TOTAL = 61;
 const DASHBOARD_ACTIVE_POLL_MS = 15_000;
 const DASHBOARD_IDLE_POLL_MS = 120_000;
+const DASHBOARD_EXPANDED_GROUPS_KEY = "erisapros.dashboard.expanded-company-groups";
+
+type DashboardCompanyGroup = {
+  key: string;
+  name: string;
+  filings: Filing[];
+};
 
 export function DashboardPage() {
   const [filings, setFilings] = useState<Filing[]>([]);
@@ -46,6 +55,7 @@ export function DashboardPage() {
   const ftwFailures = ftwFailuresState.data;
   const [rowsLimit, setRowsLimit] = useState(25);
   const [currentPage, setCurrentPage] = useState(1);
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(readExpandedCompanyGroups);
   const [toast, setToast] = useState<DashboardToast>(null);
   const [deleteTarget, setDeleteTarget] = useState<Filing | null>(null);
   const [deleteError, setDeleteError] = useState("");
@@ -94,6 +104,7 @@ export function DashboardPage() {
   );
   const needsReview = filings.filter((item) => item.status === "NEEDS_REVIEW");
   const readyToSend = filings.filter((item) => item.status === "APPROVED");
+  const allCompanyGroups = useMemo(() => groupFilingsByCompany(sortedFilings), [sortedFilings]);
 
   const filteredFilings = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -115,10 +126,11 @@ export function DashboardPage() {
       });
   }, [contractTypeFilter, dateFilter, search, sortedFilings, statusFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredFilings.length / rowsLimit));
-  const pageStartIndex = filteredFilings.length ? (currentPage - 1) * rowsLimit : 0;
-  const pageEndIndex = Math.min(pageStartIndex + rowsLimit, filteredFilings.length);
-  const visibleFilings = filteredFilings.slice(pageStartIndex, pageEndIndex);
+  const groupedFilings = useMemo(() => groupFilingsByCompany(filteredFilings), [filteredFilings]);
+  const totalPages = Math.max(1, Math.ceil(groupedFilings.length / rowsLimit));
+  const pageStartIndex = groupedFilings.length ? (currentPage - 1) * rowsLimit : 0;
+  const pageEndIndex = Math.min(pageStartIndex + rowsLimit, groupedFilings.length);
+  const visibleGroups = groupedFilings.slice(pageStartIndex, pageEndIndex);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -127,6 +139,14 @@ export function DashboardPage() {
   useEffect(() => {
     setCurrentPage((page) => Math.min(page, totalPages));
   }, [totalPages]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(DASHBOARD_EXPANDED_GROUPS_KEY, JSON.stringify([...expandedGroupKeys]));
+    } catch {
+      // Session storage is optional; expansion still works for the current render session.
+    }
+  }, [expandedGroupKeys]);
 
   useEffect(() => {
     if (!toast) return;
@@ -161,6 +181,24 @@ export function DashboardPage() {
     }
   }
 
+  function toggleCompanyGroup(groupKey: string) {
+    setExpandedGroupKeys((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
+
+  function expandVisibleGroups() {
+    setExpandedGroupKeys((current) => new Set([...current, ...visibleGroups.map((group) => group.key)]));
+  }
+
+  function collapseVisibleGroups() {
+    const visibleKeys = new Set(visibleGroups.map((group) => group.key));
+    setExpandedGroupKeys((current) => new Set([...current].filter((key) => !visibleKeys.has(key))));
+  }
+
   return (
     <div className="dashboard-page dashboard-v3 dashboard-ops">
       {toast ? <DashboardToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
@@ -190,8 +228,8 @@ export function DashboardPage() {
         <section className="dashboard-table-panel card">
           <div className="dashboard-table-head">
             <div>
-              <h2>All Filings</h2>
-              <p>{initialLoading ? "Loading ShareFile packages…" : `${filings.length} ShareFile package${filings.length === 1 ? "" : "s"} tracked for review.`}</p>
+              <h2>Companies &amp; Filings</h2>
+              <p>{initialLoading ? "Loading ShareFile packages…" : `${allCompanyGroups.length} compan${allCompanyGroups.length === 1 ? "y" : "ies"} · ${filings.length} filing${filings.length === 1 ? "" : "s"}`}</p>
             </div>
             <div className="dashboard-table-controls">
               <label className="dashboard-search">
@@ -237,7 +275,7 @@ export function DashboardPage() {
                 onChange={(value) => setContractTypeFilter(value as ContractTypeFilter)}
               />
               <FilterDropdown
-                label="Rows"
+                label="Show"
                 value={String(rowsLimit)}
                 options={[
                   { value: "10", label: "10" },
@@ -247,6 +285,10 @@ export function DashboardPage() {
                 compact
                 onChange={(value) => setRowsLimit(Number(value))}
               />
+              <div className="dashboard-group-controls" aria-label="Company group controls">
+                <button type="button" onClick={expandVisibleGroups}>Expand all</button>
+                <button type="button" onClick={collapseVisibleGroups}>Collapse all</button>
+              </div>
             </div>
           </div>
 
@@ -267,19 +309,37 @@ export function DashboardPage() {
               <tbody>
                 {initialLoading
                   ? Array.from({ length: 6 }, (_, index) => <DashboardSkeletonRow key={index} />)
-                  : visibleFilings.map((filing) => (
-                    <DashboardFilingRow key={filing.id} filing={filing} onDeleteRequest={setDeleteTarget} />
-                  ))}
+                  : visibleGroups.flatMap((group) => {
+                    const expanded = expandedGroupKeys.has(group.key);
+                    return [
+                      <DashboardCompanyRow
+                        expanded={expanded}
+                        group={group}
+                        key={`company-${group.key}`}
+                        onToggle={() => toggleCompanyGroup(group.key)}
+                      />,
+                      ...(expanded
+                        ? group.filings.map((filing) => (
+                          <DashboardFilingRow
+                            filing={filing}
+                            key={filing.id}
+                            nested
+                            onDeleteRequest={setDeleteTarget}
+                          />
+                        ))
+                        : []),
+                    ];
+                  })}
               </tbody>
             </table>
           </div>
 
-          {!initialLoading && !visibleFilings.length ? (
+          {!initialLoading && !visibleGroups.length ? (
             <div className="empty-state"><FileText size={18} /> No filings match this view.</div>
           ) : null}
 
           <div className="dashboard-table-footer">
-            <span>{initialLoading ? <InlineLoader label="Loading filings" /> : <>Showing {filteredFilings.length ? pageStartIndex + 1 : 0}-{pageEndIndex} of {filteredFilings.length} filing{filteredFilings.length === 1 ? "" : "s"}</>}</span>
+            <span>{initialLoading ? <InlineLoader label="Loading filings" /> : <>Showing {groupedFilings.length ? pageStartIndex + 1 : 0}-{pageEndIndex} of {groupedFilings.length} compan{groupedFilings.length === 1 ? "y" : "ies"} · {filteredFilings.length} filing{filteredFilings.length === 1 ? "" : "s"}</>}</span>
             <div>
               <button
                 className="button secondary"
@@ -499,7 +559,95 @@ function FilterDropdown({
   );
 }
 
-function DashboardFilingRow({ filing, onDeleteRequest }: { filing: Filing; onDeleteRequest: (filing: Filing) => void }) {
+function DashboardCompanyRow({
+  expanded,
+  group,
+  onToggle,
+}: {
+  expanded: boolean;
+  group: DashboardCompanyGroup;
+  onToggle: () => void;
+}) {
+  const summary = dashboardCompanySummary(group);
+  const coverage = dashboardCompanyCoverage(group);
+  const issues = group.filings.reduce((total, filing) => total + filingProblemCount(filing), 0);
+  const highIssues = group.filings.reduce((total, filing) => total + (filing.missing_high_priority_count || 0), 0);
+  const otherIssues = Math.max(0, issues - highIssues);
+  const latestFiling = group.filings[0];
+  const planIdentities = new Set(group.filings.map(filingPlanIdentity).filter((value) => value !== "Plan pending"));
+  return (
+    <tr className={`dashboard-company-row dashboard-company-${summary.tone}`}>
+      <td>
+        <button
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name} filings`}
+          className="dashboard-company-toggle"
+          onClick={onToggle}
+          type="button"
+        >
+          <span className="dashboard-company-chevron">
+            {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+          </span>
+          <span className="dashboard-company-icon"><Building2 size={20} /></span>
+          <span>
+            <strong>{group.name}</strong>
+            <small>{group.filings.length} Schedule A filing{group.filings.length === 1 ? "" : "s"}</small>
+          </span>
+        </button>
+      </td>
+      <td>
+        <div className="dashboard-company-plan-summary">
+          <strong>{planIdentities.size || group.filings.length} plan{(planIdentities.size || group.filings.length) === 1 ? "" : "s"}</strong>
+          <small>{planIdentities.size === 1 ? [...planIdentities][0] : "Multiple plans / contracts"}</small>
+        </div>
+      </td>
+      <td>
+        <div className="dashboard-company-status-summary">
+          <span className={`dashboard-company-status ${summary.tone}`}>{summary.label}</span>
+          <small>{summary.detail}</small>
+        </div>
+      </td>
+      <td>
+        <div className={`dashboard-confidence ${coverage.pending ? "pending" : ""}`}>
+          <strong>{coverage.headline}</strong>
+          <small>{coverage.detail}</small>
+          <div className="confidence-track">
+            <i className={coverage.barClass} style={{ width: coverage.width }} />
+          </div>
+        </div>
+      </td>
+      <td>
+        <div className="dashboard-issues">
+          <strong>{issues} issue{issues === 1 ? "" : "s"}</strong>
+          <small><i className="issue-dot high" /> {highIssues} high priority</small>
+          <small><i className="issue-dot medium" /> {otherIssues} other</small>
+        </div>
+      </td>
+      <td>
+        <div className="dashboard-uploaded-on">
+          <span>{shortDate(latestFiling.created_at)}</span>
+          <small>Latest {shortTime(latestFiling.created_at)}</small>
+        </div>
+      </td>
+      <td>
+        <button className="button dashboard-company-open-button" onClick={onToggle} type="button">
+          {expanded ? "Close" : "Open"} <span aria-hidden="true">({group.filings.length})</span>
+        </button>
+      </td>
+      <td className="more-col" />
+    </tr>
+  );
+}
+
+function DashboardFilingRow({
+  filing,
+  nested = false,
+  onDeleteRequest,
+}: {
+  filing: Filing;
+  nested?: boolean;
+  onDeleteRequest: (filing: Filing) => void;
+}) {
   const missingOther = (filing.missing_medium_priority_count || 0) + (filing.missing_low_priority_count || 0);
   const problemCount = (filing.missing_high_priority_count || 0) + missingOther + (filing.low_confidence_count || 0) + (filing.unmapped_count || 0);
   const totalFields = filing.review_field_count || DASHBOARD_REVIEW_FIELD_TOTAL;
@@ -522,14 +670,14 @@ function DashboardFilingRow({ filing, onDeleteRequest }: { filing: Filing; onDel
         : "info";
 
   return (
-    <tr>
+    <tr className={nested ? "dashboard-filing-child-row" : undefined} id={nested ? `dashboard-filing-${filing.id}` : undefined}>
       <td>
         <Link className="dashboard-filing-cell" to={`/filings/${filing.id}`}>
           <i className={`dashboard-status-dot ${statusDotTone}`} />
           <FileText size={22} />
           <span>
             <strong>{displayName}</strong>
-            <small>{clientName}</small>
+            <small>{nested ? `Schedule A · ${clientName}` : clientName}</small>
           </span>
         </Link>
       </td>
@@ -901,6 +1049,106 @@ function filingStatusToast(filing: Filing, displayName: string): NonNullable<Das
     title: "Filing updated",
     message: `${displayName} was updated from ShareFile.`,
   };
+}
+
+function readExpandedCompanyGroups() {
+  if (typeof window === "undefined") return new Set<string>();
+  try {
+    const stored = JSON.parse(window.sessionStorage.getItem(DASHBOARD_EXPANDED_GROUPS_KEY) || "[]");
+    return new Set<string>(Array.isArray(stored) ? stored.filter((value) => typeof value === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
+  const groups = new Map<string, Filing[]>();
+  for (const filing of filings) {
+    const key = filingCompanyGroupKey(filing);
+    const current = groups.get(key) || [];
+    current.push(filing);
+    groups.set(key, current);
+  }
+
+  return [...groups.entries()]
+    .map(([key, companyFilings]) => {
+      const sorted = [...companyFilings].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const namedFiling = sorted.find((filing) => filingClientName(filing) !== "Client pending") || sorted[0];
+      return {
+        key,
+        name: filingClientName(namedFiling),
+        filings: sorted,
+      };
+    })
+    .sort((a, b) => new Date(b.filings[0].created_at).getTime() - new Date(a.filings[0].created_at).getTime());
+}
+
+function filingCompanyGroupKey(filing: Filing) {
+  const ein = firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
+    || firstStringFromPackageDocuments(filing, ["ein", "company_employer_id"]);
+  const normalizedEin = ein.replace(/\D/g, "");
+  const clientName = filingClientName(filing);
+  const normalizedName = clientName
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, "-");
+  if (normalizedEin && normalizedName && clientName !== "Client pending") return `ein-${normalizedEin}-name-${normalizedName}`;
+  if (normalizedEin) return `ein-${normalizedEin}`;
+  return normalizedName && clientName !== "Client pending" ? `name-${normalizedName}` : `filing-${filing.id}`;
+}
+
+function dashboardCompanySummary(group: DashboardCompanyGroup) {
+  const failed = group.filings.filter((filing) => filing.status === "FAILED" || filing.status === "REJECTED").length;
+  const needsReview = group.filings.filter((filing) => filing.status === "NEEDS_REVIEW").length;
+  const ready = group.filings.filter((filing) => filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL").length;
+  const processing = group.filings.filter((filing) => isProcessingStatus(filing.status)).length;
+
+  if (failed) return { label: "Needs attention", detail: `${failed} filing${failed === 1 ? "" : "s"} failed`, tone: "danger" as const };
+  if (needsReview) return { label: "Needs review", detail: `${needsReview} filing${needsReview === 1 ? " requires" : "s require"} decisions`, tone: "warn" as const };
+  if (processing) return { label: "Processing", detail: `${processing} filing${processing === 1 ? "" : "s"} in progress`, tone: "info" as const };
+  if (ready === group.filings.length) return { label: "Ready", detail: "All filings reviewed", tone: "ready" as const };
+  return { label: "In progress", detail: `${ready} of ${group.filings.length} ready`, tone: "info" as const };
+}
+
+function dashboardCompanyCoverage(group: DashboardCompanyGroup) {
+  const measuredFilings = group.filings.filter((filing) => !dashboardPipelineStage(filing).pendingMetrics);
+  if (!measuredFilings.length) {
+    return {
+      headline: "Coverage pending",
+      detail: "Available after extraction",
+      pending: true,
+      barClass: "confidence-missing",
+      width: "0%",
+    };
+  }
+
+  const totals = measuredFilings.reduce((aggregate, filing) => {
+    const total = filing.review_field_count || DASHBOARD_REVIEW_FIELD_TOTAL;
+    const missing = (filing.missing_high_priority_count || 0)
+      + (filing.missing_medium_priority_count || 0)
+      + (filing.missing_low_priority_count || 0);
+    const found = filing.review_field_count ? (filing.found_field_count || 0) : Math.max(0, total - missing);
+    return { found: aggregate.found + found, total: aggregate.total + total };
+  }, { found: 0, total: 0 });
+  const completion = totals.total ? totals.found / totals.total : 0;
+
+  return {
+    headline: `${totals.found} of ${totals.total} fields`,
+    detail: `${percent(completion)} complete · ${measuredFilings.length}/${group.filings.length} measured`,
+    pending: false,
+    barClass: completion >= 0.8 ? "confidence-medium" : completion > 0 ? "confidence-low" : "confidence-missing",
+    width: percent(completion),
+  };
+}
+
+function filingProblemCount(filing: Filing) {
+  return (filing.missing_high_priority_count || 0)
+    + (filing.missing_medium_priority_count || 0)
+    + (filing.missing_low_priority_count || 0)
+    + (filing.low_confidence_count || 0)
+    + (filing.unmapped_count || 0);
 }
 
 function firstStringFromPackageDocuments(filing: Filing, keys: string[]) {
