@@ -3,10 +3,10 @@ from hashlib import sha256
 from dataclasses import dataclass
 import re
 
-from app.models import FieldRule, FieldRuleApplicability, FieldRuleStatus
+from app.models import FieldRule, FieldRuleApplicability, FieldRuleMappingMode, FieldRuleStatus
 from app.repositories import Repository
 from app.services.field_rules import DEFAULT_FIELD_RULES, normalize_name
-from app.services.ftwilliams_tags import FORM_5500_UPDATE_TAGS_BY_RULE, SCHEDULE_A_TAGS_BY_RULE
+from app.services.ftw_field_catalog import field_catalog_entry
 
 
 class FieldRuleValidationError(ValueError):
@@ -27,7 +27,8 @@ class FieldRuleService:
 
     @staticmethod
     def approved_update_tag(rule_key: str) -> str | None:
-        return FORM_5500_UPDATE_TAGS_BY_RULE.get(rule_key) or SCHEDULE_A_TAGS_BY_RULE.get(rule_key)
+        entry = field_catalog_entry(rule_key)
+        return entry.update_tag if entry else None
 
     async def ensure_seeded(self) -> None:
         existing = await self.repository.list_field_rule_versions()
@@ -88,6 +89,7 @@ class FieldRuleService:
         return PublishedRuleSnapshot(version=sha256(signature.encode("utf-8")).hexdigest()[:12], rules=rules)
 
     async def create_draft(self, rule: FieldRule, *, actor: str, reason: str) -> FieldRule:
+        require_change_reason(reason)
         await self.ensure_seeded()
         await self.validate(rule)
         history = await self.repository.list_field_rule_versions(rule.key)
@@ -108,6 +110,7 @@ class FieldRuleService:
         return await self.repository.save_field_rule_version(draft)
 
     async def publish(self, key: str, *, actor: str, reason: str) -> FieldRule:
+        require_change_reason(reason)
         history = await self.repository.list_field_rule_versions(key)
         draft = max(
             (item for item in history if item.status == FieldRuleStatus.DRAFT),
@@ -132,6 +135,7 @@ class FieldRuleService:
         return await self.repository.save_field_rule_version(published)
 
     async def disable(self, key: str, *, actor: str, reason: str) -> FieldRule:
+        require_change_reason(reason)
         published = next((rule for rule in await self.published_rules() if rule.key == key), None)
         if not published:
             raise FieldRuleValidationError("Published field rule not found.")
@@ -151,6 +155,7 @@ class FieldRuleService:
         return await self.repository.save_field_rule_version(disabled)
 
     async def rollback(self, key: str, version: int, *, actor: str, reason: str) -> FieldRule:
+        require_change_reason(reason)
         history = await self.repository.list_field_rule_versions(key)
         source = next(
             (item for item in history if item.version == version and item.status == FieldRuleStatus.PUBLISHED),
@@ -185,11 +190,58 @@ class FieldRuleService:
             errors.append("Stable rule key must use lowercase letters, numbers, and underscores only.")
         if not rule.label.strip():
             errors.append("Official field label is required.")
-        if not rule.ftw_field.strip():
+        extraction_only = rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY
+        if not extraction_only and not rule.ftw_field.strip():
             errors.append("FT Williams field is required.")
         approved_rule = next((item for item in DEFAULT_FIELD_RULES if item.key == rule.key), None)
-        if not approved_rule:
-            errors.append("Select an approved FT Williams field before saving this rule.")
+        catalog_entry = field_catalog_entry(rule.key)
+        if extraction_only:
+            if rule.source == "Form 5500" or str(rule.form_section or "").startswith("Form 5500"):
+                errors.append(
+                    "Plan Worksheet uses the protected field catalog; custom extraction-only fields "
+                    "are supported for Schedule A documents only."
+                )
+            if rule.xml_tag:
+                errors.append("Extraction-only fields cannot have an FT Williams XML tag.")
+            requests_update = str(rule.existing_behavior or "").strip().lower() in {"update", "add"}
+            requests_add = str(rule.new_behavior or "").strip().lower() in {"add", "update"}
+            if requests_update or requests_add:
+                errors.append("Extraction-only fields must remain review-only and cannot update FT Williams.")
+        elif not catalog_entry:
+            errors.append(
+                "Select an approved FT Williams field or discovered comparison field before saving this rule."
+            )
+        elif catalog_entry.catalog_tier == "DISCOVERED":
+            protected_values = {
+                "FT Williams field": (rule.ftw_field, catalog_entry.label),
+                "current XML mapping": (rule.xml_tag or "", catalog_entry.current_tag or ""),
+                "source": (rule.source, "Schedule A" if catalog_entry.form_type.value == "SCHEDULE_A" else "Form 5500"),
+                "form section": (rule.form_section or "", catalog_entry.form_section or ""),
+            }
+            changed_protected = [
+                name
+                for name, (actual, expected) in protected_values.items()
+                if str(actual or "").strip() != str(expected or "").strip()
+            ]
+            if changed_protected:
+                errors.append(
+                    "Discovered FT Williams technical mappings cannot be changed manually "
+                    f"({', '.join(changed_protected)})."
+                )
+            if catalog_entry.form_type.value == "FORM_5500":
+                expected_aliases = {normalize_name(catalog_entry.label)}
+                actual_aliases = {normalize_name(alias) for alias in rule.aliases if alias.strip()}
+                if rule.label.strip() != catalog_entry.label or actual_aliases != expected_aliases:
+                    errors.append(
+                        "Plan Worksheet labels are fixed by the FT Williams catalog; "
+                        "custom names and aliases are supported for Schedule A fields only."
+                    )
+            requests_update = str(rule.existing_behavior or "").strip().lower() in {"update", "add"}
+            requests_add = str(rule.new_behavior or "").strip().lower() in {"add", "update"}
+            if requests_update or requests_add:
+                errors.append(
+                    "This discovered field is available for FT Williams comparison only until its update contract is verified."
+                )
         else:
             protected_values = {
                 "official label": (rule.label, approved_rule.label),
@@ -208,7 +260,17 @@ class FieldRuleService:
                     "Approved FT Williams technical mappings cannot be changed manually "
                     f"({', '.join(changed_protected)})."
                 )
-            update_supported = bool(self.approved_update_tag(rule.key))
+            if rule.key.startswith("form_5500_"):
+                expected_aliases = {
+                    normalize_name(alias) for alias in approved_rule.aliases if alias.strip()
+                }
+                actual_aliases = {normalize_name(alias) for alias in rule.aliases if alias.strip()}
+                if actual_aliases != expected_aliases:
+                    errors.append(
+                        "Plan Worksheet labels are fixed by the protected field catalog; "
+                        "add aliases only to Schedule A fields."
+                    )
+            update_supported = bool(catalog_entry and catalog_entry.update_supported)
             requests_update = str(rule.existing_behavior or "").strip().lower() == "update"
             requests_add = str(rule.new_behavior or "").strip().lower() in {"add", "update"}
             if (requests_update or requests_add) and not update_supported:
@@ -251,3 +313,8 @@ def infer_applicability(rule: FieldRule) -> FieldRuleApplicability:
     if rule.key.startswith("schedule_a_part_iii_10"):
         return FieldRuleApplicability.NONEXPERIENCE
     return rule.applicability
+
+
+def require_change_reason(reason: str) -> None:
+    if not str(reason or "").strip():
+        raise FieldRuleValidationError("A change reason is required for this field-rule action.")

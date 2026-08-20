@@ -7,11 +7,35 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import FormType, NormalizedExtractionField, NormalizedExtractionResult
+from app.models import FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField, NormalizedExtractionResult
 from app.services.extractor import ExtractionService, parse_plan_worksheet_text
 
 
 class PlanWorksheetExtractionTests(unittest.TestCase):
+    def test_published_extraction_only_rule_can_capture_a_custom_worksheet_field(self):
+        rule = FieldRule(
+            key="custom_filing_signer_email",
+            label="Filing Signer Email",
+            ftw_field="",
+            xml_tag=None,
+            mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+            priority="MEDIUM",
+            source="Form 5500",
+            form_section="Form 5500 - Custom",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["E-mail address of filing signer"],
+        )
+
+        fields = parse_plan_worksheet_text(
+            "E-mail address of filing signer: signer@example.com",
+            rules=[rule],
+        )
+
+        by_name = {field.field_name: field.value for field in fields}
+        self.assertEqual(by_name["Filing Signer Email"], "signer@example.com")
+
     def test_fixed_signer_label_maps_to_plan_administrator_without_an_alias(self):
         text = """
         Form 5500 Information:

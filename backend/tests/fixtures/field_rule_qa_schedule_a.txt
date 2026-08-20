@@ -1,0 +1,5 @@
+1a. Name of Insurance Company: AMERICAN LIFE INSURANCE COMPANY
+1b. Insurance Carrier EIN: 12-3456789
+1c. NAIC Code: 98765
+1d. Contract/Policy Number: QA-2025-001
+Coverage Tier Marker: FULLY INSURED

@@ -6,6 +6,7 @@ import {
   Copy,
   Database,
   Edit3,
+  FileSearch,
   FlaskConical,
   History,
   Layers3,
@@ -26,9 +27,10 @@ import {
   rollbackFieldRule,
   saveFieldRuleDraft,
   testFieldRule,
+  runFieldRuleExtractionQA,
 } from "../api";
 import { useDialogFocus } from "../ui/useDialogFocus";
-import type { FieldRule } from "../types";
+import type { FieldRule, FieldRuleQAResult, FTWFieldCatalogEntry } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
 const PRIORITIES = ["ALL", "HIGH", "MEDIUM", "LOW"] as const;
@@ -40,6 +42,8 @@ type RuleEditorState = { mode: EditorMode; rule: FieldRule };
 export function FieldRulesPage() {
   const [rules, setRules] = useState<FieldRule[]>([]);
   const [publishedVersion, setPublishedVersion] = useState("");
+  const [catalog, setCatalog] = useState<FTWFieldCatalogEntry[]>([]);
+  const [catalogVersion, setCatalogVersion] = useState("");
   const [canManage, setCanManage] = useState(false);
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
@@ -51,6 +55,11 @@ export function FieldRulesPage() {
   const [status, setStatus] = useState("ALL");
   const [selectedRule, setSelectedRule] = useState<FieldRule | null>(null);
   const [editor, setEditor] = useState<RuleEditorState | null>(null);
+  const [qaDocumentType, setQaDocumentType] = useState<"SCHEDULE_A" | "PLAN_WORKSHEET">("SCHEDULE_A");
+  const [qaFile, setQaFile] = useState<File | null>(null);
+  const [qaResult, setQaResult] = useState<FieldRuleQAResult | null>(null);
+  const [qaBusy, setQaBusy] = useState(false);
+  const [qaError, setQaError] = useState("");
 
   const refresh = useCallback(async (preferredKey?: string) => {
     setLoading(true);
@@ -59,6 +68,8 @@ export function FieldRulesPage() {
       const payload = await listFieldRules();
       setRules(payload.field_rules);
       setPublishedVersion(payload.published_version);
+      setCatalog(payload.field_catalog || []);
+      setCatalogVersion(payload.catalog_version || "");
       setCanManage(payload.can_manage);
       if (preferredKey) setSelectedRule(payload.field_rules.find((rule) => rule.key === preferredKey && rule.status === "DRAFT") || payload.field_rules.find((rule) => rule.key === preferredKey) || null);
     } catch (error) {
@@ -123,6 +134,14 @@ export function FieldRulesPage() {
     window.setTimeout(() => setNotice(""), 5000);
   }
 
+  async function runDocumentQA() {
+    if (!qaFile) return setQaError("Choose a synthetic or approved QA document first.");
+    setQaBusy(true); setQaError(""); setQaResult(null);
+    try { setQaResult(await runFieldRuleExtractionQA(qaFile, qaDocumentType)); }
+    catch (error) { setQaError(error instanceof Error ? error.message : "Document extraction QA failed."); }
+    finally { setQaBusy(false); }
+  }
+
   return (
     <div className="rules-page rules-admin-page">
       <div className="rules-command-hero">
@@ -134,10 +153,11 @@ export function FieldRulesPage() {
               <h1 className="page-title">Field Rules</h1>
             </div>
           </div>
-          <p className="rules-intro">Control how EyeLevel values are normalized, reviewed, and safely proposed to FT Williams.</p>
+          <p className="rules-intro">Control how document values are extracted, normalized, reviewed, and safely mapped to FT Williams.</p>
           <div className="rules-version-line">
             <span className="status-dot-live" /> Published rule set {loading ? <Skeleton className="skeleton-version" /> : <code>{publishedVersion}</code>}
-            <span>Changes use a draft, test, and publish workflow.</span>
+            <span>FTW catalog {catalogVersion ? <code>{catalogVersion}</code> : "loading"} · {catalog.length || "—"} fields</span>
+            <span>Plan Worksheet labels are fixed; Schedule A aliases use a draft, test, and publish workflow.</span>
           </div>
         </div>
         <div className="rules-hero-actions">
@@ -178,17 +198,31 @@ export function FieldRulesPage() {
         </div>
       </div>
 
+      {canManage ? <section className="card field-rule-qa-card" aria-busy={qaBusy}>
+        <div className="field-rule-qa-heading"><div className="field-rule-qa-icon"><FileSearch size={21} /></div><div><span className="eyebrow">Safe extraction QA</span><h2>Test a document against published rules</h2><p>Checks aliases and FTW behavior without creating a filing or sending anything to FT Williams.</p></div></div>
+        <div className="field-rule-qa-controls">
+          <label><span>Document family</span><select value={qaDocumentType} onChange={(event) => { setQaDocumentType(event.target.value as typeof qaDocumentType); setQaResult(null); }}><option value="SCHEDULE_A">ShareFile Schedule A</option><option value="PLAN_WORKSHEET">ShareFile Plan Worksheet</option></select></label>
+          <label className="field-rule-qa-file"><span>QA document</span><input type="file" accept=".pdf,.docx,.xlsx,.xlsm,.csv,.txt" onChange={(event) => { setQaFile(event.target.files?.[0] || null); setQaResult(null); setQaError(""); }} /></label>
+          <button className="button" type="button" disabled={qaBusy || !qaFile} onClick={() => void runDocumentQA()}>{qaBusy ? <InlineLoader label="Testing document" /> : <><FlaskConical size={17} /> Run extraction test</>}</button>
+        </div>
+        {qaError ? <div className="field-rule-qa-error" role="alert">{qaError}</div> : null}
+        {qaResult ? <div className="field-rule-qa-results">
+          <div className="field-rule-qa-summary"><strong>{qaResult.file_name}</strong><span>{qaResult.provider}</span><span>Rule set <code>{qaResult.rule_set_version}</code></span><b>{qaResult.summary.matched}/{qaResult.summary.extracted} matched</b>{qaResult.summary.extraction_only ? <b>{qaResult.summary.extraction_only} extraction-only</b> : null}{qaResult.summary.unmatched ? <b className="qa-warning">{qaResult.summary.unmatched} unmatched</b> : null}</div>
+          <div className="field-rule-qa-table-wrap"><table><thead><tr><th>Extracted field</th><th>Value</th><th>Matched alias</th><th>Rule</th><th>FT Williams behavior</th></tr></thead><tbody>{qaResult.fields.map((field, index) => <tr key={`${field.field_name}:${index}`}><td><strong>{field.field_name}</strong><span>{Math.round(field.confidence * 100)}% confidence</span></td><td>{field.value || "—"}</td><td>{field.matched_alias || <em>Unmatched</em>}</td><td>{field.mapped_label || "No rule"}</td><td>{field.mapping_mode === "EXTRACTION_ONLY" ? <span className="qa-safe-chip">Review only · never sent</span> : field.will_send_to_ftw ? <span className="qa-ftw-chip">Approved FTW tag · {field.ftw_tag}</span> : field.matched ? <span className="qa-readonly-chip">FTW read-only</span> : <span className="qa-warning-chip">Needs a rule</span>}</td></tr>)}</tbody></table></div>
+        </div> : null}
+      </section> : null}
+
       <div className="rules-table-summary">{loading ? <InlineLoader label="Loading field rules" /> : <><strong>{filteredRules.length}</strong> rules shown <span>•</span> Select a row to inspect mapping details and history.</>}</div>
       <div className="card table-wrap rules-table-card rules-admin-table-card" aria-busy={loading}>
         <table className="rules-table rules-admin-table">
-          <thead><tr><th>Official FT Williams field</th><th>Applicability</th><th>Priority</th><th>Behavior</th><th>Aliases</th><th>Status</th><th>Updated</th><th /></tr></thead>
+          <thead><tr><th>Field rule</th><th>Applicability</th><th>Priority</th><th>Behavior</th><th>Aliases</th><th>Status</th><th>Updated</th><th /></tr></thead>
           <tbody>
             {Object.entries(groupedRules).map(([groupName, groupRules]) => (
               <Fragment key={groupName}>
                 <tr className="section-row"><td colSpan={8}><span>{groupName}</span><strong>{groupRules.length} fields</strong></td></tr>
                 {groupRules.map((rule) => (
                   <tr key={`${rule.key}:${rule.version}:${rule.status}`} className={`clickable-row row-${rule.priority.toLowerCase()}`} tabIndex={0} onClick={() => setSelectedRule(rule)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedRule(rule); } }}>
-                    <td><div className="field-title-line"><span className={`priority-dot dot-${rule.priority.toLowerCase()}`} /><strong>{rule.label}</strong></div><code className="field-code">{rule.xml_tag || rule.key}</code></td>
+                    <td><div className="field-title-line"><span className={`priority-dot dot-${rule.priority.toLowerCase()}`} /><strong>{rule.label}</strong></div><code className="field-code">{rule.mapping_mode === "EXTRACTION_ONLY" ? "EXTRACTION ONLY" : rule.xml_tag || rule.key}</code></td>
                     <td><span className={`applicability-chip applicability-${rule.applicability.toLowerCase()}`}>{applicabilityLabel(rule.applicability)}</span></td>
                     <td><span className={`badge priority-${rule.priority.toLowerCase()}`}>{rule.priority}</span></td>
                     <td><div className="behavior-stack"><span>Existing <strong>{rule.existing_behavior || "—"}</strong></span><span>New <strong>{rule.new_behavior || "—"}</strong></span></div></td>
@@ -220,6 +254,7 @@ export function FieldRulesPage() {
         <RuleEditor
           state={editor}
           approvedRules={rules.filter((rule) => rule.status === "PUBLISHED")}
+          catalog={catalog}
           onClose={() => setEditor(null)}
           onSaved={async (rule) => { setEditor(null); flash("Draft saved. Test and publish it when ready."); await refresh(rule.key); }}
         />
@@ -281,7 +316,7 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
       <div className={`drawer-head drawer-${rule.priority.toLowerCase()}`}><div><div className="drawer-status-line"><RuleStatus status={rule.status} /><span>Version {rule.version}</span></div><h2>{rule.label}</h2><code className="field-code">{rule.xml_tag || rule.key}</code></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></div>
       {canManage ? <div className="drawer-action-bar"><button type="button" onClick={onEdit}><Edit3 size={16} /> Edit</button><button type="button" onClick={onClone}><Copy size={16} /> Clone</button></div> : null}
       <div className="drawer-grid"><Info label="Priority" value={rule.priority} /><Info label="Applicability" value={applicabilityLabel(rule.applicability)} /><Info label="Existing record" value={rule.existing_behavior || "—"} /><Info label="New record" value={rule.new_behavior || "—"} /></div>
-      <section className="drawer-section"><h3>Mapping identity</h3><Definition label="Stable key" value={rule.key} /><Definition label="FT Williams field" value={rule.ftw_field} /><Definition label="Form section" value={rule.form_section || rule.source} /><Definition label="Field type" value={rule.field_type} /></section>
+      <section className="drawer-section"><h3>Mapping identity</h3><Definition label="Stable key" value={rule.key} /><Definition label="Rule type" value={rule.mapping_mode === "EXTRACTION_ONLY" ? "Extraction only — never sent to FT Williams" : rule.update_supported ? "Verified FT Williams update mapping" : "FT Williams comparison field — never sent"} /><Definition label="FT Williams field" value={rule.ftw_field} /><Definition label="Form section" value={rule.form_section || rule.source} /><Definition label="Field type" value={rule.field_type} /></section>
       <section className="drawer-section"><h3>Aliases used by the agent <span>{rule.aliases.length}</span></h3><div className="alias-chips">{rule.aliases.length ? rule.aliases.map((alias) => <span key={alias}>{alias}</span>) : <em>No aliases configured.</em>}</div></section>
       <section className="drawer-section"><h3>Rule guidance</h3><p>{rule.client_notes || rule.notes || "No guidance has been added."}</p></section>
       {canManage ? <section className="drawer-section publish-panel"><h3>Controlled change</h3><p>Every publish, disable, or rollback requires a reason and is preserved in history.</p><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is this change required?" />{error ? <div className="form-error">{error}</div> : null}<div className="publish-actions">{rule.status === "DRAFT" ? <button className="button" disabled={busy} onClick={() => void perform("publish")}>{busy ? <InlineLoader label="Publishing" /> : <><Sparkles size={16} /> Publish draft</>}</button> : null}{rule.status === "PUBLISHED" ? <button className="button button-danger-soft" disabled={busy} onClick={() => void perform("disable")}>{busy ? <InlineLoader label="Disabling" /> : <><Archive size={16} /> Disable rule</>}</button> : null}</div></section> : null}
@@ -290,7 +325,7 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
   </div>;
 }
 
-function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEditorState; approvedRules: FieldRule[]; onClose: () => void; onSaved: (rule: FieldRule) => Promise<void> }) {
+function RuleEditor({ state, approvedRules, catalog, onClose, onSaved }: { state: RuleEditorState; approvedRules: FieldRule[]; catalog: FTWFieldCatalogEntry[]; onClose: () => void; onSaved: (rule: FieldRule) => Promise<void> }) {
   const [rule, setRule] = useState<FieldRule>(state.rule);
   const [reason, setReason] = useState(state.mode === "add" ? "Add a new field mapping." : state.mode === "clone" ? "Clone an existing field mapping." : "Update field mapping guidance.");
   const [aliases, setAliases] = useState(state.rule.aliases.join("\n"));
@@ -298,32 +333,79 @@ function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEdi
   const [testResult, setTestResult] = useState<{ valid: boolean; matched: boolean; message: string } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState("");
   const isNewIdentity = state.mode !== "edit";
+  const isExtractionOnly = rule.mapping_mode === "EXTRACTION_ONLY";
+  const catalogEntry = catalog.find((entry) => entry.key === rule.key);
+  const isDiscoveredField = catalogEntry?.catalog_tier === "DISCOVERED";
+  const isFixedWorksheetField = !isExtractionOnly && catalogEntry?.form_type === "FORM_5500";
+  const canEditFieldName = isExtractionOnly || Boolean(isDiscoveredField && catalogEntry?.form_type === "SCHEDULE_A");
+  const filteredCatalog = useMemo(() => {
+    const query = catalogQuery.trim().toLowerCase();
+    if (!query) return catalog;
+    return catalog.filter((entry) => [entry.label, entry.current_tag, entry.form_type, entry.catalog_tier].join(" ").toLowerCase().includes(query));
+  }, [catalog, catalogQuery]);
   const editorRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, editorRef, onClose);
 
   function update<K extends keyof FieldRule>(key: K, value: FieldRule[K]) { setRule((current) => ({ ...current, [key]: value })); }
   function selectApprovedRule(key: string) {
     const selected = approvedRules.find((item) => item.key === key);
-    if (!selected) return setRule(emptyRule());
-    const prepared = {
+    const entry = catalog.find((item) => item.key === key);
+    if (!entry) return setRule(emptyRule());
+    const prepared: FieldRule = selected ? {
       ...structuredClone(selected),
       id: null,
       status: "DRAFT" as const,
       version: 1,
       ...(selected.update_supported ? {} : { existing_behavior: "Review Only", new_behavior: "Keep FTW" }),
+    } : {
+      ...emptyRule(),
+      key: entry.key,
+      label: entry.label,
+      ftw_field: entry.label,
+      xml_tag: entry.current_tag,
+      source: entry.form_type === "FORM_5500" ? "Form 5500" : "Schedule A",
+      form_section: entry.form_section,
+      applicability: entry.form_type === "FORM_5500" ? "FORM_5500" : "BOTH",
+      existing_behavior: "Review Only",
+      new_behavior: "Keep FTW",
+      update_supported: false,
+      approved_update_tag: null,
+      aliases: entry.form_type === "FORM_5500" ? [entry.label] : [],
     };
     setRule(prepared);
     setAliases(prepared.aliases.join("\n"));
     setSample(prepared.aliases[0] || prepared.label);
+    setCatalogQuery("");
+    setTestResult(null);
+  }
+
+  function selectMappingMode(mappingMode: FieldRule["mapping_mode"]) {
+    const prepared = {
+      ...emptyRule(),
+      mapping_mode: mappingMode,
+      ...(mappingMode === "EXTRACTION_ONLY" ? {
+        source: "Schedule A",
+        form_section: "Schedule A - Custom",
+        existing_behavior: "Review Only",
+        new_behavior: "Keep FTW",
+      } : {}),
+    };
+    setRule(prepared);
+    setAliases("");
+    setSample("");
     setTestResult(null);
   }
   function preparedRule(): FieldRule {
+    const extractionKey = `custom_${rule.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
     return {
       ...rule,
-      key: rule.key.trim(),
-      ftw_field: rule.ftw_field.trim(),
-      xml_tag: rule.xml_tag?.trim() || null,
+      key: isExtractionOnly ? extractionKey : rule.key.trim(),
+      ftw_field: isExtractionOnly ? "" : rule.ftw_field.trim(),
+      xml_tag: isExtractionOnly ? null : rule.xml_tag?.trim() || null,
+      existing_behavior: isExtractionOnly ? "Review Only" : rule.existing_behavior,
+      new_behavior: isExtractionOnly ? "Keep FTW" : rule.new_behavior,
       aliases: aliases.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
       status: "DRAFT",
     };
@@ -337,13 +419,14 @@ function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEdi
   }
 
   async function save() {
-    if (!rule.key.trim()) return setError("Select an approved FT Williams field.");
+    const candidate = preparedRule();
+    if (!candidate.key.trim()) return setError(isExtractionOnly ? "Enter a field name." : "Select an FT Williams field.");
     if (!rule.label.trim()) return setError("Field name is required.");
     if (!aliases.split(/\r?\n|,/).some((item) => item.trim())) return setError("Add at least one EyeLevel alias.");
     if (isNewIdentity && (!testResult?.valid || !testResult.matched)) return setError("Run a successful mapping test before saving this new rule.");
     if (!reason.trim()) return setError("A change reason is required.");
     setBusy(true); setError("");
-    try { await onSaved(await saveFieldRuleDraft(preparedRule(), reason)); }
+    try { await onSaved(await saveFieldRuleDraft(candidate, reason)); }
     catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Draft could not be saved."); }
     finally { setBusy(false); }
   }
@@ -351,18 +434,20 @@ function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEdi
   return <div className="drawer-layer editor-layer" role="presentation">
     <button className="drawer-scrim" type="button" onClick={onClose} aria-label="Close editor" />
     <aside ref={editorRef} tabIndex={-1} className="rule-editor-panel" role="dialog" aria-modal="true" aria-label="Field rule editor">
-      <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Add the field name and aliases, test the match, then save the rule as a draft.</p></div><button className="icon-button" type="button" onClick={onClose}><X size={20} /></button></header>
+      <header><div><span className="eyebrow">{state.mode === "add" ? "New mapping" : state.mode === "clone" ? "Clone mapping" : "Create next version"}</span><h2>{state.mode === "add" ? "Add field rule" : state.mode === "clone" ? "Clone field rule" : `Edit ${state.rule.label}`}</h2><p>Add the field name and aliases, test the match, then save the rule as a draft.</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close field rule editor"><X size={20} /></button></header>
       <div className="rule-editor-body">
         <EditorSection number="1" title="Field setup" description="Choose what the field is called and where it applies.">
           <div className="form-grid client-rule-grid">
-            {isNewIdentity ? <Field label="Approved FT Williams field" hint="The technical mapping is filled automatically."><select value={rule.key} onChange={(event) => selectApprovedRule(event.target.value)}><option value="">Select an approved field</option>{approvedRules.map((item) => <option key={item.key} value={item.key}>{item.label}{item.update_supported ? "" : " (read-only)"}</option>)}</select></Field> : null}
-            <Field label="Field name" hint="Official FT Williams label"><input value={rule.label} readOnly placeholder="Select an approved field" /></Field>
+            {isNewIdentity ? <Field label="Rule type" hint="Extraction-only fields are never included in FT Williams XML."><select value={rule.mapping_mode} onChange={(event) => selectMappingMode(event.target.value as FieldRule["mapping_mode"])}><option value="FTW_MAPPED">FT Williams catalog field</option><option value="EXTRACTION_ONLY">Extraction-only field</option></select></Field> : null}
+            {isNewIdentity && !isExtractionOnly ? <><Field label="Find FT Williams field" hint="Search the verified and read-only fields returned by FT Williams."><input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="Search name or FTW tag" /></Field><Field label="FT Williams field" hint="Technical tags are protected. Discovered fields remain comparison-only until their update contract is verified."><select value={rule.key} onChange={(event) => selectApprovedRule(event.target.value)}><option value="">Select an FT Williams field</option>{filteredCatalog.map((entry) => <option key={entry.key} value={entry.key}>{entry.label} · {entry.form_type === "FORM_5500" ? "Form 5500" : "Schedule A"}{entry.update_supported ? "" : " (comparison only)"}</option>)}</select></Field></> : null}
+            <Field label="Field name" hint={canEditFieldName ? "Name shown to reviewers and used with the aliases below." : "Official fixed field label"}><input value={rule.label} readOnly={!canEditFieldName} onChange={(event) => update("label", event.target.value)} placeholder={canEditFieldName ? "Enter the field name" : "Select an FT Williams field"} /></Field>
+            {isExtractionOnly ? <Field label="Document family" hint="Plan Worksheet fields come only from the protected fixed catalog."><select value="Schedule A - Custom" disabled><option>Schedule A - Custom</option></select></Field> : null}
             <Field label="Applies to"><select value={rule.applicability} onChange={(event) => update("applicability", event.target.value as FieldRule["applicability"])}><option value="BOTH">Both contract types</option><option value="EXPERIENCE">Experience rated only</option><option value="NONEXPERIENCE">Nonexperience rated only</option><option value="FORM_5500">Form 5500 only</option></select></Field>
             <Field label="Priority"><select value={rule.priority} onChange={(event) => update("priority", event.target.value as FieldRule["priority"])}><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>IGNORE</option></select></Field>
           </div>
         </EditorSection>
         <EditorSection number="2" title="EyeLevel aliases" description="Add the names EyeLevel may return, one per line, then test a real example.">
-          <Field label="Aliases"><textarea className="aliases-editor" value={aliases} onChange={(event) => { setAliases(event.target.value); setTestResult(null); }} placeholder="Insurance Carrier EIN&#10;Carrier federal EIN" /></Field>
+          <Field label="Aliases" hint={isFixedWorksheetField ? "Plan Worksheet labels are fixed and do not need client aliases." : "Add Schedule A label variations returned by the extraction service."}><textarea className="aliases-editor" value={aliases} readOnly={isFixedWorksheetField} onChange={(event) => { setAliases(event.target.value); setTestResult(null); }} placeholder="Insurance Carrier EIN&#10;Carrier federal EIN" /></Field>
           <div className="rule-test-box"><div><FlaskConical size={18} /><div><strong>Test the match</strong><span>Paste one field name exactly as EyeLevel returned it.</span></div></div><div className="rule-test-controls"><input value={sample} onChange={(event) => { setSample(event.target.value); setTestResult(null); }} placeholder="Sample EyeLevel field name" /><button type="button" disabled={busy || !sample.trim()} onClick={() => void testCurrentRule()}>{busy ? <InlineLoader label="Testing" /> : "Run test"}</button></div>{testResult ? <div className={`test-result ${testResult.valid && testResult.matched ? "pass" : "fail"}`}>{testResult.valid && testResult.matched ? <CheckCircle2 size={17} /> : <X size={17} />} {testResult.message}</div> : null}</div>
         </EditorSection>
         <EditorSection number="3" title="Review notes" description="Briefly explain when this rule should be used and why it is changing.">
@@ -371,13 +456,16 @@ function RuleEditor({ state, approvedRules, onClose, onSaved }: { state: RuleEdi
         <details className="advanced-rule-settings">
           <summary><div><strong>Advanced settings</strong><span>Technical values are generated automatically. Only change them if instructed by a technical administrator.</span></div><ChevronRight size={18} /></summary>
           <div className="advanced-rule-settings-content form-grid">
-            <Field label="Stable key" hint="Controlled by the approved FT Williams field."><input value={rule.key} readOnly /></Field>
-            <Field label="FT Williams field"><input value={rule.ftw_field} readOnly /></Field>
-            <Field label="FT Williams update tag"><input value={rule.approved_update_tag || "Read-only field"} readOnly /></Field>
+            <Field label="Stable key" hint="Controlled by the FT Williams catalog field."><input value={rule.key} readOnly /></Field>
+            <Field label="FT Williams field"><input value={isExtractionOnly ? "Not mapped" : rule.ftw_field} readOnly /></Field>
+            <Field label="FT Williams update tag"><input value={isExtractionOnly ? "Never sent" : rule.approved_update_tag || "Read-only field"} readOnly /></Field>
+            <Field label="Supported years"><input value={catalogEntry?.supported_years.join(", ") || (isExtractionOnly ? "Extraction only" : "Select a catalog field")} readOnly /></Field>
+            <Field label="FTW value format"><input value={catalogEntry ? `${catalogEntry.value_type} — ${catalogEntry.format_hint}` : "Not applicable"} readOnly /></Field>
+            <Field label="FTW current tag"><input value={catalogEntry?.current_tag || (isExtractionOnly ? "Never queried" : "Resolved by FT Williams adapter")} readOnly /></Field>
             <Field label="Form section"><input value={rule.form_section || ""} readOnly /></Field>
             <Field label="Field type"><select value={rule.field_type} onChange={(event) => update("field_type", event.target.value)}><option>Dynamic</option><option>Static</option><option>Calculated</option></select></Field>
-            <Field label="Existing FTW value"><select value={rule.existing_behavior || "Review Only"} onChange={(event) => update("existing_behavior", event.target.value)}><option>Update</option><option>Keep FTW</option><option>Review Only</option><option>Add</option></select></Field>
-            <Field label="Empty FTW value"><select value={rule.new_behavior || "Add"} onChange={(event) => update("new_behavior", event.target.value)}><option>Add</option><option>Update</option><option>Review Only</option><option>Keep FTW</option></select></Field>
+            <Field label="Existing FTW value"><select disabled={Boolean(catalogEntry && !catalogEntry.update_supported)} value={rule.existing_behavior || "Review Only"} onChange={(event) => update("existing_behavior", event.target.value)}><option>Update</option><option>Keep FTW</option><option>Review Only</option><option>Add</option></select></Field>
+            <Field label="Empty FTW value"><select disabled={Boolean(catalogEntry && !catalogEntry.update_supported)} value={rule.new_behavior || "Add"} onChange={(event) => update("new_behavior", event.target.value)}><option>Add</option><option>Update</option><option>Review Only</option><option>Keep FTW</option></select></Field>
           </div>
         </details>
         {error ? <div className="form-error editor-error">{error}</div> : null}
@@ -396,4 +484,4 @@ function uniqueValues(values: string[]) { return Array.from(new Set(values.filte
 function titleCase(value: string) { return value.toLowerCase().replace(/(^|_|\s)\w/g, (letter) => letter.toUpperCase()).replaceAll("_", " "); }
 function applicabilityLabel(value: FieldRule["applicability"]) { return value === "BOTH" ? "Both types" : value === "EXPERIENCE" ? "Experience" : value === "NONEXPERIENCE" ? "Nonexperience" : "Form 5500"; }
 function formatDate(value?: string) { if (!value) return "—"; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)); }
-function emptyRule(): FieldRule { return { key: "", label: "", ftw_field: "", xml_tag: "", priority: "MEDIUM", source: "Schedule A", form_section: "Schedule A - Part I", field_type: "Dynamic", existing_or_new: "BOTH", existing_behavior: "Review Only", new_behavior: "Add", notes: "", client_notes: "", aliases: [], required: false, order: 0, applicability: "BOTH", status: "DRAFT", version: 1 }; }
+function emptyRule(): FieldRule { return { key: "", label: "", ftw_field: "", xml_tag: "", mapping_mode: "FTW_MAPPED", priority: "MEDIUM", source: "Schedule A", form_section: "Schedule A - Part I", field_type: "Dynamic", existing_or_new: "BOTH", existing_behavior: "Review Only", new_behavior: "Add", notes: "", client_notes: "", aliases: [], required: false, order: 0, applicability: "BOTH", status: "DRAFT", version: 1 }; }

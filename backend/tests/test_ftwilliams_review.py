@@ -427,6 +427,7 @@ class FakeFTWilliamsCurrentTagService(FTWilliamsService):
                             query_results={
                                 "InsCarrierName": "UnitedHealthcare",
                                 "InsCarrierEIN": "36-2739571",
+                                "InsCarrierNAICCode": "98765",
                                 "InsContractNum": "1246876",
                                 "InsFailProvideInfoInd": "2",
                                 "Name1": "NFP LLC",
@@ -1270,6 +1271,18 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     ),
                     ExtractedField(
                         filing_id=filing.id,
+                        source_field_name="QA Carrier Registry Number",
+                        normalized_field_name="qa carrier registry number",
+                        mapped_rule_key="schedule_a_part_i_1c_naic_code",
+                        mapped_label="1c. NAIC Code",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="98765",
+                        proposed_value="98765",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
                         source_field_name="3a. Name of Agent/Broker/Person",
                         normalized_field_name="broker_name",
                         mapped_rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
@@ -1308,8 +1321,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
-        review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
+        fake_ftw = FakeFTWilliamsCurrentTagService()
+        review = run_async(FTWilliamsReviewService(fake_ftw).prepare_review(filing.id, send_queries=True))
         by_label = {field.label: field for field in review.fields}
+        selected_schedule_call = next(
+            call
+            for call in fake_ftw.calls
+            if call.operation == "query_schedule_a" and call.ftw_seq_no == "1"
+        )
 
         self.assertTrue(review.current_year_exists)
         self.assertFalse(review.bring_forward_required)
@@ -1318,11 +1337,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["14. Active participants at end"].current_value, "279")
         self.assertEqual(by_label["12. Total participants at end of year"].current_value, "298")
         self.assertEqual(by_label["1e. Plan Sponsor EIN"].current_value, "73-1185740")
+        self.assertEqual(by_label["1c. NAIC Code"].current_value, "98765")
         self.assertEqual(by_label["3a. Name of Agent/Broker/Person"].current_value, "NFP LLC")
         self.assertEqual(by_label["3b. Amount of Commissions"].current_value, "111893")
         self.assertEqual(len(review.schedule_a_candidates), 2)
         self.assertEqual(review.schedule_a_candidates[0]["ftw_seq_no"], "1")
         self.assertEqual({record["ftw_seq_no"] for record in review.schedule_a_records}, {"1", "3"})
+        self.assertEqual(selected_schedule_call.year, "2025")
+        self.assertEqual(selected_schedule_call.ftw_customer_id, "571475632")
+        self.assertEqual(selected_schedule_call.ftw_plan_id, "682436783")
 
     def test_prepare_review_preserves_loaded_ftw_current_values_after_local_edit(self):
         repo = repositories.get_repository()

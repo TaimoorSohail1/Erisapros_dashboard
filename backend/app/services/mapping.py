@@ -1,6 +1,6 @@
 from datetime import datetime
 from app.config import get_settings
-from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FilingStatus, FormType, NormalizedExtractionField
+from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FieldRuleMappingMode, FilingStatus, FormType, NormalizedExtractionField
 from app.services.field_rules import find_rule_for_field, form_type_for_rule, normalize_name, rules_for_form_type
 
 
@@ -22,7 +22,12 @@ def map_extraction_to_rules(
         field_rule = find_rule_for_field(field.field_name, field_rules)
         confidence = normalize_confidence(field.confidence)
         status = ExtractedFieldStatus.MATCHED
-        status_reason = "Matched to FT Williams field rule."
+        extraction_only = bool(field_rule and field_rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY)
+        status_reason = (
+            "Matched to extraction-only field rule; never sent to FT Williams."
+            if extraction_only
+            else "Matched to FT Williams field rule."
+        )
         if field_rule and field_rule.priority == FieldPriority.IGNORE:
             status = ExtractedFieldStatus.IGNORED
             status_reason = "Field rule is marked ignore."
@@ -42,8 +47,8 @@ def map_extraction_to_rules(
             normalized_field_name=normalize_name(field_rule.label if field_rule else field.field_name),
             mapped_rule_key=field_rule.key if field_rule else None,
             mapped_label=field_rule.label if field_rule else None,
-            ftw_field=field_rule.ftw_field if field_rule else None,
-            xml_tag=field_rule.xml_tag if field_rule else None,
+            ftw_field=field_rule.ftw_field if field_rule and not extraction_only else None,
+            xml_tag=field_rule.xml_tag if field_rule and not extraction_only else None,
             priority=field_rule.priority if field_rule else FieldPriority.LOW,
             value="" if is_placeholder_value(field.value) else field.value,
             proposed_value="" if is_placeholder_value(field.value) else field.value,
@@ -82,8 +87,8 @@ def map_extraction_to_rules(
                     normalized_field_name=normalize_name(field_rule.label),
                     mapped_rule_key=field_rule.key,
                     mapped_label=field_rule.label,
-                    ftw_field=field_rule.ftw_field,
-                    xml_tag=field_rule.xml_tag,
+                    ftw_field=(field_rule.ftw_field if field_rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY else None),
+                    xml_tag=(field_rule.xml_tag if field_rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY else None),
                     priority=field_rule.priority,
                     source_document_type=source_document_type,
                     form_type=form_type or form_type_for_rule(field_rule),
@@ -91,7 +96,11 @@ def map_extraction_to_rules(
                     proposed_value="",
                     confidence=0,
                     status=ExtractedFieldStatus.MISSING,
-                    status_reason=f"{field_rule.priority.value} priority FT Williams field was not found in the extraction output.",
+                    status_reason=(
+                        f"{field_rule.priority.value} priority extraction-only field was not found in the extraction output."
+                        if field_rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY
+                        else f"{field_rule.priority.value} priority FT Williams field was not found in the extraction output."
+                    ),
                     created_at=now,
                     updated_at=now,
                 )

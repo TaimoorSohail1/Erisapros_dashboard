@@ -52,6 +52,11 @@ class FieldRuleApplicability(str, Enum):
     FORM_5500 = "FORM_5500"
 
 
+class FieldRuleMappingMode(str, Enum):
+    FTW_MAPPED = "FTW_MAPPED"
+    EXTRACTION_ONLY = "EXTRACTION_ONLY"
+
+
 class DocumentType(str, Enum):
     SCHEDULE_A = "SCHEDULE_A"
     PLAN_WORKSHEET = "PLAN_WORKSHEET"
@@ -105,6 +110,7 @@ class FieldRule(BaseModel):
     label: str
     ftw_field: str
     xml_tag: str | None = None
+    mapping_mode: FieldRuleMappingMode = FieldRuleMappingMode.FTW_MAPPED
     priority: FieldPriority
     source: str
     form_section: str | None = None
@@ -124,6 +130,22 @@ class FieldRule(BaseModel):
     change_reason: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWFieldCatalogEntry(BaseModel):
+    key: str
+    label: str
+    form_type: FormType
+    form_section: str | None = None
+    supported_years: list[str] = Field(default_factory=list)
+    value_type: str
+    format_hint: str
+    current_tag: str | None = None
+    update_tag: str | None = None
+    update_supported: bool = False
+    read_only_reason: str | None = None
+    contract_version: str
+    catalog_tier: str = "VERIFIED"
 
 
 class FieldRuleDraftRequest(BaseModel):

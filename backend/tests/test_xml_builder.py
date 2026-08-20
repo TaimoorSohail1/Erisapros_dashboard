@@ -14,6 +14,64 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_discovered_comparison_field_never_enters_ftw_xml(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="Carrier explanation for missing information",
+            normalized_field_name="carrier_explanation_for_missing_information",
+            mapped_rule_key="ftw_discovered_schedule_a_ins_fail_provide_info_text",
+            mapped_label="Reason information was not provided",
+            ftw_field="Insurance Carrier Missing Information Explanation",
+            xml_tag="InsFailProvideInfoText",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.MEDIUM,
+            value="Carrier records were incomplete",
+            proposed_value="Carrier records were incomplete",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOLScheduleAData",
+            [field],
+            FormType.SCHEDULE_A,
+            transaction_type="2",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+        )
+
+        self.assertNotIn("InsFailProvideInfoText", xml)
+        self.assertNotIn("Carrier records were incomplete", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
+
+    def test_extraction_only_fields_never_enter_ftw_xml(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="Policy Category",
+            normalized_field_name="policy_category",
+            mapped_rule_key="custom_policy_category",
+            mapped_label="Policy Category",
+            ftw_field=None,
+            xml_tag=None,
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.MEDIUM,
+            value="Medical",
+            proposed_value="Medical",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOLScheduleAData",
+            [field],
+            FormType.SCHEDULE_A,
+            transaction_type="2",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+        )
+
+        self.assertNotIn("Policy Category", xml)
+        self.assertNotIn("Medical", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
+
     def test_skips_unchanged_5500_fields_when_current_ftw_values_match(self):
         fields = [
             ExtractedField(

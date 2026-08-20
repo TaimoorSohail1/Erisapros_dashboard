@@ -1,6 +1,8 @@
 import type {
   ExtractedField,
   FieldRule,
+  FieldRuleQAResult,
+  FTWFieldCatalogEntry,
   Filing,
   FilingDetail,
   FTWilliamsFailureQueueResponse,
@@ -160,6 +162,8 @@ export async function retryExtraction(filingId: string): Promise<{ id: string; s
 export interface FieldRuleListResponse {
   field_rules: FieldRule[];
   published_version: string;
+  field_catalog: FTWFieldCatalogEntry[];
+  catalog_version: string;
   can_manage: boolean;
 }
 
@@ -187,6 +191,19 @@ export async function testFieldRule(rule: FieldRule, sampleFieldName: string): P
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rule, sample_field_name: sampleFieldName })
+  });
+}
+
+export async function runFieldRuleExtractionQA(
+  file: File,
+  documentType: "SCHEDULE_A" | "PLAN_WORKSHEET",
+): Promise<FieldRuleQAResult> {
+  const formData = new FormData();
+  formData.set("file", file);
+  formData.set("document_type", documentType);
+  return request<FieldRuleQAResult>("/field-rules/qa-extraction", {
+    method: "POST",
+    body: formData,
   });
 }
 
