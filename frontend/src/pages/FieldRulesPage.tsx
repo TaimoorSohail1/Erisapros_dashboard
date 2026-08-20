@@ -314,7 +314,7 @@ function RuleDrawer({ rule, canManage, onClose, onEdit, onClone, onChanged }: {
     <button className="drawer-scrim" type="button" onClick={onClose} aria-label="Close field details" />
     <aside ref={drawerRef} tabIndex={-1} className="rule-drawer rule-admin-drawer" role="dialog" aria-modal="true" aria-label="Field rule details">
       <div className={`drawer-head drawer-${rule.priority.toLowerCase()}`}><div><div className="drawer-status-line"><RuleStatus status={rule.status} /><span>Version {rule.version}</span></div><h2>{rule.label}</h2><code className="field-code">{rule.xml_tag || rule.key}</code></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></div>
-      {canManage ? <div className="drawer-action-bar"><button type="button" onClick={onEdit}><Edit3 size={16} /> Edit</button><button type="button" onClick={onClone}><Copy size={16} /> Clone</button></div> : null}
+      {canManage ? <div className="drawer-action-bar"><button type="button" onClick={onEdit}><Edit3 size={16} /> Edit</button>{rule.mapping_mode !== "EXTRACTION_ONLY" ? <button type="button" onClick={onClone}><Copy size={16} /> Clone</button> : null}</div> : null}
       <div className="drawer-grid"><Info label="Priority" value={rule.priority} /><Info label="Applicability" value={applicabilityLabel(rule.applicability)} /><Info label="Existing record" value={rule.existing_behavior || "—"} /><Info label="New record" value={rule.new_behavior || "—"} /></div>
       <section className="drawer-section"><h3>Mapping identity</h3><Definition label="Stable key" value={rule.key} /><Definition label="Rule type" value={rule.mapping_mode === "EXTRACTION_ONLY" ? "Extraction only — never sent to FT Williams" : rule.update_supported ? "Verified FT Williams update mapping" : "FT Williams comparison field — never sent"} /><Definition label="FT Williams field" value={rule.ftw_field} /><Definition label="Form section" value={rule.form_section || rule.source} /><Definition label="Field type" value={rule.field_type} /></section>
       <section className="drawer-section"><h3>Aliases used by the agent <span>{rule.aliases.length}</span></h3><div className="alias-chips">{rule.aliases.length ? rule.aliases.map((alias) => <span key={alias}>{alias}</span>) : <em>No aliases configured.</em>}</div></section>
@@ -381,22 +381,6 @@ function RuleEditor({ state, approvedRules, catalog, onClose, onSaved }: { state
     setTestResult(null);
   }
 
-  function selectMappingMode(mappingMode: FieldRule["mapping_mode"]) {
-    const prepared = {
-      ...emptyRule(),
-      mapping_mode: mappingMode,
-      ...(mappingMode === "EXTRACTION_ONLY" ? {
-        source: "Schedule A",
-        form_section: "Schedule A - Custom",
-        existing_behavior: "Review Only",
-        new_behavior: "Keep FTW",
-      } : {}),
-    };
-    setRule(prepared);
-    setAliases("");
-    setSample("");
-    setTestResult(null);
-  }
   function preparedRule(): FieldRule {
     const extractionKey = `custom_${rule.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
     return {
@@ -438,7 +422,6 @@ function RuleEditor({ state, approvedRules, catalog, onClose, onSaved }: { state
       <div className="rule-editor-body">
         <EditorSection number="1" title="Field setup" description="Choose what the field is called and where it applies.">
           <div className="form-grid client-rule-grid">
-            {isNewIdentity ? <Field label="Rule type" hint="Extraction-only fields are never included in FT Williams XML."><select value={rule.mapping_mode} onChange={(event) => selectMappingMode(event.target.value as FieldRule["mapping_mode"])}><option value="FTW_MAPPED">FT Williams catalog field</option><option value="EXTRACTION_ONLY">Extraction-only field</option></select></Field> : null}
             {isNewIdentity && !isExtractionOnly ? <><Field label="Find FT Williams field" hint="Search the verified and read-only fields returned by FT Williams."><input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="Search name or FTW tag" /></Field><Field label="FT Williams field" hint="Technical tags are protected. Discovered fields remain comparison-only until their update contract is verified."><select value={rule.key} onChange={(event) => selectApprovedRule(event.target.value)}><option value="">Select an FT Williams field</option>{filteredCatalog.map((entry) => <option key={entry.key} value={entry.key}>{entry.label} · {entry.form_type === "FORM_5500" ? "Form 5500" : "Schedule A"}{entry.update_supported ? "" : " (comparison only)"}</option>)}</select></Field></> : null}
             <Field label="Field name" hint={canEditFieldName ? "Name shown to reviewers and used with the aliases below." : "Official fixed field label"}><input value={rule.label} readOnly={!canEditFieldName} onChange={(event) => update("label", event.target.value)} placeholder={canEditFieldName ? "Enter the field name" : "Select an FT Williams field"} /></Field>
             {isExtractionOnly ? <Field label="Document family" hint="Plan Worksheet fields come only from the protected fixed catalog."><select value="Schedule A - Custom" disabled><option>Schedule A - Custom</option></select></Field> : null}
