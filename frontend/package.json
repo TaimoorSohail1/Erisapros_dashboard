@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "smoke:build": "node scripts/smoke-built-app.mjs",
+    "test:performance": "node scripts/test-shared-polling-resource.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

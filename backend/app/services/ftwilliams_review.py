@@ -85,14 +85,20 @@ class FTWilliamsReviewService:
         send_queries: bool = False,
         *,
         reuse_current_snapshot: bool = False,
+        preloaded: tuple | None = None,
     ) -> FTWilliamsReview:
         repo = get_repository()
-        published_rules = await FieldRuleService(repo).published_rules()
-        filing = await repo.get_filing(filing_id)
-        if not filing:
-            raise ValueError("Filing not found")
-        fields = await repo.list_fields(filing_id)
-        existing_review = await repo.get_ftwilliams_review(filing_id)
+        if preloaded is None:
+            published_rules = await FieldRuleService(repo).published_rules()
+            filing = await repo.get_filing(filing_id)
+            if not filing:
+                raise ValueError("Filing not found")
+            fields = await repo.list_fields(filing_id)
+            existing_review = await repo.get_ftwilliams_review(filing_id)
+        else:
+            filing, fields, published_rules, existing_review = preloaded
+            if not filing or filing.id != filing_id:
+                raise ValueError("Filing not found")
 
         query_payload_base = self._query_payload_base()
         configured = bool(self.ftwilliams.status()["configured"])

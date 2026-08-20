@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from urllib.parse import urlsplit
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -79,11 +80,13 @@ async def get_filing(filing_id: str):
     filing = await repo.get_filing(filing_id)
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
-    fields = await repo.list_fields(filing_id)
-    events = await repo.list_events(filing_id)
-    jobs = await repo.list_extraction_jobs(filing_id)
-    audit_logs = await repo.list_audit_logs(filing_id)
-    ftw_review = await repo.get_ftwilliams_review(filing_id)
+    fields, events, jobs, audit_logs, ftw_review = await asyncio.gather(
+        repo.list_fields(filing_id),
+        repo.list_events(filing_id),
+        repo.list_extraction_jobs(filing_id),
+        repo.list_audit_logs(filing_id),
+        repo.get_ftwilliams_review(filing_id),
+    )
     return FilingDetail(**filing.model_dump(), fields=fields, events=events, jobs=jobs, audit_logs=audit_logs, ftw_review=ftw_review)
 
 
@@ -268,7 +271,11 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     filing = await repo.get_filing(filing_id)
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
-    existing_fields = await repo.list_fields(filing_id)
+    existing_fields, published_rules, existing_review = await asyncio.gather(
+        repo.list_fields(filing_id),
+        FieldRuleService(repo).published_rules(),
+        repo.get_ftwilliams_review(filing_id),
+    )
     before = next((field.proposed_value for field in existing_fields if field.id == field_id), None)
     field_status = ExtractedFieldStatus.MISSING if payload.mark_missing else ExtractedFieldStatus.EDITED
     status_reason = "Marked missing by reviewer." if payload.mark_missing else "Value confirmed by reviewer."
@@ -281,7 +288,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
-    fields = await repo.list_fields(filing_id)
+    fields = [field if item.id == field_id else item for item in existing_fields]
     before_automatic = {
         item.id: (item.proposed_value, item.status, item.status_reason)
         for item in fields
@@ -298,8 +305,6 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
             status=item.status,
             status_reason=item.status_reason,
         )
-    fields = await repo.list_fields(filing_id)
-    published_rules = await FieldRuleService(repo).published_rules()
     relevant_fields = filter_schedule_a_fields_for_contract_type(
         fields,
         classification.contract_type,
@@ -330,7 +335,11 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     field = next((item for item in fields if item.id == field_id), field)
     ftw_review = None
     try:
-        ftw_review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=False)
+        ftw_review = await FTWilliamsReviewService().prepare_review(
+            filing_id,
+            send_queries=False,
+            preloaded=(filing, fields, published_rules, existing_review),
+        )
     except ValueError:
         pass
     await repo.add_event(

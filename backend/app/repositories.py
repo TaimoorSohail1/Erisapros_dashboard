@@ -43,6 +43,7 @@ class Repository:
     async def list_filings(self) -> list[Filing]: ...
     async def list_dashboard_filings(self) -> list[Filing]: ...
     async def get_filing(self, filing_id: str) -> Filing | None: ...
+    async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
@@ -61,8 +62,10 @@ class Repository:
     async def add_audit(self, audit: AuditLog) -> None: ...
     async def list_audit_logs(self, filing_id: str) -> list[AuditLog]: ...
     async def list_ftwilliams_audit_logs(self, since: datetime, limit: int = 100) -> list[AuditLog]: ...
+    async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]: ...
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]: ...
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
+    async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]: ...
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
     async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None: ...
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping: ...
@@ -128,6 +131,50 @@ class MongoRepository(Repository):
         await self.db.filings.create_index(
             "package_documents.sharefile_item_id",
             name="filing_package_sharefile_item_idx",
+        )
+        await self.db.filings.create_index(
+            [("status", 1), ("created_at", -1)],
+            name="filing_status_created_idx",
+        )
+        await self.db.extracted_fields.create_index(
+            [("filing_id", 1), ("mapped_label", 1)],
+            name="field_filing_label_idx",
+        )
+        await self.db.review_events.create_index(
+            [("filing_id", 1), ("created_at", -1)],
+            name="review_event_filing_created_idx",
+        )
+        await self.db.audit_logs.create_index(
+            [("event", 1), ("created_at", -1)],
+            name="audit_ftw_event_created_idx",
+        )
+        await self.db.audit_logs.create_index(
+            [("filing_id", 1), ("created_at", -1)],
+            name="audit_filing_created_idx",
+        )
+        await self.db.audit_logs.create_index(
+            [("event", 1), ("filing_id", 1), ("created_at", -1)],
+            name="audit_failure_queue_idx",
+        )
+        await self.db.extraction_jobs.create_index(
+            [("filing_id", 1), ("created_at", -1)],
+            name="job_filing_created_idx",
+        )
+        await self.db.ftwilliams_reviews.create_index(
+            "filing_id",
+            name="ftw_review_filing_idx",
+        )
+        await self.db.ftwilliams_reviews.create_index(
+            [("status", 1), ("updated_at", -1)],
+            name="ftw_review_status_updated_idx",
+        )
+        await self.db.ftwilliams_plan_mappings.create_index(
+            [("company_employer_id", 1), ("plan_number", 1)],
+            name="ftw_plan_mapping_identity_idx",
+        )
+        await self.db.field_rule_versions.create_index(
+            [("key", 1), ("version", -1), ("created_at", -1)],
+            name="field_rule_key_version_idx",
         )
 
     async def create_filing(self, filing: Filing) -> Filing:
@@ -202,6 +249,13 @@ class MongoRepository(Repository):
         doc = await self.db.filings.find_one({"_id": ObjectId(filing_id)})
         return from_mongo(doc, Filing) if doc else None
 
+    async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]:
+        object_ids = [ObjectId(value) for value in filing_ids if ObjectId.is_valid(value)]
+        if not object_ids:
+            return []
+        docs = await self.db.filings.find({"_id": {"$in": object_ids}}).to_list(len(object_ids))
+        return [from_mongo(doc, Filing) for doc in docs]
+
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         if not ObjectId.is_valid(filing_id):
             return None
@@ -269,13 +323,34 @@ class MongoRepository(Repository):
 
     async def list_ftwilliams_audit_logs(self, since: datetime, limit: int = 100) -> list[AuditLog]:
         events = list(FTWILLIAMS_HISTORY_EVENTS)
-        docs = await self.db.audit_logs.find({"event": {"$in": events}}).sort("created_at", -1).to_list(max(limit * 3, 100))
-        logs = [from_mongo(doc, AuditLog) for doc in docs]
-        return [log for log in logs if log.created_at >= since][:limit]
+        docs = await (
+            self.db.audit_logs.find({"event": {"$in": events}, "created_at": {"$gte": since}})
+            .sort("created_at", -1)
+            .to_list(limit)
+        )
+        return [from_mongo(doc, AuditLog) for doc in docs]
+
+    async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]:
+        if not filing_ids:
+            return []
+        pipeline = [
+            {"$match": {"event": "FTWILLIAMS_UPDATE_FAILED", "filing_id": {"$in": sorted(filing_ids)}}},
+            {"$sort": {"created_at": -1}},
+            {"$group": {"_id": "$filing_id", "record": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$record"}},
+        ]
+        docs = await self.db.audit_logs.aggregate(pipeline).to_list(len(filing_ids))
+        return [from_mongo(doc, AuditLog) for doc in docs]
 
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         doc = await self.db.ftwilliams_reviews.find_one({"filing_id": filing_id})
         return from_mongo(doc, FTWilliamsReview) if doc else None
+
+    async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]:
+        if not filing_ids:
+            return []
+        docs = await self.db.ftwilliams_reviews.find({"filing_id": {"$in": sorted(filing_ids)}}).to_list(len(filing_ids))
+        return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
         docs = await self.db.ftwilliams_reviews.find(
@@ -580,6 +655,9 @@ class MemoryRepository(Repository):
     async def get_filing(self, filing_id: str) -> Filing | None:
         return self.filings.get(filing_id)
 
+    async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]:
+        return [self.filings[filing_id] for filing_id in filing_ids if filing_id in self.filings]
+
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         filing = self.filings.get(filing_id)
         if not filing:
@@ -644,8 +722,21 @@ class MemoryRepository(Repository):
         ]
         return sorted(logs, key=lambda item: item.created_at, reverse=True)[:limit]
 
+    async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]:
+        latest: dict[str, AuditLog] = {}
+        for audit in self.audit:
+            if audit.event != "FTWILLIAMS_UPDATE_FAILED" or not audit.filing_id or audit.filing_id not in filing_ids:
+                continue
+            current = latest.get(audit.filing_id)
+            if current is None or audit.created_at > current.created_at:
+                latest[audit.filing_id] = audit
+        return list(latest.values())
+
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         return self.ftwilliams_reviews.get(filing_id)
+
+    async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]:
+        return [self.ftwilliams_reviews[filing_id] for filing_id in filing_ids if filing_id in self.ftwilliams_reviews]
 
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
         return sorted(

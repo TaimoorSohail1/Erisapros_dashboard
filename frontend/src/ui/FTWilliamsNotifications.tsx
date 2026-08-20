@@ -1,67 +1,25 @@
 import { Activity, AlertTriangle, Bell, CheckCircle2, Eye, X, XCircle } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useMemo, useRef, useState, type RefObject } from "react";
 import { Link } from "../router";
-import { listFTWilliamsFailureQueue, listFTWilliamsHistory } from "../api";
 import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { useDialogFocus } from "./useDialogFocus";
+import { useFTWilliamsFailures, useFTWilliamsHistory } from "./ftWilliamsNotificationStore";
 
 type FTWPanelTab = "failures" | "activity";
 
-const FTW_NOTIFICATIONS_POLL_MS = 30000;
-
 export function FTWilliamsNotifications() {
-  const [failureMessage, setFailureMessage] = useState("");
-  const [historyMessage, setHistoryMessage] = useState("");
-  const [failures, setFailures] = useState<FTWilliamsFailureQueueItem[]>([]);
-  const [history, setHistory] = useState<FTWilliamsHistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<FTWPanelTab>("failures");
   const [isOpen, setIsOpen] = useState(false);
+  const failuresState = useFTWilliamsFailures();
+  const historyState = useFTWilliamsHistory(isOpen && activeTab === "activity");
+  const failures = failuresState.data;
+  const history = historyState.data;
+  const failureMessage = failuresState.error;
+  const historyMessage = historyState.error;
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const warningCount = useMemo(() => history.filter((item) => item.status === "warning").length, [history]);
   const issueCount = failures.length + warningCount;
-
-  useEffect(() => {
-    let active = true;
-    let requestInFlight = false;
-
-    async function load() {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      try {
-        const failureQueue = await listFTWilliamsFailureQueue();
-        if (!active) return;
-        setFailures(failureQueue.items);
-        setFailureMessage("");
-      } catch (error) {
-        if (active) {
-          setFailures([]);
-          setFailureMessage(error instanceof Error ? error.message : "Could not load FT Williams failure queue");
-        }
-      }
-
-      try {
-        const historyPayload = await listFTWilliamsHistory("30d");
-        if (!active) return;
-        setHistory(historyPayload.items);
-        setHistoryMessage("");
-      } catch (error) {
-        if (active) {
-          setHistory([]);
-          setHistoryMessage(error instanceof Error ? error.message : "Could not load FT Williams history");
-        }
-      } finally {
-        requestInFlight = false;
-      }
-    }
-
-    load();
-    const interval = window.setInterval(load, FTW_NOTIFICATIONS_POLL_MS);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, []);
 
   return (
     <>

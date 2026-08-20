@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from pymongo.errors import NetworkTimeout
@@ -10,6 +11,46 @@ from app.repositories import MongoRepository, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_performance_indexes_cover_review_and_history_queries(self):
+        async def scenario():
+            repository = MongoRepository.__new__(MongoRepository)
+            collection_names = [
+                "sharefile_file_index",
+                "sharefile_suppressions",
+                "filings",
+                "extracted_fields",
+                "review_events",
+                "audit_logs",
+                "extraction_jobs",
+                "ftwilliams_reviews",
+                "ftwilliams_plan_mappings",
+                "field_rule_versions",
+            ]
+            collections = {
+                name: SimpleNamespace(create_index=AsyncMock())
+                for name in collection_names
+            }
+            repository.db = SimpleNamespace(**collections)
+            await repository.ensure_indexes()
+            return {
+                name: {call.kwargs.get("name") for call in collection.create_index.await_args_list}
+                for name, collection in collections.items()
+            }
+
+        indexes = asyncio.run(scenario())
+
+        self.assertIn("filing_status_created_idx", indexes["filings"])
+        self.assertIn("field_filing_label_idx", indexes["extracted_fields"])
+        self.assertIn("review_event_filing_created_idx", indexes["review_events"])
+        self.assertIn("audit_ftw_event_created_idx", indexes["audit_logs"])
+        self.assertIn("audit_filing_created_idx", indexes["audit_logs"])
+        self.assertIn("audit_failure_queue_idx", indexes["audit_logs"])
+        self.assertIn("job_filing_created_idx", indexes["extraction_jobs"])
+        self.assertIn("ftw_review_filing_idx", indexes["ftwilliams_reviews"])
+        self.assertIn("ftw_review_status_updated_idx", indexes["ftwilliams_reviews"])
+        self.assertIn("ftw_plan_mapping_identity_idx", indexes["ftwilliams_plan_mappings"])
+        self.assertIn("field_rule_key_version_idx", indexes["field_rule_versions"])
+
     def test_client_has_bounded_network_and_pool_wait_timeouts(self):
         with patch("app.repositories.AsyncIOMotorClient") as client:
             MongoRepository("mongodb://example.test/erisapros")

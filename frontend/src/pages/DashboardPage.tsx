@@ -14,11 +14,12 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "../router";
-import { deleteFiling, listFilings, listFTWilliamsFailureQueue } from "../api";
-import type { Filing, FilingStatus, FTWilliamsFailureQueueItem, ScheduleAContractType } from "../types";
+import { deleteFiling, listFilings } from "../api";
+import type { Filing, FilingStatus, ScheduleAContractType } from "../types";
 import { StatusBadge } from "../ui/StatusBadge";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { useDialogFocus } from "../ui/useDialogFocus";
+import { useFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 import { formatFilingDisplayName, percent } from "../utils";
 
 type StatusFilter = "ALL" | FilingStatus;
@@ -30,7 +31,8 @@ type DashboardToast = {
   tone: "error" | "success";
 } | null;
 const DASHBOARD_REVIEW_FIELD_TOTAL = 61;
-const DASHBOARD_POLL_MS = 30000;
+const DASHBOARD_ACTIVE_POLL_MS = 15_000;
+const DASHBOARD_IDLE_POLL_MS = 120_000;
 
 export function DashboardPage() {
   const [filings, setFilings] = useState<Filing[]>([]);
@@ -40,7 +42,8 @@ export function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
-  const [ftwFailures, setFtwFailures] = useState<FTWilliamsFailureQueueItem[]>([]);
+  const ftwFailuresState = useFTWilliamsFailures();
+  const ftwFailures = ftwFailuresState.data;
   const [rowsLimit, setRowsLimit] = useState(25);
   const [currentPage, setCurrentPage] = useState(1);
   const [toast, setToast] = useState<DashboardToast>(null);
@@ -52,10 +55,12 @@ export function DashboardPage() {
   useEffect(() => {
     let active = true;
     let requestInFlight = false;
+    let timer: number | undefined;
 
     async function load({ announceChanges = false }: { announceChanges?: boolean } = {}) {
       if (requestInFlight) return;
       requestInFlight = true;
+      let nextPollMs = DASHBOARD_IDLE_POLL_MS;
       try {
         const rows = await listFilings();
         if (!active) return;
@@ -63,30 +68,23 @@ export function DashboardPage() {
         const toastMessage = announceChanges ? dashboardChangeToast(previousFilingsRef.current, shareFileRows) : null;
         previousFilingsRef.current = shareFileRows;
         setFilings(shareFileRows);
+        nextPollMs = shareFileRows.some((item) => isProcessingStatus(item.status))
+          ? DASHBOARD_ACTIVE_POLL_MS
+          : DASHBOARD_IDLE_POLL_MS;
         if (toastMessage) setToast(toastMessage);
       } catch (error) {
         if (active) setMessage(error instanceof Error ? error.message : "Could not load filings");
-      }
-
-      try {
-        const failureQueue = await listFTWilliamsFailureQueue();
-        if (!active) return;
-        setFtwFailures(failureQueue.items);
-      } catch (error) {
-        if (active) {
-          setFtwFailures([]);
-        }
       } finally {
         requestInFlight = false;
         if (active) setInitialLoading(false);
+        if (active) timer = window.setTimeout(() => void load({ announceChanges: true }), nextPollMs);
       }
     }
 
-    load();
-    const interval = window.setInterval(() => load({ announceChanges: true }), DASHBOARD_POLL_MS);
+    void load();
     return () => {
       active = false;
-      window.clearInterval(interval);
+      if (timer) window.clearTimeout(timer);
     };
   }, []);
 
@@ -148,7 +146,6 @@ export function DashboardPage() {
         previousFilingsRef.current = next;
         return next;
       });
-      setFtwFailures((current) => current.filter((item) => item.filing_id !== target.id));
       setToast({
         tone: "success",
         title: "Filing removed",
@@ -184,7 +181,7 @@ export function DashboardPage() {
         <DashboardKpi loading={initialLoading} icon={<FileText size={24} />} value={filings.length} label="Total Filings" tone="info" note="Tracked packages" />
         <DashboardKpi loading={initialLoading} icon={<HelpCircle size={24} />} value={needsReview.length} label="Needs Review" tone="warn" note={filings.length ? `${Math.round((needsReview.length / filings.length) * 100)}% of total` : "0% of total"} />
         <DashboardKpi loading={initialLoading} icon={<CheckCircle2 size={24} />} value={readyToSend.length} label="Ready to Send" tone="ready" note={filings.length ? `${Math.round((readyToSend.length / filings.length) * 100)}% of total` : "0% of total"} />
-        <DashboardKpi loading={initialLoading} icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
+        <DashboardKpi loading={!ftwFailuresState.updatedAt && ftwFailuresState.loading} icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
       </section>
 
       {message ? <div className="dashboard-message card">{message}</div> : null}
