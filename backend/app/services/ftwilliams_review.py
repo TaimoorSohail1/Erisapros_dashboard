@@ -890,16 +890,24 @@ class FTWilliamsReviewService:
             archive_error = await self._try_archive_plan_lookup(lookup, derived_identity, repo)
             if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
                 return lookup
+            batch_error = await self._try_plan_ids_batch_lookup(lookup, repo)
+            if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
+                return lookup
             if lookup.status != FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES:
                 lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
-            lookup.error_message = "; ".join(filter(None, [plan_error, fallback_error, archive_error]))
+            lookup.error_message = "; ".join(filter(None, [plan_error, fallback_error, archive_error, batch_error]))
             return lookup
         if not response.raw_response:
             archive_error = await self._try_archive_plan_lookup(lookup, derived_identity, repo)
             if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
                 return lookup
+            batch_error = await self._try_plan_ids_batch_lookup(lookup, repo)
+            if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
+                return lookup
             lookup.status = FTWilliamsPlanLookupStatus.FAILED
-            lookup.error_message = "; ".join(filter(None, ["FT Williams plan lookup did not return a response.", archive_error]))
+            lookup.error_message = "; ".join(
+                filter(None, ["FT Williams plan lookup did not return a response.", archive_error, batch_error])
+            )
             return lookup
 
         if not response.success or not response.statuses:
@@ -913,9 +921,12 @@ class FTWilliamsReviewService:
             archive_error = await self._try_archive_plan_lookup(lookup, derived_identity, repo)
             if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
                 return lookup
+            batch_error = await self._try_plan_ids_batch_lookup(lookup, repo)
+            if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
+                return lookup
             if lookup.status != FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES:
                 lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
-            lookup.error_message = "; ".join(filter(None, [plan_error, fallback_error, archive_error]))
+            lookup.error_message = "; ".join(filter(None, [plan_error, fallback_error, archive_error, batch_error]))
             return lookup
 
         success_status = next((status for status in response.statuses if str(status.error_code or "") == "0"), response.statuses[0])
@@ -1176,6 +1187,169 @@ class FTWilliamsReviewService:
             return None
 
         return "; ".join(errors) if errors else "Archive5500 name lookup did not find a matching plan."
+
+    async def _try_plan_ids_batch_lookup(self, lookup: FTWilliamsPlanLookup, repo) -> str | None:
+        """Resolve real FT Williams IDs without assuming CustomerID equals EIN.
+
+        CustomerID and PlanID are user-defined in FT Williams. PlanIDs_Batch
+        is therefore the authoritative discovery fallback when legacy lookups
+        cannot locate the extracted EIN/plan number.
+        """
+        payload = FTWilliamsQueryRequest(operation="plan_ids_batch", send=True)
+        try:
+            request_xml = self.ftwilliams.mask_key_id(self.ftwilliams.build_request_xml(payload))
+        except ValueError as exc:
+            return str(exc)
+
+        lookup.request_xml = "\n\n".join(filter(None, [lookup.request_xml, request_xml]))
+        response = await self.ftwilliams.run_query(payload)
+        if response.request_xml and response.request_xml != request_xml:
+            lookup.request_xml = "\n\n".join(filter(None, [lookup.request_xml, response.request_xml]))
+        if response.error:
+            return response.error
+        if not response.raw_response:
+            return "PlanIDs_Batch did not return a response."
+
+        records = self.ftwilliams.parse_plan_ids_batch_response(response.raw_response)
+        if not records:
+            return self._status_error(response.statuses) or "PlanIDs_Batch returned no accessible plans."
+
+        direct_matches = [record for record in records if self._plan_lookup_score(record, lookup) >= 8]
+        if len(direct_matches) == 1:
+            self._append_plan_ids_batch_summary(lookup, len(records), direct_matches[0])
+            return await self._accept_plan_ids_batch_match(lookup, repo, direct_matches[0])
+        if len(direct_matches) > 1:
+            self._append_plan_ids_batch_summary(lookup, len(records))
+            lookup.matches = direct_matches
+            lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+            return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
+
+        probed_entries: list[tuple[dict[str, str], str | None, str | None]] = []
+        errors: list[str] = []
+        concurrency = max(1, min(20, get_settings().ftw_slot_query_concurrency))
+
+        async def probe(record: dict[str, str]):
+            identity = self._identity_from_lookup_match(record)
+            if not self._has_plan_identity(identity):
+                return record, None, None, "PlanIDs_Batch returned an incomplete identifier pair."
+            query = FTWilliamsQueryRequest(operation="query_plan", send=True, **identity)
+            try:
+                built_request = self.ftwilliams.mask_key_id(self.ftwilliams.build_request_xml(query))
+            except ValueError as exc:
+                return record, None, None, str(exc)
+            result = await self.ftwilliams.run_query(query)
+            return record, result, built_request, None
+
+        for batch_start in range(0, len(records), concurrency):
+            batch_records = records[batch_start : batch_start + concurrency]
+            results = await asyncio.gather(*(probe(record) for record in batch_records))
+            for record, result, built_request, probe_error in results:
+                if probe_error:
+                    errors.append(probe_error)
+                if result is None:
+                    continue
+                if not result.success or not result.statuses:
+                    error = result.error or self._status_error(result.statuses)
+                    if error:
+                        errors.append(error)
+                    continue
+                status = next(
+                    (item for item in result.statuses if str(item.error_code or "") == "0"),
+                    result.statuses[0],
+                )
+                match = dict(record)
+                match.update(status.query_results or {})
+                status_identity = self._identity_from_status(status)
+                match.update(
+                    {
+                        "CustomerID": status_identity.get("customer_id") or match.get("CustomerID", ""),
+                        "PlanID": status_identity.get("plan_id") or match.get("PlanID", ""),
+                        "FTWCustomerID": status_identity.get("ftw_customer_id") or match.get("FTWCustomerID", ""),
+                        "FTWPlanID": status_identity.get("ftw_plan_id") or match.get("FTWPlanID", ""),
+                    }
+                )
+                if status.plan_name and not match.get("PlanName"):
+                    match["PlanName"] = status.plan_name
+                probed_entries.append(
+                    (
+                        {key: value for key, value in match.items() if value},
+                        result.request_xml or built_request,
+                        result.raw_response,
+                    )
+                )
+
+            exact_entries = [entry for entry in probed_entries if self._plan_lookup_score(entry[0], lookup) >= 8]
+            if len(exact_entries) == 1:
+                match, selected_request, selected_response = exact_entries[0]
+                self._append_plan_ids_batch_summary(lookup, len(records), match)
+                self._append_plan_lookup_trace(lookup, selected_request, selected_response)
+                return await self._accept_plan_ids_batch_match(lookup, repo, match)
+            if len(exact_entries) > 1:
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.matches = [entry[0] for entry in exact_entries]
+                lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+                return "PlanIDs_Batch resolved multiple plans with the extracted EIN and plan number."
+
+        probed_matches = [entry[0] for entry in probed_entries]
+        partial = self._plan_lookup_matches(probed_matches, lookup)
+        if len(partial) == 1:
+            selected = next((entry for entry in probed_entries if entry[0] == partial[0]), None)
+            self._append_plan_ids_batch_summary(lookup, len(records), partial[0])
+            if selected:
+                self._append_plan_lookup_trace(lookup, selected[1], selected[2])
+            return await self._accept_plan_ids_batch_match(lookup, repo, partial[0])
+        if len(partial) > 1:
+            self._append_plan_ids_batch_summary(lookup, len(records))
+            lookup.matches = partial
+            lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+            return "PlanIDs_Batch returned multiple possible plan matches."
+        if len(records) == 1:
+            self._append_plan_ids_batch_summary(lookup, len(records), records[0])
+            return await self._accept_plan_ids_batch_match(lookup, repo, records[0])
+        self._append_plan_ids_batch_summary(lookup, len(records))
+        return "; ".join(errors[:3]) or "PlanIDs_Batch could not match an accessible FT Williams plan to the extracted EIN and plan number."
+
+    @staticmethod
+    def _append_plan_ids_batch_summary(
+        lookup: FTWilliamsPlanLookup,
+        result_count: int,
+        match: dict[str, str] | None = None,
+    ) -> None:
+        root = ET.Element("PlanIDsBatchSummary")
+        ET.SubElement(root, "ResultCount").text = str(result_count)
+        if match:
+            selected = ET.SubElement(root, "SelectedPlan")
+            for key in ["CustomerID", "PlanID", "FTWCustomerID", "FTWPlanID", "CompanyEmployerID", "PlanNumber"]:
+                value = str(match.get(key) or "").strip()
+                if value:
+                    ET.SubElement(selected, key).text = value
+        summary = ET.tostring(root, encoding="unicode")
+        lookup.response_xml = "\n\n".join(filter(None, [lookup.response_xml, summary]))
+
+    @staticmethod
+    def _append_plan_lookup_trace(
+        lookup: FTWilliamsPlanLookup,
+        request_xml: str | None,
+        response_xml: str | None,
+    ) -> None:
+        lookup.request_xml = "\n\n".join(filter(None, [lookup.request_xml, request_xml]))
+        lookup.response_xml = "\n\n".join(filter(None, [lookup.response_xml, response_xml]))
+
+    async def _accept_plan_ids_batch_match(
+        self,
+        lookup: FTWilliamsPlanLookup,
+        repo,
+        match: dict[str, str],
+    ) -> str | None:
+        identity = self._identity_from_lookup_match(match)
+        if not self._has_plan_identity(identity):
+            return "PlanIDs_Batch found a plan but did not return a complete identifier pair."
+        lookup.matches = [match]
+        lookup.matched_identity = identity
+        lookup.status = FTWilliamsPlanLookupStatus.MATCHED
+        lookup.error_message = None
+        await self._persist_plan_mapping(lookup, repo, match, source="PLAN_IDS_BATCH")
+        return None
 
     async def _persist_plan_mapping(self, lookup: FTWilliamsPlanLookup, repo, match: dict[str, str], *, source: str) -> None:
         await repo.upsert_ftwilliams_plan_mapping(

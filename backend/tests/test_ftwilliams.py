@@ -85,6 +85,46 @@ class FTWilliamsServiceTests(unittest.TestCase):
         self.assertIn("<CompanyEmployerID>73-0759701</CompanyEmployerID>", xml)
         self.assertIn("<PlanNumber>501</PlanNumber>", xml)
 
+    def test_builds_plan_ids_batch_query_without_guessing_user_ids(self):
+        xml = self.service.build_request_xml(
+            FTWilliamsQueryRequest(operation="plan_ids_batch")
+        )
+
+        self.assertIn("<PlanIDs_Batch>", xml)
+        self.assertIn("<TransactionType>Q</TransactionType>", xml)
+        self.assertNotIn("<CustomerID>", xml)
+        self.assertNotIn("<PlanID>", xml)
+        self.assertNotIn("<FTWCustomerID>", xml)
+
+    def test_parses_plan_ids_batch_records(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>PlanIDs_Batch</Type>
+    <ErrorCode>0</ErrorCode>
+    <CustomerID>OHIO-COMPANY</CustomerID>
+    <PlanID>OHIO-PLAN</PlanID>
+    <FTWCustomerID>387302687</FTWCustomerID>
+    <FTWPlanID>987654321</FTWPlanID>
+    <QueryResults><CompanyEmployerID>34-1655024</CompanyEmployerID><PlanNumber>501</PlanNumber></QueryResults>
+  </Status>
+  <Status>
+    <Type>PlanIDs_Batch</Type>
+    <ErrorCode>0</ErrorCode>
+    <CustomerID>OTHER-COMPANY</CustomerID>
+    <PlanID>OTHER-PLAN</PlanID>
+    <FTWCustomerID>111</FTWCustomerID>
+    <FTWPlanID>222</FTWPlanID>
+  </Status>
+</ftwLinkResponse>"""
+
+        records = self.service.parse_plan_ids_batch_response(response_xml)
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["CustomerID"], "OHIO-COMPANY")
+        self.assertEqual(records[0]["FTWPlanID"], "987654321")
+        self.assertEqual(records[0]["CompanyEmployerID"], "34-1655024")
+
     def test_parse_schedule_a_query_response(self):
         response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
 <ftwLinkResponse>

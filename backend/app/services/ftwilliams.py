@@ -15,6 +15,7 @@ FTWILLIAMS_QUERY_OPERATIONS = {
     "archive_5500_get_data",
     "query_company",
     "query_plan",
+    "plan_ids_batch",
     "query_schedule_a",
     "query_5500",
     "edit_checks_5500",
@@ -133,6 +134,11 @@ class FTWilliamsService:
                     **self._identifier_values(payload, require_plan=True),
                 },
             )
+        if operation == "plan_ids_batch":
+            values = {"TransactionType": "Q"}
+            if payload.ftw_customer_id:
+                values["FTWCustomerID"] = payload.ftw_customer_id
+            return self._ftwlink_xml("PlanIDs_Batch", values)
         if operation == "query_schedule_a":
             values = {
                 "TransactionType": "Q",
@@ -254,6 +260,59 @@ class FTWilliamsService:
             add_match(direct_values)
 
         return matches
+
+    def parse_plan_ids_batch_response(self, response_xml: str) -> list[dict[str, str]]:
+        """Return the identifier tuples exposed by FT Williams PlanIDs_Batch.
+
+        ftwLink installations have returned this operation both as one Status
+        per plan and as nested plan rows. Parse both shapes without depending
+        on a user-defined CustomerID convention.
+        """
+        try:
+            root = ET.fromstring(response_xml)
+        except ET.ParseError:
+            return []
+
+        identifier_keys = {"CustomerID", "PlanID", "FTWCustomerID", "FTWPlanID"}
+        records: list[dict[str, str]] = []
+        record_positions: dict[tuple[str, str, str, str], int] = {}
+
+        def add(values: dict[str, str]) -> None:
+            cleaned = {
+                key: str(value or "").strip()
+                for key, value in values.items()
+                if key not in {"Type", "ErrorCode", "ErrorDesc"} and str(value or "").strip()
+            }
+            present = identifier_keys.intersection(cleaned)
+            has_user_pair = {"CustomerID", "PlanID"}.issubset(present)
+            has_ftw_pair = {"FTWCustomerID", "FTWPlanID"}.issubset(present)
+            if not (has_user_pair or has_ftw_pair):
+                return
+            signature = tuple(cleaned.get(key, "") for key in ["CustomerID", "PlanID", "FTWCustomerID", "FTWPlanID"])
+            existing_position = record_positions.get(signature)
+            if existing_position is not None:
+                records[existing_position].update(cleaned)
+                return
+            record_positions[signature] = len(records)
+            records.append(cleaned)
+
+        for status in root.findall(".//Status"):
+            values = {
+                key: self._text(status, key) or ""
+                for key in ["CustomerID", "PlanID", "FTWCustomerID", "FTWPlanID"]
+            }
+            values.update(self._child_text_map(status.find("QueryResults")))
+            add(values)
+
+        for element in root.iter():
+            direct_leaf_values = {
+                child.tag: (child.text or "").strip()
+                for child in list(element)
+                if not list(child) and (child.text or "").strip()
+            }
+            add(direct_leaf_values)
+
+        return records
 
     def response_success(self, statuses: list[FTWilliamsStatusItem]) -> bool:
         return bool(statuses) and all(str(status.error_code or "") == "0" for status in statuses)
