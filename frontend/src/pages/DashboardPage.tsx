@@ -1094,9 +1094,12 @@ function filingCompanyGroupKey(filing: Filing) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, "-");
-  if (normalizedEin && normalizedName && clientName !== "Client pending") return `ein-${normalizedEin}-name-${normalizedName}`;
+  // ShareFile's client folder name is the stable company identity in this dashboard.
+  // Older filings can carry a missing or stale EIN, so including it in the primary
+  // key splits one client into duplicate company groups.
+  if (normalizedName && clientName !== "Client pending") return `name-${normalizedName}`;
   if (normalizedEin) return `ein-${normalizedEin}`;
-  return normalizedName && clientName !== "Client pending" ? `name-${normalizedName}` : `filing-${filing.id}`;
+  return `filing-${filing.id}`;
 }
 
 function dashboardCompanySummary(group: DashboardCompanyGroup) {
