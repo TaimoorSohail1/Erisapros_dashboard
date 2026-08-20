@@ -142,9 +142,12 @@ export function FilingReviewPage() {
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
+  const pollingPaused = ftwBusy || ftwSendBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
+  const shouldPollReview = !pollingPaused && isProcessingStatus(filing?.status ?? "UPLOADED");
 
   useEffect(() => {
     if (!id) return;
+    if (pollingPaused) return;
     const filingId = id;
     let active = true;
     let requestInFlight = false;
@@ -167,12 +170,14 @@ export function FilingReviewPage() {
     }
 
     load();
-    const interval = window.setInterval(() => load({ announceChanges: true }), REVIEW_POLL_MS);
+    const interval = shouldPollReview
+      ? window.setInterval(() => load({ announceChanges: true }), REVIEW_POLL_MS)
+      : undefined;
     return () => {
       active = false;
-      window.clearInterval(interval);
+      if (interval) window.clearInterval(interval);
     };
-  }, [id, pollVersion]);
+  }, [id, pollVersion, pollingPaused, shouldPollReview]);
 
   const fields = filing?.fields ?? [];
   const ftwReview = filing?.ftw_review || null;

@@ -114,6 +114,65 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(item.plan_number, "501")
         self.assertEqual(item.ftw_customer_id, "688253650")
 
+    def test_history_batches_filing_and_review_context_reads(self):
+        class CountingRepository(repositories.MemoryRepository):
+            def __init__(self):
+                super().__init__()
+                self.individual_filing_reads = 0
+                self.individual_review_reads = 0
+                self.batch_filing_reads = 0
+                self.batch_review_reads = 0
+
+            async def get_filing(self, filing_id):
+                self.individual_filing_reads += 1
+                return await super().get_filing(filing_id)
+
+            async def get_ftwilliams_review(self, filing_id):
+                self.individual_review_reads += 1
+                return await super().get_ftwilliams_review(filing_id)
+
+            async def get_filings_by_ids(self, filing_ids):
+                self.batch_filing_reads += 1
+                return [self.filings[filing_id] for filing_id in filing_ids if filing_id in self.filings]
+
+            async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids):
+                self.batch_review_reads += 1
+                return [self.ftwilliams_reviews[filing_id] for filing_id in filing_ids if filing_id in self.ftwilliams_reviews]
+
+        async def scenario():
+            repo = CountingRepository()
+            repositories._repository = repo
+            for index in range(3):
+                filing = await repo.create_filing(
+                    Filing(
+                        file_name=f"History {index}.pdf",
+                        content_type="application/pdf",
+                        file_size=1,
+                        s3_key=f"history-{index}",
+                    )
+                )
+                await repo.upsert_ftwilliams_review(FTWilliamsReview(filing_id=filing.id))
+                await repo.add_audit(
+                    AuditLog(
+                        filing_id=filing.id,
+                        event="FTWILLIAMS_REVIEW_PREPARED",
+                        message="Prepared",
+                        details={"field_count": index + 1},
+                    )
+                )
+            repo.individual_filing_reads = 0
+            repo.individual_review_reads = 0
+            response = await history("1d")
+            return response, repo
+
+        response, repo = run_async(scenario())
+
+        self.assertEqual(len(response.items), 3)
+        self.assertEqual(repo.batch_filing_reads, 1)
+        self.assertEqual(repo.batch_review_reads, 1)
+        self.assertEqual(repo.individual_filing_reads, 0)
+        self.assertEqual(repo.individual_review_reads, 0)
+
     def test_history_labels_current_query_failures(self):
         async def scenario():
             repo = repositories.get_repository()
@@ -252,6 +311,61 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(response.items[0].failure_reason, "FT Williams rejected the update.")
         self.assertEqual(response.items[0].attempted_field_count, 1)
         self.assertEqual(response.items[0].company_employer_id, "12-3456789")
+
+    def test_failure_queue_batches_filing_and_failed_audit_reads(self):
+        class CountingRepository(repositories.MemoryRepository):
+            def __init__(self):
+                super().__init__()
+                self.individual_filing_reads = 0
+                self.individual_audit_reads = 0
+                self.batch_filing_reads = 0
+                self.batch_audit_reads = 0
+
+            async def get_filing(self, filing_id):
+                self.individual_filing_reads += 1
+                return await super().get_filing(filing_id)
+
+            async def list_audit_logs(self, filing_id):
+                self.individual_audit_reads += 1
+                return await super().list_audit_logs(filing_id)
+
+            async def get_filings_by_ids(self, filing_ids):
+                self.batch_filing_reads += 1
+                return await super().get_filings_by_ids(filing_ids)
+
+            async def list_latest_ftwilliams_failure_audits(self, filing_ids):
+                self.batch_audit_reads += 1
+                return await super().list_latest_ftwilliams_failure_audits(filing_ids)
+
+        async def scenario():
+            repo = CountingRepository()
+            repositories._repository = repo
+            for index in range(3):
+                filing = await repo.create_filing(
+                    Filing(file_name=f"Failed {index}.pdf", content_type="application/pdf", file_size=1, s3_key=f"failed-{index}")
+                )
+                await repo.upsert_ftwilliams_review(
+                    FTWilliamsReview(filing_id=filing.id, status=FTWilliamsReviewStatus.UPDATE_FAILED)
+                )
+                await repo.add_audit(
+                    AuditLog(
+                        filing_id=filing.id,
+                        event="FTWILLIAMS_UPDATE_FAILED",
+                        message="Failed",
+                    )
+                )
+            repo.individual_filing_reads = 0
+            repo.individual_audit_reads = 0
+            response = await failure_queue()
+            return response, repo
+
+        response, repo = run_async(scenario())
+
+        self.assertEqual(response.total, 3)
+        self.assertEqual(repo.batch_filing_reads, 1)
+        self.assertEqual(repo.batch_audit_reads, 1)
+        self.assertEqual(repo.individual_filing_reads, 0)
+        self.assertEqual(repo.individual_audit_reads, 0)
 
     def test_failed_ftw_update_can_be_retried(self):
         async def scenario():

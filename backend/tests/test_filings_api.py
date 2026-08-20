@@ -9,6 +9,7 @@ import app.repositories as repositories
 from fastapi import HTTPException
 from app.api.filings import (
     delete_filing_from_dashboard,
+    get_filing,
     get_ftwilliams_bring_forward_link,
     list_filings,
     regenerate_xml,
@@ -238,6 +239,90 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(marked_missing["field"].proposed_value, "")
         self.assertEqual(marked_missing["field"].status_reason, "Marked missing by reviewer.")
         self.assertEqual([event.type for event in events[-2:]], ["EDIT", "MARK_MISSING"])
+
+    def test_filing_detail_reads_independent_collections_concurrently(self):
+        class ConcurrentReadRepository(repositories.MemoryRepository):
+            def __init__(self):
+                super().__init__()
+                self.active_reads = 0
+                self.max_active_reads = 0
+
+            async def _track(self, operation):
+                self.active_reads += 1
+                self.max_active_reads = max(self.max_active_reads, self.active_reads)
+                try:
+                    await asyncio.sleep(0.01)
+                    return await operation
+                finally:
+                    self.active_reads -= 1
+
+            async def list_fields(self, filing_id):
+                return await self._track(super().list_fields(filing_id))
+
+            async def list_events(self, filing_id):
+                return await self._track(super().list_events(filing_id))
+
+            async def list_extraction_jobs(self, filing_id):
+                return await self._track(super().list_extraction_jobs(filing_id))
+
+            async def list_audit_logs(self, filing_id):
+                return await self._track(super().list_audit_logs(filing_id))
+
+            async def get_ftwilliams_review(self, filing_id):
+                return await self._track(super().get_ftwilliams_review(filing_id))
+
+        async def scenario():
+            repo = ConcurrentReadRepository()
+            repositories._repository = repo
+            filing = await repo.create_filing(
+                Filing(file_name="Concurrent.pdf", content_type="application/pdf", file_size=1, s3_key="concurrent")
+            )
+            detail = await get_filing(filing.id)
+            return detail, repo.max_active_reads
+
+        detail, max_active_reads = run_async(scenario())
+
+        self.assertEqual(detail.file_name, "Concurrent.pdf")
+        self.assertEqual(max_active_reads, 5)
+
+    def test_field_decision_reuses_one_loaded_field_snapshot(self):
+        class CountingRepository(repositories.MemoryRepository):
+            def __init__(self):
+                super().__init__()
+                self.field_list_reads = 0
+
+            async def list_fields(self, filing_id):
+                self.field_list_reads += 1
+                return await super().list_fields(filing_id)
+
+        async def scenario():
+            repo = CountingRepository()
+            repositories._repository = repo
+            filing = await repo.create_filing(
+                Filing(file_name="Fast decision.pdf", content_type="application/pdf", file_size=1, s3_key="fast-decision")
+            )
+            field = (
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1f. Plan Sponsor Address",
+                            normalized_field_name="sponsor_address",
+                            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                            mapped_label="1f. Plan Sponsor Address",
+                            form_type=FormType.FORM_5500,
+                            proposed_value="OLD ADDRESS",
+                        )
+                    ]
+                )
+            )[0]
+            result = await update_field(filing.id, field.id, FieldEditRequest(proposed_value="NEW ADDRESS"))
+            return result, repo.field_list_reads
+
+        result, field_list_reads = run_async(scenario())
+
+        self.assertEqual(result["field"].proposed_value, "NEW ADDRESS")
+        self.assertEqual(field_list_reads, 1)
 
     def test_bring_forward_link_is_safe_and_audited_without_mutating_ftw(self):
         async def scenario():

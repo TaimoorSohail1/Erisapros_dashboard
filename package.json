@@ -11,6 +11,6 @@
     "backend:check": "python -m compileall backend/app",
     "backend:test": "set PYTHONPATH=backend&& backend\\.venv\\Scripts\\python -m unittest discover -s backend/tests",
     "backend:reclassify-schedule-a": "set PYTHONPATH=backend&& backend\\.venv\\Scripts\\python backend/scripts/reclassify_schedule_a.py",
-    "check": "npm run frontend:typecheck && npm run frontend:build && npm --prefix frontend run smoke:build && npm run backend:check && npm run backend:test"
+    "check": "npm --prefix frontend run test:performance && npm run frontend:typecheck && npm run frontend:build && npm --prefix frontend run smoke:build && npm run backend:check && npm run backend:test"
   }
 }

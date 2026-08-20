@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query
 
@@ -44,12 +45,23 @@ async def _build_failure_queue(repo):
     # Failed reviews are normally empty or very small. Query that collection
     # first instead of loading every filing and issuing two more queries per
     # row on every dashboard refresh.
-    for review in await repo.list_failed_ftwilliams_reviews():
-        filing = await repo.get_filing(review.filing_id)
+    reviews = await repo.list_failed_ftwilliams_reviews()
+    filing_ids = {review.filing_id for review in reviews}
+    filing_rows, audit_rows = await asyncio.gather(
+        repo.get_filings_by_ids(filing_ids),
+        repo.list_latest_ftwilliams_failure_audits(filing_ids),
+    )
+    filings = {filing.id: filing for filing in filing_rows if filing.id}
+    failed_audits = {
+        audit.filing_id: audit
+        for audit in audit_rows
+        if audit.filing_id
+    }
+    for review in reviews:
+        filing = filings.get(review.filing_id)
         if not filing or not filing.id or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
             continue
-        audits = await repo.list_audit_logs(filing.id)
-        failed_audit = next((audit for audit in audits if audit.event == "FTWILLIAMS_UPDATE_FAILED"), None)
+        failed_audit = failed_audits.get(filing.id)
         items.append(_failure_queue_item(filing, review, failed_audit))
     items.sort(key=lambda item: item.failed_at, reverse=True)
     return FTWilliamsFailureQueueResponse(total=len(items), items=items)
@@ -61,16 +73,26 @@ async def history(range_: str = Query("7d", alias="range", pattern="^(1d|7d|30d)
     since = datetime.utcnow() - timedelta(days=days)
     repo = get_repository()
     audits = await repo.list_ftwilliams_audit_logs(since, limit=100)
+    filing_ids = {audit.filing_id for audit in audits if audit.filing_id}
+    filing_rows, review_rows = await asyncio.gather(
+        repo.get_filings_by_ids(filing_ids),
+        repo.get_ftwilliams_reviews_by_filing_ids(filing_ids),
+    )
+    filings = {filing.id: filing for filing in filing_rows if filing.id}
+    reviews = {
+        review.filing_id: review
+        for review in review_rows
+    }
     items: list[FTWilliamsHistoryItem] = []
     for audit in audits:
         if not audit.filing_id:
             continue
-        filing = await repo.get_filing(audit.filing_id)
+        filing = filings.get(audit.filing_id)
         if not filing:
             continue
         if filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
             continue
-        review = await repo.get_ftwilliams_review(audit.filing_id)
+        review = reviews.get(audit.filing_id)
         items.append(_history_item(audit, filing, review))
     return FTWilliamsHistoryResponse(range=range_, days=days, items=items)
 
