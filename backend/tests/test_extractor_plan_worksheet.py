@@ -2,14 +2,17 @@ import unittest
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.extractor import parse_plan_worksheet_text
+from app.models import FormType, NormalizedExtractionField, NormalizedExtractionResult
+from app.services.extractor import ExtractionService, parse_plan_worksheet_text
 
 
 class PlanWorksheetExtractionTests(unittest.TestCase):
-    def test_signer_name_is_not_used_as_plan_administrator_name_and_welfare_codes_are_extracted(self):
+    def test_fixed_signer_label_maps_to_plan_administrator_without_an_alias(self):
         text = """
         Form 5500 Information:
         Plan sponsor name MIDWEST HOSE & SPECIALTY INC.
@@ -32,8 +35,98 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
         fields = parse_plan_worksheet_text(text)
         by_name = {field.field_name: field.value for field in fields}
 
-        self.assertNotIn("2a. Plan Administrator Name", by_name)
+        self.assertEqual(by_name["2a. Plan Administrator Name"], "CHRISTINE CATALDO")
         self.assertEqual(by_name["8c. Welfare Benefit Features"], "4A 4B 4D 4E 4F 4H 4Q")
+
+    def test_ohio_valley_layout_extracts_every_present_canonical_worksheet_value(self):
+        text = """
+        Form 5500 Information:
+        Plan sponsor name OHIO VALLEY STAMPING & ASSEMBLIES INC.
+        Plan sponsor address 515 NEWMAN ST MASFIELD OH 44902
+        Plan sponsor phone number (419) 755-5464
+        EIN 34-1655024
+        Business code 336370
+        Plan number(s) 501
+        Plan name(s) OHIO VALLEY STAMPING & ASSEMBLIES INC. HARTFORD PLAN
+        Plan year begin / end 01-01-2025 12-31-2025
+        Original ERISA plan effective date 01-01-2024
+        Is the plan collectively bargained? No
+        Individual signing as plan administrator MICHAEL HAMILTON
+        E-mail address of filing signer michael@hamiltonins.net
+        5500 Contact / email address Angela Woouchuk awoochuk@enmanstamping.com
+        Participant Counts:
+        5 Total number of participants at the beginning of the plan year
+        [used previous year's count from 6(d)] 137
+        6(a)(1) Total number of active participants on the first day of the plan year
+        [use previous year's count from 6(a)(2)] 137
+        6(a)(2) Total number of active participants on the last day of the plan year 143
+        6(b) Total number of retired or COBRA participants on benefits as of last day of the plan year 0
+        6(c) Total number of retired or COBRA participants entitled to benefits as of last day of the plan year 0
+        Benefits offered / Funding arrangement / Schedule A info:
+        Fully-Insured Benefits
+        LIFE; LTD; AD&D HARTFORD LIFE AND ACCIDENT 922520G 01-01-2025 12-31-2025
+        Self-Funded Benefits
+        Health
+        """
+
+        fields = parse_plan_worksheet_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        expected = {
+            "1a. Plan Name": "OHIO VALLEY STAMPING & ASSEMBLIES INC. HARTFORD PLAN",
+            "1b. Plan Number (PN)": "501",
+            "1c. Plan Effective Date": "01-01-2024",
+            "1d. Plan Sponsor Name": "OHIO VALLEY STAMPING & ASSEMBLIES INC.",
+            "1e. Plan Sponsor EIN": "34-1655024",
+            "1f. Plan Sponsor Address": "515 NEWMAN ST MASFIELD OH 44902",
+            "1g. Business Code": "336370",
+            "2a. Plan Administrator Name": "MICHAEL HAMILTON",
+            "6. Plan Year Beginning Date": "01-01-2025",
+            "7. Plan Year Ending Date": "12-31-2025",
+            "9. Plan funding arrangement": "Insurance",
+            "10a. Plan benefit arrangement": "Insurance",
+            "10b. Schedules attached": "A",
+            "11. Total participants at beginning of year": "137",
+            "12. Total participants at end of year": "143",
+            "13. Active participants at beginning": "137",
+            "14. Active participants at end": "143",
+            "15. Retired/separated participants receiving benefits": "0",
+            "16. Other retired/separated participants entitled to benefits": "0",
+        }
+        self.assertEqual({name: by_name.get(name) for name in expected}, expected)
+
+
+class PlanWorksheetFallbackTests(unittest.IsolatedAsyncioTestCase):
+    @patch("app.services.extractor.extract_pdf_text_pages", return_value=[])
+    @patch(
+        "app.services.extractor.get_settings",
+        return_value=SimpleNamespace(groundx_api_key="test-key", groundx_bucket_id="test-bucket"),
+    )
+    async def test_scanned_pdf_uses_groundx_ocr_fallback_for_canonical_fields(self, _settings, _pages):
+        service = ExtractionService()
+        service._extract_with_groundx = AsyncMock(
+            return_value=NormalizedExtractionResult(
+                provider="GroundX Plan Worksheet OCR",
+                fields=[
+                    NormalizedExtractionField(
+                        field_name="2a. Plan Administrator Name",
+                        value="MICHAEL HAMILTON",
+                        confidence=0.91,
+                    )
+                ],
+            )
+        )
+
+        result = await service.extract_plan_worksheet(b"%PDF scanned", "Plan Worksheet.pdf")
+
+        self.assertEqual(result.fields[0].field_name, "2a. Plan Administrator Name")
+        self.assertEqual(result.fields[0].value, "MICHAEL HAMILTON")
+        service._extract_with_groundx.assert_awaited_once_with(
+            b"%PDF scanned",
+            "Plan Worksheet.pdf",
+            FormType.FORM_5500,
+            "Plan Worksheet",
+        )
 
 
 if __name__ == "__main__":

@@ -92,6 +92,22 @@ class ExtractionService:
                 raw={"context_preview": context_text[:4000]},
             )
 
+        settings = get_settings()
+        if settings.groundx_api_key and settings.groundx_bucket_id:
+            try:
+                return await self._extract_with_groundx(
+                    file_bytes,
+                    file_name,
+                    FormType.FORM_5500,
+                    "Plan Worksheet",
+                )
+            except Exception as exc:
+                return NormalizedExtractionResult(
+                    provider=f"Plan Worksheet OCR fallback failed ({safe_error_summary(exc)})",
+                    fields=[],
+                    raw={"context_preview": context_text[:4000], "error": safe_error_summary(exc)},
+                )
+
         return NormalizedExtractionResult(
             provider="Plan Worksheet parser",
             fields=[],
@@ -185,6 +201,16 @@ class ExtractionService:
                 search_fields.extend(self._extract_fields_from_groundx_search(payload))
             else:
                 fallback_fields.extend(self._extract_field_like_items(payload))
+
+        if form_type == FormType.FORM_5500:
+            worksheet_context = build_structured_extraction_context(raw_payloads, file_bytes)
+            fields = parse_plan_worksheet_text(worksheet_context)
+            provider = "GroundX Plan Worksheet OCR" if fields else "GroundX Plan Worksheet OCR not ready"
+            return NormalizedExtractionResult(
+                provider=provider,
+                fields=fields,
+                raw={"ingest": ingest_raw, "process": poll_raw, "outputs": raw_payloads[2:]},
+            )
 
         if form_type == FormType.SCHEDULE_A:
             # GroundX is useful, but for Schedule A we also have stable label-driven text
@@ -1118,6 +1144,15 @@ def build_structured_extraction_context(raw_payloads: list[Any], file_bytes: byt
     for payload in raw_payloads:
         if is_groundx_search_payload(payload):
             chunks.extend(extract_text_chunks_from_groundx_search(payload))
+        elif is_groundx_xray_payload(payload):
+            for chunk in payload.get("chunks", []):
+                if not isinstance(chunk, dict):
+                    continue
+                text = build_xray_source_text(chunk)
+                if text:
+                    page = parse_xray_page(chunk)
+                    prefix = f"[GroundX page {page}]\n" if page else "[GroundX]\n"
+                    chunks.append(f"{prefix}{text}")
 
     pages = extract_pdf_text_pages(file_bytes)
     for page_number, text in pages:
@@ -1224,6 +1259,7 @@ def parse_plan_worksheet_text(text: str) -> list[NormalizedExtractionField]:
         [
             r"Plan administrator name\s+(.+?)\s+(?:Plan administrator address|E-mail address|Participant Counts:)",
             r"Administrator name\s+(.+?)\s+(?:Administrator address|E-mail address|Participant Counts:)",
+            r"Individual signing as plan administrator\s+(.+?)\s+(?:E-mail address of filing signer|5500 Contact|Additional 5500 Contact|Participant Counts:)",
         ],
         flags=re.IGNORECASE,
     )
