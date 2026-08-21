@@ -706,8 +706,12 @@ export function FilingReviewPage() {
           onStepSelect={setActiveWorkflowStep}
         />
 
-        {isProcessing && !fields.length ? <ProcessingPanel filing={filing} /> : null}
-        <section className="approval-decision-table-shell approval-preview-shell" id="filing-review-table">
+        {isProcessing && !fields.length ? (
+          <ProcessingPanel filing={filing} />
+        ) : filing.status === "FAILED" && !fields.length ? (
+          <ExtractionFailurePanel busy={retryBusy} onRetry={retryFailedExtraction} />
+        ) : (
+          <section className="approval-decision-table-shell approval-preview-shell" id="filing-review-table">
             <div className="approval-table-head compact-review-header">
               <div className="compact-review-file">
                 <strong>{displayFileName}</strong>
@@ -820,7 +824,8 @@ export function FilingReviewPage() {
                 </nav>
               ) : null}
             </div>
-        </section>
+          </section>
+        )}
 
       </main>
 
@@ -3336,17 +3341,89 @@ function SelectFilter({ label, value, options, onChange }: { label: string; valu
 
 function ProcessingPanel({ filing }: { filing: FilingDetail }) {
   const latestJob = (filing.jobs || [])[0];
-  const displayStatus = (filing.status || "UPLOADED").replaceAll("_", " ");
+  const status = filing.status || "UPLOADED";
+  const displayStatus = status.replaceAll("_", " ");
+  const activeStage = status === "QUEUED" || status === "UPLOADED"
+    ? 0
+    : status === "EXTRACTING"
+      ? 1
+      : status === "EXTRACTED"
+        ? 2
+        : 3;
+  const headline = activeStage === 0
+    ? "Your filing is in the processing queue"
+    : activeStage === 1
+      ? "We’re reading your filing"
+      : activeStage === 2
+        ? "We’re organizing the extracted data"
+        : "We’re preparing your review";
+  const stages = [
+    { label: "File received", detail: "Your filing package is secure and ready.", icon: <FileText size={20} /> },
+    { label: "Reading documents", detail: "Key filing details are being extracted.", icon: <Sparkles size={20} /> },
+    { label: "Matching filing fields", detail: "Values are being mapped to review rules.", icon: <ListChecks size={20} /> },
+    { label: "Preparing review", detail: "Your FT Williams comparison is being assembled.", icon: <ShieldCheck size={20} /> },
+  ];
+
   return (
-    <section className="processing-panel card">
-      <RefreshCw size={20} />
-      <div>
-        <h2>Extraction Is Running</h2>
-        <p>
-          Current status: <strong>{displayStatus}</strong>
-          {latestJob ? ` / ${latestJob.status.replaceAll("_", " ")}` : ""}. This page refreshes automatically from MongoDB.
-        </p>
+    <section className="extraction-progress-shell card" role="status" aria-live="polite" aria-label={`Filing extraction in progress: ${latestJob?.status || displayStatus}`}>
+      <div className="extraction-progress-glow" aria-hidden="true" />
+      <header className="extraction-progress-intro">
+        <div className="extraction-progress-mark" aria-hidden="true">
+          <Sparkles size={30} />
+        </div>
+        <div className="extraction-progress-kicker"><span /> Automated review in progress</div>
+        <h1>{headline}</h1>
+        <p>ERISAPros is securely analyzing the documents and matching the results to FT Williams. This usually takes a few minutes.</p>
+        <div className="extraction-progress-live"><span /> Processing now</div>
+      </header>
+
+      <div className="extraction-progress-stages" aria-label="Extraction stages">
+        {stages.map((stage, index) => {
+          const state = index < activeStage ? "complete" : index === activeStage ? "current" : "pending";
+          return (
+            <div className={`extraction-progress-stage ${state}`} key={stage.label}>
+              <div className="extraction-progress-stage-icon" aria-hidden="true">
+                {state === "complete"
+                  ? <CheckCircle2 size={22} />
+                  : state === "current"
+                    ? <RefreshCw className="extraction-progress-spinner" size={22} />
+                    : stage.icon}
+              </div>
+              <div>
+                <span>Step {index + 1}</span>
+                <strong>{stage.label}</strong>
+                <small>{stage.detail}</small>
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      <footer className="extraction-progress-footer">
+        <div className="extraction-progress-file">
+          <FileText size={18} />
+          <span><small>Processing filing</small><strong>{formatFilingDisplayName(filing.file_name)}</strong></span>
+        </div>
+        <div className="extraction-progress-reassurance">
+          <ShieldCheck size={18} />
+          <span><strong>You can safely leave this page.</strong><small>Processing continues in the background and this review updates automatically.</small></span>
+        </div>
+      </footer>
+    </section>
+  );
+}
+
+function ExtractionFailurePanel({ busy, onRetry }: { busy: boolean; onRetry: () => void }) {
+  return (
+    <section className="extraction-failure-shell card" role="alert">
+      <div className="extraction-failure-mark" aria-hidden="true"><XCircle size={30} /></div>
+      <span className="extraction-failure-kicker">Extraction needs attention</span>
+      <h1>We couldn’t finish preparing this filing</h1>
+      <p>A temporary issue interrupted document processing. Your original filing is safe, and you can restart extraction without uploading it again.</p>
+      <button className="button extraction-retry-button" type="button" disabled={busy} onClick={onRetry}>
+        {busy ? <InlineLoader label="Restarting extraction" /> : <><RefreshCw size={17} /> Try extraction again</>}
+      </button>
+      <small>If the issue continues, contact support and include the filing name.</small>
     </section>
   );
 }
