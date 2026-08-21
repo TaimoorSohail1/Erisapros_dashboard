@@ -9896,7 +9896,8 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   border: 1px solid #cbd6e2;
   border-radius: 8px;
   display: grid;
-  max-height: 210px;
+  gap: 3px;
+  max-height: 292px;
   overflow-y: auto;
   padding: 4px;
   width: 100%;
@@ -9913,8 +9914,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   gap: 10px;
   justify-content: space-between;
   min-width: 0;
-  padding: 9px 10px;
+  padding: 10px;
   text-align: left;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
   width: 100%;
 }
 
@@ -9924,9 +9926,23 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   color: #065f46;
 }
 
-.workflow-schedule-menu > button > span {
+.workflow-schedule-menu > button.recommended:not(.selected) {
+  background: #f5fbf8;
+  box-shadow: inset 3px 0 0 #34b98b;
+}
+
+.workflow-schedule-candidate-copy {
   display: grid;
-  gap: 3px;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+}
+
+.workflow-schedule-candidate-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -9942,6 +9958,72 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .workflow-schedule-menu small {
   color: #64748b;
   font-size: 10px;
+}
+
+.workflow-schedule-recommended {
+  align-items: center;
+  background: #dff7ed;
+  border: 1px solid #b8ead7;
+  border-radius: 999px;
+  color: #087354;
+  display: inline-flex;
+  font-size: 8px;
+  font-weight: 900;
+  gap: 3px;
+  letter-spacing: .04em;
+  line-height: 1;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+
+.workflow-schedule-candidate-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.workflow-schedule-candidate-meta > span {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 800;
+  gap: 3px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.workflow-schedule-candidate-meta .loaded {
+  background: #e8f7f1;
+  color: #087354;
+}
+
+.workflow-schedule-candidate-meta .unavailable {
+  background: #f1f4f7;
+  color: #65758a;
+}
+
+.workflow-schedule-candidate-meta .score {
+  background: #fff4d6;
+  color: #8c6100;
+}
+
+.workflow-schedule-selected {
+  align-items: center;
+  background: #07875f;
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  margin-top: 2px;
+  width: 22px;
+}
+
+.workflow-schedule-menu .workflow-schedule-selected svg {
+  color: currentColor;
 }
 
 .workflow-schedule-menu svg {

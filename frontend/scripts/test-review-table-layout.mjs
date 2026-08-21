@@ -214,6 +214,21 @@ assert.match(
 );
 assert.match(
   source,
+  /textValue\(candidate\.score\)/,
+  "The compact Schedule A selector must display the backend match score.",
+);
+assert.match(
+  source,
+  /workflow-schedule-recommended[^\n]*Recommended/,
+  "The strongest Schedule A candidate must be visibly marked as recommended.",
+);
+assert.match(
+  source,
+  /candidate\.has_current_data/,
+  "The compact Schedule A selector must display whether current FTW data was loaded.",
+);
+assert.match(
+  source,
   /className="workflow-dialog-footer-note"/,
   "Workflow dialogs must keep contextual state in the quiet footer area.",
 );
@@ -316,7 +331,7 @@ assert.match(
 assert.doesNotMatch(source, /<select id="workflow-schedule-candidate"/, "The workflow dialog must not use the overflowing native Schedule A selector.");
 assert.match(
   styles,
-  /\.workflow-schedule-menu\s*\{[^}]*max-height:\s*210px;[^}]*overflow-y:\s*auto;[^}]*width:\s*100%;/,
+  /\.workflow-schedule-menu\s*\{[^}]*max-height:\s*\d+px;[^}]*overflow-y:\s*auto;[^}]*width:\s*100%;/,
   "The Schedule A listbox must stay inside the modal and scroll internally.",
 );
 assert.doesNotMatch(styles, /\.workflow-dialog\s*\{[^}]*overflow:\s*visible;/, "Workflow dialogs must contain their controls and decoration.");
