@@ -38,6 +38,25 @@ DISCOVERED_READ_ONLY_REASON = (
     "and comparison, but its update tag and validation contract have not been verified."
 )
 
+# These comparison-only fields were temporarily exposed in Field Rules from
+# FT Williams discovery responses. They are not useful review fields for the
+# ERISAPros workflow, so keep them out of the active catalog while preserving
+# any saved rule versions for audit history.
+RETIRED_FIELD_RULE_KEYS = frozenset(
+    {
+        "ftw_discovered_schedule_a_health_ind",
+        "ftw_discovered_schedule_a_ins_fail_provide_info_text",
+        "ftw_discovered_schedule_a_vision_ind",
+    }
+)
+_RETIRED_DISCOVERED_TAGS = frozenset(
+    {
+        (FormType.SCHEDULE_A, "HealthInd"),
+        (FormType.SCHEDULE_A, "InsFailProvideInfoText"),
+        (FormType.SCHEDULE_A, "VisionInd"),
+    }
+)
+
 
 # Read-only field names observed in successful 2025 ftwLink current-data responses
 # for accessible Form 5500 and Schedule A records. Queryability does not imply
@@ -218,6 +237,8 @@ def _build_catalog() -> tuple[FTWFieldCatalogEntry, ...]:
         (FormType.SCHEDULE_A, _DISCOVERED_SCHEDULE_A_TAGS),
     ):
         for tag in tags:
+            if (form_type, tag) in _RETIRED_DISCOVERED_TAGS:
+                continue
             if (form_type, tag) not in covered:
                 entries.append(_discovered_entry(form_type, tag))
     return tuple(entries)

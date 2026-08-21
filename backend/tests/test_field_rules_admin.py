@@ -168,56 +168,71 @@ class FieldRuleAdminTests(unittest.TestCase):
         self.assertIsNone(published.xml_tag)
         self.assertIsNone(FieldRuleService.approved_update_tag(published.key))
 
-    def test_discovered_ftw_field_can_be_added_with_alias_and_compared_read_only(self):
+    def test_retired_discovered_ftw_fields_are_hidden_and_disabled(self):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
-            entry = field_catalog_entry("ftw_discovered_schedule_a_ins_fail_provide_info_text")
-            self.assertIsNotNone(entry)
-            draft = await service.create_draft(
+            retired_key = "ftw_discovered_schedule_a_ins_fail_provide_info_text"
+            published = await repositories.get_repository().save_field_rule_version(
                 FieldRule(
-                    key=entry.key,
+                    key=retired_key,
                     label="Reason information was not provided",
-                    ftw_field=entry.label,
-                    xml_tag=entry.current_tag,
+                    ftw_field="Insurance Carrier Missing Information Explanation",
+                    xml_tag="InsFailProvideInfoText",
                     mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
                     priority="MEDIUM",
                     source="Schedule A",
-                    form_section=entry.form_section,
+                    form_section="Schedule A - Discovered FTW fields",
                     field_type="Dynamic",
                     existing_behavior="Review Only",
                     new_behavior="Keep FTW",
                     aliases=["Carrier explanation for missing information"],
+                    status=FieldRuleStatus.PUBLISHED,
+                    version=1,
                 ),
-                actor="admin@example.com",
-                reason="Add a discovered FTW comparison field",
             )
-            return await service.publish(
-                draft.key,
-                actor="admin@example.com",
-                reason="Alias extraction and FTW-current comparison verified",
-            )
+            listed = await service.list_rules()
+            active = await service.published_rules()
+            history = await service.history(retired_key)
+            return published, listed, active, history
 
-        published = run_async(scenario())
-        result = map_extraction_to_rules(
-            "filing-1",
-            [
-                NormalizedExtractionField(
-                    field_name="Carrier explanation for missing information",
-                    value="Carrier records were incomplete",
-                    confidence=0.96,
+        published, listed, active, history = run_async(scenario())
+
+        self.assertEqual(published.status, FieldRuleStatus.PUBLISHED)
+        self.assertNotIn(published.key, {rule.key for rule in listed})
+        self.assertNotIn(published.key, {rule.key for rule in active})
+        self.assertEqual(history[0].status, FieldRuleStatus.DISABLED)
+
+    def test_read_only_capability_overrides_stale_update_behavior(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            await service.ensure_seeded()
+            existing = next(
+                rule
+                for rule in await repositories.get_repository().list_field_rule_versions()
+                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+            )
+            await repositories.get_repository().save_field_rule_version(
+                existing.model_copy(
+                    update={
+                        "id": None,
+                        "version": existing.version + 1,
+                        "status": FieldRuleStatus.PUBLISHED,
+                        "existing_behavior": "Update",
+                        "new_behavior": "Add",
+                    }
                 )
-            ],
-            rules=[published],
-        )
-        field = result["fields"][0]
+            )
+            return next(
+                rule
+                for rule in await service.list_rules()
+                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+            )
 
-        self.assertEqual(field.mapped_rule_key, published.key)
-        self.assertEqual(field.proposed_value, "Carrier records were incomplete")
-        self.assertEqual(
-            resolve_ftw_current_value(field, {"InsFailProvideInfoText": "Prior FTW explanation"}),
-            "Prior FTW explanation",
-        )
-        self.assertIsNone(FieldRuleService.approved_update_tag(published.key))
+        rule = run_async(scenario())
+
+        self.assertEqual(rule.existing_behavior, "Review Only")
+        self.assertEqual(rule.new_behavior, "Keep FTW")
+        self.assertIsNone(FieldRuleService.approved_update_tag(rule.key))
 
     def test_discovered_form_5500_field_keeps_its_fixed_catalog_label(self):
         async def scenario():

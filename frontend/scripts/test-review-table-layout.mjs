@@ -86,6 +86,16 @@ assert.match(
 );
 assert.match(
   source,
+  /if \(field\?\.status === "EDITED"\) return comparison\.changed && comparison\.update_included \? "WILL_UPDATE" : "SAME";/,
+  "A reviewer-confirmed field must enter Will Update only when the FTW update contract includes it.",
+);
+assert.match(
+  source,
+  /Resolved · not sent to FTW/,
+  "A confirmed read-only field must clearly state that it will not be sent to FT Williams.",
+);
+assert.match(
+  source,
   /const needsDecisionRows = reviewRows\.filter\(\(row\) => row\.group === "NEEDS_DECISION" && isActionRequiredRow\(row\)\);/,
   "Approval summaries must not count reviewer-confirmed decisions as unresolved.",
 );

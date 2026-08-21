@@ -2641,7 +2641,7 @@ function rowFromComparison(
     extracted: comparison.extracted_value || field?.value || "",
     proposed: comparison.proposed_value || field?.proposed_value || "",
     issue: rejectedField?.reason || issueForComparison(comparison, field, group),
-    statusLabel: rejectedField ? "Rejected by FTW" : reviewedStatusLabel(group, field),
+    statusLabel: rejectedField ? "Rejected by FTW" : reviewedStatusLabel(group, field, comparison),
     group,
     priority: comparison.priority,
     confidence: comparison.confidence,
@@ -2673,6 +2673,7 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 }
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
+  if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
   if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") return "LOW_CONFIDENCE";
   if (comparison.extraction_status === "UNMAPPED" || field?.status === "UNMAPPED") return "NEEDS_DECISION";
@@ -2690,6 +2691,9 @@ function groupForExtractedField(field: ExtractedField): ReviewRowGroup {
 
 function issueForComparison(comparison: FTWilliamsComparisonField, field: ExtractedField | undefined, group: ReviewRowGroup) {
   if (field?.status === "EDITED" && group === "WILL_UPDATE") return "Reviewer confirmed this FT Williams update.";
+  if (field?.status === "EDITED" && comparison.changed && !comparison.update_included) {
+    return "Reviewed successfully. This field is not supported for FT Williams updates.";
+  }
   if (field?.status === "EDITED" && group === "SAME") return "Reviewer confirmed the current FT Williams value.";
   if (field?.status_reason) return field.status_reason;
   if (group === "MISSING") return "Required source value was not found.";
@@ -2707,8 +2711,9 @@ function statusLabelForGroup(group: ReviewRowGroup) {
   return "Same";
 }
 
-function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField) {
+function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
+  if (comparison?.changed && !comparison.update_included) return "Resolved · not sent to FTW";
   if (group === "WILL_UPDATE") return "Resolved · will update";
   if (group === "SAME") return "Resolved · keeps FTW";
   return "Resolved";

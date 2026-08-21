@@ -471,7 +471,7 @@
     "field_type": "Dynamic",
     "existing_or_new": "BOTH",
     "existing_behavior": "Review Only",
-    "new_behavior": "--",
+    "new_behavior": "Keep FTW",
     "notes": "Formal plan name exactly as stated in plan document",
     "client_notes": "",
     "aliases": [
@@ -555,7 +555,7 @@
     "field_type": "Dynamic",
     "existing_or_new": "BOTH",
     "existing_behavior": "Review Only",
-    "new_behavior": "--",
+    "new_behavior": "Keep FTW",
     "notes": "Nine-digit Employer Identification Number",
     "client_notes": "",
     "aliases": [
@@ -575,8 +575,8 @@
     "form_section": "Form 5500 - Part I",
     "field_type": "Dynamic",
     "existing_or_new": "BOTH",
-    "existing_behavior": "Update",
-    "new_behavior": "--",
+    "existing_behavior": "Review Only",
+    "new_behavior": "Keep FTW",
     "notes": "Complete street address, city, state, ZIP code",
     "client_notes": "",
     "aliases": [
@@ -617,8 +617,8 @@
     "form_section": "Form 5500 - Part I",
     "field_type": "Dynamic",
     "existing_or_new": "BOTH",
-    "existing_behavior": "Update",
-    "new_behavior": "--",
+    "existing_behavior": "Review Only",
+    "new_behavior": "Keep FTW",
     "notes": "Person or entity designated as plan administrator",
     "client_notes": "",
     "aliases": [

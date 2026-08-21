@@ -30,25 +30,24 @@ def test_catalog_records_update_support_and_read_only_reason() -> None:
     assert all(entry.read_only_reason for entry in catalog if not entry.update_supported)
 
 
-def test_catalog_includes_live_discovered_schedule_a_fields_outside_verified_rules() -> None:
-    entry = field_catalog_entry("ftw_discovered_schedule_a_ins_fail_provide_info_text")
+def test_catalog_excludes_retired_discovered_schedule_a_fields() -> None:
+    retired_keys = {
+        "ftw_discovered_schedule_a_health_ind",
+        "ftw_discovered_schedule_a_ins_fail_provide_info_text",
+        "ftw_discovered_schedule_a_vision_ind",
+    }
 
-    assert entry is not None
-    assert entry.catalog_tier == "DISCOVERED"
-    assert entry.form_type == FormType.SCHEDULE_A
-    assert entry.current_tag == "InsFailProvideInfoText"
-    assert entry.update_tag is None
-    assert entry.update_supported is False
-    assert entry.supported_years == ["2025"]
+    assert all(field_catalog_entry(key) is None for key in retired_keys)
+    assert retired_keys.isdisjoint({entry.key for entry in field_catalog()})
 
 
 def test_catalog_preserves_every_observed_current_tag_without_promoting_write_access() -> None:
     catalog = field_catalog()
     discovered = [entry for entry in catalog if entry.catalog_tier == "DISCOVERED"]
 
-    assert len(catalog) == 357
-    assert len(discovered) == 295
-    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 355
+    assert len(catalog) == 354
+    assert len(discovered) == 292
+    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 352
     assert all(not entry.update_supported and entry.update_tag is None for entry in discovered)
 
 
