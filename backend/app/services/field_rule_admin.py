@@ -6,7 +6,7 @@ import re
 from app.models import FieldRule, FieldRuleApplicability, FieldRuleMappingMode, FieldRuleStatus
 from app.repositories import Repository
 from app.services.field_rules import DEFAULT_FIELD_RULES, normalize_name
-from app.services.ftw_field_catalog import field_catalog_entry
+from app.services.ftw_field_catalog import RETIRED_FIELD_RULE_KEYS, field_catalog_entry
 
 
 class FieldRuleValidationError(ValueError):
@@ -30,6 +30,18 @@ class FieldRuleService:
         entry = field_catalog_entry(rule_key)
         return entry.update_tag if entry else None
 
+    @classmethod
+    def apply_catalog_capability(cls, rule: FieldRule) -> FieldRule:
+        """Make the catalog, rather than stale saved behavior, authoritative."""
+        if rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY:
+            return rule
+        if cls.approved_update_tag(rule.key):
+            return rule
+        return rule.model_copy(
+            deep=True,
+            update={"existing_behavior": "Review Only", "new_behavior": "Keep FTW"},
+        )
+
     async def ensure_seeded(self) -> None:
         existing = await self.repository.list_field_rule_versions()
         existing_keys = {rule.key for rule in existing}
@@ -52,35 +64,59 @@ class FieldRuleService:
             )
             await self.repository.save_field_rule_version(seeded)
 
+        # Retire obsolete discovered rules with a new disabled version. This is
+        # idempotent and intentionally retains the complete version history.
+        versions = await self.repository.list_field_rule_versions()
+        for key in RETIRED_FIELD_RULE_KEYS:
+            history = [rule for rule in versions if rule.key == key]
+            if not history:
+                continue
+            latest = max(history, key=lambda item: item.version)
+            if latest.status == FieldRuleStatus.DISABLED:
+                continue
+            retired = latest.model_copy(
+                deep=True,
+                update={
+                    "id": None,
+                    "status": FieldRuleStatus.DISABLED,
+                    "version": latest.version + 1,
+                    "updated_by": "system:migration",
+                    "change_reason": "Retired from the active Field Rules inventory.",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            await self.repository.save_field_rule_version(retired)
+
     async def list_rules(self) -> list[FieldRule]:
         await self.ensure_seeded()
         versions = await self.repository.list_field_rule_versions()
         current: list[FieldRule] = []
-        for key in sorted({rule.key for rule in versions}):
+        for key in sorted({rule.key for rule in versions} - RETIRED_FIELD_RULE_KEYS):
             key_versions = [rule for rule in versions if rule.key == key]
             published = next((rule for rule in key_versions if rule.status == FieldRuleStatus.PUBLISHED), None)
             draft = next((rule for rule in key_versions if rule.status == FieldRuleStatus.DRAFT), None)
             disabled = next((rule for rule in key_versions if rule.status == FieldRuleStatus.DISABLED), None)
             if disabled and (not published or disabled.version >= published.version):
-                current.append(disabled)
+                current.append(self.apply_catalog_capability(disabled))
                 continue
             if published:
-                current.append(published)
+                current.append(self.apply_catalog_capability(published))
             if draft and (not published or draft.version > published.version):
-                current.append(draft)
+                current.append(self.apply_catalog_capability(draft))
         return sorted(current, key=lambda item: (item.order, item.form_section or item.source, item.label))
 
     async def published_rules(self) -> list[FieldRule]:
         await self.ensure_seeded()
         versions = await self.repository.list_field_rule_versions()
         published: list[FieldRule] = []
-        for key in sorted({rule.key for rule in versions}):
+        for key in sorted({rule.key for rule in versions} - RETIRED_FIELD_RULE_KEYS):
             candidates = [rule for rule in versions if rule.key == key and rule.status == FieldRuleStatus.PUBLISHED]
             disabled = [rule for rule in versions if rule.key == key and rule.status == FieldRuleStatus.DISABLED]
             latest = max(candidates, key=lambda item: item.version, default=None)
             latest_disabled = max(disabled, key=lambda item: item.version, default=None)
             if latest and (not latest_disabled or latest.version > latest_disabled.version):
-                published.append(latest)
+                published.append(self.apply_catalog_capability(latest))
         return sorted(published, key=lambda item: (item.order, item.form_section or item.source, item.label))
 
     async def published_snapshot(self) -> PublishedRuleSnapshot:
@@ -186,6 +222,8 @@ class FieldRuleService:
 
     async def validate(self, rule: FieldRule, *, ignore_record_id: str | None = None) -> list[str]:
         errors: list[str] = []
+        if rule.key in RETIRED_FIELD_RULE_KEYS:
+            errors.append("This field has been retired from the active Field Rules inventory.")
         if not re.fullmatch(r"[a-z0-9_]+", rule.key.strip()):
             errors.append("Stable rule key must use lowercase letters, numbers, and underscores only.")
         if not rule.label.strip():
