@@ -1476,6 +1476,12 @@ function WorkflowScheduleSelect({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const scoredCandidates = candidates
+    .map((candidate) => textValue(candidate.score))
+    .filter(Boolean)
+    .map(Number)
+    .filter(Number.isFinite);
+  const topScore = scoredCandidates.length ? Math.max(...scoredCandidates) : null;
   const selectedCandidate = selectedIndex === "" ? null : candidates[Number(selectedIndex)] || null;
   const selectedLabel = selectedCandidate
     ? [
@@ -1526,11 +1532,15 @@ function WorkflowScheduleSelect({
             const carrier = textValue(candidate.carrier) || textValue(candidate.description) || "Schedule A";
             const contract = textValue(candidate.contract);
             const sequence = textValue(candidate.ftw_seq_no);
+            const score = textValue(candidate.score);
+            const numericScore = score ? Number(score) : null;
+            const recommended = topScore === null ? index === 0 : numericScore === topScore && topScore > 0;
+            const hasCurrentData = candidate.has_current_data === true;
             const selected = selectedIndex === String(index);
             return (
               <button
                 aria-selected={selected}
-                className={selected ? "selected" : ""}
+                className={[selected ? "selected" : "", recommended ? "recommended" : ""].filter(Boolean).join(" ")}
                 key={sequence || `${carrier}-${index}`}
                 onClick={() => {
                   onChange(String(index));
@@ -1539,11 +1549,21 @@ function WorkflowScheduleSelect({
                 role="option"
                 type="button"
               >
-                <span>
-                  <strong>{carrier}</strong>
+                <span className="workflow-schedule-candidate-copy">
+                  <span className="workflow-schedule-candidate-heading">
+                    <strong>{carrier}</strong>
+                    {recommended ? <span className="workflow-schedule-recommended"><Sparkles aria-hidden="true" size={10} /> Recommended</span> : null}
+                  </span>
                   <small>{[contract && `Contract ${contract}`, sequence && `Seq ${sequence}`].filter(Boolean).join(" · ") || "Schedule details unavailable"}</small>
+                  <span className="workflow-schedule-candidate-meta">
+                    <span className={hasCurrentData ? "loaded" : "unavailable"}>
+                      {hasCurrentData ? <CheckCircle2 aria-hidden="true" size={11} /> : <AlertTriangle aria-hidden="true" size={11} />}
+                      {hasCurrentData ? "Current data loaded" : "Details unavailable"}
+                    </span>
+                    {score ? <span className="score">Match score {score}</span> : null}
+                  </span>
                 </span>
-                {selected ? <Check size={15} /> : null}
+                {selected ? <span className="workflow-schedule-selected"><Check aria-hidden="true" size={14} /></span> : null}
               </button>
             );
           })}
