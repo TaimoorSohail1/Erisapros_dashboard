@@ -118,8 +118,43 @@ assert.match(
 );
 assert.match(
   source,
-  /const displayStatus = \(filing\.status \|\| "UPLOADED"\)\.replaceAll\("_", " "\);/,
+  /const status = filing\.status \|\| "UPLOADED";\s*const displayStatus = status\.replaceAll\("_", " "\);/,
   "Processing state must tolerate older filing payloads without a status value.",
+);
+assert.match(
+  source,
+  /isProcessing && !fields\.length \? \(\s*<ProcessingPanel filing=\{filing\} \/>\s*\) : filing\.status === "FAILED"[\s\S]*?<section className="approval-decision-table-shell approval-preview-shell"/,
+  "The empty review workspace must be replaced by the dedicated progress experience while extraction is running.",
+);
+assert.match(
+  source,
+  /<section className="extraction-progress-shell card" role="status" aria-live="polite"/,
+  "Extraction progress must be announced accessibly without interrupting the user.",
+);
+assert.match(
+  source,
+  /File received[\s\S]*Reading documents[\s\S]*Matching filing fields[\s\S]*Preparing review/,
+  "The extraction experience must explain the full customer-facing processing journey.",
+);
+assert.match(
+  source,
+  /You can safely leave this page/,
+  "The progress experience must reassure users that processing continues in the background.",
+);
+assert.match(
+  source,
+  /filing\.status === "FAILED" && !fields\.length \? \(\s*<ExtractionFailurePanel/,
+  "A failed extraction without review fields must replace the empty workspace with a recovery experience.",
+);
+assert.match(
+  source,
+  /function ExtractionFailurePanel[\s\S]*?role="alert"[\s\S]*?onClick=\{onRetry\}[\s\S]*?Try extraction again/,
+  "The extraction failure state must offer a clear retry action.",
+);
+assert.doesNotMatch(
+  source,
+  /This page refreshes automatically from MongoDB/,
+  "Customer-facing progress copy must not expose internal database implementation details.",
 );
 assert.match(
   source,
@@ -285,6 +320,31 @@ assert.match(
   "The Schedule A listbox must stay inside the modal and scroll internally.",
 );
 assert.doesNotMatch(styles, /\.workflow-dialog\s*\{[^}]*overflow:\s*visible;/, "Workflow dialogs must contain their controls and decoration.");
+assert.match(
+  styles,
+  /\.extraction-progress-shell\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/,
+  "The extraction progress screen must fill the available review viewport without creating page overflow.",
+);
+assert.match(
+  styles,
+  /\.extraction-progress-stages\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);/,
+  "Desktop extraction progress must present the processing stages as one readable journey.",
+);
+assert.match(
+  styles,
+  /@media \(max-width:\s*720px\)[\s\S]*?\.extraction-progress-stages\s*\{[^}]*grid-template-columns:\s*1fr;/,
+  "Extraction stages must stack cleanly on small screens.",
+);
+assert.match(
+  styles,
+  /@media \(max-width:\s*720px\)[\s\S]*?\.approval-workspace-page \.approval-workspace\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;/,
+  "The mobile workflow scroller must not force the extraction screen wider than the viewport.",
+);
+assert.match(
+  styles,
+  /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.extraction-progress-spinner/,
+  "Extraction animations must respect reduced-motion preferences.",
+);
 assert.match(
   styles,
   /\.workflow-review-panel > header strong\s*\{[^}]*font-size:\s*14px;/,
