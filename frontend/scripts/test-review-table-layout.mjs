@@ -51,8 +51,13 @@ assert.match(
 );
 assert.match(
   source,
-  /approvalReady=\{!scheduleSelectionRequired && actionRequiredRows\.length === 0\}/,
-  "Approval must stay hidden until Schedule A selection and field decisions are complete.",
+  /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
+  "Approval must remain available with unresolved fields once processing and Schedule A selection are complete.",
+);
+assert.match(
+  source,
+  /hasBlockers=\{actionRequiredRows\.length > 0\}/,
+  "The approval confirmation must warn whenever unresolved fields remain.",
 );
 assert.match(
   source,
@@ -68,6 +73,51 @@ assert.match(
   source,
   /function FTWVerificationSummary/,
   "FT Williams send results must show verified and remaining field counts.",
+);
+assert.match(
+  source,
+  /if \(row\.extractedField\?\.status === "EDITED"\) return false;/,
+  "A reviewer-confirmed field must immediately leave the Action Required count.",
+);
+assert.match(
+  source,
+  /const needsDecisionRows = reviewRows\.filter\(\(row\) => row\.group === "NEEDS_DECISION" && isActionRequiredRow\(row\)\);/,
+  "Approval summaries must not count reviewer-confirmed decisions as unresolved.",
+);
+assert.match(
+  source,
+  /\(filing\.jobs \|\| \[\]\)\.map/,
+  "Older filing payloads without processing jobs must not crash the review page.",
+);
+assert.match(
+  source,
+  /\(filing\.audit_logs \|\| \[\]\)\.map/,
+  "Older filing payloads without audit logs must not crash the review page.",
+);
+assert.match(
+  source,
+  /const latestJob = \(filing\.jobs \|\| \[\]\)\[0\];/,
+  "Processing state must tolerate filing payloads without a jobs array.",
+);
+assert.match(
+  source,
+  /const displayStatus = \(filing\.status \|\| "UPLOADED"\)\.replaceAll\("_", " "\);/,
+  "Processing state must tolerate older filing payloads without a status value.",
+);
+assert.match(
+  source,
+  /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
+  "Approval must remain unavailable while processing is running or Schedule A selection is unresolved.",
+);
+assert.match(
+  source,
+  /title = "Document processing is in progress";/,
+  "Processing guidance must take priority over approval-ready messaging.",
+);
+assert.doesNotMatch(
+  source,
+  /filing\.fields\.length|filing\.jobs\[0\]/,
+  "Optional filing arrays must not be dereferenced without safe defaults.",
 );
 assert.match(
   source,

@@ -207,13 +207,13 @@ export function FilingReviewPage() {
     [fields, filing?.ftw_review, reviewRows, scheduleAContractType, showExcludedFields],
   );
   const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
-  const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION");
+  const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" && isActionRequiredRow(row));
   const willUpdateRows = reviewRows.filter((row) => row.group === "WILL_UPDATE");
   const sameRows = reviewRows.filter((row) => row.group === "SAME");
   const missingRows = reviewRows.filter((row) => row.group === "MISSING");
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
   const actionRequiredRows = reviewRows.filter(isActionRequiredRow);
-  const approvalBlockerRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" || (row.group === "MISSING" && row.priority === "HIGH"));
+  const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return visibleReviewRows.filter((row) => {
@@ -717,6 +717,7 @@ export function FilingReviewPage() {
           clientError={clientError || filingClientError}
           filingStatus={filing.status}
           ftwReadyToSend={ftwReadyToSend}
+          isProcessing={isProcessing}
           missingHighCount={missingHigh.length}
           scheduleSelectionRequired={scheduleSelectionRequired}
           actions={bringForwardRequired ? (
@@ -783,7 +784,7 @@ export function FilingReviewPage() {
               </div>
               <ReviewPrimaryActions
                 approvalBlocked={approvalBlocked}
-                approvalReady={!scheduleSelectionRequired && actionRequiredRows.length === 0}
+                approvalReady={!isProcessing && !scheduleSelectionRequired}
                 busy={reviewInteractionBusy}
                 decisionAction={decisionAction}
                 filingStatus={filing.status}
@@ -887,7 +888,12 @@ export function FilingReviewPage() {
             <ReadinessStep done label="Filing year confirmed" detail={lookup?.year || filing.ftw_review?.year || "Pending"} />
             <ReadinessStep done={Boolean(lookup?.status === "MATCHED" || filing.ftw_review?.customer_id || filing.ftw_review?.ftw_customer_id)} label="FTW plan matched" detail={lookup?.company_employer_id && lookup?.plan_number ? `${lookup.company_employer_id} / ${lookup.plan_number}` : "Needs FTW lookup"} />
             <ReadinessStep done={Boolean(filing.ftw_review?.schedule_a_match)} label="Schedule A selected" detail={scheduleMatch} />
-            <ReadinessStep done={!approvalBlocked} active={approvalBlocked} label="Fields reviewed" detail={approvalBlocked ? `${actionRequiredRows.length} require attention` : "No blockers"} />
+            <ReadinessStep
+              done={actionRequiredRows.length === 0}
+              active={actionRequiredRows.length > 0}
+              label="Fields reviewed"
+              detail={actionRequiredRows.length ? `${actionRequiredRows.length} unresolved — approval allowed with confirmation` : "No unresolved fields"}
+            />
             <ReadinessStep done={Boolean(filing.proposed_xml)} label="XML preview ready" detail={filing.proposed_xml ? "Prepared from proposed values" : "Generate after extraction"} />
             <ReadinessStep done={ftwReadyToSend && !ftwFailed} failed={ftwFailed} locked={!ftwReadyToSend && !ftwFailed} label="Send to FT Williams" detail={bringForwardRequired ? "Bring Forward required" : ftwFailed ? "Review the FT Williams issue above" : ftwReadyToSend ? "Unlocked" : sendLockReason(filing, form5500SafetyReady, scheduleASafetyReady, ftwCurrentLoaded)} />
           </section>
@@ -937,21 +943,21 @@ export function FilingReviewPage() {
                 <span><ChevronDown size={16} /> Processing Logs</span>
               </summary>
               <div className="audit-log-list">
-                {filing.jobs.map((job) => (
+                {(filing.jobs || []).map((job) => (
                   <div key={job.id} className="audit-log-row">
                     <strong>{job.status.replaceAll("_", " ")}</strong>
                     <span>{job.provider} attempt {job.attempts || 0}/{job.max_attempts}</span>
                     {job.last_error ? <small>{job.last_error}</small> : null}
                   </div>
                 ))}
-                {filing.audit_logs.map((log) => (
+                {(filing.audit_logs || []).map((log) => (
                   <div key={log.id} className="audit-log-row">
                     <strong>{log.event.replaceAll("_", " ")}</strong>
                     <span>{log.message}</span>
                     <small>{formatDate(log.created_at)}</small>
                   </div>
                 ))}
-                {!filing.jobs.length && !filing.audit_logs.length ? <p className="subtle">No logs yet.</p> : null}
+                {!(filing.jobs || []).length && !(filing.audit_logs || []).length ? <p className="subtle">No logs yet.</p> : null}
               </div>
             </details>
 
@@ -988,7 +994,7 @@ export function FilingReviewPage() {
             willKeepFtw: sameRows.length,
             willUpdate: willUpdateRows.length,
           }}
-          hasBlockers={approvalBlocked}
+          hasBlockers={actionRequiredRows.length > 0}
           unresolvedRows={approvalBlockerRows}
           onApprove={approveAnyway}
           onClose={() => setShowApproveConfirm(false)}
@@ -1130,7 +1136,7 @@ function reviewChangeSignature(filing: FilingDetail) {
   return [
     filing.status,
     filing.updated_at,
-    filing.fields.length,
+    (filing.fields || []).length,
     filing.missing_high_priority_count,
     filing.missing_medium_priority_count,
     filing.missing_low_priority_count,
@@ -1186,16 +1192,17 @@ function WorkflowStepper({
   ftwReadyToSend: boolean;
   needsDecisionCount: number;
 }) {
+  const processing = isProcessingStatus(filing.status ?? "UPLOADED") && !(filing.fields || []).length;
   const ftwQuerying = filing.status === "QUERYING_FTW_CURRENT";
   const ftwLoaded = Boolean(filing.ftw_review?.current_query_success);
   const approved = filing.status === "APPROVED";
   const updateSent = filing.ftw_review?.status === "UPDATE_SENT";
   const steps = [
     { label: "Intake", detail: "Package received", state: "done" },
-    { label: "Extraction", detail: filing.extraction_provider || "Waiting", state: filing.fields.length ? "done" : "pending" },
+    { label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
     { label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
-    { label: "Review", detail: needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: needsDecisionCount ? "active" : "done" },
-    { label: "Approval", detail: approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: approved ? "done" : needsDecisionCount ? "active" : "active" },
+    { label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
+    { label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : needsDecisionCount ? "active" : "active" },
     { label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
   ];
   const currentStep = steps.find((step) => step.state === "active") || steps.find((step) => step.state === "pending") || steps[steps.length - 1];
@@ -1233,6 +1240,7 @@ function FilingGuidancePanel({
   clientError,
   filingStatus,
   ftwReadyToSend,
+  isProcessing,
   missingHighCount,
   scheduleSelectionRequired,
 }: {
@@ -1243,6 +1251,7 @@ function FilingGuidancePanel({
   clientError: ClientFacingError | null;
   filingStatus: string;
   ftwReadyToSend: boolean;
+  isProcessing: boolean;
   missingHighCount: number;
   scheduleSelectionRequired: boolean;
 }) {
@@ -1252,7 +1261,13 @@ function FilingGuidancePanel({
   let nextAction = "No blocking field issues remain.";
   let tone = "ready";
 
-  if (bringForwardRequired) {
+  if (isProcessing) {
+    source = "Extraction";
+    title = "Document processing is in progress";
+    message = "The uploaded documents are being extracted and matched to field rules.";
+    nextAction = "This page refreshes automatically when the review is ready.";
+    tone = "ready";
+  } else if (bringForwardRequired) {
     source = "FT Williams";
     title = "Current-year FT Williams record is missing";
     message = "Use Bring Forward for this plan in FT Williams, then refresh the current data here.";
@@ -1273,7 +1288,7 @@ function FilingGuidancePanel({
   } else if (approvalBlocked) {
     title = `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`;
     message = `${missingHighCount} high-priority field${missingHighCount === 1 ? " is" : "s are"} missing or unresolved.`;
-    nextAction = "Resolve the highlighted fields before approving.";
+    nextAction = "Review them now, or approve with the confirmation override.";
     tone = "warning";
   } else if (filingStatus === "APPROVED" && ftwReadyToSend) {
     source = "FT Williams";
@@ -2695,8 +2710,9 @@ function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField) {
 }
 
 function isActionRequiredRow(row: ReviewDecisionRow) {
+  if (row.failedByFtw) return true;
+  if (row.extractedField?.status === "EDITED") return false;
   return Boolean(
-    row.failedByFtw ||
     row.group === "NEEDS_DECISION" ||
     row.group === "LOW_CONFIDENCE" ||
     (row.group === "MISSING" && row.priority === "HIGH")
@@ -2992,14 +3008,15 @@ function SelectFilter({ label, value, options, onChange }: { label: string; valu
 }
 
 function ProcessingPanel({ filing }: { filing: FilingDetail }) {
-  const latestJob = filing.jobs[0];
+  const latestJob = (filing.jobs || [])[0];
+  const displayStatus = (filing.status || "UPLOADED").replaceAll("_", " ");
   return (
     <section className="processing-panel card">
       <RefreshCw size={20} />
       <div>
         <h2>Extraction Is Running</h2>
         <p>
-          Current status: <strong>{filing.status.replaceAll("_", " ")}</strong>
+          Current status: <strong>{displayStatus}</strong>
           {latestJob ? ` / ${latestJob.status.replaceAll("_", " ")}` : ""}. This page refreshes automatically from MongoDB.
         </p>
       </div>

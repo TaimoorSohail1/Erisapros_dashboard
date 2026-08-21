@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     groundx_api_base_url: str = "https://api.groundx.ai/api/v1"
     groundx_poll_seconds: float = 3
     groundx_max_wait_seconds: int = 90
+    # Browser requests pass through CloudFront, whose origin response timeout is
+    # 60 seconds. Keep interactive field-rule QA below that boundary and fall
+    # back to the deterministic document parser when GroundX is still working.
+    field_rule_qa_timeout_seconds: float = 45
     allow_pdf_text_fallback: bool = False
     low_confidence_threshold: float = 0.8
 

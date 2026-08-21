@@ -112,6 +112,7 @@ async def qa_field_rule_extraction(
             document_type,
             snapshot.rules,
             rule_set_version=snapshot.version,
+            qa_timeout_seconds=get_settings().field_rule_qa_timeout_seconds,
         )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Extraction QA could not read this document: {exc}") from exc

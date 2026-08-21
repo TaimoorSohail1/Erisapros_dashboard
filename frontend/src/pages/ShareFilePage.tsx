@@ -35,7 +35,9 @@ export function ShareFilePage() {
       const result = await syncShareFileFolder();
       setSyncResult(
         {
-          message: `${result.message} Found ${result.found ?? 0}, supported ${result.supported ?? 0}, packages ${result.packages ?? 0}, synced ${result.synced ?? 0}, skipped ${result.skipped ?? 0}, failed ${result.failed ?? 0}.`,
+          message: result.queued
+            ? "ShareFile scan started. New filings will appear automatically when background processing finishes."
+            : result.message,
           roots: result.scan_roots,
           errors: result.scan_errors,
         }

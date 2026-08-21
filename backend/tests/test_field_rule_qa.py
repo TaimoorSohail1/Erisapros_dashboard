@@ -35,6 +35,13 @@ class FakeExtractor:
         )
 
 
+class SlowExtractor:
+    async def extract_document(self, file_bytes, file_name, document_type):
+        del file_bytes, file_name, document_type
+        await asyncio.sleep(0.1)
+        return NormalizedExtractionResult(provider="Too late", fields=[])
+
+
 class FieldRuleQATests(unittest.TestCase):
     def setUp(self):
         repositories._repository = repositories.MemoryRepository()
@@ -174,6 +181,39 @@ class FieldRuleQATests(unittest.TestCase):
         self.assertEqual(result["fields"][0]["ftw_field"], rule.ftw_field)
         self.assertIsNone(result["fields"][0]["ftw_tag"])
         self.assertFalse(result["fields"][0]["will_send_to_ftw"])
+
+    def test_schedule_a_qa_falls_back_before_the_browser_request_times_out(self):
+        rule = FieldRule(
+            key="schedule_a_part_i_1c_naic_code",
+            label="1c. NAIC Code",
+            ftw_field="1c. NAIC Code",
+            xml_tag="InsCarrierNAICCode",
+            mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Part I",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["QA Carrier Registry Number"],
+        )
+
+        result = asyncio.run(
+            run_field_rule_qa(
+                b"QA Carrier Registry Number: 98765\n",
+                "carrier-sample.txt",
+                DocumentType.SCHEDULE_A,
+                [rule],
+                extractor=SlowExtractor(),
+                rule_set_version="qa-version",
+                qa_timeout_seconds=0.01,
+            )
+        )
+
+        self.assertIn("GroundX QA timeout", result["provider"])
+        self.assertEqual(result["summary"]["matched"], 1)
+        self.assertEqual(result["fields"][0]["mapped_rule_key"], rule.key)
+        self.assertEqual(result["fields"][0]["value"], "98765")
 
 
 if __name__ == "__main__":

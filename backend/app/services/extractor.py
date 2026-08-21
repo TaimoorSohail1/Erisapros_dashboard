@@ -653,34 +653,87 @@ def dedupe_fields(fields: list[NormalizedExtractionField]) -> list[NormalizedExt
     return list(best.values())
 
 
+def is_obvious_template_placeholder(value: Any) -> bool:
+    """Reject sample-form filler without rejecting legitimate long identifiers."""
+    clean = re.sub(r"\s+", "", clean_extracted_value(str(value or ""))).upper()
+    if not clean:
+        return False
+    if clean.count("ABCDEFGHI") >= 2:
+        return True
+    if clean in {"ABCDE", "ABCDEFGHI", "ABCDEFGHIJ"}:
+        return True
+    return clean.lstrip("-") in {
+        "0123456789",
+        "1234567890",
+        "123456789012345",
+        "0123456789012345",
+    }
+
+
+def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> list[NormalizedExtractionField]:
+    """Return one trustworthy value per dashboard field.
+
+    The dashboard and FT Williams mapping model each rule as one value. PDF
+    templates can expose both sample-layer filler and the completed overlay;
+    keeping every conflicting value created false review/update rows.
+    """
+    best: dict[str, NormalizedExtractionField] = {}
+    order: list[str] = []
+    for field in fields:
+        if (
+            is_blank_extraction_value(field.value)
+            or is_obvious_template_placeholder(field.value)
+            or _is_column_heading_broker_name(field)
+        ):
+            continue
+        key = field.field_name.strip().lower()
+        current = best.get(key)
+        if current is None:
+            order.append(key)
+        # Later specialized parsers win a confidence tie over broad OCR regexes.
+        if current is None or field.confidence >= current.confidence:
+            best[key] = field
+    return [best[key] for key in order]
+
+
 def merge_schedule_a_fields(
     primary_fields: list[NormalizedExtractionField],
     pdf_text_fields: list[NormalizedExtractionField],
 ) -> list[NormalizedExtractionField]:
     if not pdf_text_fields:
-        return dedupe_fields(primary_fields)
+        return select_best_schedule_a_fields(primary_fields)
 
     def _has_usable_value(field: NormalizedExtractionField) -> bool:
         value = (field.value or "").strip()
-        return bool(value) and value.lower() not in {"n/a", "na", "none", "null", "-", "unknown", "not found"}
+        if not value or is_blank_extraction_value(value):
+            return False
+        if field.field_name == "1d. Contract/Policy Number":
+            return is_valid_contract_identifier(value, allow_numeric=True)
+        return True
 
-    # AI-extracted (primary) values win. Local PDF-text parsing is used only to
-    # fill fields the primary extractor did not return a usable value for.
-    primary_named = {field.field_name for field in primary_fields if _has_usable_value(field)}
+    # Specialized PDF parsers are authoritative for the stable Schedule A
+    # table fields. For other fields, keep a single usable AI value and use the
+    # document parser when AI produced no value or conflicting values.
+    usable_primary_by_name: dict[str, list[NormalizedExtractionField]] = {}
+    for field in primary_fields:
+        if _has_usable_value(field):
+            usable_primary_by_name.setdefault(field.field_name, []).append(field)
     merged: list[NormalizedExtractionField] = list(primary_fields)
     existing_names = {field.field_name for field in merged}
     for field in pdf_text_fields:
-        if field.field_name in primary_named:
-            continue
-        if field.field_name in existing_names and field.field_name not in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS:
+        usable_primary = usable_primary_by_name.get(field.field_name, [])
+        distinct_primary_values = {clean_extracted_value(item.value).lower() for item in usable_primary}
+        prefer_document_value = field.field_name in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS
+        if not prefer_document_value and len(distinct_primary_values) == 1:
             continue
         if field.field_name in existing_names:
-            # Primary returned the field but with no usable value - replace it.
+            # Replace invalid/conflicting AI values, or an AI value for a field
+            # that has a reliable format-specific document parser.
             merged = [f for f in merged if f.field_name != field.field_name]
         merged.append(field)
         existing_names.add(field.field_name)
 
-    return dedupe_fields(merged)
+    return select_best_schedule_a_fields(merged)
 
 
 def is_groundx_search_payload(payload: Any) -> bool:
@@ -979,9 +1032,27 @@ def is_xray_label_or_header(path: str, value: Any) -> bool:
 
 def is_blank_extraction_value(value: Any) -> bool:
     text = str(value or "").strip().lower()
-    if text in {"", "missing", "unreadable", "blank", "none", "null", "obscured", "not provided", "not shown", "not visible", "redacted"}:
+    if text in {
+        "",
+        "missing",
+        "unreadable",
+        "blank",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "unknown",
+        "not found",
+        "obscured",
+        "not provided",
+        "not shown",
+        "not visible",
+        "redacted",
+    }:
         return True
-    return any(marker in text for marker in ["obscured", "redaction", "redacted", "not visible", "unreadable"])
+    return is_obvious_template_placeholder(value) or any(
+        marker in text for marker in ["obscured", "redaction", "redacted", "not visible", "unreadable"]
+    )
 
 
 def looks_like_ein(value: Any) -> bool:
@@ -1000,7 +1071,7 @@ def looks_like_org_code(value: Any) -> bool:
 def is_probable_carrier_name(value: Any) -> bool:
     clean = clean_extracted_value(str(value or ""))
     lower = clean.lower()
-    if not clean or looks_like_ein(clean) or looks_like_numeric_or_code(clean):
+    if not clean or is_obvious_template_placeholder(clean) or looks_like_ein(clean) or looks_like_numeric_or_code(clean):
         return False
     if lower in {"name of insurance carrier", "name of insurance company", "insurance carrier", "carrier name"}:
         return False
@@ -1012,7 +1083,7 @@ def is_probable_carrier_name(value: Any) -> bool:
 def is_probable_person_or_entity_name(value: Any) -> bool:
     clean = clean_extracted_value(str(value or ""))
     lower = clean.lower()
-    if not clean or looks_like_numeric_or_code(clean):
+    if not clean or is_obvious_template_placeholder(clean) or looks_like_numeric_or_code(clean):
         return False
     if lower in {
         "name",
@@ -1507,7 +1578,7 @@ def extract_fields_from_document_text(
         *(extract_email_schedule_a_fields(pages) if str(file_name or "").lower().endswith("email body.txt") else []),
         *schedule_a_broker_compensation_fields(extract_tabular_broker_rows(pages)),
     ]
-    return dedupe_fields(fields)
+    return select_best_schedule_a_fields(fields)
 
 
 def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
@@ -1737,6 +1808,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields: list[NormalizedExtractionField] = []
     for index, text in page_texts:
         fields.extend(parse_schedule_a_text(text, index, rules=rules))
+        fields.extend(extract_explicit_benefit_indicator_fields(text, index, rules=rules))
         fields.extend(extract_bcbsma_schedule_a_worksheet_fields(text, index))
     fields.extend(extract_bcbs_michigan_schedule_a_fields(page_texts))
     fields.extend(extract_prudential_schedule_a_fields(page_texts))
@@ -1753,7 +1825,74 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     # this the amounts were parsed and then thrown away.
     fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
     fields.extend(extract_commission_fee_total_fields(page_texts))
-    return dedupe_fields([field for field in fields if not _is_column_heading_broker_name(field)])
+    return dedupe_fields(
+        [
+            field
+            for field in fields
+            if not _is_column_heading_broker_name(field)
+            and not is_obvious_template_placeholder(field.value)
+        ]
+    )
+
+
+def extract_explicit_benefit_indicator_fields(
+    text: str,
+    page: int | None = None,
+    *,
+    rules=None,
+) -> list[NormalizedExtractionField]:
+    """Map explicit benefit evidence to discovered FTW comparison fields.
+
+    Merely printing the word "Vision" on a blank IRS form is not evidence. We
+    accept a completed benefit summary, an explicit insurance/coverage phrase,
+    or a checked label. Checkbox evidence is ignored on obvious sample forms.
+    """
+    if not rules:
+        return []
+    normalized = normalize_ocr_text(text)
+    placeholder_heavy = len(re.findall(r"ABCDEFGHI|123456789012345", normalized, flags=re.IGNORECASE)) >= 2
+    fields: list[NormalizedExtractionField] = []
+    for rule in rules:
+        tag = str(rule.xml_tag or "").strip().lower()
+        if tag not in {"healthind", "visionind"}:
+            continue
+        aliases = [rule.label, *rule.aliases]
+        matched_source: str | None = None
+        matched_value = "Yes"
+        for alias in sorted({alias.strip() for alias in aliases if alias.strip()}, key=len, reverse=True):
+            token = loose_label_pattern(alias)
+            if not placeholder_heavy:
+                checkbox = re.search(
+                    rf"(?im)(?:\([A-M]\)\s*)?\[\s*(?P<mark>[Xx]?)\s*\]\s*{token}\b",
+                    normalized,
+                )
+                if checkbox:
+                    matched_source = checkbox.group(0).strip()
+                    matched_value = "Yes" if checkbox.group("mark") else "No"
+                    break
+            patterns = [
+                rf"(?im)^\s*Benefits?\s*:\s*[^\n]*\b{token}\b[^\n]*$",
+                rf"(?i)\b{token}\s+(?:insurance|coverage|benefit)\b",
+                rf"(?i)\b{token}\s+plan\b",
+                rf"(?i)\b(?:type\s+of\s+benefit|benefit\s+type)\s*:?\s*{token}\b",
+            ]
+            if not placeholder_heavy:
+                patterns.append(rf"(?im)^\s*(?:X|✓|☑)\s*{token}\b")
+            match = next((match for pattern in patterns if (match := re.search(pattern, normalized))), None)
+            if match:
+                matched_source = match.group(0).strip()
+                break
+        if matched_source:
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=rule.label,
+                    value=matched_value,
+                    confidence=0.9,
+                    page=page,
+                    source_text=matched_source,
+                )
+            )
+    return fields
 
 
 _BROKER_HEADING_TOKENS = (
@@ -4172,6 +4311,16 @@ def extract_table_contract_identifier(text: str) -> str | None:
 
 
 def extract_table_covered_persons(text: str) -> str | None:
+    worksheet_total = re.search(
+        r"\bTotal\s*\(E\)\s*([0-9][0-9,]*)\b.{0,160}?"
+        r"(?:Approx\.?\s+no\.?\s+of\s+Persons\s+cov\.?|Persons\s+covered)"
+        r".{0,100}?End\s+of\s+Policy\s+Year",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if worksheet_total:
+        return worksheet_total.group(1)
+
     flattened_match = re.search(
         r"NAIC\s+Code:.*?Listing\s*([0-9][0-9,]*)\s*[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}",
         text,
@@ -4203,6 +4352,14 @@ def extract_table_policy_dates(text: str) -> tuple[str, str] | None:
     )
     if match:
         return normalize_schedule_a_date(match.group(1), end_of_month=False), normalize_schedule_a_date(match.group(2), end_of_month=True)
+    worksheet_match = re.search(
+        r"\(F\)\s*From\s*\(F\)\s*([0-9]{4}-[0-9]{2}-[0-9]{2}).*?"
+        r"\(G\)\s*To\s*\(G\)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if worksheet_match:
+        return normalize_schedule_a_date(worksheet_match.group(1), end_of_month=False), normalize_schedule_a_date(worksheet_match.group(2), end_of_month=True)
     return None
 
 
@@ -4404,7 +4561,7 @@ def extract_configured_custom_fields(
     normalized_text = normalize_ocr_text(text)
     fields: list[NormalizedExtractionField] = []
     for rule in rules:
-        if rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY:
+        if rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY and not rule.key.startswith("ftw_discovered_"):
             continue
         labels = rule_labels(rule.label, rules=rules)
         for label in sorted(labels, key=len, reverse=True):
@@ -4502,6 +4659,10 @@ def extract_contract_year_range(text: str) -> tuple[str, str] | None:
 
 def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
     text = str(value or "").strip()
+    iso_match = re.fullmatch(r"(20\d{2})-(\d{2})-(\d{2})", text)
+    if iso_match:
+        year, month, day = (int(part) for part in iso_match.groups())
+        return f"{month:02d}/{day:02d}/{year}"
     parts = text.split("/")
     if len(parts) == 2:
         month = int(parts[0])

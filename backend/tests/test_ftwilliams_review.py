@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService
-from app.services.ftwilliams_tags import resolve_ftw_tag
+from app.services.ftwilliams_tags import resolve_ftw_tag, values_meaningfully_different
 from app.services.xml_builder import build_proposed_ftw_xml, build_single_document_update_xml
 
 
@@ -993,6 +993,11 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_zero_one_schedule_a_indicators_compare_to_yes_no_values(self) -> None:
+        self.assertFalse(values_meaningfully_different("1", "Yes", tag="HealthInd"))
+        self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
+        self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
+
     def setUp(self):
         repositories._repository = repositories.MemoryRepository()
 

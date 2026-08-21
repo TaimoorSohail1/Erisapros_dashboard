@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType
+from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField
 from app.services.extractor import (
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
@@ -13,6 +13,7 @@ from app.services.extractor import (
     extract_eyemed_broker_rows,
     extract_eyemed_schedule_a_fields,
     extract_eyemed_schedule_a_summaries,
+    extract_explicit_benefit_indicator_fields,
     extract_fields_from_groundx_xray,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
@@ -31,6 +32,9 @@ from app.services.extractor import (
     extract_united_omaha_schedule_a_records,
     extract_united_omaha_schedule_a_summaries,
     build_groundx_schema_query,
+    extract_fields_from_document_text,
+    is_obvious_template_placeholder,
+    merge_schedule_a_fields,
     parse_schedule_a_text,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
@@ -40,6 +44,137 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_equitable_schedule_a_worksheet_extracts_coverage_period_and_checkbox_no_values(self):
+        health_rule = FieldRule(
+            key="ftw_discovered_schedule_a_health_ind",
+            label="Health Indicator",
+            ftw_field="Health Indicator",
+            xml_tag="HealthInd",
+            mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Discovered FTW fields",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["Health"],
+        )
+        vision_rule = health_rule.model_copy(
+            update={
+                "key": "ftw_discovered_schedule_a_vision_ind",
+                "label": "Vision Indicator",
+                "ftw_field": "Vision Indicator",
+                "xml_tag": "VisionInd",
+                "aliases": ["Vision"],
+            }
+        )
+        text = """
+        Schedule A (Form5500)Worksheet
+        (D) Contract or ID Number 011335 Total (E) 279 Combined Numbers
+        Approx. no. of Persons cov. At End of Policy Year Employees
+        (E) Policy or Contract Year (F) From (F) 2023-10-01 (G) To (G) 2024-09-30
+        Section 8: Benefit and Contract Type
+        (A) [] Health (other than dental or vision) (C) [] Vision (D) [X] Life Ins.
+        """
+
+        fields = parse_schedule_a_text(text, rules=[health_rule, vision_rule])
+        fields.extend(
+            extract_explicit_benefit_indicator_fields(
+                text,
+                rules=[health_rule, vision_rule],
+            )
+        )
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "279")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "10/01/2023")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "09/30/2024")
+        self.assertEqual(by_name["Health Indicator"], "No")
+        self.assertEqual(by_name["Vision Indicator"], "No")
+
+    def test_obvious_irs_template_placeholders_are_not_real_values(self):
+        self.assertTrue(is_obvious_template_placeholder("ABCDEFGHI ABCDEFGHI ABCDEFGHI"))
+        self.assertTrue(is_obvious_template_placeholder("123456789012345"))
+        self.assertFalse(is_obvious_template_placeholder("Federal Insurance Company"))
+        self.assertFalse(is_obvious_template_placeholder("0927447"))
+
+    def test_local_parser_uses_discovered_ftw_aliases_for_explicit_benefits(self):
+        health_rule = FieldRule(
+            key="ftw_discovered_schedule_a_health_ind",
+            label="Health Indicator",
+            ftw_field="Health Indicator",
+            xml_tag="HealthInd",
+            mapping_mode=FieldRuleMappingMode.FTW_MAPPED,
+            priority="MEDIUM",
+            source="Schedule A",
+            form_section="Schedule A - Discovered FTW fields",
+            field_type="Dynamic",
+            existing_behavior="Review Only",
+            new_behavior="Keep FTW",
+            aliases=["Health", "Medical coverage"],
+        )
+        vision_rule = health_rule.model_copy(
+            update={
+                "key": "ftw_discovered_schedule_a_vision_ind",
+                "label": "Vision Indicator",
+                "ftw_field": "Vision Indicator",
+                "xml_tag": "VisionInd",
+                "aliases": ["Vision", "Eye care"],
+            }
+        )
+
+        fields = extract_fields_from_document_text(
+            b"Benefits: Health, Dental, Vision, Prescription Drug",
+            "schedule-a.txt",
+            rules=[health_rule, vision_rule],
+        )
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(by_name["Health Indicator"], "Yes")
+        self.assertEqual(by_name["Vision Indicator"], "Yes")
+
+    def test_local_parser_keeps_one_best_value_per_schedule_a_field(self):
+        text = """
+        Name of Insurance Carrier: Kaiser Foundation Health Plan, Inc.
+        Total Amount of Commissions Paid: $4,810.38
+        March 12, 2026
+        """
+
+        fields = extract_fields_from_document_text(text.encode(), "schedule-a.txt")
+        names = [field.field_name for field in fields]
+
+        self.assertEqual(names.count("1a. Name of Insurance Company"), 1)
+        self.assertEqual(names.count("3b. Amount of Commissions"), 1)
+
+    def test_merge_replaces_invalid_ai_contract_with_validated_document_value(self):
+        ai_fields = [
+            NormalizedExtractionField(
+                field_name="1d. Contract/Policy Number",
+                value="4",
+                confidence=0.99,
+                page=1,
+            ),
+            NormalizedExtractionField(
+                field_name="1d. Contract/Policy Number",
+                value="10420761002",
+                confidence=0.98,
+                page=1,
+            ),
+        ]
+        document_fields = [
+            NormalizedExtractionField(
+                field_name="1d. Contract/Policy Number",
+                value="1042075/6-1001/1002",
+                confidence=0.92,
+                page=1,
+            )
+        ]
+
+        merged = merge_schedule_a_fields(ai_fields, document_fields)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].value, "1042075/6-1001/1002")
+
     def test_groundx_query_contains_published_aliases_for_the_relevant_form(self):
         custom_alias = "Carrier Registry Number"
         rules = [

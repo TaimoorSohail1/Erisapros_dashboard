@@ -271,6 +271,7 @@ export async function syncShareFileFolder(): Promise<{
   synced: number;
   skipped: number;
   failed: number;
+  queued?: boolean;
   deleted?: number;
   scan_scope?: string;
   scan_roots?: Array<{ id: string; name: string; source: string; path: string }>;

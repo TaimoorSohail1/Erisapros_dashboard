@@ -196,6 +196,29 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(self.service._client_name_for(schedule_a), "Housing Counseling Services")
         self.assertEqual(self.service._filing_year_for(schedule_a), "2025")
 
+    def test_nested_package_uses_deepest_filing_year_and_client_folder(self):
+        schedule_a = sharefile_file(
+            "nested-schedule-a",
+            "QA Schedule A.pdf",
+            [
+                "HighlandTech AI Test Folder",
+                "5500 Filing",
+                "2025 Filing",
+                "Schedule A's",
+                "ERISAPros E2E Harold 20260616-095048",
+                "2024 Filing SPY",
+                "Schedule A's",
+                "QA Schedule A.pdf",
+            ],
+            DocumentType.SCHEDULE_A,
+        )
+
+        self.assertEqual(self.service._filing_year_for(schedule_a), "2024")
+        self.assertEqual(
+            self.service._client_name_for(schedule_a),
+            "ERISAPros E2E Harold 20260616-095048",
+        )
+
     def test_relevant_webhook_discovery_only_walks_filing_folder_levels(self):
         def folder(item_id: str, name: str) -> dict:
             return {"Id": item_id, "Name": name, "ItemType": "Folder"}
