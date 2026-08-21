@@ -3,6 +3,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from bson import ObjectId
+
 from pymongo.errors import NetworkTimeout
 from pymongo.read_preferences import ReadPreference
 
@@ -11,6 +13,44 @@ from app.repositories import MongoRepository, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_dashboard_query_returns_every_active_filing_instead_of_latest_hundred(self):
+        class Cursor:
+            def __init__(self, documents):
+                self.documents = documents
+                self.index = 0
+
+            def sort(self, *_args):
+                return self
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.documents):
+                    raise StopAsyncIteration
+                document = self.documents[self.index]
+                self.index += 1
+                return document
+
+        documents = [
+            {
+                "_id": ObjectId(),
+                "file_name": f"filing-{index}.pdf",
+                "content_type": "application/pdf",
+                "file_size": index + 1,
+                "s3_key": f"filings/{index}.pdf",
+            }
+            for index in range(125)
+        ]
+        repository = MongoRepository.__new__(MongoRepository)
+        repository.db = SimpleNamespace(
+            filings=SimpleNamespace(find=lambda *_args, **_kwargs: Cursor(documents))
+        )
+
+        filings = asyncio.run(repository.list_dashboard_filings())
+
+        self.assertEqual(len(filings), 125)
+
     def test_performance_indexes_cover_review_and_history_queries(self):
         async def scenario():
             repository = MongoRepository.__new__(MongoRepository)

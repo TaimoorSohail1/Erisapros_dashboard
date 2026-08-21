@@ -45,6 +45,7 @@ import { InlineLoader, Skeleton } from "../ui/Loading";
 import { formatDate, formatFilingDisplayName, percent } from "../utils";
 
 type ReviewTab = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE" | "ALL";
+type WorkflowStepKey = "INTAKE" | "EXTRACTION" | "FTW_LOADED" | "REVIEW" | "APPROVAL" | "FTW_UPDATE";
 type FilterValue = "ALL" | string;
 type ContractTypeFilter = "ALL" | ScheduleAContractType;
 
@@ -124,9 +125,8 @@ export function FilingReviewPage() {
   const [sectionFilter, setSectionFilter] = useState<FilterValue>("ALL");
   const [formFilter, setFormFilter] = useState<FilterValue>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
+  const [reviewPage, setReviewPage] = useState(1);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [rowsPerPage, setRowsPerPage] = useState(15);
   const [pollVersion, setPollVersion] = useState(0);
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
@@ -136,7 +136,8 @@ export function FilingReviewPage() {
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
   const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
-  const [showAllFields, setShowAllFields] = useState(false);
+  const [activeWorkflowStep, setActiveWorkflowStep] = useState<WorkflowStepKey | null>(null);
+  const [showTechnicalDrawer, setShowTechnicalDrawer] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
@@ -239,15 +240,21 @@ export function FilingReviewPage() {
       );
     });
   }, [activeTab, contractTypeFilter, formFilter, priorityFilter, visibleReviewRows, scheduleAContractType, search, sectionFilter, statusFilter]);
+  const reviewRowsPerPage = 8;
+  const reviewTotalPages = Math.max(1, Math.ceil(displayRows.length / reviewRowsPerPage));
+  const paginatedDisplayRows = displayRows.slice((reviewPage - 1) * reviewRowsPerPage, reviewPage * reviewRowsPerPage);
+
+  useEffect(() => {
+    setReviewPage(1);
+  }, [activeTab, contractTypeFilter, formFilter, priorityFilter, search, sectionFilter, showExcludedFields, statusFilter]);
+
+  useEffect(() => {
+    setReviewPage((current) => Math.min(current, reviewTotalPages));
+  }, [reviewTotalPages]);
   const selectedField = useMemo(
     () => selectedFieldId ? fields.find((field) => field.id === selectedFieldId) : undefined,
     [fields, selectedFieldId],
   );
-  const totalPages = Math.max(1, Math.ceil(displayRows.length / rowsPerPage));
-  const pageStart = displayRows.length ? (currentPage - 1) * rowsPerPage + 1 : 0;
-  const pageEnd = Math.min(currentPage * rowsPerPage, displayRows.length);
-  const pagedRows = displayRows.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
-  const previewRows = displayRows.slice(0, 8);
   const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0;
   const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
   const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
@@ -289,14 +296,6 @@ export function FilingReviewPage() {
   const ftwFailed = !bringForwardRequired && Boolean(clientError || filing?.ftw_review?.status === "UPDATE_FAILED");
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
   const scheduleSelectionRequired = scheduleCandidates.length > 1 && !ftwReview?.schedule_a_match;
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [activeTab, search, statusFilter, priorityFilter, sectionFilter, formFilter, contractTypeFilter, rowsPerPage]);
-
-  useEffect(() => {
-    setCurrentPage((page) => Math.min(page, totalPages));
-  }, [totalPages]);
 
   useEffect(() => {
     if (!toast) return;
@@ -440,13 +439,13 @@ export function FilingReviewPage() {
     setSectionFilter("ALL");
     setFormFilter("ALL");
     setContractTypeFilter("ALL");
-    setShowAllFields(true);
+    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function editAllFields() {
     setActiveTab("ALL");
     resetFilters();
-    setShowAllFields(true);
+    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   // Auto-refresh FTW data when the user returns from the FT Williams tab after
@@ -704,84 +703,21 @@ export function FilingReviewPage() {
           filing={filing}
           ftwReadyToSend={ftwReadyToSend}
           needsDecisionCount={actionRequiredRows.length}
+          onStepSelect={setActiveWorkflowStep}
         />
-
-        {ftwInteractionBusy ? <FTWilliamsLoadingPanel sendBusy={ftwSendBusy} autoQuery={autoFtwQueryBusy} /> : null}
 
         {isProcessing && !fields.length ? <ProcessingPanel filing={filing} /> : null}
-
-        <FilingGuidancePanel
-          actionRequiredCount={actionRequiredRows.length}
-          approvalBlocked={approvalBlocked}
-          bringForwardRequired={bringForwardRequired}
-          clientError={clientError || filingClientError}
-          filingStatus={filing.status}
-          ftwReadyToSend={ftwReadyToSend}
-          isProcessing={isProcessing}
-          missingHighCount={missingHigh.length}
-          scheduleSelectionRequired={scheduleSelectionRequired}
-          actions={bringForwardRequired ? (
-            <>
-              <button className="button" type="button" disabled={ftwInteractionBusy} onClick={openFtwBringForward}>
-                <ExternalLink size={16} /> Open FTW Bring Forward
-              </button>
-              <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={() => prepareFtw(true)}>
-                <RefreshCw size={16} /> Refresh FTW Data
-              </button>
-            </>
-          ) : ftwUpdateFailed ? (
-            <>
-              <button className="button" type="button" disabled={reviewInteractionBusy || !ftwReadyToSend} onClick={sendFtwUpdate}>
-                <ShieldCheck size={16} /> Retry remaining
-              </button>
-              <button className="button secondary" type="button" disabled={ftwInteractionBusy} onClick={() => prepareFtw(true)}>
-                <RefreshCw size={16} /> Refresh FTW
-              </button>
-            </>
-          ) : undefined}
-        />
-
-        <FTWVerificationSummary review={ftwReview} onReview={() => { setActiveTab("NEEDS_DECISION"); setShowAllFields(true); }} />
-
-        {scheduleSelectionRequired ? (
-          <ScheduleASelectionStep
-            busy={ftwInteractionBusy}
-            candidates={scheduleCandidates}
-            onSelect={selectFtwScheduleMatch}
-          />
-        ) : null}
-
-        <section className="approval-focus-layout">
-          <div className="approval-summary-strip">
-            <div className="approval-summary-card primary">
-              <span>Filing Package</span>
-              <strong>{displayFileName}</strong>
-              <small>{filing.package_document_count || 1} document{(filing.package_document_count || 1) === 1 ? "" : "s"} from {filing.intake_source || "ShareFile"}</small>
-            </div>
-            <div className="approval-summary-card">
-              <span>Fields Found</span>
-              <strong>{foundCount} / {totalFields || 61}</strong>
-              <small>{percent(filing.overall_confidence)} confidence</small>
-            </div>
-            <div className="approval-summary-card warn">
-              <span>Needs Review</span>
-              <strong>{actionRequiredRows.length}</strong>
-              <small>{missingHigh.length} high-priority missing</small>
-            </div>
-            <div className="approval-summary-card">
-              <span>FTW Match</span>
-              <strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong>
-              <small>{lookup?.company_employer_id && lookup?.plan_number ? `${lookup.company_employer_id} / ${lookup.plan_number}` : "Current values required"}</small>
-            </div>
-          </div>
-
-          <section className="approval-decision-table-shell approval-preview-shell">
-            <div className="approval-table-head">
-              <div>
-                <span className="eyebrow">Decision Queue</span>
-                <h2>{activeTab === "ALL" ? "All Compared Fields" : activeTab === "WILL_UPDATE" ? "FT Williams Update Preview" : "Action Required"}</h2>
-                <p>{activeTab === "WILL_UPDATE" ? "Review every value that will be sent to FT Williams." : "Only fields requiring a decision or correction are shown first."}</p>
+        <section className="approval-decision-table-shell approval-preview-shell" id="filing-review-table">
+            <div className="approval-table-head compact-review-header">
+              <div className="compact-review-file">
+                <strong>{displayFileName}</strong>
               </div>
+              <div className="compact-review-meta" aria-label="Filing review summary">
+                <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
+                <span><small>Needs review</small><strong>{actionRequiredRows.length}</strong></span>
+                <span><small>FTW match</small><strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong></span>
+              </div>
+              <div className="compact-review-toolbar">
               <ReviewPrimaryActions
                 approvalBlocked={approvalBlocked}
                 approvalReady={!isProcessing && !scheduleSelectionRequired}
@@ -802,15 +738,9 @@ export function FilingReviewPage() {
                 onReject={rejectDecision}
                 onRetryExtraction={retryFailedExtraction}
                 onSend={sendFtwUpdate}
+                onOpenTechnical={() => setShowTechnicalDrawer(true)}
               />
-              <div className="field-table-controls">
-                <label className="table-search">
-                  <Search size={16} />
-                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search fields..." />
-                </label>
-                <button className="button secondary table-filter-button" onClick={resetFilters}>
-                  <SlidersHorizontal size={16} /> Reset
-                </button>
+                <button className="button secondary table-filter-button" onClick={resetFilters}><SlidersHorizontal size={14} /> Reset</button>
               </div>
             </div>
 
@@ -831,6 +761,10 @@ export function FilingReviewPage() {
                   <Eye size={16} /> {showExcludedFields ? "Hide" : "Show"} excluded fields ({excludedFields.length})
                 </button>
               ) : null}
+              <label className="table-search compact-table-search">
+                <Search size={14} />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search fields..." />
+              </label>
             </div>
 
             <div className="approval-table-wrap">
@@ -842,22 +776,21 @@ export function FilingReviewPage() {
                     <th>Current FTW</th>
                     <th>Proposed To Send</th>
                     <th>Status</th>
-                    <th>Decision</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {previewRows.map((row) => (
+                  {paginatedDisplayRows.map((row) => (
                     <ReviewDecisionTableRow
                       key={row.key}
                       row={row}
                       selected={row.fieldId === selectedFieldId}
                       onInspect={() => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-                      onAccept={() => setProposedValue(row, row.proposed, {
-                        successTitle: "Proposed value accepted",
+                      onAccept={() => setProposedValue(row, row.extracted, {
+                        successTitle: "Extracted value selected",
                         successMessage: `${row.label} is ready for FT Williams review.`,
                       })}
                       onKeepFtw={() => setProposedValue(row, row.currentFtw, {
-                        successTitle: "FT Williams value kept",
+                        successTitle: "Current FT Williams value kept",
                         successMessage: `${row.label} will keep its current FT Williams value.`,
                       })}
                       disabled={reviewInteractionBusy}
@@ -873,105 +806,21 @@ export function FilingReviewPage() {
             ) : null}
 
             <div className="approval-preview-footer">
-              <span>Showing {Math.min(previewRows.length, displayRows.length)} of {displayRows.length} matching fields</span>
-              <button className="button secondary" type="button" onClick={() => setShowAllFields(true)}>
-                <Eye size={16} /> View all {displayRows.length || reviewRows.length || totalFields} fields
-              </button>
+              <span>
+                Showing {displayRows.length ? (reviewPage - 1) * reviewRowsPerPage + 1 : 0}
+                -{Math.min(reviewPage * reviewRowsPerPage, displayRows.length)} of {displayRows.length} matching field{displayRows.length === 1 ? "" : "s"}
+              </span>
+              {reviewTotalPages > 1 ? (
+                <nav className="compact-table-pagination" aria-label="Review table pages">
+                  <button type="button" disabled={reviewPage === 1} onClick={() => setReviewPage((page) => Math.max(1, page - 1))} aria-label="Previous page">‹</button>
+                  {Array.from({ length: reviewTotalPages }, (_, index) => index + 1).map((page) => (
+                    <button key={page} type="button" className={page === reviewPage ? "active" : ""} onClick={() => setReviewPage(page)} aria-label={`Page ${page}`}>{page}</button>
+                  ))}
+                  <button type="button" disabled={reviewPage === reviewTotalPages} onClick={() => setReviewPage((page) => Math.min(reviewTotalPages, page + 1))} aria-label="Next page">›</button>
+                </nav>
+              ) : null}
             </div>
-          </section>
-
-          <section className="approval-readiness-compact">
-            <div>
-              <PanelHeading icon={<ClipboardCheck size={16} />} title="Approval Readiness" />
-              <p>These items unlock approval and sending to FT Williams.</p>
-            </div>
-            <ReadinessStep done label="Filing year confirmed" detail={lookup?.year || filing.ftw_review?.year || "Pending"} />
-            <ReadinessStep done={Boolean(lookup?.status === "MATCHED" || filing.ftw_review?.customer_id || filing.ftw_review?.ftw_customer_id)} label="FTW plan matched" detail={lookup?.company_employer_id && lookup?.plan_number ? `${lookup.company_employer_id} / ${lookup.plan_number}` : "Needs FTW lookup"} />
-            <ReadinessStep done={Boolean(filing.ftw_review?.schedule_a_match)} label="Schedule A selected" detail={scheduleMatch} />
-            <ReadinessStep
-              done={actionRequiredRows.length === 0}
-              active={actionRequiredRows.length > 0}
-              label="Fields reviewed"
-              detail={actionRequiredRows.length ? `${actionRequiredRows.length} unresolved — approval allowed with confirmation` : "No unresolved fields"}
-            />
-            <ReadinessStep done={Boolean(filing.proposed_xml)} label="XML preview ready" detail={filing.proposed_xml ? "Prepared from proposed values" : "Generate after extraction"} />
-            <ReadinessStep done={ftwReadyToSend && !ftwFailed} failed={ftwFailed} locked={!ftwReadyToSend && !ftwFailed} label="Send to FT Williams" detail={bringForwardRequired ? "Bring Forward required" : ftwFailed ? "Review the FT Williams issue above" : ftwReadyToSend ? "Unlocked" : sendLockReason(filing, form5500SafetyReady, scheduleASafetyReady, ftwCurrentLoaded)} />
-          </section>
-
-          <ScheduleAWorksheetSummaryPanel summaries={scheduleAWorksheetSummaries} />
-
-          <ScheduleABrokerRowsPanel rows={scheduleABrokerRows} />
-
-          <section className="approval-note-panel">
-            <label className="approval-note-box">
-              <span>Approval note or rejection reason</span>
-              <textarea
-                className="textarea"
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder="Optional note for approval or rejection"
-              />
-            </label>
-
-            <div className="approval-help-box">
-              <strong>What happens next?</strong>
-              <p>Once unresolved fields are reviewed, approve the filing. Sending to FT Williams remains locked until approval and the required FTW current data is safe.</p>
-            </div>
-          </section>
         </section>
-
-        <details className="review-advanced card">
-          <summary>
-            <span><ChevronDown size={17} /> Advanced details</span>
-            <em>FT Williams matching, logs, and XML</em>
-          </summary>
-          <div className="review-advanced-content">
-            <FTWilliamsComparisonPanel
-              review={filing.ftw_review || null}
-              busy={ftwInteractionBusy}
-              sendBusy={ftwSendBusy}
-              canSendUpdate={ftwReadyToSend}
-              onPreparePreview={() => prepareFtw(false)}
-              onQueryCurrent={() => prepareFtw(true)}
-              onSaveManualMatch={saveFtwManualMatch}
-              onSelectScheduleMatch={selectFtwScheduleMatch}
-              onSendUpdate={sendFtwUpdate}
-            />
-
-            <details className="review-xml card">
-              <summary>
-                <span><ChevronDown size={16} /> Processing Logs</span>
-              </summary>
-              <div className="audit-log-list">
-                {(filing.jobs || []).map((job) => (
-                  <div key={job.id} className="audit-log-row">
-                    <strong>{job.status.replaceAll("_", " ")}</strong>
-                    <span>{job.provider} attempt {job.attempts || 0}/{job.max_attempts}</span>
-                    {job.last_error ? <small>{job.last_error}</small> : null}
-                  </div>
-                ))}
-                {(filing.audit_logs || []).map((log) => (
-                  <div key={log.id} className="audit-log-row">
-                    <strong>{log.event.replaceAll("_", " ")}</strong>
-                    <span>{log.message}</span>
-                    <small>{formatDate(log.created_at)}</small>
-                  </div>
-                ))}
-                {!(filing.jobs || []).length && !(filing.audit_logs || []).length ? <p className="subtle">No logs yet.</p> : null}
-              </div>
-            </details>
-
-            <details className="review-xml card">
-              <summary>
-                <span><ChevronDown size={16} /> Technical XML Preview</span>
-                <button className="button secondary" type="button" onClick={(event) => { event.preventDefault(); rebuildXml(); }}>
-                  <RefreshCw size={16} /> Regenerate
-                </button>
-              </summary>
-              <pre className="xml">{filing.proposed_xml || "XML will appear after extraction."}</pre>
-            </details>
-          </div>
-        </details>
 
       </main>
 
@@ -1010,49 +859,45 @@ export function FilingReviewPage() {
         />
       ) : null}
 
-      {showAllFields ? (
-        <FullFieldReviewDrawer
-          activeTab={activeTab}
-          contractTypeFilter={contractTypeFilter}
-          currentPage={currentPage}
-          displayRows={displayRows}
-          formFilter={formFilter}
-          disabled={reviewInteractionBusy}
-          onAccept={(row) => setProposedValue(row, row.proposed, {
-            successTitle: "Proposed value accepted",
-            successMessage: `${row.label} is ready for FT Williams review.`,
-          })}
-          onClose={() => setShowAllFields(false)}
-          onInspect={(row) => row.fieldId ? setSelectedFieldId(row.fieldId) : undefined}
-          onKeepFtw={(row) => setProposedValue(row, row.currentFtw, {
-            successTitle: "FT Williams value kept",
-            successMessage: `${row.label} will keep its current FT Williams value.`,
-          })}
-          onPageChange={setCurrentPage}
-          onResetFilters={resetFilters}
-          onRowsPerPageChange={setRowsPerPage}
-          onSearchChange={setSearch}
-          onTabChange={setActiveTab}
-          pagedRows={pagedRows}
-          pageEnd={pageEnd}
-          pageStart={pageStart}
-          priorityFilter={priorityFilter}
-          reviewRows={reviewRows}
-          rowsPerPage={rowsPerPage}
-          savingFieldId={fieldSavingId}
-          search={search}
-          sectionFilter={sectionFilter}
-          sectionOptions={sectionOptions}
-          selectedFieldId={selectedFieldId}
-          setContractTypeFilter={setContractTypeFilter}
-          setFormFilter={setFormFilter}
-          setPriorityFilter={setPriorityFilter}
-          setSectionFilter={setSectionFilter}
-          setStatusFilter={setStatusFilter}
-          statusFilter={statusFilter}
+      {activeWorkflowStep ? (
+        <WorkflowDetailDialog
+          actionRequiredCount={actionRequiredRows.length}
+          busy={reviewInteractionBusy}
+          filing={filing}
+          foundCount={foundCount}
+          ftwCurrentLoaded={ftwCurrentLoaded}
+          ftwReadyToSend={ftwReadyToSend}
+          onClose={() => setActiveWorkflowStep(null)}
+          onOpenBringForward={openFtwBringForward}
+          onQuery={() => prepareFtw(true)}
+          onSelectSchedule={selectFtwScheduleMatch}
+          onShowTab={(tab) => {
+            setActiveTab(tab);
+            setActiveWorkflowStep(null);
+            window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+          }}
+          scheduleCandidates={scheduleCandidates}
+          step={activeWorkflowStep}
           totalFields={totalFields}
-          totalPages={totalPages}
-          willUpdateRows={willUpdateRows}
+          willUpdateCount={willUpdateRows.length}
+        />
+      ) : null}
+
+      {showTechnicalDrawer ? (
+        <TechnicalReviewDrawer
+          busy={reviewInteractionBusy}
+          canSendUpdate={ftwReadyToSend}
+          filing={filing}
+          onClose={() => setShowTechnicalDrawer(false)}
+          onPreparePreview={() => prepareFtw(false)}
+          onPreviewXml={rebuildXml}
+          onQueryCurrent={() => prepareFtw(true)}
+          onReEvaluate={reEvaluateWithLatestRules}
+          onRetryExtraction={retryFailedExtraction}
+          onSaveManualMatch={saveFtwManualMatch}
+          onSelectScheduleMatch={selectFtwScheduleMatch}
+          onSendUpdate={sendFtwUpdate}
+          sendBusy={ftwSendBusy}
         />
       ) : null}
     </div>
@@ -1187,10 +1032,12 @@ function WorkflowStepper({
   filing,
   ftwReadyToSend,
   needsDecisionCount,
+  onStepSelect,
 }: {
   filing: FilingDetail;
   ftwReadyToSend: boolean;
   needsDecisionCount: number;
+  onStepSelect: (step: WorkflowStepKey) => void;
 }) {
   const processing = isProcessingStatus(filing.status ?? "UPLOADED") && !(filing.fields || []).length;
   const ftwQuerying = filing.status === "QUERYING_FTW_CURRENT";
@@ -1198,24 +1045,23 @@ function WorkflowStepper({
   const approved = filing.status === "APPROVED";
   const updateSent = filing.ftw_review?.status === "UPDATE_SENT";
   const steps = [
-    { label: "Intake", detail: "Package received", state: "done" },
-    { label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
-    { label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
-    { label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
-    { label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : needsDecisionCount ? "active" : "active" },
-    { label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
+    { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
+    { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
+    { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
+    { key: "REVIEW" as const, label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
+    { key: "APPROVAL" as const, label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : "active" },
+    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
   ];
-  const currentStep = steps.find((step) => step.state === "active") || steps.find((step) => step.state === "pending") || steps[steps.length - 1];
   return (
     <section className="approval-progress-card">
-      <div className="approval-progress-summary">
-        <span>You are here</span>
-        <strong>{currentStep.label}</strong>
-        <small>{currentStep.detail}</small>
+      <div className="approval-workflow-source">
+        <span><FileText size={14} /> Share File</span>
+        <i aria-hidden="true">⇄</i>
+        <strong>FTW Comparison</strong>
       </div>
       <div className="approval-stepper">
         {steps.map((step, index) => (
-          <div className={`approval-step step-${step.state}`} key={step.label}>
+          <button className={`approval-step step-${step.state}`} key={step.label} type="button" onClick={() => onStepSelect(step.key)}>
             <span className="approval-step-index">
               {step.state === "done" ? <Check size={16} /> : step.state === "locked" ? <Lock size={16} /> : index + 1}
             </span>
@@ -1225,7 +1071,7 @@ function WorkflowStepper({
               <em>{step.detail}</em>
             </div>
             {index < steps.length - 1 ? <i /> : null}
-          </div>
+          </button>
         ))}
       </div>
     </section>
@@ -1335,6 +1181,7 @@ function ReviewPrimaryActions({
   onReject,
   onRetryExtraction,
   onSend,
+  onOpenTechnical,
   queryBusy,
   retryBusy,
   rulesBusy,
@@ -1355,6 +1202,7 @@ function ReviewPrimaryActions({
   onReject: () => void;
   onRetryExtraction: () => void;
   onSend: () => void;
+  onOpenTechnical: () => void;
   queryBusy: boolean;
   retryBusy: boolean;
   rulesBusy: boolean;
@@ -1364,11 +1212,9 @@ function ReviewPrimaryActions({
   const failed = filingStatus === "FAILED";
   return (
     <div className="review-primary-actions" aria-label="Filing actions">
-      {!ftwCurrentLoaded ? (
-        <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
-          {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
-        </button>
-      ) : null}
+      <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
+        {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
+      </button>
       {!approved && !failed && approvalReady ? (
         <>
           <button
@@ -1390,32 +1236,434 @@ function ReviewPrimaryActions({
           {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> {failed ? "Retry remaining" : "Send to FT Williams"}</>}
         </button>
       ) : null}
-      <details className="review-more-actions">
-        <summary>More actions</summary>
-        <div>
-          {ftwCurrentLoaded ? (
-            <button type="button" disabled={busy || queryBusy} onClick={onQuery}>
-              <Search size={15} /> {queryBusy ? "Fetching FTW..." : "Query FTW Current"}
-            </button>
+      <button className="button secondary" type="button" onClick={onOpenTechnical}>
+        <SlidersHorizontal size={16} /> More actions
+      </button>
+    </div>
+  );
+}
+
+function WorkflowDetailDialog({
+  actionRequiredCount,
+  busy,
+  filing,
+  foundCount,
+  ftwCurrentLoaded,
+  ftwReadyToSend,
+  onClose,
+  onOpenBringForward,
+  onQuery,
+  onSelectSchedule,
+  onShowTab,
+  scheduleCandidates,
+  step,
+  totalFields,
+  willUpdateCount,
+}: {
+  actionRequiredCount: number;
+  busy: boolean;
+  filing: FilingDetail;
+  foundCount: number;
+  ftwCurrentLoaded: boolean;
+  ftwReadyToSend: boolean;
+  onClose: () => void;
+  onOpenBringForward: () => void;
+  onQuery: () => void;
+  onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string }) => void;
+  onShowTab: (tab: ReviewTab) => void;
+  scheduleCandidates: Array<Record<string, unknown>>;
+  step: WorkflowStepKey;
+  totalFields: number;
+  willUpdateCount: number;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
+  const stepNumber = ["INTAKE", "EXTRACTION", "FTW_LOADED", "REVIEW", "APPROVAL", "FTW_UPDATE"].indexOf(step) + 1;
+  const titles: Record<WorkflowStepKey, string> = {
+    INTAKE: "Intake",
+    EXTRACTION: "Extraction",
+    FTW_LOADED: "FTW loaded",
+    REVIEW: "User review",
+    APPROVAL: "Approval",
+    FTW_UPDATE: "FT Williams verification",
+  };
+  const review = filing.ftw_review || null;
+  const attempted = review?.update_attempted_count || 0;
+  const confirmed = review?.update_confirmed_count || 0;
+  const remaining = review?.update_remaining_count || 0;
+  const packageCount = filing.package_document_count || 1;
+  const currentScheduleSequence = textValue(review?.schedule_a_match?.ftw_seq_no);
+  const [selectedScheduleIndex, setSelectedScheduleIndex] = useState(() => {
+    const currentIndex = scheduleCandidates.findIndex((candidate) => textValue(candidate.ftw_seq_no) === currentScheduleSequence);
+    return currentIndex >= 0 ? String(currentIndex) : "";
+  });
+  const selectedSchedule = selectedScheduleIndex === "" ? null : scheduleCandidates[Number(selectedScheduleIndex)] || null;
+  const selectedScheduleLabel = selectedSchedule
+    ? textValue(selectedSchedule.carrier) || textValue(selectedSchedule.description) || `FTW sequence ${textValue(selectedSchedule.ftw_seq_no)}`
+    : currentScheduleSequence
+      ? formatScheduleAMatch(review?.schedule_a_match)
+      : "No Schedule A selected";
+  const footerNotes: Record<WorkflowStepKey, string> = {
+    INTAKE: `${packageCount} document${packageCount === 1 ? "" : "s"} received from ${filing.intake_source || "ShareFile"}`,
+    EXTRACTION: `${foundCount} of ${totalFields} fields extracted`,
+    FTW_LOADED: selectedScheduleLabel,
+    REVIEW: actionRequiredCount ? `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} still require action` : "Review complete",
+    APPROVAL: filing.status === "APPROVED" ? "Filing approved" : "Approval not yet confirmed",
+    FTW_UPDATE: review?.status === "UPDATE_SENT" ? `${confirmed} field${confirmed === 1 ? "" : "s"} verified` : "Update not yet verified",
+  };
+
+  function handleScheduleChange(index: string) {
+    setSelectedScheduleIndex(index);
+    if (index === "") return;
+    const candidate = scheduleCandidates[Number(index)];
+    if (!candidate) return;
+    onSelectSchedule({
+      ftw_seq_no: textValue(candidate.ftw_seq_no) || undefined,
+      carrier: textValue(candidate.carrier) || undefined,
+      carrier_ein: textValue(candidate.carrier_ein) || undefined,
+      contract: textValue(candidate.contract) || undefined,
+    });
+  }
+
+  return (
+    <div className="workflow-dialog-backdrop" role="presentation">
+      <section ref={dialogRef} tabIndex={-1} className="workflow-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-dialog-title">
+        <header>
+          <span className="workflow-dialog-number">{stepNumber}</span>
+          <div>
+            <small>Workflow step</small>
+            <h2 id="workflow-dialog-title">{titles[step]}</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="Close workflow details" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="workflow-dialog-body">
+          {step === "INTAKE" ? (
+            <>
+              <WorkflowStatus tone="success" label="Package received" />
+              <p className="workflow-explanation">The Schedule A and Plan Worksheet package has been received and is tracked as one filing.</p>
+              <WorkflowActivity items={[
+                formatFilingDisplayName(filing.file_name),
+                `${packageCount} document${packageCount === 1 ? "" : "s"} received`,
+                `${filing.intake_source || "ShareFile"} intake connected`,
+              ]} />
+            </>
           ) : null}
-          <button type="button" disabled={busy || rulesBusy} onClick={onReEvaluate}>
-            <Sparkles size={15} /> {rulesBusy ? "Re-evaluating..." : "Re-evaluate rules"}
-          </button>
-          <button type="button" disabled={busy || xmlBusy} onClick={onPreviewXml}>
-            <RefreshCw size={15} /> {xmlBusy ? "Building XML..." : "Preview XML"}
-          </button>
-          {failed && !ftwReadyToSend ? (
-            <button type="button" disabled={busy || retryBusy} onClick={onRetryExtraction}>
-              <RefreshCw size={15} /> {retryBusy ? "Restarting..." : "Retry extraction"}
-            </button>
+
+          {step === "EXTRACTION" ? (
+            <>
+              <WorkflowStatus tone={foundCount ? "success" : "warning"} label={foundCount ? "Extraction complete" : "Extraction in progress"} />
+              <p className="workflow-explanation">Published field rules and Schedule A aliases guide extraction. The resulting values appear in the Extracted column.</p>
+              <WorkflowActivity items={[
+                `${foundCount} of ${totalFields} fields extracted`,
+                `${filing.extraction_provider || "Extraction service"} completed the document review`,
+                `${percent(filing.overall_confidence)} overall confidence`,
+              ]} />
+            </>
           ) : null}
-          {approved ? (
-            <button type="button" disabled={busy} onClick={onApprove}>
-              <Ban size={15} /> Change approval
-            </button>
+
+          {step === "FTW_LOADED" ? (
+            <>
+              <WorkflowStatus tone={ftwCurrentLoaded ? "success" : "warning"} label={ftwCurrentLoaded ? "FTW current data loaded" : "Processing"} />
+              {scheduleCandidates.length ? (
+                <WorkflowScheduleSelect
+                  busy={busy}
+                  candidates={scheduleCandidates}
+                  selectedIndex={selectedScheduleIndex}
+                  onChange={handleScheduleChange}
+                />
+              ) : null}
+              <p className="workflow-explanation">ERISAPros fetches current FT Williams values so extracted and existing data can be compared.</p>
+              <WorkflowActivity items={[
+                `${foundCount} of ${totalFields} fields extracted`,
+                review?.customer_id ? "FT Williams plan connection active" : "FT Williams plan match pending",
+                ftwCurrentLoaded ? "Current values loaded automatically" : "Current values are ready to refresh",
+                `Filing is ${review?.ftw_editable === false ? "locked" : review?.ftw_editable === true ? "editable" : "awaiting editability check"}`,
+              ]} />
+              <div className="workflow-dialog-actions">
+                {review?.bring_forward_required ? <button className="button secondary" type="button" disabled={busy} onClick={onOpenBringForward}>Open FTW Bring Forward</button> : null}
+                <button className="button secondary" type="button" disabled={busy} onClick={onQuery}><Search size={15} /> Refresh FTW Data</button>
+              </div>
+            </>
+          ) : null}
+
+          {step === "REVIEW" ? (
+            <>
+              <WorkflowStatus tone={actionRequiredCount ? "warning" : "success"} label={actionRequiredCount ? "Needs review" : "Review complete"} />
+              {scheduleCandidates.length ? (
+                <WorkflowScheduleSelect busy={busy} candidates={scheduleCandidates} selectedIndex={selectedScheduleIndex} onChange={handleScheduleChange} />
+              ) : null}
+              <WorkflowReviewCenter
+                actionRequiredCount={actionRequiredCount}
+                onShowTab={onShowTab}
+                review={review}
+                totalFields={totalFields}
+                willUpdateCount={willUpdateCount}
+              />
+            </>
+          ) : null}
+
+          {step === "APPROVAL" ? (
+            <>
+              <WorkflowStatus tone={filing.status === "APPROVED" ? "success" : "warning"} label={filing.status === "APPROVED" ? "Filing approved" : "Approval pending"} />
+              <p className="workflow-explanation">Approval confirms the reviewed values. Any remaining issues are shown before the user confirms.</p>
+              <WorkflowActivity items={[
+                actionRequiredCount ? `${actionRequiredCount} unresolved field${actionRequiredCount === 1 ? "" : "s"} will be confirmed during approval` : "All field decisions are complete",
+                ftwCurrentLoaded ? "FT Williams current data is loaded" : "FT Williams current data is required",
+                filing.status === "APPROVED" ? "Approval recorded" : "Approval is waiting for confirmation",
+              ]} />
+            </>
+          ) : null}
+
+          {step === "FTW_UPDATE" ? (
+            <>
+              <WorkflowStatus tone={review?.status === "UPDATE_SENT" ? "success" : ftwReadyToSend ? "warning" : "neutral"} label={review?.status === "UPDATE_SENT" ? "Update verified" : ftwReadyToSend ? "Ready to send" : "Waiting for approval and FTW checks"} />
+              <p className="workflow-explanation">After sending, ERISAPros refreshes FT Williams and verifies every returned value automatically.</p>
+              <WorkflowActivity items={[
+                `${attempted} field${attempted === 1 ? "" : "s"} attempted`,
+                `${confirmed} field${confirmed === 1 ? "" : "s"} verified`,
+                `${remaining} field${remaining === 1 ? "" : "s"} need review`,
+              ]} />
+              {(review?.update_results || []).length ? (
+                <div className="workflow-result-list">
+                  {(review?.update_results || []).map((result, index) => (
+                    <div key={result.field_id || result.tag || index} className={result.status === "VERIFIED" ? "verified" : "needs-review"}>
+                      {result.status === "VERIFIED" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                      <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
-      </details>
+        <footer>
+          <span className="workflow-dialog-footer-note">{footerNotes[step]}</span>
+          <button className="button" type="button" onClick={onClose}>Done</button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function WorkflowStatus({ label, tone }: { label: string; tone: "neutral" | "success" | "warning" }) {
+  return <span className={`workflow-status-pill workflow-status-pill-${tone}`}>{label}</span>;
+}
+
+function WorkflowActivity({ items }: { items: string[] }) {
+  return (
+    <section className="workflow-step-activity" aria-label="Step activity">
+      <h3>Step activity</h3>
+      {items.map((item, index) => <div key={`${item}-${index}`}><span aria-hidden="true" />{item}</div>)}
+    </section>
+  );
+}
+
+function WorkflowScheduleSelect({
+  busy,
+  candidates,
+  onChange,
+  selectedIndex,
+}: {
+  busy: boolean;
+  candidates: Array<Record<string, unknown>>;
+  onChange: (index: string) => void;
+  selectedIndex: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const selectedCandidate = selectedIndex === "" ? null : candidates[Number(selectedIndex)] || null;
+  const selectedLabel = selectedCandidate
+    ? [
+      textValue(selectedCandidate.carrier) || textValue(selectedCandidate.description) || "Schedule A",
+      textValue(selectedCandidate.contract) && `Contract ${textValue(selectedCandidate.contract)}`,
+      textValue(selectedCandidate.ftw_seq_no) && `Seq ${textValue(selectedCandidate.ftw_seq_no)}`,
+    ].filter(Boolean).join(" · ")
+    : "Select Schedule A";
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  return (
+    <div className="workflow-schedule-select" ref={ref}>
+      <span className="workflow-schedule-label" id="workflow-schedule-candidate-label">Select Schedule A</span>
+      <button
+        aria-controls="workflow-schedule-candidate-menu"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="workflow-schedule-trigger"
+        disabled={busy}
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span>{selectedLabel}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div
+          aria-labelledby="workflow-schedule-candidate-label"
+          className="workflow-schedule-menu"
+          id="workflow-schedule-candidate-menu"
+          role="listbox"
+        >
+          {candidates.map((candidate, index) => {
+            const carrier = textValue(candidate.carrier) || textValue(candidate.description) || "Schedule A";
+            const contract = textValue(candidate.contract);
+            const sequence = textValue(candidate.ftw_seq_no);
+            const selected = selectedIndex === String(index);
+            return (
+              <button
+                aria-selected={selected}
+                className={selected ? "selected" : ""}
+                key={sequence || `${carrier}-${index}`}
+                onClick={() => {
+                  onChange(String(index));
+                  setOpen(false);
+                }}
+                role="option"
+                type="button"
+              >
+                <span>
+                  <strong>{carrier}</strong>
+                  <small>{[contract && `Contract ${contract}`, sequence && `Seq ${sequence}`].filter(Boolean).join(" · ") || "Schedule details unavailable"}</small>
+                </span>
+                {selected ? <Check size={15} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      <small>{candidates.length} Schedule A filing{candidates.length === 1 ? "" : "s"} available</small>
+    </div>
+  );
+}
+
+function WorkflowReviewCenter({
+  actionRequiredCount,
+  onShowTab,
+  review,
+  totalFields,
+  willUpdateCount,
+}: {
+  actionRequiredCount: number;
+  onShowTab: (tab: ReviewTab) => void;
+  review: FTWilliamsReview | null;
+  totalFields: number;
+  willUpdateCount: number;
+}) {
+  const reviewComplete = actionRequiredCount === 0;
+  return (
+    <div className="workflow-review-center">
+      <section className="workflow-review-panel workflow-user-review-panel">
+        <header>
+          <span className={reviewComplete ? "complete" : "attention"}>
+            {reviewComplete ? <CheckCircle2 size={17} /> : <ClipboardCheck size={17} />}
+          </span>
+          <div>
+            <small>User review</small>
+            <strong>{reviewComplete ? "All field decisions are complete" : `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`}</strong>
+          </div>
+        </header>
+        <p>{reviewComplete ? "The reviewed values are ready for approval." : "Resolve missing or different values, then confirm what should be sent to FT Williams."}</p>
+        <div className="workflow-review-metrics" aria-label="User review counts">
+          <span><small>Action required</small><strong>{actionRequiredCount}</strong></span>
+          <span><small>Will update FTW</small><strong>{willUpdateCount}</strong></span>
+          <span><small>Compared</small><strong>{totalFields}</strong></span>
+        </div>
+        <div className="workflow-dialog-actions">
+          {actionRequiredCount ? <button className="button" type="button" onClick={() => onShowTab("NEEDS_DECISION")}>Review action required</button> : null}
+          <button className="button secondary" type="button" onClick={() => onShowTab("WILL_UPDATE")}>Review FTW updates</button>
+        </div>
+      </section>
+      <FTWVerificationSummary review={review} onReview={() => onShowTab("NEEDS_DECISION")} compact />
+    </div>
+  );
+}
+
+function TechnicalReviewDrawer({
+  busy,
+  canSendUpdate,
+  filing,
+  onClose,
+  onPreparePreview,
+  onPreviewXml,
+  onQueryCurrent,
+  onReEvaluate,
+  onRetryExtraction,
+  onSaveManualMatch,
+  onSelectScheduleMatch,
+  onSendUpdate,
+  sendBusy,
+}: {
+  busy: boolean;
+  canSendUpdate: boolean;
+  filing: FilingDetail;
+  onClose: () => void;
+  onPreparePreview: () => void;
+  onPreviewXml: () => void;
+  onQueryCurrent: () => void;
+  onReEvaluate: () => void;
+  onRetryExtraction: () => void;
+  onSaveManualMatch: (payload: { customer_id?: string; plan_id?: string; ftw_customer_id?: string; ftw_plan_id?: string; year?: string }) => void;
+  onSelectScheduleMatch: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string; create_new?: boolean; schedule_desc?: string }) => void;
+  onSendUpdate: () => void;
+  sendBusy: boolean;
+}) {
+  const drawerRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, drawerRef, onClose);
+  return (
+    <div className="technical-drawer-backdrop" role="presentation">
+      <aside ref={drawerRef} tabIndex={-1} className="technical-review-drawer" role="dialog" aria-modal="true" aria-labelledby="technical-drawer-title">
+        <header>
+          <div>
+            <span className="eyebrow">Administrator workspace</span>
+            <h2 id="technical-drawer-title">Technical details</h2>
+            <p>FT Williams matching, processing logs, and XML.</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="Close technical details" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="technical-drawer-toolbar">
+          <button className="button secondary" type="button" disabled={busy} onClick={onReEvaluate}><Sparkles size={15} /> Re-evaluate rules</button>
+          <button className="button secondary" type="button" disabled={busy} onClick={onRetryExtraction}><RefreshCw size={15} /> Retry extraction</button>
+          <button className="button secondary" type="button" disabled={busy} onClick={onPreviewXml}><FileText size={15} /> Regenerate XML</button>
+        </div>
+        <div className="technical-drawer-body">
+          <FTWilliamsComparisonPanel
+            review={filing.ftw_review || null}
+            busy={busy}
+            sendBusy={sendBusy}
+            canSendUpdate={canSendUpdate}
+            onPreparePreview={onPreparePreview}
+            onQueryCurrent={onQueryCurrent}
+            onSaveManualMatch={onSaveManualMatch}
+            onSelectScheduleMatch={onSelectScheduleMatch}
+            onSendUpdate={onSendUpdate}
+          />
+          <details className="review-xml card">
+            <summary><span><ChevronDown size={16} /> Processing logs</span></summary>
+            <div className="audit-log-list">
+              {(filing.jobs || []).map((job) => <div key={job.id} className="audit-log-row"><strong>{job.status.replaceAll("_", " ")}</strong><span>{job.provider} attempt {job.attempts || 0}/{job.max_attempts}</span>{job.last_error ? <small>{job.last_error}</small> : null}</div>)}
+              {(filing.audit_logs || []).map((log) => <div key={log.id} className="audit-log-row"><strong>{log.event.replaceAll("_", " ")}</strong><span>{log.message}</span><small>{formatDate(log.created_at)}</small></div>)}
+              {!(filing.jobs || []).length && !(filing.audit_logs || []).length ? <p className="subtle">No logs yet.</p> : null}
+            </div>
+          </details>
+          <details className="review-xml card">
+            <summary><span><ChevronDown size={16} /> Technical XML preview</span></summary>
+            <pre className="xml">{filing.proposed_xml || "XML will appear after extraction."}</pre>
+          </details>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -1477,13 +1725,65 @@ function ScheduleASelectionStep({
   );
 }
 
-function FTWVerificationSummary({ review, onReview }: { review: FTWilliamsReview | null; onReview: () => void }) {
+function FTWVerificationSummary({ review, onReview, compact = false }: { review: FTWilliamsReview | null; onReview: () => void; compact?: boolean }) {
   const attempted = review?.update_attempted_count || 0;
-  if (!review?.update_verification_attempted && !attempted) return null;
+  const verificationAttempted = Boolean(review?.update_verification_attempted || attempted);
   const confirmed = review?.update_confirmed_count || 0;
   const remaining = review?.update_remaining_count || 0;
   const results = review?.update_results || [];
   const complete = attempted > 0 && remaining === 0 && review?.update_verification_success !== false;
+
+  if (compact && !verificationAttempted) {
+    return (
+      <section className="workflow-review-panel workflow-verification-panel waiting" aria-label="FT Williams verification">
+        <header>
+          <span><ShieldCheck size={17} /></span>
+          <div>
+            <small>FT Williams verification</small>
+            <strong>Waiting for an FT Williams update</strong>
+          </div>
+        </header>
+        <p>Verification results will appear here automatically after data is sent to FT Williams.</p>
+      </section>
+    );
+  }
+
+  if (!verificationAttempted) return null;
+
+  if (compact) {
+    return (
+      <section className={`workflow-review-panel workflow-verification-panel ${complete ? "complete" : "attention"}`} aria-label="FT Williams verification">
+        <header>
+          <span>{complete ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}</span>
+          <div>
+            <small>FT Williams verification</small>
+            <strong>{complete ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated and verified` : `${confirmed} field${confirmed === 1 ? "" : "s"} updated · ${remaining} need review`}</strong>
+          </div>
+        </header>
+        <p>The dashboard refreshed FT Williams and compared every returned value automatically.</p>
+        <div className="workflow-review-metrics" aria-label="FT Williams verification counts">
+          <span><small>Attempted</small><strong>{attempted}</strong></span>
+          <span><small>Verified</small><strong>{confirmed}</strong></span>
+          <span><small>Need review</small><strong>{remaining}</strong></span>
+        </div>
+        {results.length ? (
+          <details className="workflow-verification-results" open={!complete}>
+            <summary>View field results</summary>
+            <div>
+              {results.map((result, index) => (
+                <article className={result.status === "VERIFIED" ? "verified" : "needs-correction"} key={result.field_id || result.tag || index}>
+                  {result.status === "VERIFIED" ? <Check size={14} /> : <AlertTriangle size={14} />}
+                  <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "the approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                </article>
+              ))}
+            </div>
+          </details>
+        ) : null}
+        {!complete ? <div className="workflow-dialog-actions"><button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button></div> : null}
+      </section>
+    );
+  }
+
   return (
     <section className={`ftw-verification-summary ${complete ? "complete" : "partial"}`} role="status">
       <div className="ftw-verification-icon">{complete ? <CheckCircle2 size={22} /> : <AlertTriangle size={22} />}</div>
@@ -1613,37 +1913,42 @@ function ReviewDecisionTableRow({
       </td>
       <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
       <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
-      <td>
+      <td className="proposed-cell">
         <button className="proposed-value-button" type="button" disabled={disabled || !canEdit} onClick={onInspect}>
           <span>{row.proposed || "No proposed value"}</span>
           {canEdit ? <Edit3 size={14} /> : null}
         </button>
-      </td>
-      <td>
-        <span className={`review-issue-pill ${issueClass}`}>{row.statusLabel}</span>
-        <small className={row.failedByFtw ? "ftw-row-error" : undefined}>{row.ftwFailureReason || row.issue}</small>
-      </td>
-      <td>
         <div className="decision-actions">
           {saving ? (
             <button type="button" disabled><InlineLoader label="Saving" /></button>
           ) : (
             <>
-              {row.proposed ? <button type="button" disabled={disabled || !canEdit} onClick={onAccept}>Use proposed</button> : null}
+              {row.extracted ? (
+                <button
+                  className={row.proposed === row.extracted ? "active" : ""}
+                  type="button"
+                  disabled={disabled || !canEdit}
+                  onClick={onAccept}
+                >
+                  Keep Extracted
+                </button>
+              ) : null}
               <button
+                className={row.proposed === row.currentFtw && Boolean(row.currentFtw) ? "active" : ""}
                 type="button"
                 disabled={disabled || !canEdit || !row.currentFtw}
                 onClick={onKeepFtw}
                 title={!row.currentFtw ? "No current FT Williams value is available to keep." : "Keep the current FT Williams value."}
               >
-                Keep FTW
-              </button>
-              <button type="button" disabled={disabled || !canEdit} onClick={onInspect}>
-                {row.proposed ? "Edit" : "Enter value"}
+                Keep Current
               </button>
             </>
           )}
         </div>
+      </td>
+      <td>
+        <span className={`review-issue-pill ${issueClass}`}>{row.statusLabel}</span>
+        <small className={row.failedByFtw ? "ftw-row-error" : undefined}>{row.ftwFailureReason || row.issue}</small>
       </td>
     </tr>
   );
@@ -1769,7 +2074,6 @@ function FullFieldReviewDrawer({
                 <th>Current FTW</th>
                 <th>Proposed To Send</th>
                 <th>Status</th>
-                <th>Decision</th>
               </tr>
             </thead>
             <tbody>
@@ -2869,51 +3173,64 @@ function FieldReviewModal({
         </div>
 
         <div className="field-review-modal-grid field-review-modal-grid-simple">
-          <div className="inspector-block">
-            <h3>Values</h3>
+          <div className="inspector-block field-review-values-block">
+            <div className="field-review-section-heading">
+              <div>
+                <h3>Value comparison</h3>
+                <p>Confirm the extracted value before it is prepared for FT Williams.</p>
+              </div>
+            </div>
             <div className="modal-values-grid">
-              <label>
-                <span>Extracted Value</span>
+              <label className="field-review-value-card field-review-value-source">
+                <span className="field-review-value-label"><FileText size={15} /> Extracted from ShareFile</span>
                 <input className="input" value={field.value || "Not found"} disabled />
+                <small>Original value returned by extraction.</small>
               </label>
-              <label>
-                <span>Proposed Value</span>
+              <label className="field-review-value-card field-review-value-proposed">
+                <span className="field-review-value-label"><Sparkles size={15} /> Proposed to FT Williams</span>
                 <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} />
-                <small className="field-edit-hint">Enter or edit the value, then save it. Empty values must be marked missing.</small>
+                <small className="field-edit-hint">Edit if needed, then confirm. Empty values must be marked missing.</small>
               </label>
             </div>
           </div>
 
-          <div className="inspector-block">
-            <div className="inspector-confidence-head">
-              <span>Confidence</span>
-              <strong>{percent(field.confidence)}</strong>
+          <div className="field-review-insights">
+            <div className="field-review-insight-card field-review-confidence-card">
+              <div className="inspector-confidence-head">
+                <span>Extraction confidence</span>
+                <strong>{percent(field.confidence)}</strong>
+              </div>
+              <div className="confidence-track inspector-confidence">
+                <i className={`confidence-${confidenceTone(field.confidence)}`} style={{ width: percent(field.confidence) }} />
+              </div>
+              <small>Confidence reported for this extracted value.</small>
             </div>
-            <div className="confidence-track inspector-confidence">
-              <i className={`confidence-${confidenceTone(field.confidence)}`} style={{ width: percent(field.confidence) }} />
-            </div>
-          </div>
 
-          <div className="inspector-block">
-            <h3>Rule Match</h3>
-            <div className="rule-match-row">
+            <div className="field-review-insight-card field-review-rule-card">
+              <div className="field-review-insight-head">
+                <span>Rule match</span>
+                <span className={`field-status status-${field.status.toLowerCase()}`}>{field.status === "MATCHED" ? "Exact Match" : field.status.replaceAll("_", " ")}</span>
+              </div>
               <p>{field.status_reason || reasonForField(field)}</p>
-              <span className={`field-status status-${field.status.toLowerCase()}`}>{field.status === "MATCHED" ? "Exact Match" : field.status.replaceAll("_", " ")}</span>
             </div>
           </div>
         </div>
 
         <div className="field-review-modal-actions">
-          <button className="button" disabled={saving || !draft.trim()} onClick={() => save(draft)}>
-            {saving ? <InlineLoader label="Saving value" /> : <><CheckCircle2 size={16} /> {draft === (field.proposed_value ?? "") ? "Accept Proposed" : "Save Value"}</>}
-          </button>
-          <button className="button secondary" disabled={saving} onClick={() => { inputRef.current?.focus(); inputRef.current?.select(); }}>
-            <Edit3 size={16} /> Edit Value
-          </button>
-          <button className="button danger" disabled={saving} onClick={() => save("", { markMissing: true })}>
-            <Ban size={16} /> Mark Missing
-          </button>
-          <button className="button secondary" disabled={saving} onClick={onClose}>Close</button>
+          <div className="field-review-action-group field-review-secondary-actions">
+            <button className="button secondary" disabled={saving} onClick={() => { inputRef.current?.focus(); inputRef.current?.select(); }}>
+              <Edit3 size={16} /> Edit Value
+            </button>
+            <button className="button danger" disabled={saving} onClick={() => save("", { markMissing: true })}>
+              <Ban size={16} /> Mark Missing
+            </button>
+          </div>
+          <div className="field-review-action-group field-review-primary-actions">
+            <button className="button secondary" disabled={saving} onClick={onClose}>Cancel</button>
+            <button className="button" disabled={saving || !draft.trim()} onClick={() => save(draft)}>
+              {saving ? <InlineLoader label="Saving value" /> : <><CheckCircle2 size={16} /> {draft === (field.proposed_value ?? "") ? "Confirm Proposed" : "Save Value"}</>}
+            </button>
+          </div>
         </div>
       </section>
     </div>
