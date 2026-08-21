@@ -2033,6 +2033,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.update_attempted_count, 2)
         self.assertEqual(review.update_confirmed_count, 2)
         self.assertEqual(review.update_remaining_count, 0)
+        self.assertEqual(len(review.update_results), 2)
+        self.assertTrue(all(item["status"] == "VERIFIED" for item in review.update_results))
+        self.assertTrue(all(item.get("label") and item.get("sent_value") for item in review.update_results))
 
         mismatched = run_async(
             FTWilliamsReviewService(VerifyingFTWilliamsService(reflect_updates=False)).approve_and_update(
@@ -2046,6 +2049,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(mismatched.update_verification_attempted)
         self.assertFalse(mismatched.update_verification_success)
         self.assertGreater(len(mismatched.update_verification_mismatches), 0)
+        self.assertTrue(any(item["status"] == "NEEDS_CORRECTION" for item in mismatched.update_results))
         self.assertIn("read-back verification", mismatched.error_message or "")
 
     def test_partial_form_success_is_refreshed_and_only_remaining_form_is_retried(self):

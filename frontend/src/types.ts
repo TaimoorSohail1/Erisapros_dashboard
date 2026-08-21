@@ -245,6 +245,15 @@ export interface FTWilliamsReview {
   update_attempted_count?: number;
   update_confirmed_count?: number;
   update_remaining_count?: number;
+  update_results?: Array<{
+    field_id?: string | null;
+    tag?: string | null;
+    label: string;
+    form_type?: string | null;
+    sent_value?: string | null;
+    status: "VERIFIED" | "NEEDS_CORRECTION" | string;
+    reason?: string | null;
+  }>;
   update_retry_count?: number;
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
