@@ -1,9 +1,12 @@
-import { FolderSync, LayoutDashboard, ListChecks, ShieldCheck } from "lucide-react";
+import { Columns3, FolderSync, LayoutDashboard, ListChecks, ShieldCheck } from "lucide-react";
 import { NavLink } from "../router";
 import { FTWilliamsNotifications } from "./FTWilliamsNotifications";
 import { authenticationEnabled, signOut } from "../auth";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const filingReviewPath = typeof window !== "undefined" && window.location.pathname.startsWith("/filings/")
+    ? window.location.pathname
+    : null;
   return (
     <div className="shell">
       <header className="topbar">
@@ -16,6 +19,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="nav">
           <NavLink to="/" end><LayoutDashboard size={18} /> Dashboard</NavLink>
+          {filingReviewPath ? <NavLink to={filingReviewPath}><Columns3 size={18} /> FTW Review</NavLink> : null}
           <NavLink to="/field-rules"><ListChecks size={18} /> Field Rules</NavLink>
           <NavLink to="/sharefile"><FolderSync size={18} /> ShareFile Intake</NavLink>
         </nav>

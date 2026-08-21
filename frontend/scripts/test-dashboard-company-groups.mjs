@@ -49,5 +49,20 @@ assert.match(
   /\.dashboard-company-toggle:focus-visible/,
   "Company toggles should have a visible keyboard focus state.",
 );
+assert.match(
+  styles,
+  /\.shell:has\(\.dashboard-ops\)\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;/,
+  "Desktop dashboard layout should use the shell's real viewport row instead of a fixed offset.",
+);
+assert.match(
+  styles,
+  /\.dashboard-ops\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;/,
+  "Dashboard content should fill the remaining shell height without overflowing it.",
+);
+assert.doesNotMatch(
+  styles,
+  /--dashboard-shell-offset|height:\s*calc\(100dvh - var\(--dashboard-shell-offset\)\)/,
+  "Dashboard height must not depend on a duplicated hard-coded shell offset.",
+);
 
 console.log("Dashboard company grouping checks passed.");

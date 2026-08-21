@@ -233,14 +233,11 @@ class MongoRepository(Repository):
             "created_at": 1,
             "updated_at": 1,
         }
-        docs = await (
-            self.db.filings.find(
-                {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
-                projection,
-            )
-            .sort("created_at", -1)
-            .to_list(100)
-        )
+        cursor = self.db.filings.find(
+            {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
+            projection,
+        ).sort("created_at", -1)
+        docs = [document async for document in cursor]
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def get_filing(self, filing_id: str) -> Filing | None:

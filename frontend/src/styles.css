@@ -2551,7 +2551,8 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 .field-modal-scrim {
-  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+  background: rgba(15, 23, 42, 0.5);
   border: 0;
   cursor: pointer;
   height: 100%;
@@ -2562,28 +2563,31 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .field-review-modal {
   display: grid;
-  gap: 18px;
+  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   max-height: calc(100vh - 48px);
-  max-width: 720px;
-  overflow: auto;
-  padding: 26px;
+  max-width: 680px;
+  overflow: hidden;
+  padding: 0;
   position: relative;
-  width: min(720px, 96vw);
+  width: min(680px, 96vw);
   z-index: 1;
 }
 
 .field-review-modal-head {
   align-items: flex-start;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
   border-bottom: 1px solid #e2e8f0;
   display: flex;
   gap: 18px;
   justify-content: space-between;
-  padding-bottom: 18px;
+  padding: 20px 24px 18px;
 }
 
 .field-review-modal-head h2 {
   color: #102033;
-  font-size: 24px;
+  font-size: 22px;
+  font-weight: 850;
   line-height: 1.22;
   margin: 0;
   max-width: 680px;
@@ -2594,7 +2598,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .field-review-pills > span:not(.badge):not(.field-status) {
@@ -2610,8 +2614,10 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .field-review-modal-grid {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
+  overflow: auto;
+  padding: 20px 24px;
 }
 
 .field-review-modal-grid-simple {
@@ -2620,8 +2626,100 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .modal-values-grid {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-review-values-block {
+  border-top: 0;
+  gap: 12px;
+  padding-top: 0;
+}
+
+.field-review-block-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.field-review-block-heading p {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.field-review-value-card {
+  border: 1px solid #dce3ea;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.field-review-value-source {
+  background: #f8fafc;
+}
+
+.field-review-value-proposed {
+  background: #f0fdf7;
+  border-color: #b7ead2;
+}
+
+.field-review-value-label {
+  align-items: center;
+  color: #475569;
+  display: flex;
+  font-size: 10.5px;
+  font-weight: 900;
+  gap: 6px;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.field-review-value-label svg {
+  color: #07875f;
+}
+
+.field-review-value-card .text-input {
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 650;
+  min-height: 42px;
+}
+
+.field-review-value-card .text-input:disabled {
+  color: #334155;
+  opacity: 1;
+}
+
+.field-review-insights {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+}
+
+.field-review-insight-card {
+  background: #f8fafc;
+  border: 1px solid #dce3ea;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px 14px;
+}
+
+.field-review-insight-card .inspector-confidence-head span {
+  margin-bottom: 0;
+}
+
+.field-review-rule-card .rule-match-row {
+  gap: 8px;
+}
+
+.field-review-rule-card .rule-match-row p {
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .field-edit-hint {
@@ -2648,17 +2746,30 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .field-review-modal-actions {
   align-items: center;
+  background: #f8fafc;
   border-top: 1px solid #e2e8f0;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
-  padding-top: 18px;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 14px 24px;
 }
 
-.field-review-modal-actions .button:first-child {
-  min-width: 160px;
+.field-review-action-group {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.field-review-modal-actions .button {
+  font-size: 12px;
   justify-content: center;
+  min-height: 38px;
+}
+
+.field-review-primary-actions .button:last-child {
+  min-width: 156px;
 }
 
 .field-inspector.empty {
@@ -2950,6 +3061,23 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
   .modal-values-grid {
     grid-template-columns: 1fr;
+  }
+
+  .field-review-insights {
+    grid-template-columns: 1fr;
+  }
+
+  .field-review-modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .field-review-action-group {
+    width: 100%;
+  }
+
+  .field-review-action-group .button {
+    flex: 1 1 auto;
   }
 }
 
@@ -7058,6 +7186,17 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 /* Dashboard command center refinement */
+.shell:has(.dashboard-ops) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell:has(.dashboard-ops) .main {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 1fr;
@@ -7192,12 +7331,11 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 .dashboard-ops {
-  --dashboard-shell-offset: 128px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: calc(100dvh - var(--dashboard-shell-offset));
-  min-height: min(620px, calc(100dvh - var(--dashboard-shell-offset)));
+  height: 100%;
+  min-height: 0;
 }
 
 .dashboard-ops .dashboard-v2-hero {
@@ -8234,6 +8372,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 }
 
 @media (max-width: 980px) {
+  .shell:has(.dashboard-ops) {
+    height: auto;
+    min-height: 100dvh;
+    overflow: auto;
+  }
+
+  .shell:has(.dashboard-ops) .main {
+    overflow: visible;
+  }
+
   .topbar {
     align-items: stretch;
     flex-direction: column;
@@ -8779,4 +8927,1288 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .branded-loader-mark > svg {
     animation-duration: 2.4s;
   }
+}
+
+/* Compact filing review workspace */
+.approval-workspace {
+  gap: 12px;
+  padding-bottom: 24px;
+}
+
+.approval-step {
+  appearance: none;
+  background: #fff;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  min-height: 76px;
+  padding: 10px 12px;
+  text-align: left;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.approval-step:hover {
+  background: #f8fafc;
+}
+
+.approval-step:focus-visible {
+  box-shadow: inset 0 0 0 3px rgba(5, 150, 105, 0.24);
+  outline: 0;
+}
+
+.approval-step.step-active:hover {
+  background: #fff7d6;
+}
+
+.approval-step-index {
+  height: 36px;
+  width: 36px;
+}
+
+.approval-summary-strip {
+  gap: 10px;
+}
+
+.approval-summary-card {
+  gap: 4px;
+  min-height: 82px;
+  padding: 12px 14px;
+}
+
+.approval-summary-card strong {
+  font-size: 18px;
+}
+
+.approval-preview-shell .approval-table-wrap {
+  max-height: min(620px, calc(100vh - 350px));
+  min-height: 180px;
+  overflow: auto;
+}
+
+.approval-decision-table th {
+  padding: 10px 12px;
+}
+
+.approval-decision-table td {
+  font-size: 13px;
+  padding: 10px 12px;
+}
+
+.approval-preview-footer {
+  padding: 10px 16px;
+}
+
+/* Focused workflow step dialog */
+.workflow-dialog-backdrop {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.46);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 80;
+}
+
+.workflow-dialog {
+  background: #fff;
+  border: 1px solid #dce3ea;
+  border-radius: 14px;
+  box-shadow: 0 28px 72px rgba(15, 23, 42, 0.24);
+  display: flex;
+  flex-direction: column;
+  max-height: min(780px, calc(100vh - 48px));
+  overflow: hidden;
+  width: min(720px, 100%);
+}
+
+.workflow-dialog > header {
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 16px 18px;
+}
+
+.workflow-dialog > header h2 {
+  color: #102033;
+  font-size: 20px;
+  margin: 2px 0 0;
+}
+
+.workflow-dialog-number {
+  align-items: center;
+  background: #fef3c7;
+  border-radius: 999px;
+  color: #b45309;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 900;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.workflow-dialog-body {
+  display: grid;
+  gap: 16px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.workflow-dialog > footer {
+  align-items: center;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 18px;
+}
+
+.workflow-detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workflow-detail {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.workflow-detail span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.workflow-detail strong {
+  color: #102033;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-status {
+  align-items: flex-start;
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  color: #065f46;
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+}
+
+.workflow-status.warn {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.workflow-dialog-actions,
+.workflow-result-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-result-list {
+  display: grid;
+}
+
+.workflow-result-list > div {
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: flex;
+  gap: 9px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+/* Technical details live in a secondary right drawer. */
+.technical-drawer-backdrop {
+  background: rgba(15, 23, 42, 0.38);
+  display: flex;
+  inset: 0;
+  justify-content: flex-end;
+  position: fixed;
+  z-index: 85;
+}
+
+.technical-review-drawer {
+  background: #f8fafc;
+  box-shadow: -22px 0 62px rgba(15, 23, 42, 0.2);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 100%;
+  width: min(760px, 100%);
+}
+
+.technical-review-drawer > header {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.technical-review-drawer > header h2 {
+  color: #102033;
+  font-size: 20px;
+  margin: 0;
+}
+
+.technical-drawer-toolbar {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 18px;
+}
+
+.technical-drawer-body {
+  display: grid;
+  gap: 12px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.technical-drawer-body .ftw-technical-panel,
+.technical-drawer-body details {
+  background: #fff;
+}
+
+@media (max-width: 1100px) {
+  .approval-stepper {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .approval-step:nth-child(3) {
+    border-right: 0;
+  }
+
+  .approval-step:nth-child(-n + 3) {
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .approval-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .approval-summary-card:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 680px) {
+  .approval-workspace {
+    gap: 9px;
+  }
+
+  .approval-stepper,
+  .approval-summary-strip,
+  .workflow-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-step,
+  .approval-step:nth-child(3) {
+    border-bottom: 1px solid #e2e8f0;
+    border-right: 0;
+    min-height: 64px;
+  }
+
+  .approval-step:last-child {
+    border-bottom: 0;
+  }
+
+  .approval-summary-card:first-child {
+    grid-column: auto;
+  }
+
+  .review-primary-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .review-primary-actions .button,
+  .review-primary-actions .review-approved-badge {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .workflow-dialog-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .workflow-dialog {
+    border-radius: 14px 14px 0 0;
+    max-height: 92vh;
+    width: 100%;
+  }
+
+  .technical-review-drawer {
+    width: 100%;
+  }
+}
+
+/* Exact compact FTW comparison workspace parity. */
+.shell:has(.approval-workspace-page) {
+  grid-template-rows: 46px minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell:has(.approval-workspace-page) .topbar {
+  gap: 14px;
+  height: 46px;
+  min-height: 46px;
+  padding: 0 18px;
+}
+
+.shell:has(.approval-workspace-page) .topbar-brand {
+  gap: 8px;
+  min-width: 142px;
+}
+
+.shell:has(.approval-workspace-page) .topbar-brand-mark {
+  border-radius: 999px;
+  height: 28px;
+  width: 28px;
+}
+
+.shell:has(.approval-workspace-page) .topbar-brand-mark svg { height: 14px; width: 14px; }
+.shell:has(.approval-workspace-page) .topbar .brand { font-size: 14px; line-height: 1; }
+.shell:has(.approval-workspace-page) .topbar .subtle { color: #52637a; font-size: 8px; margin-top: 3px; }
+
+.shell:has(.approval-workspace-page) .topbar .nav {
+  border-radius: 8px;
+  gap: 1px;
+  min-height: 32px;
+  padding: 2px;
+}
+
+.shell:has(.approval-workspace-page) .topbar .nav a {
+  border-radius: 6px;
+  font-size: 9px;
+  gap: 5px;
+  min-height: 27px;
+  padding: 0 9px;
+}
+
+.shell:has(.approval-workspace-page) .topbar .nav a svg { height: 12px; width: 12px; }
+.shell:has(.approval-workspace-page) .topbar-actions { gap: 6px; }
+.shell:has(.approval-workspace-page) .topbar-actions .button,
+.shell:has(.approval-workspace-page) .topbar-status,
+.shell:has(.approval-workspace-page) .ftw-notification-trigger {
+  font-size: 9px;
+  min-height: 28px;
+  padding: 0 9px;
+}
+
+.shell:has(.approval-workspace-page) .main {
+  min-height: 0;
+  overflow: hidden;
+  padding: 10px 18px 8px;
+}
+
+.approval-workspace-page {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.approval-workspace-page .approval-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+}
+
+.approval-workspace-page .approval-progress-card {
+  background: #fff;
+  border: 1px solid #dce3ea;
+  border-radius: 6px;
+  display: grid;
+  flex: 0 0 56px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  height: 56px;
+  min-height: 56px;
+  overflow: hidden;
+}
+
+.approval-workflow-source {
+  align-items: center;
+  border-right: 1px solid #dce3ea;
+  color: #344256;
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.approval-workflow-source span,
+.approval-workflow-source strong {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.approval-workflow-source span {
+  background: #f4f1ff;
+  border-radius: 5px;
+  color: #54509a;
+  padding: 5px 6px;
+}
+
+.approval-workflow-source i { color: #10a27a; font-style: normal; }
+.approval-workflow-source strong { color: #1c2d43; font-size: 11px; }
+
+.approval-workspace-page .approval-stepper {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  height: 56px;
+  min-height: 56px;
+}
+
+.approval-workspace-page .approval-step {
+  align-items: center;
+  border: 0;
+  border-right: 1px solid #e5eaf0;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 26px minmax(0, 1fr) 5px;
+  height: 56px;
+  min-height: 56px;
+  padding: 5px 9px;
+}
+
+.approval-workspace-page .approval-step:last-child { border-right: 0; }
+.approval-workspace-page .approval-step-index { font-size: 10px; height: 26px; width: 26px; }
+.approval-workspace-page .approval-step-index svg { height: 10px; width: 10px; }
+.approval-workspace-page .approval-step > div { min-width: 0; }
+.approval-workspace-page .approval-step strong { color: #14243a; font-size: 11px; line-height: 1.15; }
+.approval-workspace-page .approval-step small { color: #526177; font-size: 9px; line-height: 1.25; margin-top: 2px; }
+.approval-workspace-page .approval-step em { display: none; }
+.approval-workspace-page .approval-step i { border-width: 1px 1px 0 0; height: 4px; width: 4px; }
+
+.approval-workspace-page .approval-preview-shell {
+  background: #fff;
+  border: 1px solid #dce3ea;
+  border-radius: 6px;
+  box-shadow: none;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.approval-workspace-page .compact-review-header {
+  align-items: center;
+  display: flex;
+  flex: 0 0 58px;
+  gap: 10px;
+  height: 58px;
+  min-height: 58px;
+  padding: 0 10px;
+}
+
+.compact-review-file {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.compact-review-file strong {
+  color: #112238;
+  display: block;
+  font-size: 13px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-review-meta {
+  display: grid;
+  flex: 0 0 340px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  height: 28px;
+}
+
+.compact-review-meta > span {
+  border-left: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 9px;
+}
+
+.compact-review-meta small {
+  color: #526177;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.compact-review-meta strong { color: #102033; font-size: 12px; line-height: 1.15; margin-top: 3px; }
+.compact-review-toolbar { align-items: center; display: flex; flex: 0 0 auto; gap: 5px; }
+.compact-review-toolbar .review-primary-actions { flex-wrap: nowrap; gap: 5px; width: auto; }
+.compact-review-toolbar .review-primary-actions .button,
+.compact-review-toolbar .review-primary-actions .review-approved-badge,
+.compact-review-toolbar > .button {
+  border-radius: 5px;
+  font-size: 10.5px;
+  gap: 4px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.compact-review-toolbar .review-primary-actions svg,
+.compact-review-toolbar > .button svg { height: 11px; width: 11px; }
+
+.approval-workspace-page .approval-count-tabs {
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  flex: 0 0 48px;
+  gap: 6px;
+  height: 48px;
+  padding: 0 10px;
+}
+
+.approval-workspace-page .approval-count-tabs button {
+  border-radius: 5px;
+  font-size: 10.5px;
+  gap: 4px;
+  height: 29px;
+  min-height: 29px;
+  padding: 0 8px;
+}
+
+.approval-workspace-page .approval-count-tabs button svg { height: 10px; width: 10px; }
+.approval-workspace-page .approval-count-tabs strong { font-size: 9px; height: 19px; min-width: 19px; }
+
+.approval-workspace-page .approval-filter-row {
+  align-items: center;
+  border-bottom: 1px solid #dfe5ec;
+  display: flex;
+  flex: 0 0 50px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  height: 50px;
+  overflow: visible;
+  padding: 0 10px;
+}
+
+.approval-workspace-page .review-filter-dropdown { min-width: 105px; width: 105px; }
+.approval-workspace-page .review-filter-dropdown .filter-dropdown-trigger {
+  border-radius: 5px;
+  font-size: 10.5px;
+  gap: 4px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 7px;
+}
+
+.approval-workspace-page .filter-dropdown-label { color: #526177; font-size: 9px; }
+.approval-workspace-page .filter-dropdown-trigger strong { color: #17283e; font-size: 10.5px; }
+.approval-workspace-page .filter-dropdown-trigger svg { height: 10px; width: 10px; }
+.approval-workspace-page .approval-filter-row > .button {
+  border-radius: 5px;
+  font-size: 10.5px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.approval-workspace-page .approval-filter-row > .button svg { height: 10px; width: 10px; }
+.compact-table-search {
+  box-sizing: border-box;
+  flex: 0 0 220px;
+  height: 32px;
+  margin-left: auto;
+  min-width: 180px;
+  min-height: 32px;
+  overflow: hidden;
+  padding: 0 9px;
+  width: 220px;
+}
+
+.compact-table-search input {
+  background: transparent;
+  color: #132238;
+  font-size: 11px;
+  height: 100%;
+  line-height: 1.2;
+  min-height: 0;
+  padding: 0;
+}
+.compact-table-search svg { height: 10px; width: 10px; }
+
+.approval-workspace-page .approval-table-wrap {
+  flex: 1 1 auto;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
+}
+
+.approval-workspace-page .approval-decision-table {
+  min-width: 980px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.approval-workspace-page .approval-decision-table th {
+  background: #f8fafc;
+  color: #26384f;
+  font-size: 10px;
+  font-weight: 900;
+  height: 34px;
+  letter-spacing: .035em;
+  padding: 0 12px;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 3;
+}
+
+.approval-workspace-page .approval-decision-table td {
+  color: #132238;
+  font-size: 12px;
+  height: 76px;
+  line-height: 1.4;
+  padding: 11px 12px;
+  vertical-align: middle;
+}
+
+.approval-workspace-page .approval-decision-table th:nth-child(1),
+.approval-workspace-page .approval-decision-table td:nth-child(1) { width: 21%; }
+.approval-workspace-page .approval-decision-table th:nth-child(2),
+.approval-workspace-page .approval-decision-table td:nth-child(2) { width: 15%; }
+.approval-workspace-page .approval-decision-table th:nth-child(3),
+.approval-workspace-page .approval-decision-table td:nth-child(3) { width: 15%; }
+.approval-workspace-page .approval-decision-table th:nth-child(4),
+.approval-workspace-page .approval-decision-table td:nth-child(4) { width: 29%; }
+.approval-workspace-page .approval-decision-table th:nth-child(5),
+.approval-workspace-page .approval-decision-table td:nth-child(5) { width: 20%; }
+
+.approval-workspace-page .approval-decision-table td strong { color: #0f1f33; font-size: 12.5px; line-height: 1.3; }
+.approval-workspace-page .approval-decision-table td small { color: #46566b; font-size: 10px; line-height: 1.4; margin-top: 4px; }
+.approval-workspace-page .muted-value { color: #526177; font-size: 11px; }
+.approval-workspace-page .proposed-value-button {
+  border-radius: 4px;
+  font-size: 11px;
+  height: 35px;
+  min-height: 35px;
+  padding: 0 10px;
+}
+
+.approval-workspace-page .proposed-value-button svg { height: 11px; width: 11px; }
+.approval-workspace-page .proposed-cell .decision-actions {
+  gap: 3px;
+  justify-content: flex-start;
+  margin-top: 2px;
+}
+
+.approval-workspace-page .proposed-cell .decision-actions button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #21334b;
+  font-size: 10px;
+  font-weight: 800;
+  min-height: 24px;
+  padding: 3px 8px;
+}
+
+.approval-workspace-page .proposed-cell .decision-actions button:hover,
+.approval-workspace-page .proposed-cell .decision-actions button.active {
+  background: #d9f8e9;
+  color: #087354;
+}
+
+.approval-workspace-page .proposed-cell .decision-actions button:disabled { cursor: not-allowed; opacity: .45; }
+.approval-workspace-page .review-issue-pill { font-size: 10px; line-height: 1; padding: 6px 8px; }
+.approval-workspace-page .approval-preview-footer {
+  align-items: center;
+  display: flex;
+  color: #394b63;
+  flex: 0 0 40px;
+  font-size: 10px;
+  font-weight: 800;
+  height: 40px;
+  justify-content: space-between;
+  padding: 0 10px;
+}
+
+.approval-workspace-page .compact-table-pagination {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.approval-workspace-page .compact-table-pagination button {
+  background: #fff;
+  border: 1px solid #d8e0ea;
+  border-radius: 5px;
+  color: #26364f;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  font-size: 10px;
+  height: 28px;
+  width: 28px;
+}
+
+.approval-workspace-page .compact-table-pagination button.active {
+  background: #087d5d;
+  border-color: #087d5d;
+  color: #fff;
+}
+
+.approval-workspace-page .compact-table-pagination button:disabled {
+  background: #eef2f7;
+  color: #a4afbf;
+  cursor: default;
+}
+
+@media (max-width: 1180px) {
+  .approval-workspace-page .approval-progress-card { grid-template-columns: 165px minmax(0, 1fr); }
+  .compact-review-meta { flex-basis: 230px; }
+  .compact-review-toolbar .review-primary-actions .button span { display: none; }
+  .approval-workspace-page .review-filter-dropdown { min-width: 92px; width: 92px; }
+  .compact-table-search { flex-basis: 180px; width: 180px; }
+}
+
+@media (max-width: 820px) {
+  .shell:has(.approval-workspace-page) { height: auto; min-height: 100dvh; overflow: auto; }
+  .shell:has(.approval-workspace-page) .topbar { overflow-x: auto; }
+  .shell:has(.approval-workspace-page) .main { min-height: calc(100dvh - 46px); overflow: auto; }
+  .approval-workspace-page { height: auto; min-height: calc(100dvh - 64px); overflow: visible; }
+  .approval-workspace-page .approval-progress-card { display: block; height: 56px; min-height: 56px; overflow-x: auto; }
+  .approval-workflow-source { display: none; }
+  .approval-workspace-page .approval-stepper { grid-template-columns: repeat(6, minmax(118px, 1fr)); min-width: 708px; }
+  .approval-workspace-page .compact-review-header { align-items: flex-start; flex-wrap: wrap; height: auto; min-height: 106px; padding: 8px 10px; }
+  .compact-review-file { flex-basis: 100%; }
+  .compact-review-meta { flex: 1 1 100%; }
+  .compact-review-toolbar { flex: 1 1 100%; justify-content: flex-end; min-width: 0; }
+  .compact-review-toolbar .review-primary-actions { justify-content: flex-end; }
+  .approval-workspace-page .approval-filter-row { overflow-x: auto; overflow-y: hidden; }
+  .compact-table-search { min-width: 180px; }
+  .approval-workspace-page .approval-preview-shell { min-height: 0; }
+  .approval-workspace-page .approval-table-wrap {
+    flex: 0 1 auto;
+    height: auto;
+    max-height: none;
+    min-height: 360px;
+  }
+}
+
+/* Prototype-parity workflow dialogs: one focused task, quiet progress, clear footer. */
+.workflow-dialog-backdrop {
+  background: rgba(31, 41, 55, 0.52);
+  padding: 20px;
+}
+
+.workflow-dialog {
+  border: 1px solid #d7e0e9;
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  height: min(620px, calc(100dvh - 40px));
+  max-height: min(620px, calc(100dvh - 40px));
+  overflow: hidden;
+  position: relative;
+  width: min(590px, calc(100vw - 40px));
+}
+
+.workflow-dialog::before {
+  display: none;
+}
+
+.workflow-dialog > header {
+  background: #fff;
+  border-radius: 12px 12px 0 0;
+  gap: 12px;
+  min-height: 76px;
+  padding: 14px 16px;
+  position: relative;
+  z-index: 2;
+}
+
+.workflow-dialog > header small {
+  color: #66758b;
+  display: block;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.workflow-dialog > header h2 {
+  font-size: 20px;
+  line-height: 1.2;
+  margin-top: 5px;
+}
+
+.workflow-dialog-number {
+  background: #fff7dc;
+  color: #b77905;
+  font-size: 15px;
+  height: 42px;
+  width: 42px;
+}
+
+.workflow-dialog > header .icon-button {
+  background: #fff;
+  border: 2px solid #172033;
+  border-radius: 999px;
+  color: #172033;
+  height: 36px;
+  min-height: 36px;
+  width: 36px;
+}
+
+.workflow-dialog-body {
+  align-content: start;
+  background: #fff;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.workflow-status-pill {
+  align-self: flex-start;
+  background: #fff4ce;
+  border-radius: 999px;
+  color: #9a6500;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
+.workflow-status-pill-success {
+  background: #dcf8e9;
+  color: #087354;
+}
+
+.workflow-status-pill-neutral {
+  background: #edf1f6;
+  color: #5c6b80;
+}
+
+.workflow-schedule-select {
+  background: #f8fbfd;
+  border: 1px solid #cbd6e2;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.workflow-schedule-label {
+  color: #24364d;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.workflow-schedule-trigger {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #aebdca;
+  border-radius: 8px;
+  color: #142238;
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 10px;
+  height: 44px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.workflow-schedule-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-schedule-trigger svg {
+  flex: 0 0 auto;
+}
+
+.workflow-schedule-trigger:hover {
+  background: #fbfefd;
+  border-color: #7f91a5;
+}
+
+.workflow-schedule-trigger:focus-visible {
+  border-color: #07936c;
+  box-shadow: 0 0 0 3px rgba(7, 147, 108, .14);
+  outline: 0;
+}
+
+.workflow-schedule-trigger:disabled {
+  background: #eef3f7;
+  color: #77879a;
+  cursor: not-allowed;
+}
+
+.workflow-schedule-menu {
+  background: #fff;
+  border: 1px solid #cbd6e2;
+  border-radius: 8px;
+  display: grid;
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 4px;
+  width: 100%;
+}
+
+.workflow-schedule-menu > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #142238;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.workflow-schedule-menu > button:hover,
+.workflow-schedule-menu > button.selected {
+  background: #eaf8f2;
+  color: #065f46;
+}
+
+.workflow-schedule-menu > button > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workflow-schedule-menu strong,
+.workflow-schedule-menu small {
+  overflow-wrap: anywhere;
+}
+
+.workflow-schedule-menu strong {
+  font-size: 12px;
+}
+
+.workflow-schedule-menu small {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.workflow-schedule-menu svg {
+  color: #07875f;
+  flex: 0 0 auto;
+}
+
+.workflow-schedule-select small,
+.workflow-dialog-footer-note {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.workflow-explanation {
+  color: #3f4f65;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.workflow-step-activity {
+  display: grid;
+}
+
+.workflow-step-activity h3 {
+  border-bottom: 1px solid #dfe6ee;
+  color: #27384f;
+  font-size: 12px;
+  margin: 0;
+  padding: 0 0 8px;
+}
+
+.workflow-step-activity > div {
+  align-items: center;
+  border-bottom: 1px solid #e8edf3;
+  color: #52637a;
+  display: flex;
+  font-size: 11px;
+  gap: 9px;
+  min-height: 34px;
+  padding: 7px 2px;
+}
+
+.workflow-step-activity > div > span {
+  background: #11b981;
+  border-radius: 999px;
+  flex: 0 0 6px;
+  height: 6px;
+  width: 6px;
+}
+
+.workflow-dialog-actions {
+  gap: 7px;
+}
+
+.workflow-dialog .workflow-dialog-actions .button,
+.workflow-dialog > footer .button {
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
+.workflow-dialog .workflow-result-list {
+  gap: 6px;
+}
+
+.workflow-dialog .workflow-result-list > div {
+  border-radius: 6px;
+  font-size: 11px;
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.workflow-review-center {
+  display: grid;
+  gap: 10px;
+}
+
+.workflow-review-panel {
+  background: #f8fafc;
+  border: 1px solid #dbe3ec;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.workflow-review-panel > header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.workflow-review-panel > header > span {
+  align-items: center;
+  background: #eef2f7;
+  border-radius: 999px;
+  color: #64748b;
+  display: inline-flex;
+  flex: 0 0 34px;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.workflow-review-panel > header > span.attention,
+.workflow-verification-panel.attention > header > span {
+  background: #fff1c7;
+  color: #a86700;
+}
+
+.workflow-review-panel > header > span.complete,
+.workflow-verification-panel.complete > header > span {
+  background: #dcf8e9;
+  color: #087354;
+}
+
+.workflow-review-panel > header > div {
+  min-width: 0;
+}
+
+.workflow-review-panel > header small {
+  color: #66758b;
+  display: block;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .055em;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+}
+
+.workflow-review-panel > header strong {
+  color: #172033;
+  display: block;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.workflow-review-panel > p {
+  color: #52637a;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.workflow-user-review-panel {
+  background: #f5fffb;
+  border-color: #b9ead7;
+}
+
+.workflow-verification-panel.complete {
+  background: #f2fcf7;
+  border-color: #b9ead7;
+}
+
+.workflow-verification-panel.attention {
+  background: #fffaf0;
+  border-color: #f4d58d;
+}
+
+.workflow-review-metrics {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workflow-review-metrics > span {
+  background: rgba(255, 255, 255, .82);
+  border: 1px solid #dfe6ee;
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.workflow-review-metrics small {
+  color: #718096;
+  font-size: 9px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.workflow-review-metrics strong {
+  color: #172033;
+  font-size: 15px;
+}
+
+.workflow-verification-results {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+}
+
+.workflow-verification-results summary {
+  color: #34445b;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.workflow-verification-results > div {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.workflow-verification-results article {
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #64748b;
+  display: flex;
+  gap: 7px;
+  padding: 7px 8px;
+}
+
+.workflow-verification-results article.verified { color: #07815d; }
+.workflow-verification-results article.needs-correction { color: #b45309; }
+
+.workflow-verification-results article > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workflow-verification-results article strong {
+  color: #26364d;
+  font-size: 10px;
+}
+
+.workflow-verification-results article small {
+  color: #718096;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.workflow-dialog > footer {
+  background: #f8fafc;
+  border-radius: 0 0 12px 12px;
+  justify-content: space-between;
+  min-height: 54px;
+  padding: 10px 16px;
+}
+
+.workflow-dialog-footer-note {
+  max-width: 72%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .workflow-dialog-backdrop { align-items: flex-end; padding: 0; }
+  .workflow-dialog {
+    border-radius: 14px 14px 0 0;
+    height: min(650px, 94dvh);
+    max-height: 94dvh;
+    width: 100%;
+  }
+  .workflow-dialog::before { display: none; }
+  .workflow-dialog > header { border-radius: 14px 14px 0 0; }
+  .workflow-dialog > footer { border-radius: 0; }
+  .workflow-dialog-footer-note { max-width: 62%; }
 }
