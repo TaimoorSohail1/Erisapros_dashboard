@@ -602,6 +602,7 @@ class FTWilliamsReview(BaseModel):
     update_attempted_count: int = 0
     update_confirmed_count: int = 0
     update_remaining_count: int = 0
+    update_results: list[dict] = Field(default_factory=list)
     update_retry_count: int = 0
     edit_check_request_xml: str | None = None
     edit_check_response_xml: str | None = None

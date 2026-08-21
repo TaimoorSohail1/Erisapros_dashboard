@@ -1,7 +1,8 @@
+import asyncio
 import re
 
 from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType
-from app.services.extractor import ExtractionService
+from app.services.extractor import ExtractionService, local_schedule_a_pdf_result
 from app.services.field_rule_admin import FieldRuleService
 from app.services.field_rules import find_rule_for_field, normalize_name, rules_for_form_type
 
@@ -14,12 +15,29 @@ async def run_field_rule_qa(
     *,
     extractor=None,
     rule_set_version: str = "",
+    qa_timeout_seconds: float | None = None,
 ) -> dict:
     """Run extraction and mapping diagnostics without creating a filing or sending XML."""
     form_type = FormType.FORM_5500 if document_type == DocumentType.PLAN_WORKSHEET else FormType.SCHEDULE_A
     relevant_rules = rules_for_form_type(form_type, rules)
     extraction_service = extractor or ExtractionService(relevant_rules)
-    extraction = await extraction_service.extract_document(file_bytes, file_name, document_type)
+    extraction_call = extraction_service.extract_document(file_bytes, file_name, document_type)
+    try:
+        extraction = (
+            await asyncio.wait_for(extraction_call, timeout=qa_timeout_seconds)
+            if qa_timeout_seconds and qa_timeout_seconds > 0
+            else await extraction_call
+        )
+    except TimeoutError:
+        if document_type != DocumentType.SCHEDULE_A:
+            raise
+        extraction = local_schedule_a_pdf_result(
+            file_bytes,
+            file_name,
+            provider="Local parser after GroundX QA timeout",
+            rules=relevant_rules,
+        )
+        extraction.provider = f"{extraction.provider} after GroundX QA timeout"
 
     fields: list[dict] = []
     for extracted in extraction.fields:

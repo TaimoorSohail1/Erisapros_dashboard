@@ -3061,19 +3061,23 @@ class ShareFileService:
         path_parts = [part for part in file_item.get("path_parts", []) if part]
         if not path_parts:
             return None
-        for part in path_parts:
-            if self._is_year_filing_segment(part):
-                index = path_parts.index(part)
-                if index > 1 and "5500" in path_parts[index - 1].lower():
-                    return path_parts[index - 2]
-                return path_parts[index - 1] if index > 0 else path_parts[0]
+        year_indexes = [
+            index
+            for index, part in enumerate(path_parts)
+            if self._is_year_filing_segment(part)
+        ]
+        if year_indexes:
+            index = year_indexes[-1]
+            if index > 1 and "5500" in path_parts[index - 1].lower():
+                return path_parts[index - 2]
+            return path_parts[index - 1] if index > 0 else path_parts[0]
         for index, part in enumerate(path_parts):
             if "5500" in part.lower() and index > 0:
                 return path_parts[index - 1]
         return path_parts[0]
 
     def _filing_year_for(self, file_item: dict) -> str | None:
-        for part in file_item.get("path_parts", []):
+        for part in reversed(file_item.get("path_parts", [])):
             match = re.search(r"\b(20\d{2})\b", str(part))
             if match:
                 return match.group(1)

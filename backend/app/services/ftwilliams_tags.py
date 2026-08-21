@@ -330,6 +330,11 @@ def values_meaningfully_different(
         proposed_indicator = _one_two_indicator_value(proposed)
         if current_indicator and proposed_indicator:
             return current_indicator != proposed_indicator
+    if tag and tag.endswith("Ind"):
+        current_indicator = _zero_one_indicator_value(current)
+        proposed_indicator = _zero_one_indicator_value(proposed)
+        if current_indicator is not None and proposed_indicator is not None:
+            return current_indicator != proposed_indicator
     if _looks_numeric(current) and _looks_numeric(proposed):
         current_number = _parse_decimal(current)
         proposed_number = _parse_decimal(proposed)
@@ -349,6 +354,19 @@ def _one_two_indicator_value(value: str) -> str | None:
         "n": "2",
         "no": "2",
         "false": "2",
+    }.get(value.strip().casefold())
+
+
+def _zero_one_indicator_value(value: str) -> str | None:
+    return {
+        "1": "1",
+        "y": "1",
+        "yes": "1",
+        "true": "1",
+        "0": "0",
+        "n": "0",
+        "no": "0",
+        "false": "0",
     }.get(value.strip().casefold())
 
 

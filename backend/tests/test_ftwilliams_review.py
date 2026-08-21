@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService
-from app.services.ftwilliams_tags import resolve_ftw_tag
+from app.services.ftwilliams_tags import resolve_ftw_tag, values_meaningfully_different
 from app.services.xml_builder import build_proposed_ftw_xml, build_single_document_update_xml
 
 
@@ -993,6 +993,11 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_zero_one_schedule_a_indicators_compare_to_yes_no_values(self) -> None:
+        self.assertFalse(values_meaningfully_different("1", "Yes", tag="HealthInd"))
+        self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
+        self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
+
     def setUp(self):
         repositories._repository = repositories.MemoryRepository()
 
@@ -2033,6 +2038,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.update_attempted_count, 2)
         self.assertEqual(review.update_confirmed_count, 2)
         self.assertEqual(review.update_remaining_count, 0)
+        self.assertEqual(len(review.update_results), 2)
+        self.assertTrue(all(item["status"] == "VERIFIED" for item in review.update_results))
+        self.assertTrue(all(item.get("label") and item.get("sent_value") for item in review.update_results))
 
         mismatched = run_async(
             FTWilliamsReviewService(VerifyingFTWilliamsService(reflect_updates=False)).approve_and_update(
@@ -2046,6 +2054,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(mismatched.update_verification_attempted)
         self.assertFalse(mismatched.update_verification_success)
         self.assertGreater(len(mismatched.update_verification_mismatches), 0)
+        self.assertTrue(any(item["status"] == "NEEDS_CORRECTION" for item in mismatched.update_results))
         self.assertIn("read-back verification", mismatched.error_message or "")
 
     def test_partial_form_success_is_refreshed_and_only_remaining_form_is_retried(self):

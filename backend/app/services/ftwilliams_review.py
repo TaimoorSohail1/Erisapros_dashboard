@@ -1698,6 +1698,17 @@ class FTWilliamsReviewService:
             raise ValueError(error_message)
 
         attempted_field_keys = self._changed_field_keys(review)
+        attempted_fields = {
+            self._comparison_field_key(field): {
+                "field_id": field.field_id,
+                "tag": field.ftw_tag,
+                "label": field.label,
+                "form_type": field.form_type.value if field.form_type else None,
+                "sent_value": field.proposed_value,
+            }
+            for field in review.fields
+            if field.changed and field.update_included
+        }
         attempted_count = len(attempted_field_keys)
         response_parts: list[str] = []
         retry_count = 0
@@ -1761,7 +1772,8 @@ class FTWilliamsReviewService:
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
-        remaining_count = self._remaining_attempted_count(attempted_field_keys, reconciled)
+        remaining_field_keys = self._remaining_attempted_keys(attempted_field_keys, reconciled)
+        remaining_count = len(remaining_field_keys)
         confirmed_count = max(0, attempted_count - remaining_count)
         if attempted_count and remaining_count == 0 and reconciled.current_query_success:
             success = True
@@ -1780,6 +1792,23 @@ class FTWilliamsReviewService:
         review.update_attempted_count = attempted_count
         review.update_confirmed_count = confirmed_count
         review.update_remaining_count = remaining_count
+        mismatches_by_tag = {
+            str(item.get("tag") or ""): item
+            for item in verification_mismatches
+            if item.get("tag")
+        }
+        review.update_results = [
+            {
+                **attempted_fields[key],
+                "status": "NEEDS_CORRECTION" if key in remaining_field_keys else "VERIFIED",
+                "reason": (
+                    mismatches_by_tag.get(str(attempted_fields[key].get("tag") or ""), {}).get("reason")
+                    or ("FT Williams still returns a different value." if key in remaining_field_keys else "Confirmed by FT Williams read-back.")
+                ),
+            }
+            for key in attempted_field_keys
+            if key in attempted_fields
+        ]
         review.update_retry_count = retry_count
         review.error_message = error_message
         review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
@@ -1865,17 +1894,18 @@ class FTWilliamsReviewService:
         }
 
     def _remaining_attempted_count(self, attempted_keys: set[str], review: FTWilliamsReview) -> int:
+        return len(self._remaining_attempted_keys(attempted_keys, review))
+
+    def _remaining_attempted_keys(self, attempted_keys: set[str], review: FTWilliamsReview) -> set[str]:
         refreshed_by_key = {
             self._comparison_field_key(field): field
             for field in review.fields
         }
-        return len(
-            [
-                key
-                for key in attempted_keys
-                if key not in refreshed_by_key or refreshed_by_key[key].changed
-            ]
-        )
+        return {
+            key
+            for key in attempted_keys
+            if key not in refreshed_by_key or refreshed_by_key[key].changed
+        }
 
     async def _verify_update_readback(self, review: FTWilliamsReview) -> dict:
         all_request_xmls: list[str] = []
