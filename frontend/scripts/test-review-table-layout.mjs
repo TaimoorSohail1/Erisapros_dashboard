@@ -51,6 +51,11 @@ assert.match(
 );
 assert.match(
   source,
+  /<details className="review-more-actions">[\s\S]*?ftwCurrentLoaded \? \([\s\S]*?Query FTW Current[\s\S]*?\) : null/,
+  "Query FTW Current must remain available under More actions after current FTW data has loaded.",
+);
+assert.match(
+  source,
   /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
   "Approval must remain available with unresolved fields once processing and Schedule A selection are complete.",
 );

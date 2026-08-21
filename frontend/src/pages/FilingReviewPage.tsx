@@ -1393,6 +1393,11 @@ function ReviewPrimaryActions({
       <details className="review-more-actions">
         <summary>More actions</summary>
         <div>
+          {ftwCurrentLoaded ? (
+            <button type="button" disabled={busy || queryBusy} onClick={onQuery}>
+              <Search size={15} /> {queryBusy ? "Fetching FTW..." : "Query FTW Current"}
+            </button>
+          ) : null}
           <button type="button" disabled={busy || rulesBusy} onClick={onReEvaluate}>
             <Sparkles size={15} /> {rulesBusy ? "Re-evaluating..." : "Re-evaluate rules"}
           </button>
