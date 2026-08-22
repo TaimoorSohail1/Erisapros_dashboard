@@ -5,8 +5,13 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 
 assert.match(
   styles,
-  /\.dashboard-ops\s*\{[^}]*height:\s*calc\(100dvh\s*-\s*var\(--dashboard-shell-offset\)\)/s,
-  "Dashboard should size itself from the available viewport height.",
+  /\.shell:has\(\.dashboard-ops\)\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;/s,
+  "Dashboard shell should use the real viewport height.",
+);
+assert.match(
+  styles,
+  /\.dashboard-ops\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;/s,
+  "Dashboard should fill the shell's remaining viewport row.",
 );
 assert.match(
   styles,

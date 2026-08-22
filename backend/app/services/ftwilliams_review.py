@@ -133,6 +133,8 @@ class FTWilliamsReviewService:
         schedule_a_records: list[dict] = []
         error_message: str | None = self._authoritative_plan_lookup_error(plan_lookup)
         current_query_success = False
+        current_query_complete: bool | None = None
+        current_query_failed = False
         current_year_exists = False
         bring_forward_required = False
         comparison_year: str | None = None
@@ -156,6 +158,7 @@ class FTWilliamsReviewService:
             schedule_a_candidates = list(existing_review.schedule_a_candidates or [])
             schedule_a_records = list(existing_review.schedule_a_records or [])
             current_query_success = existing_review.current_query_success
+            current_query_complete = existing_review.current_query_complete
             current_year_exists = existing_review.current_year_exists
             bring_forward_required = existing_review.bring_forward_required
             comparison_year = existing_review.comparison_year
@@ -185,10 +188,25 @@ class FTWilliamsReviewService:
                 schedule_a_records = query_result["schedule_a_records"]
                 error_message = query_result["error_message"]
                 current_query_success = query_result["current_query_success"]
+                current_query_complete = query_result["current_query_complete"]
+                current_query_failed = query_result["current_query_failed"]
                 current_year_exists = query_result["current_year_exists"]
                 bring_forward_required = query_result["bring_forward_required"]
                 comparison_year = query_result["comparison_year"]
                 comparison_year_source = query_result["comparison_year_source"]
+                if query_result["current_query_failed"] and existing_review and self._review_has_valid_current_snapshot(existing_review):
+                    form_5500_current = dict(existing_review.form_5500_current_values)
+                    schedule_a_current = dict(existing_review.schedule_a_current_values)
+                    schedule_a_candidates = list(existing_review.schedule_a_candidates or [])
+                    schedule_a_records = list(existing_review.schedule_a_records or [])
+                    current_query_success = False
+                    current_query_complete = False
+                    current_year_exists = existing_review.current_year_exists
+                    bring_forward_required = False
+                    comparison_year = existing_review.comparison_year
+                    comparison_year_source = existing_review.comparison_year_source
+                    preservation_note = "FT Williams current data could not be refreshed; the last valid snapshot was preserved for safety."
+                    error_message = "; ".join(filter(None, [preservation_note, error_message]))
 
         selected_schedule_desc = None
         if matched_schedule_a:
@@ -324,6 +342,7 @@ class FTWilliamsReviewService:
             configured=configured,
             current_query_sent=send_queries or bool(existing_review and existing_review.current_query_sent),
             current_query_success=current_query_success,
+            current_query_complete=current_query_complete,
             current_year_exists=current_year_exists,
             bring_forward_required=bring_forward_required,
             ftw_editable=ftw_editability["editable"],
@@ -336,7 +355,17 @@ class FTWilliamsReviewService:
             schedule_a_match=(
                 self._schedule_match_payload(matched_schedule_a, fields)
                 if matched_schedule_a
-                else ((existing_review.schedule_a_match or None) if existing_review else None)
+                else (
+                    (existing_review.schedule_a_match or None)
+                    if existing_review
+                    and (
+                        not send_queries
+                        or current_query_failed
+                        or str((existing_review.schedule_a_match or {}).get("source") or "").upper()
+                        in {"MANUAL", "NEW_SCHEDULE_A"}
+                    )
+                    else None
+                )
             ),
             schedule_a_candidates=schedule_a_candidates,
             schedule_a_records=schedule_a_records,
@@ -384,7 +413,7 @@ class FTWilliamsReviewService:
         await repo.update_filing(filing_id, filing_contract_updates)
         if (
             existing_review
-            and existing_review.status == FTWilliamsReviewStatus.UPDATE_FAILED
+            and existing_review.status in {FTWilliamsReviewStatus.UPDATE_FAILED, FTWilliamsReviewStatus.UPDATE_UNKNOWN}
             and send_queries
             and review.current_query_success
             and not review.error_message
@@ -400,7 +429,7 @@ class FTWilliamsReviewService:
                 AuditLog(
                     filing_id=filing_id,
                     event="FTWILLIAMS_UPDATE_FAILURE_CLEARED",
-                    message="Previous FT Williams update failure was cleared after rebuilding or refreshing the review preview.",
+                    message="Previous FT Williams update issue was cleared after rebuilding or refreshing the review preview.",
                     details={
                         "send_queries": send_queries,
                         "review_status": review.status,
@@ -1388,8 +1417,11 @@ class FTWilliamsReviewService:
         expects_form_5500 = any(field.form_type == FormType.FORM_5500 for field in fields)
         expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
         missing_required_record = (
-            (expects_schedule_a and not result["schedule_a_candidates"])
-            or (not expects_schedule_a and expects_form_5500 and not result["form_5500_current"])
+            not result["current_query_failed"]
+            and (
+                (expects_schedule_a and not result["schedule_a_candidates"])
+                or (not expects_schedule_a and expects_form_5500 and not result["form_5500_current"])
+            )
         )
         current_year_exists = bool(
             result["schedule_a_candidates"]
@@ -1441,7 +1473,10 @@ class FTWilliamsReviewService:
             )
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
             if not matched_schedule_a:
-                schedule_a_error = "Multiple FT Williams Schedule A records were found, but none clearly matched the extracted carrier/contract."
+                schedule_a_error = (
+                    "FT Williams Schedule A records were found, but none safely matched the extracted "
+                    "carrier, EIN, NAIC, or contract. Select the correct existing record or create a new Schedule A."
+                )
         else:
             schedule_a_error = schedule_a_error or "Schedule A query did not return a usable current schedule."
         if schedule_a_error:
@@ -1453,6 +1488,10 @@ class FTWilliamsReviewService:
         has_required_current = (not expects_form_5500 or bool(form_5500_current)) and (
             not expects_schedule_a or bool(schedule_a_current)
         )
+        current_query_failed = bool(
+            (expects_form_5500 and snapshot["form_5500_query_failed"])
+            or (expects_schedule_a and snapshot["schedule_a_query_failed"])
+        )
 
         return {
             "query_request_xmls": query_request_xmls,
@@ -1463,8 +1502,9 @@ class FTWilliamsReviewService:
             "schedule_a_candidates": schedule_a_candidates,
             "schedule_a_records": schedule_a_records,
             "error_message": error_message,
-            "current_query_success": has_any_current,
-            "current_query_complete": has_required_current,
+            "current_query_success": has_any_current and not current_query_failed,
+            "current_query_complete": has_required_current and not current_query_failed,
+            "current_query_failed": current_query_failed,
         }
 
     async def _current_data_snapshot(self, query_payload_base: dict, *, reuse: bool) -> dict:
@@ -1483,7 +1523,8 @@ class FTWilliamsReviewService:
             _CURRENT_DATA_SNAPSHOT_INFLIGHT[key] = task
         try:
             snapshot = await task
-            _CURRENT_DATA_SNAPSHOT_CACHE[key] = (time.monotonic(), deepcopy(snapshot))
+            if not snapshot["form_5500_query_failed"] and not snapshot["schedule_a_query_failed"]:
+                _CURRENT_DATA_SNAPSHOT_CACHE[key] = (time.monotonic(), deepcopy(snapshot))
             return deepcopy(snapshot)
         finally:
             if reuse and _CURRENT_DATA_SNAPSHOT_INFLIGHT.get(key) is task:
@@ -1503,12 +1544,14 @@ class FTWilliamsReviewService:
         if query_5500.success and query_5500.statuses:
             form_5500_current = query_5500.statuses[0].query_results
             form_5500_error = None
+            form_5500_query_failed = False
         else:
             form_5500_error = (
                 query_5500.error
                 or self._status_error(query_5500.statuses)
                 or "Form 5500 query did not succeed."
             )
+            form_5500_query_failed = not self._response_explicitly_reports_missing(query_5500)
 
         schedule_statuses, schedule_request_xmls, schedule_response_xmls, schedule_a_error = (
             await self._query_schedule_a_statuses(query_payload_base)
@@ -1520,8 +1563,10 @@ class FTWilliamsReviewService:
             "query_response_xmls": query_response_xmls,
             "form_5500_current": form_5500_current,
             "form_5500_error": form_5500_error,
+            "form_5500_query_failed": form_5500_query_failed,
             "schedule_statuses": schedule_statuses,
             "schedule_a_error": schedule_a_error,
+            "schedule_a_query_failed": bool(schedule_a_error),
         }
 
     def _current_data_snapshot_key(self, query_payload_base: dict) -> tuple[str, ...]:
@@ -1534,6 +1579,23 @@ class FTWilliamsReviewService:
             str(query_payload_base.get("plan_id") or ""),
             str(query_payload_base.get("year") or ""),
         )
+
+    @staticmethod
+    def _review_has_valid_current_snapshot(review: FTWilliamsReview) -> bool:
+        return bool(
+            review.current_year_exists
+            and (
+                review.form_5500_current_values
+                or review.schedule_a_current_values
+                or review.schedule_a_records
+                or review.schedule_a_candidates
+            )
+        )
+
+    @staticmethod
+    def _response_explicitly_reports_missing(response) -> bool:
+        statuses = list(response.statuses or [])
+        return bool(statuses) and all(str(status.error_code or "") == "59" for status in statuses)
 
     async def _query_schedule_a_statuses(self, query_payload_base: dict) -> tuple[list[FTWilliamsStatusItem], list[str], list[str], str | None]:
         request_xmls: list[str] = []
@@ -1652,12 +1714,23 @@ class FTWilliamsReviewService:
         # Rebuild the outbound XML immediately before sending. FT Williams treats
         # Schedule A updates as a full replacement set, so sending stale XML that
         # only contains the selected schedule can remove the other Schedule A rows.
-        review = await self.prepare_review(filing_id, send_queries=refresh_current_before_update)
+        existing_review = await repo.get_ftwilliams_review(filing_id)
+        can_reuse_current_snapshot = bool(
+            refresh_current_before_update
+            and existing_review
+            and existing_review.current_query_success
+            and existing_review.current_query_complete is not False
+        )
+        review = await self.prepare_review(
+            filing_id,
+            send_queries=refresh_current_before_update,
+            reuse_current_snapshot=can_reuse_current_snapshot,
+        )
         if not review.configured:
             error_message = "FT Williams endpoint and KeyID must be configured before sending approved updates."
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
-        if not review.current_query_success:
+        if not review.current_query_success or review.current_query_complete is False:
             error_message = review.error_message or "Current FT Williams data must be queried successfully before sending approved updates."
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
@@ -1697,19 +1770,6 @@ class FTWilliamsReviewService:
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
 
-        attempted_field_keys = self._changed_field_keys(review)
-        attempted_fields = {
-            self._comparison_field_key(field): {
-                "field_id": field.field_id,
-                "tag": field.ftw_tag,
-                "label": field.label,
-                "form_type": field.form_type.value if field.form_type else None,
-                "sent_value": field.proposed_value,
-            }
-            for field in review.fields
-            if field.changed and field.update_included
-        }
-        attempted_count = len(attempted_field_keys)
         response_parts: list[str] = []
         retry_count = 0
         success = False
@@ -1720,32 +1780,60 @@ class FTWilliamsReviewService:
         verification_mismatches: list[dict] = []
         verification_request_xml: str | None = None
         verification_response_xml: str | None = None
-        working_review = review
+        responses = await self._send_update_payload(review)
+        sent_form_types = {
+            FormType.FORM_5500
+            for response in responses
+            if response.operation == "update_5500"
+        } | {
+            FormType.SCHEDULE_A
+            for response in responses
+            if response.operation == "update_schedule_a"
+        }
+        attempted_fields = {
+            self._comparison_field_key(field): {
+                "field_id": field.field_id,
+                "tag": field.ftw_tag,
+                "label": field.label,
+                "form_type": field.form_type.value if field.form_type else None,
+                "sent_value": field.proposed_value,
+            }
+            for field in review.fields
+            if field.changed and field.update_included and field.form_type in sent_form_types
+        }
+        attempted_field_keys = set(attempted_fields)
+        attempted_count = len(attempted_field_keys)
+        response_parts.extend(
+            response.raw_response or response.error or ""
+            for response in responses
+            if response.raw_response or response.error
+        )
+        ftw_accepted = bool(responses) and all(response.success for response in responses)
+        error_message = None if ftw_accepted else "; ".join(
+            filter(None, [response.error or self._status_error(response.statuses) for response in responses])
+        )
 
-        for attempt in range(2):
-            payload_fingerprint = self._update_payload_fingerprint(working_review)
-            responses = await self._send_update_payload(working_review)
-            response_parts.extend(
-                response.raw_response or response.error or ""
-                for response in responses
-                if response.raw_response or response.error
-            )
-            ftw_accepted = bool(responses) and all(response.success for response in responses)
-            error_message = None if ftw_accepted else "; ".join(
-                filter(None, [response.error or self._status_error(response.statuses) for response in responses])
+        if any(self._update_response_is_ambiguous(response) for response in responses):
+            return await self._record_ambiguous_update(
+                repo,
+                filing_id,
+                review,
+                attempted_fields,
+                attempted_field_keys,
+                responses,
             )
 
-            if ftw_accepted:
-                clear_ftw_current_snapshot_cache()
-                verification = await self._verify_update_readback(working_review)
-                verification_attempted = True
-                verification_success = bool(verification["success"])
-                verification_mismatches = verification["mismatches"]
-                verification_request_xml = verification["request_xml"]
-                verification_response_xml = verification["response_xml"]
-                if verification_success:
-                    success = True
-                    break
+        if ftw_accepted:
+            clear_ftw_current_snapshot_cache()
+            verification = await self._verify_update_readback(review)
+            verification_attempted = True
+            verification_success = bool(verification["success"])
+            verification_mismatches = verification["mismatches"]
+            verification_request_xml = verification["request_xml"]
+            verification_response_xml = verification["response_xml"]
+            if verification_success:
+                success = True
+            else:
                 mismatch_fields = ", ".join(
                     str(item.get("tag") or item.get("form") or "field")
                     for item in verification_mismatches[:8]
@@ -1754,21 +1842,6 @@ class FTWilliamsReviewService:
                     "FT Williams accepted the update, but read-back verification did not match the sent values"
                     f" ({mismatch_fields or 'updated fields'})."
                 )
-
-            clear_ftw_current_snapshot_cache()
-            refreshed = await self.prepare_review(filing_id, send_queries=True)
-            refreshed_fingerprint = self._update_payload_fingerprint(refreshed)
-            can_retry_remaining = bool(
-                attempt == 0
-                and refreshed.current_query_success
-                and self._has_update_payload(refreshed)
-                and refreshed_fingerprint != payload_fingerprint
-            )
-            working_review = refreshed
-            if can_retry_remaining:
-                retry_count = 1
-                continue
-            break
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
@@ -1862,21 +1935,21 @@ class FTWilliamsReviewService:
     async def _send_update_payload(self, review: FTWilliamsReview) -> list:
         responses = []
         if review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500:
-            responses.append(await self.ftwilliams.send_xml("update_5500", review.update_xml_5500))
+            form_response = await self.ftwilliams.send_xml("update_5500", review.update_xml_5500)
+            responses.append(form_response)
+            if not form_response.success or self._update_response_is_ambiguous(form_response):
+                return responses
         if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
             responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
         return responses
 
     @staticmethod
-    def _has_update_payload(review: FTWilliamsReview) -> bool:
-        return bool(
-            (review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500)
-            or (review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
-        )
-
-    @staticmethod
-    def _update_payload_fingerprint(review: FTWilliamsReview) -> tuple[str, str]:
-        return (str(review.update_xml_5500 or ""), str(review.update_xml_schedule_a or ""))
+    def _update_response_is_ambiguous(response) -> bool:
+        if not response.sent or response.http_status is None or not 200 <= response.http_status < 300:
+            return False
+        raw_response = str(response.raw_response or "").strip()
+        parse_failed = any(str(status.error_code or "") == "PARSE_ERROR" for status in response.statuses or [])
+        return not raw_response or parse_failed
 
     @staticmethod
     def _comparison_field_key(field: FTWilliamsComparisonField) -> str:
@@ -2282,6 +2355,84 @@ class FTWilliamsReviewService:
                 "error_message": error_message,
             },
         )
+
+    async def _record_ambiguous_update(
+        self,
+        repo,
+        filing_id: str,
+        review: FTWilliamsReview,
+        attempted_fields: dict,
+        attempted_field_keys: set[str],
+        responses: list,
+    ) -> FTWilliamsReview:
+        error_details = "; ".join(
+            filter(
+                None,
+                [response.error or self._status_error(response.statuses) for response in responses],
+            )
+        )
+        error_message = (
+            "FT Williams received the update request, but its response was empty or malformed, so the update "
+            "could not be confirmed. The last valid FT Williams snapshot was preserved; verify the result before retrying."
+        )
+        if error_details:
+            error_message = f"{error_message} {error_details}"
+
+        review = review.model_copy(deep=True)
+        review.status = FTWilliamsReviewStatus.UPDATE_UNKNOWN
+        review.current_query_success = False
+        review.bring_forward_required = False
+        review.update_response_xml = "\n\n".join(
+            filter(
+                None,
+                [response.raw_response or response.error or self._status_error(response.statuses) for response in responses],
+            )
+        ) or None
+        review.update_verification_attempted = False
+        review.update_verification_success = None
+        review.update_verification_mismatches = []
+        review.update_attempted_count = len(attempted_field_keys)
+        review.update_confirmed_count = 0
+        review.update_remaining_count = len(attempted_field_keys)
+        review.update_retry_count = 0
+        review.update_results = [
+            {
+                **attempted_fields[key],
+                "status": "VERIFICATION_REQUIRED",
+                "reason": "FT Williams returned no usable confirmation. Verify the current value before retrying.",
+            }
+            for key in attempted_field_keys
+            if key in attempted_fields
+        ]
+        review.error_message = error_message
+        review.client_error = self._normalize_review_error(error_message, review.fields)
+        await repo.upsert_ftwilliams_review(review)
+        await repo.update_filing(
+            filing_id,
+            {
+                "status": FilingStatus.FAILED,
+                "approved_at": None,
+                "error_message": error_message,
+            },
+        )
+        await repo.add_event(ReviewEvent(filing_id=filing_id, type="APPROVE_AND_FTW_UPDATE", reason=""))
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_UPDATE_UNKNOWN",
+                message="FT Williams update outcome requires verification.",
+                details={
+                    "error": error_message,
+                    "update_attempted_count": len(attempted_field_keys),
+                    "update_confirmed_count": 0,
+                    "update_remaining_count": len(attempted_field_keys),
+                    "update_retry_count": 0,
+                    "verification_attempted": False,
+                    "verification_success": None,
+                },
+            )
+        )
+        return review
 
     def _normalize_review_error(
         self,
@@ -2774,8 +2925,6 @@ class FTWilliamsReviewService:
         candidates = [status for status in statuses if status.query_results]
         if not candidates:
             return statuses[0] if statuses else None
-        if len(candidates) == 1:
-            return candidates[0]
         scored = sorted(
             ((self._schedule_match_details(fields, status), status) for status in candidates),
             key=lambda item: (item[0]["score"], item[0]["strong_matches"], item[0]["filled"]),
@@ -2800,7 +2949,15 @@ class FTWilliamsReviewService:
                 )
                 if preferred_is_current_best:
                     return preferred_status
-        if top_match["score"] <= 0:
+        safe_identity_match = bool(
+            top_match["strong_matches"] > 0
+            or "Carrier name" in top_match["reasons"]
+        )
+        if (
+            top_match["score"] <= 0
+            or not safe_identity_match
+            or self._schedule_identity_conflicts(fields, top_status)
+        ):
             return None
         if (
             len(scored) > 1
@@ -3561,6 +3718,8 @@ class FTWilliamsReviewService:
 
     def _preferred_schedule_a_sequence(self, review: FTWilliamsReview | None) -> str | None:
         if not review or not review.schedule_a_match:
+            return None
+        if str(review.schedule_a_match.get("source") or "").upper() != "MANUAL":
             return None
         value = review.schedule_a_match.get("ftw_seq_no")
         return str(value) if value else None

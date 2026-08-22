@@ -74,6 +74,7 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                     created_at=datetime.utcnow() - timedelta(hours=2),
                 )
             )
+
             await repo.add_audit(
                 AuditLog(
                     filing_id=filing.id,
@@ -267,6 +268,33 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                 )
             )
 
+            unknown = await repo.create_filing(
+                Filing(
+                    file_name="Unverified Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/unverified",
+                    intake_source="SHAREFILE",
+                    status=FilingStatus.FAILED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=unknown.id,
+                    status=FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+                    current_query_success=False,
+                    error_message="FT Williams accepted the request but returned no verifiable response.",
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=unknown.id,
+                    event="FTWILLIAMS_UPDATE_UNKNOWN",
+                    message="FT Williams update requires verification.",
+                    details={"error": "FT Williams accepted the request but returned no verifiable response."},
+                )
+            )
+
             resolved = await repo.create_filing(
                 Filing(
                     file_name="Resolved Schedule A.pdf",
@@ -306,11 +334,13 @@ class FTWilliamsHistoryTests(unittest.TestCase):
             return await failure_queue()
 
         response = run_async(scenario())
-        self.assertEqual(response.total, 1)
-        self.assertEqual(response.items[0].filing_name, "Failed Schedule A.pdf")
-        self.assertEqual(response.items[0].failure_reason, "FT Williams rejected the update.")
-        self.assertEqual(response.items[0].attempted_field_count, 1)
-        self.assertEqual(response.items[0].company_employer_id, "12-3456789")
+        self.assertEqual(response.total, 2)
+        by_name = {item.filing_name: item for item in response.items}
+        self.assertEqual(by_name["Failed Schedule A.pdf"].failure_reason, "FT Williams rejected the update.")
+        self.assertEqual(by_name["Failed Schedule A.pdf"].attempted_field_count, 1)
+        self.assertEqual(by_name["Failed Schedule A.pdf"].company_employer_id, "12-3456789")
+        self.assertEqual(by_name["Unverified Schedule A.pdf"].review_status, FTWilliamsReviewStatus.UPDATE_UNKNOWN)
+        self.assertEqual(by_name["Unverified Schedule A.pdf"].last_action_label, "Verification required")
 
     def test_failure_queue_batches_filing_and_failed_audit_reads(self):
         class CountingRepository(repositories.MemoryRepository):

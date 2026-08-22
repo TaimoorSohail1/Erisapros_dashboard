@@ -84,6 +84,7 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_READY = "UPDATE_READY"
     UPDATE_SENT = "UPDATE_SENT"
     UPDATE_FAILED = "UPDATE_FAILED"
+    UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
 class ScheduleAContractType(str, Enum):
@@ -558,6 +559,7 @@ class FTWilliamsReview(BaseModel):
     configured: bool = False
     current_query_sent: bool = False
     current_query_success: bool = False
+    current_query_complete: bool | None = None
     current_year_exists: bool = False
     bring_forward_required: bool = False
     ftw_editable: bool | None = None

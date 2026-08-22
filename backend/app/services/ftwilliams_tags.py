@@ -142,6 +142,7 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
 
 FORM_5500_UNSUPPORTED_UPDATE_RULES = {
     "form_5500_part_i_1a_plan_name",
+    "form_5500_part_i_1d_plan_sponsor_name",
     "form_5500_part_i_1e_plan_sponsor_ein",
     "form_5500_part_i_1f_plan_sponsor_address",
     "form_5500_part_i_2a_plan_administrator_name",
