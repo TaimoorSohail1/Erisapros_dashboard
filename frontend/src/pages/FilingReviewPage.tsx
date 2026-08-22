@@ -143,6 +143,7 @@ export function FilingReviewPage() {
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
+  const ftwSendInFlightRef = useRef(false);
   const pollingPaused = ftwBusy || ftwSendBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
   const shouldPollReview = !pollingPaused && isProcessingStatus(filing?.status ?? "UPLOADED");
 
@@ -267,11 +268,13 @@ export function FilingReviewPage() {
   const ftwCurrentLoaded = Boolean(
     ftwReview?.configured &&
     ftwReview.current_query_success &&
+    ftwReview.current_query_complete !== false &&
     ftwReview.current_year_exists &&
     !bringForwardRequired &&
     (form5500CurrentLoaded || scheduleACurrentLoaded),
   );
   const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
+  const ftwUpdateUnknown = ftwReview?.status === "UPDATE_UNKNOWN";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
@@ -281,6 +284,7 @@ export function FilingReviewPage() {
     ftwSendStatusReady &&
     ftwReview?.configured &&
     ftwReview.current_query_success &&
+    ftwReview.current_query_complete !== false &&
     ftwReview.ftw_editable !== false &&
     form5500SafetyReady &&
     scheduleASafetyReady,
@@ -293,9 +297,9 @@ export function FilingReviewPage() {
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.client_error || null;
   const filingClientError = filing?.status === "FAILED" && filing.error_message ? clientErrorFromRaw(filing.error_message, "Processing") : null;
-  const ftwFailed = !bringForwardRequired && Boolean(clientError || filing?.ftw_review?.status === "UPDATE_FAILED");
+  const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
-  const scheduleSelectionRequired = scheduleCandidates.length > 1 && !ftwReview?.schedule_a_match;
+  const scheduleSelectionRequired = scheduleCandidates.length > 0 && !ftwReview?.schedule_a_match;
 
   useEffect(() => {
     if (!toast) return;
@@ -582,7 +586,8 @@ export function FilingReviewPage() {
   }
 
   async function sendFtwUpdate() {
-    if (!id) return;
+    if (!id || ftwSendInFlightRef.current) return;
+    ftwSendInFlightRef.current = true;
     setFtwBusy(true);
     setFtwSendBusy(true);
     setMessage("");
@@ -624,6 +629,7 @@ export function FilingReviewPage() {
         message: errorMessage,
       });
     } finally {
+      ftwSendInFlightRef.current = false;
       setFtwBusy(false);
       setFtwSendBusy(false);
     }
@@ -725,6 +731,7 @@ export function FilingReviewPage() {
               <ReviewPrimaryActions
                 approvalBlocked={approvalBlocked}
                 approvalReady={!isProcessing && !scheduleSelectionRequired}
+                bringForwardRequired={bringForwardRequired}
                 busy={reviewInteractionBusy}
                 decisionAction={decisionAction}
                 filingStatus={filing.status}
@@ -736,6 +743,7 @@ export function FilingReviewPage() {
                 rulesBusy={rulesBusy}
                 xmlBusy={xmlBusy}
                 onApprove={handleApproveClick}
+                onOpenBringForward={openFtwBringForward}
                 onPreviewXml={rebuildXml}
                 onQuery={() => prepareFtw(true)}
                 onReEvaluate={reEvaluateWithLatestRules}
@@ -1047,12 +1055,19 @@ function WorkflowStepper({
   const processing = isProcessingStatus(filing.status ?? "UPLOADED") && !(filing.fields || []).length;
   const ftwQuerying = filing.status === "QUERYING_FTW_CURRENT";
   const ftwLoaded = Boolean(filing.ftw_review?.current_query_success);
+  const ftwScheduleMatch = Boolean(filing.ftw_review?.schedule_a_match);
+  const ftwScheduleNeedsDecision = Boolean(
+    ftwLoaded
+    && !filing.ftw_review?.schedule_a_match
+    && ((filing.ftw_review?.schedule_a_candidates || []).length || filing.ftw_review?.bring_forward_required),
+  );
+  const ftwScheduleStatus = ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
   const approved = filing.status === "APPROVED";
   const updateSent = filing.ftw_review?.status === "UPDATE_SENT";
   const steps = [
     { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
     { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
-    { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
+    { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwScheduleNeedsDecision ? "active" : ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
     { key: "REVIEW" as const, label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
     { key: "APPROVAL" as const, label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : "active" },
     { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
@@ -1072,7 +1087,7 @@ function WorkflowStepper({
             </span>
             <div>
               <strong>{step.label}</strong>
-              <small>{step.state === "done" ? "Complete" : step.state === "active" ? "Needs review" : step.state === "locked" ? "Locked" : "Pending"}</small>
+              <small>{step.key === "FTW_LOADED" && ftwScheduleStatus ? ftwScheduleStatus : step.state === "done" ? "Complete" : step.state === "active" ? "Needs review" : step.state === "locked" ? "Locked" : "Pending"}</small>
               <em>{step.detail}</em>
             </div>
             {index < steps.length - 1 ? <i /> : null}
@@ -1173,6 +1188,7 @@ function FilingGuidancePanel({
 function ReviewPrimaryActions({
   approvalBlocked,
   approvalReady,
+  bringForwardRequired,
   busy,
   decisionAction,
   filingStatus,
@@ -1180,6 +1196,7 @@ function ReviewPrimaryActions({
   ftwReadyToSend,
   ftwSendBusy,
   onApprove,
+  onOpenBringForward,
   onPreviewXml,
   onQuery,
   onReEvaluate,
@@ -1194,6 +1211,7 @@ function ReviewPrimaryActions({
 }: {
   approvalBlocked: boolean;
   approvalReady: boolean;
+  bringForwardRequired: boolean;
   busy: boolean;
   decisionAction: "approve" | "reject" | "unapprove" | null;
   filingStatus: string;
@@ -1201,6 +1219,7 @@ function ReviewPrimaryActions({
   ftwReadyToSend: boolean;
   ftwSendBusy: boolean;
   onApprove: () => void;
+  onOpenBringForward: () => void;
   onPreviewXml: () => void;
   onQuery: () => void;
   onReEvaluate: () => void;
@@ -1217,6 +1236,11 @@ function ReviewPrimaryActions({
   const failed = filingStatus === "FAILED";
   return (
     <div className="review-primary-actions" aria-label="Filing actions">
+      {bringForwardRequired ? (
+        <button className="button button-warn" type="button" disabled={busy} onClick={onOpenBringForward}>
+          <ExternalLink size={16} /> Open FTW Bring Forward
+        </button>
+      ) : null}
       <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
         {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
       </button>
@@ -1303,6 +1327,21 @@ function WorkflowDetailDialog({
     return currentIndex >= 0 ? String(currentIndex) : "";
   });
   const selectedSchedule = selectedScheduleIndex === "" ? null : scheduleCandidates[Number(selectedScheduleIndex)] || null;
+  const scheduleMatchSelected = Boolean(review?.schedule_a_match);
+  const scheduleDecisionRequired = Boolean(
+    (review?.current_query_success || ftwCurrentLoaded)
+    && !scheduleMatchSelected
+    && (scheduleCandidates.length || review?.bring_forward_required),
+  );
+  const matchSource = textValue(review?.schedule_a_match?.source).toUpperCase();
+  const recommendedSequence = scheduleMatchSelected && !["MANUAL", "NEW_SCHEDULE_A"].includes(matchSource)
+    ? currentScheduleSequence
+    : "";
+  const selectedScheduleScore = textValue(selectedSchedule?.score) || textValue(review?.schedule_a_match?.score) || "Not scored";
+  const rawMatchReasons = review?.schedule_a_match?.match_reasons;
+  const selectedScheduleReasons = Array.isArray(rawMatchReasons)
+    ? rawMatchReasons.map(textValue).filter(Boolean).join(", ")
+    : "";
   const selectedScheduleLabel = selectedSchedule
     ? textValue(selectedSchedule.carrier) || textValue(selectedSchedule.description) || `FTW sequence ${textValue(selectedSchedule.ftw_seq_no)}`
     : currentScheduleSequence
@@ -1368,11 +1407,33 @@ function WorkflowDetailDialog({
 
           {step === "FTW_LOADED" ? (
             <>
-              <WorkflowStatus tone={ftwCurrentLoaded ? "success" : "warning"} label={ftwCurrentLoaded ? "FTW current data loaded" : "Processing"} />
+              <WorkflowStatus
+                tone={scheduleDecisionRequired || !ftwCurrentLoaded ? "warning" : "success"}
+                label={scheduleMatchSelected ? "Best match selected" : scheduleDecisionRequired ? "Needs your decision" : ftwCurrentLoaded ? "FTW current data loaded" : "Processing"}
+              />
+              {scheduleMatchSelected ? (
+                <div className="workflow-schedule-match-summary">
+                  <span><CheckCircle2 aria-hidden="true" size={14} /> Selected Schedule A</span>
+                  <strong>{selectedScheduleLabel}</strong>
+                  <small>
+                    <span>Match score {selectedScheduleScore}</span>
+                    {selectedScheduleReasons ? <span>Matched by {selectedScheduleReasons}</span> : null}
+                  </small>
+                </div>
+              ) : scheduleDecisionRequired && review?.bring_forward_required ? (
+                <p className="workflow-schedule-decision-note">
+                  FT Williams has no current Schedule A for this filing. Complete Bring Forward in FT Williams, then refresh the current data.
+                </p>
+              ) : scheduleDecisionRequired ? (
+                <p className="workflow-schedule-decision-note">
+                  FT Williams returned {scheduleCandidates.length} possible Schedule A {scheduleCandidates.length === 1 ? "record" : "records"}, but none passed the safe identity match. Choose the correct record to continue.
+                </p>
+              ) : null}
               {scheduleCandidates.length ? (
                 <WorkflowScheduleSelect
                   busy={busy}
                   candidates={scheduleCandidates}
+                  recommendedSequence={recommendedSequence}
                   selectedIndex={selectedScheduleIndex}
                   onChange={handleScheduleChange}
                 />
@@ -1395,7 +1456,7 @@ function WorkflowDetailDialog({
             <>
               <WorkflowStatus tone={actionRequiredCount ? "warning" : "success"} label={actionRequiredCount ? "Needs review" : "Review complete"} />
               {scheduleCandidates.length ? (
-                <WorkflowScheduleSelect busy={busy} candidates={scheduleCandidates} selectedIndex={selectedScheduleIndex} onChange={handleScheduleChange} />
+                <WorkflowScheduleSelect busy={busy} candidates={scheduleCandidates} recommendedSequence={recommendedSequence} selectedIndex={selectedScheduleIndex} onChange={handleScheduleChange} />
               ) : null}
               <WorkflowReviewCenter
                 actionRequiredCount={actionRequiredCount}
@@ -1421,7 +1482,10 @@ function WorkflowDetailDialog({
 
           {step === "FTW_UPDATE" ? (
             <>
-              <WorkflowStatus tone={review?.status === "UPDATE_SENT" ? "success" : ftwReadyToSend ? "warning" : "neutral"} label={review?.status === "UPDATE_SENT" ? "Update verified" : ftwReadyToSend ? "Ready to send" : "Waiting for approval and FTW checks"} />
+              <WorkflowStatus
+                tone={review?.status === "UPDATE_SENT" ? "success" : review?.status === "UPDATE_UNKNOWN" || ftwReadyToSend ? "warning" : "neutral"}
+                label={review?.status === "UPDATE_SENT" ? "Update verified" : review?.status === "UPDATE_UNKNOWN" ? "Verification required" : ftwReadyToSend ? "Ready to send" : "Waiting for approval and FTW checks"}
+              />
               <p className="workflow-explanation">After sending, ERISAPros refreshes FT Williams and verifies every returned value automatically.</p>
               <WorkflowActivity items={[
                 `${attempted} field${attempted === 1 ? "" : "s"} attempted`,
@@ -1467,21 +1531,17 @@ function WorkflowScheduleSelect({
   busy,
   candidates,
   onChange,
+  recommendedSequence,
   selectedIndex,
 }: {
   busy: boolean;
   candidates: Array<Record<string, unknown>>;
   onChange: (index: string) => void;
+  recommendedSequence: string;
   selectedIndex: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  const scoredCandidates = candidates
-    .map((candidate) => textValue(candidate.score))
-    .filter(Boolean)
-    .map(Number)
-    .filter(Number.isFinite);
-  const topScore = scoredCandidates.length ? Math.max(...scoredCandidates) : null;
   const selectedCandidate = selectedIndex === "" ? null : candidates[Number(selectedIndex)] || null;
   const selectedLabel = selectedCandidate
     ? [
@@ -1508,7 +1568,7 @@ function WorkflowScheduleSelect({
 
   return (
     <div className="workflow-schedule-select" ref={ref}>
-      <span className="workflow-schedule-label" id="workflow-schedule-candidate-label">Select Schedule A</span>
+      <span className="workflow-schedule-label" id="workflow-schedule-candidate-label">{selectedCandidate ? "Selected Schedule A" : "Choose Schedule A"}</span>
       <button
         aria-controls="workflow-schedule-candidate-menu"
         aria-expanded={open}
@@ -1533,8 +1593,7 @@ function WorkflowScheduleSelect({
             const contract = textValue(candidate.contract);
             const sequence = textValue(candidate.ftw_seq_no);
             const score = textValue(candidate.score);
-            const numericScore = score ? Number(score) : null;
-            const recommended = topScore === null ? index === 0 : numericScore === topScore && topScore > 0;
+            const recommended = Boolean(recommendedSequence && sequence === recommendedSequence);
             const hasCurrentData = candidate.has_current_data === true;
             const selected = selectedIndex === String(index);
             return (
@@ -3042,7 +3101,7 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
-  if (comparison?.changed && !comparison.update_included) return "Resolved · not sent to FTW";
+  if (comparison?.changed && !comparison.update_included) return "Review only · not supported";
   if (group === "WILL_UPDATE") return "Resolved · will update";
   if (group === "SAME") return "Resolved · keeps FTW";
   return "Resolved";

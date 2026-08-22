@@ -331,7 +331,7 @@ class MongoRepository(Repository):
         if not filing_ids:
             return []
         pipeline = [
-            {"$match": {"event": "FTWILLIAMS_UPDATE_FAILED", "filing_id": {"$in": sorted(filing_ids)}}},
+            {"$match": {"event": {"$in": ["FTWILLIAMS_UPDATE_FAILED", "FTWILLIAMS_UPDATE_UNKNOWN"]}, "filing_id": {"$in": sorted(filing_ids)}}},
             {"$sort": {"created_at": -1}},
             {"$group": {"_id": "$filing_id", "record": {"$first": "$$ROOT"}}},
             {"$replaceRoot": {"newRoot": "$record"}},
@@ -351,7 +351,7 @@ class MongoRepository(Repository):
 
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
         docs = await self.db.ftwilliams_reviews.find(
-            {"status": "UPDATE_FAILED"}
+            {"status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]}}
         ).sort("updated_at", -1).to_list(100)
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
@@ -722,7 +722,7 @@ class MemoryRepository(Repository):
     async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]:
         latest: dict[str, AuditLog] = {}
         for audit in self.audit:
-            if audit.event != "FTWILLIAMS_UPDATE_FAILED" or not audit.filing_id or audit.filing_id not in filing_ids:
+            if audit.event not in {"FTWILLIAMS_UPDATE_FAILED", "FTWILLIAMS_UPDATE_UNKNOWN"} or not audit.filing_id or audit.filing_id not in filing_ids:
                 continue
             current = latest.get(audit.filing_id)
             if current is None or audit.created_at > current.created_at:
@@ -740,7 +740,7 @@ class MemoryRepository(Repository):
             (
                 review
                 for review in self.ftwilliams_reviews.values()
-                if review.status.value == "UPDATE_FAILED"
+                if review.status.value in {"UPDATE_FAILED", "UPDATE_UNKNOWN"}
             ),
             key=lambda item: item.updated_at,
             reverse=True,
@@ -977,4 +977,5 @@ FTWILLIAMS_HISTORY_EVENTS = {
     "FTWILLIAMS_SCHEDULE_A_MATCH_SELECTED",
     "FTWILLIAMS_UPDATE_SENT",
     "FTWILLIAMS_UPDATE_FAILED",
+    "FTWILLIAMS_UPDATE_UNKNOWN",
 }

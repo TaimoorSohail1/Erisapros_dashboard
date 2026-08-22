@@ -109,7 +109,7 @@ def _failure_queue_item(
         (client_error.message if client_error else None)
         or _text(details.get("error"))
         or review.error_message
-        or "FT Williams update failed."
+        or ("FT Williams update requires verification." if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "FT Williams update failed.")
     )
     return FTWilliamsFailureQueueItem(
         filing_id=filing.id or review.filing_id,
@@ -129,7 +129,7 @@ def _failure_queue_item(
         year=review.year or review.comparison_year,
         attempted_field_count=len([field for field in review.fields if field.changed and field.update_included]),
         failed_at=(failed_audit.created_at if failed_audit else review.updated_at),
-        last_action_label="Update failed",
+        last_action_label="Verification required" if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "Update failed",
     )
 
 
@@ -181,6 +181,8 @@ def _history_action(audit: AuditLog) -> tuple[str, str]:
         return "Update sent", "success"
     if audit.event == "FTWILLIAMS_UPDATE_FAILED":
         return "Update failed", "failed"
+    if audit.event == "FTWILLIAMS_UPDATE_UNKNOWN":
+        return "Verification required", "warning"
     return audit.event.replace("_", " ").title(), "info"
 
 
@@ -192,7 +194,7 @@ def _history_updated_field_count(audit: AuditLog, review: FTWilliamsReview | Non
             return value
         if isinstance(value, str) and value.isdigit():
             return int(value)
-    if audit.event in {"FTWILLIAMS_UPDATE_SENT", "FTWILLIAMS_UPDATE_FAILED"} and review:
+    if audit.event in {"FTWILLIAMS_UPDATE_SENT", "FTWILLIAMS_UPDATE_FAILED", "FTWILLIAMS_UPDATE_UNKNOWN"} and review:
         return len([field for field in review.fields if field.changed and field.update_included])
     return None
 

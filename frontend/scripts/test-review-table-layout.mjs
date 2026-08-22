@@ -58,6 +58,16 @@ assert.match(
 );
 assert.match(
   source,
+  /bringForwardRequired=\{bringForwardRequired\}[\s\S]*?onOpenBringForward=\{openFtwBringForward\}/,
+  "The main filing actions must receive the Bring Forward state and action.",
+);
+assert.match(
+  source,
+  /bringForwardRequired \? \([\s\S]*?Open FTW Bring Forward/,
+  "Bring Forward must be directly visible in the main filing actions when the current-year record is missing.",
+);
+assert.match(
+  source,
   /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
   "Approval must remain available with unresolved fields once processing and Schedule A selection are complete.",
 );
@@ -78,6 +88,36 @@ assert.match(
 );
 assert.match(
   source,
+  /ftwScheduleMatch \? "Best match selected" : ftwScheduleNeedsDecision \? "Needs your decision"/,
+  "The FTW Loaded step must distinguish a safe automatic match from a required reviewer decision.",
+);
+assert.match(
+  source,
+  /\(filing\.ftw_review\?\.schedule_a_candidates \|\| \[\]\)\.length \|\| filing\.ftw_review\?\.bring_forward_required/,
+  "A missing current Schedule A that requires Bring Forward must keep FTW Loaded in the decision state.",
+);
+assert.match(
+  source,
+  /label=\{scheduleMatchSelected \? "Best match selected" : scheduleDecisionRequired \? "Needs your decision"/,
+  "The FTW Loaded dialog must repeat the Schedule A match decision clearly.",
+);
+assert.match(
+  source,
+  /const scheduleDecisionRequired = Boolean\(\s*\(review\?\.current_query_success \|\| ftwCurrentLoaded\)/,
+  "An intentionally incomplete snapshot with unmatched candidates must still open as Needs your decision, not Processing.",
+);
+assert.match(
+  source,
+  /Selected Schedule A[\s\S]*?Match score \{selectedScheduleScore\}/,
+  "The FTW Loaded dialog must show the selected Schedule A and its match score.",
+);
+assert.match(
+  source,
+  /const recommended = Boolean\(recommendedSequence && sequence === recommendedSequence\);/,
+  "Only the backend-selected safe Schedule A may be labelled as recommended.",
+);
+assert.match(
+  source,
   /function FTWVerificationSummary/,
   "FT Williams send results must show verified and remaining field counts.",
 );
@@ -91,10 +131,27 @@ assert.match(
   /if \(field\?\.status === "EDITED"\) return comparison\.changed && comparison\.update_included \? "WILL_UPDATE" : "SAME";/,
   "A reviewer-confirmed field must enter Will Update only when the FTW update contract includes it.",
 );
+assert.match(source, /Review only · not supported/, "Unsupported FTW fields must be labelled as review-only rather than resolved.");
+assert.doesNotMatch(source, /Resolved · not sent to FTW/, "Unsupported FTW fields must not appear as successfully resolved updates.");
 assert.match(
   source,
-  /Resolved · not sent to FTW/,
-  "A confirmed read-only field must clearly state that it will not be sent to FT Williams.",
+  /const ftwSendInFlightRef = useRef\(false\);/,
+  "FT Williams sends need an immediate in-flight guard so rapid clicks cannot start duplicate requests.",
+);
+assert.match(
+  source,
+  /if \(!id \|\| ftwSendInFlightRef\.current\) return;[\s\S]*?ftwSendInFlightRef\.current = true;[\s\S]*?finally \{[\s\S]*?ftwSendInFlightRef\.current = false;/,
+  "The duplicate-send guard must cover the complete FT Williams request lifecycle.",
+);
+assert.match(
+  source,
+  /ftwReview\.current_query_complete !== false/,
+  "Sending must remain locked when FT Williams returned only a partial current-data snapshot.",
+);
+assert.match(
+  source,
+  /review\?\.status === "UPDATE_UNKNOWN" \? "Verification required"/,
+  "An ambiguous FT Williams response must be displayed as verification required.",
 );
 assert.match(
   source,
@@ -160,6 +217,11 @@ assert.match(
   source,
   /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
   "Approval must remain unavailable while processing is running or Schedule A selection is unresolved.",
+);
+assert.match(
+  source,
+  /const scheduleSelectionRequired = scheduleCandidates\.length > 0 && !ftwReview\?\.schedule_a_match;/,
+  "Even one unmatched Schedule A candidate must require an explicit reviewer selection.",
 );
 assert.match(
   source,

@@ -25,8 +25,8 @@ from app.models import (
     ScheduleABrokerRow,
 )
 from app.services.ftwilliams import FTWilliamsService
-from app.services.ftwilliams_review import FTWilliamsReviewService
-from app.services.ftwilliams_tags import resolve_ftw_tag, values_meaningfully_different
+from app.services.ftwilliams_review import FTWilliamsReviewService, clear_ftw_current_snapshot_cache
+from app.services.ftwilliams_tags import resolve_ftw_tag, resolve_ftw_update_tag, values_meaningfully_different
 from app.services.xml_builder import build_proposed_ftw_xml, build_single_document_update_xml
 
 
@@ -999,9 +999,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
 
     def setUp(self):
+        clear_ftw_current_snapshot_cache()
         repositories._repository = repositories.MemoryRepository()
 
     def tearDown(self):
+        clear_ftw_current_snapshot_cache()
         repositories._repository = None
 
     def test_resolves_dashboard_rules_to_real_ftw_tags(self):
@@ -1047,6 +1049,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(resolve_ftw_tag(sponsor_field), "SPONS_DFE_NAME0")
+        self.assertIsNone(
+            resolve_ftw_update_tag(sponsor_field),
+            "FT Williams rejects Plan Sponsor Name through the update contract, so it must remain review-only.",
+        )
 
     def test_prepare_review_reports_pre_send_validation_without_crashing(self):
         repo = repositories.get_repository()
@@ -1743,6 +1749,63 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(seq4["has_current_data"])
         self.assertGreater(seq4["score"], 0)
 
+    def test_single_schedule_candidate_with_conflicting_identity_requires_manual_selection(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1a. Name of Insurance Company",
+                normalized_field_name="carrier_name",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Name of Insurance Company",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Kaiser Foundation Health Plan",
+                proposed_value="Kaiser Foundation Health Plan",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1b. EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="94-1340523",
+                proposed_value="94-1340523",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract/Policy Number",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract/Policy Number",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="607863",
+                proposed_value="607863",
+            ),
+        ]
+        wrong_current_schedule = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="1",
+            query_results={
+                "InsCarrierName": "Principal Life Insurance Company",
+                "InsCarrierEIN": "42-0127290",
+                "InsContractNum": "1149477",
+                "InsPolicyFromDate": "01/01/2024",
+                "InsPolicyToDate": "12/31/2024",
+            },
+        )
+
+        matched = service._match_schedule_a_status(fields, [wrong_current_schedule])
+
+        self.assertIsNone(matched)
+
     def test_schedule_match_uses_carrier_ein_and_naic_when_contract_is_missing(self):
         service = FTWilliamsReviewService()
         fields = [
@@ -2042,6 +2105,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "VERIFIED" for item in review.update_results))
         self.assertTrue(all(item.get("label") and item.get("sent_value") for item in review.update_results))
 
+        clear_ftw_current_snapshot_cache()
         mismatched = run_async(
             FTWilliamsReviewService(VerifyingFTWilliamsService(reflect_updates=False)).approve_and_update(
                 filing.id,
@@ -2054,10 +2118,260 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(mismatched.update_verification_attempted)
         self.assertFalse(mismatched.update_verification_success)
         self.assertGreater(len(mismatched.update_verification_mismatches), 0)
-        self.assertTrue(any(item["status"] == "NEEDS_CORRECTION" for item in mismatched.update_results))
+        self.assertTrue(
+            any(item["status"] == "NEEDS_CORRECTION" for item in mismatched.update_results),
+            mismatched.update_results,
+        )
         self.assertIn("read-back verification", mismatched.error_message or "")
 
-    def test_partial_form_success_is_refreshed_and_only_remaining_form_is_retried(self):
+    def test_ambiguous_ftw_update_preserves_last_valid_schedule_snapshot(self):
+        class AmbiguousUpdateFTWilliamsService(FakeFTWilliamsService):
+            def __init__(self):
+                super().__init__()
+                self.events = []
+                self.update_started = False
+
+            async def run_query(self, payload):
+                self.events.append(f"query:{payload.operation}")
+                if not self.update_started:
+                    response = await super().run_query(payload)
+                    if payload.operation == "query_5500" and response.statuses:
+                        response.statuses[0].query_results.update(
+                            {
+                                "TotActivePartcpCnt": "100",
+                                "SponsDfePlanNum": "501",
+                                "PlanYearEndDate": "12/31/2025",
+                                "LockedStatus": "Unlocked",
+                            }
+                        )
+                    if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2" and response.statuses:
+                        response.statuses[0].query_results["WlfrTotChargesPaidAmt"] = "90"
+                    return response
+                if payload.operation == "query_plan":
+                    return await super().run_query(payload)
+                request_xml = self.mask_key_id(self.build_request_xml(payload))
+                return FTWilliamsQueryResponse(
+                    operation=payload.operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    http_status=200,
+                    success=False,
+                    raw_response="",
+                    statuses=[FTWilliamsStatusItem(type=payload.operation, error_code="PARSE_ERROR", error_desc="no element found")],
+                )
+
+            async def send_xml(self, operation, request_xml):
+                self.events.append(f"send:{operation}")
+                self.update_started = True
+                return FTWilliamsQueryResponse(
+                    operation=operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    http_status=200,
+                    success=False,
+                    raw_response="",
+                    statuses=[FTWilliamsStatusItem(type=operation, error_code="PARSE_ERROR", error_desc="no element found")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        run_async(
+            repo.add_fields(
+                [
+                    field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "73-0759701", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "12/31/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_ii_14_active_participants_at_end", "14. Active Participants at End", "101", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "BlueCross BlueShield of Oklahoma", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. Insurance Carrier EIN", "36-1236610", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract", "Y00979", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier", "10a. Total premiums", "100", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                ]
+            )
+        )
+
+        fake_ftw = AmbiguousUpdateFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+        baseline = run_async(service.prepare_review(filing.id, send_queries=True))
+        baseline_records = baseline.schedule_a_records
+        baseline_candidates = baseline.schedule_a_candidates
+        baseline_current = baseline.schedule_a_current_values
+        fake_ftw.events.clear()
+
+        result = run_async(
+            service.approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+            )
+        )
+
+        first_send = next(index for index, event in enumerate(fake_ftw.events) if event.startswith("send:"))
+        self.assertFalse(any(event in {"query:query_5500", "query:query_schedule_a"} for event in fake_ftw.events[:first_send]))
+        self.assertFalse(any(event.startswith("query:") for event in fake_ftw.events[first_send + 1 :]))
+        self.assertEqual(
+            [event for event in fake_ftw.events if event.startswith("send:")],
+            ["send:update_5500"],
+        )
+        self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_UNKNOWN)
+        self.assertFalse(result.current_query_success)
+        self.assertTrue(result.current_year_exists)
+        self.assertFalse(result.bring_forward_required)
+        self.assertEqual(result.schedule_a_records, baseline_records)
+        self.assertEqual(result.schedule_a_candidates, baseline_candidates)
+        self.assertEqual(result.schedule_a_current_values, baseline_current)
+        self.assertEqual(result.update_attempted_count, 1)
+        self.assertEqual(result.update_confirmed_count, 0)
+        self.assertEqual(result.update_remaining_count, 1)
+        self.assertEqual(result.update_retry_count, 0)
+        self.assertIn("could not be confirmed", result.error_message or "")
+
+    def test_failed_current_refresh_preserves_last_valid_snapshot_without_bring_forward(self):
+        class FailingRefreshFTWilliamsService(FakeFTWilliamsService):
+            def __init__(self):
+                super().__init__()
+                self.fail_refresh = False
+                self.send_count = 0
+
+            async def run_query(self, payload):
+                if not self.fail_refresh or payload.operation == "query_plan":
+                    return await super().run_query(payload)
+                request_xml = self.mask_key_id(self.build_request_xml(payload))
+                return FTWilliamsQueryResponse(
+                    operation=payload.operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    http_status=200,
+                    success=False,
+                    raw_response="",
+                    statuses=[FTWilliamsStatusItem(type=payload.operation, error_code="PARSE_ERROR", error_desc="no element found")],
+                )
+
+            async def send_xml(self, operation, request_xml):
+                self.send_count += 1
+                return await super().send_xml(operation, request_xml)
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Plan Sponsor EIN",
+                        normalized_field_name="sponsor_ein",
+                        mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+                        mapped_label="1e. Plan Sponsor EIN",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.HIGH,
+                        value="73-0759701",
+                        proposed_value="73-0759701",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. Plan Number",
+                        normalized_field_name="plan_number",
+                        mapped_rule_key="form_5500_part_i_1b_plan_number_pn",
+                        mapped_label="1b. Plan Number",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.HIGH,
+                        value="501",
+                        proposed_value="501",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="7. Plan Year Ending Date",
+                        normalized_field_name="plan_year_end",
+                        mapped_rule_key="form_5500_part_i_7_plan_year_ending_date",
+                        mapped_label="7. Plan Year Ending Date",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.HIGH,
+                        value="12/31/2025",
+                        proposed_value="12/31/2025",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1a. Name of Insurance Company",
+                        normalized_field_name="carrier",
+                        mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                        mapped_label="1a. Name of Insurance Company",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="BlueCross BlueShield of Oklahoma",
+                        proposed_value="BlueCross BlueShield of Oklahoma",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. Insurance Carrier EIN",
+                        normalized_field_name="carrier_ein",
+                        mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                        mapped_label="1b. Insurance Carrier EIN",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="36-1236610",
+                        proposed_value="36-1236610",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1d. Contract",
+                        normalized_field_name="contract",
+                        mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                        mapped_label="1d. Contract",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="Y00979",
+                        proposed_value="Y00979",
+                    ),
+                ]
+            )
+        )
+
+        fake_ftw = FailingRefreshFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+        baseline = run_async(service.prepare_review(filing.id, send_queries=True))
+        fake_ftw.fail_refresh = True
+
+        refreshed = run_async(service.prepare_review(filing.id, send_queries=True))
+
+        self.assertFalse(refreshed.current_query_success)
+        self.assertFalse(refreshed.current_query_complete)
+        self.assertTrue(refreshed.current_year_exists)
+        self.assertFalse(refreshed.bring_forward_required)
+        self.assertEqual(refreshed.schedule_a_match, baseline.schedule_a_match)
+        self.assertEqual(refreshed.schedule_a_candidates, baseline.schedule_a_candidates)
+        self.assertEqual(refreshed.schedule_a_records, baseline.schedule_a_records)
+        self.assertEqual(refreshed.form_5500_current_values, baseline.form_5500_current_values)
+        self.assertEqual(refreshed.schedule_a_current_values, baseline.schedule_a_current_values)
+        self.assertIn("last valid", refreshed.error_message or "")
+        with self.assertRaisesRegex(ValueError, "last valid|queried successfully"):
+            run_async(service.approve_and_update(filing.id, send_to_ftw=True, refresh_current_before_update=True))
+        self.assertEqual(fake_ftw.send_count, 0)
+
+    def test_partial_form_success_is_reported_without_automatic_write_retry(self):
         class PartialUpdateFTWilliamsService(FakeFTWilliamsService):
             def __init__(self):
                 super().__init__()
@@ -2158,13 +2472,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(review.status, FTWilliamsReviewStatus.UPDATE_SENT)
-        self.assertEqual(fake_ftw.send_operations, ["update_5500", "update_schedule_a", "update_schedule_a"])
-        self.assertEqual(review.update_retry_count, 1)
+        self.assertEqual(review.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertEqual(fake_ftw.send_operations, ["update_5500", "update_schedule_a"])
+        self.assertEqual(review.update_retry_count, 0)
         self.assertEqual(review.update_attempted_count, 2)
-        self.assertEqual(review.update_confirmed_count, 2)
-        self.assertEqual(review.update_remaining_count, 0)
-        self.assertFalse(any(field.changed and field.update_included for field in review.fields))
+        self.assertEqual(review.update_confirmed_count, 1)
+        self.assertEqual(review.update_remaining_count, 1)
+        self.assertEqual(len([field for field in review.fields if field.changed and field.update_included]), 1)
 
     def test_rejected_internal_tag_is_mapped_to_a_client_facing_field_label(self):
         error = FTWilliamsReviewService()._normalize_review_error(
