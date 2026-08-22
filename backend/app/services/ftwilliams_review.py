@@ -353,7 +353,7 @@ class FTWilliamsReviewService:
             comparison_year=comparison_year,
             comparison_year_source=comparison_year_source,
             schedule_a_match=(
-                self._schedule_match_payload(matched_schedule_a, fields)
+                self._schedule_match_payload_preserving_decision(matched_schedule_a, fields, existing_review)
                 if matched_schedule_a
                 else (
                     (existing_review.schedule_a_match or None)
@@ -3012,12 +3012,51 @@ class FTWilliamsReviewService:
                 anonymous.append(status)
                 continue
             existing = merged.get(seq)
-            if not existing or self._schedule_status_richness(status) >= self._schedule_status_richness(existing):
+            if not existing or (
+                not self._schedule_status_identity_conflicts(existing, status)
+                and self._schedule_status_richness(status) >= self._schedule_status_richness(existing)
+            ):
                 merged[seq] = status
         return [
             *sorted(merged.values(), key=lambda item: self._sequence_sort_key(item.ftw_seq_no)),
             *anonymous,
         ]
+
+    def _schedule_status_identity_conflicts(
+        self,
+        existing: FTWilliamsStatusItem,
+        incoming: FTWilliamsStatusItem,
+    ) -> bool:
+        existing_values = existing.query_results or {}
+        incoming_values = incoming.query_results or {}
+        pairs = [
+            (
+                self._normalize_contract(existing_values.get("InsContractNum") or existing_values.get("INS_CONTRACT_NUM")),
+                self._normalize_contract(incoming_values.get("InsContractNum") or incoming_values.get("INS_CONTRACT_NUM")),
+            ),
+            (
+                self._normalize_ein_digits(existing_values.get("InsCarrierEIN") or existing_values.get("INS_CARRIER_EIN")),
+                self._normalize_ein_digits(incoming_values.get("InsCarrierEIN") or incoming_values.get("INS_CARRIER_EIN")),
+            ),
+            (
+                self._normalize_identifier_digits(
+                    existing_values.get("InsCarrierNAICCode") or existing_values.get("INS_CARRIER_NAIC_CODE")
+                ),
+                self._normalize_identifier_digits(
+                    incoming_values.get("InsCarrierNAICCode") or incoming_values.get("INS_CARRIER_NAIC_CODE")
+                ),
+            ),
+        ]
+        if any(left and right and left != right for left, right in pairs):
+            return True
+
+        existing_description = normalize_compare_value(
+            existing_values.get("ScheduleDesc") or existing_values.get("SCHEDULE_DESC")
+        )
+        incoming_description = normalize_compare_value(
+            incoming_values.get("ScheduleDesc") or incoming_values.get("SCHEDULE_DESC")
+        )
+        return bool(existing_description and incoming_description and existing_description != incoming_description)
 
     def _schedule_status_richness(self, status: FTWilliamsStatusItem) -> int:
         values = status.query_results or {}
@@ -3129,6 +3168,22 @@ class FTWilliamsReviewService:
             "description": status.query_results.get("ScheduleDesc") or status.query_results.get("SCHEDULE_DESC"),
             "has_current_data": bool(status.query_results),
         }
+
+    def _schedule_match_payload_preserving_decision(
+        self,
+        status: FTWilliamsStatusItem,
+        fields: list[ExtractedField],
+        existing_review: FTWilliamsReview | None,
+    ) -> dict:
+        payload = self._schedule_match_payload(status, fields)
+        existing_match = existing_review.schedule_a_match if existing_review else None
+        if (
+            existing_match
+            and str(existing_match.get("source") or "").upper() == "MANUAL"
+            and str(existing_match.get("ftw_seq_no") or "").strip() == str(status.ftw_seq_no or "").strip()
+        ):
+            payload["source"] = "MANUAL"
+        return payload
 
     def _schedule_candidate_payloads(self, statuses: list[FTWilliamsStatusItem], fields: list[ExtractedField]) -> list[dict]:
         candidates: list[dict] = []

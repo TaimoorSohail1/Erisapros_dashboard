@@ -1749,6 +1749,213 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(seq4["has_current_data"])
         self.assertGreater(seq4["score"], 0)
 
+    def test_schedule_candidates_do_not_overwrite_explicit_sequence_with_conflicting_fallback(self):
+        class ConflictingFallbackFTWilliamsService(FakeFTWilliamsService):
+            async def run_query(self, payload):
+                if payload.operation != "query_schedule_a":
+                    return await super().run_query(payload)
+
+                self.calls.append(payload)
+                request_xml = self.mask_key_id(self.build_request_xml(payload))
+
+                def success(sequence: str, values: dict[str, str]) -> FTWilliamsQueryResponse:
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[
+                            FTWilliamsStatusItem(
+                                type="ScheduleA",
+                                error_code="0",
+                                ftw_seq_no=sequence,
+                                query_results=values,
+                            )
+                        ],
+                    )
+
+                if payload.ftw_seq_no == "1":
+                    return success(
+                        "1",
+                        {
+                            "ScheduleDesc": "CIGNA",
+                            "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                            "InsCarrierEIN": "59-1031071",
+                            "InsCarrierNAICCode": "67369",
+                            "InsContractNum": "00626686",
+                            "InsPolicyFromDate": "01/01/2025",
+                            "InsPolicyToDate": "12/31/2025",
+                        },
+                    )
+                if payload.ftw_seq_no == "2":
+                    return success(
+                        "2",
+                        {
+                            "ScheduleDesc": "GUARDIAN",
+                            "InsCarrierName": "GUARDIAN",
+                            "InsCarrierEIN": "13-5123390",
+                            "InsCarrierNAICCode": "64246",
+                            "InsContractNum": "00564017",
+                            "InsPolicyFromDate": "01/01/2025",
+                            "InsPolicyToDate": "12/31/2025",
+                        },
+                    )
+                if not payload.ftw_seq_no:
+                    return success(
+                        "2",
+                        {
+                            "ScheduleDesc": "CIGNA",
+                            "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                            "InsCarrierEIN": "59-1031071",
+                            "InsCarrierNAICCode": "67369",
+                            "InsContractNum": "00626686",
+                            "InsPolicyFromDate": "01/01/2025",
+                            "InsPolicyToDate": "12/31/2025",
+                            "Name1": "PREFERRED BENEFITS INC",
+                            "FeesPdAmt1": "116838",
+                            "FeesPdText1": "FEES",
+                        },
+                    )
+                return FTWilliamsQueryResponse(
+                    operation=payload.operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    success=False,
+                    raw_response="<ftwLinkResponse />",
+                    statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="59")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        run_async(
+            repo.add_fields(
+                [
+                    field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "22-1629238", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number (PN)", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "12/31/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "CIGNA HEALTH AND LIFE INSURANCE COMPANY", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. EIN", "59-1031071", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1c_naic_code", "1c. NAIC", "67369", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "00626686", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                ]
+            )
+        )
+
+        review = run_async(FTWilliamsReviewService(ConflictingFallbackFTWilliamsService()).prepare_review(filing.id, send_queries=True))
+        candidates = {candidate["ftw_seq_no"]: candidate for candidate in review.schedule_a_candidates}
+
+        self.assertEqual(candidates["1"]["carrier"], "CIGNA HEALTH AND LIFE INSURANCE COMPANY")
+        self.assertEqual(candidates["2"]["carrier"], "GUARDIAN")
+        self.assertEqual(review.schedule_a_match["ftw_seq_no"], "1")
+
+    def test_manual_schedule_selection_survives_repeated_current_data_refreshes(self):
+        class TiedScheduleFTWilliamsService(FakeFTWilliamsService):
+            async def run_query(self, payload):
+                if payload.operation != "query_schedule_a":
+                    return await super().run_query(payload)
+
+                self.calls.append(payload)
+                request_xml = self.mask_key_id(self.build_request_xml(payload))
+                if payload.ftw_seq_no in {"1", "2"}:
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        success=True,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[
+                            FTWilliamsStatusItem(
+                                type="ScheduleA",
+                                error_code="0",
+                                ftw_seq_no=payload.ftw_seq_no,
+                                query_results={
+                                    "ScheduleDesc": f"CIGNA-{payload.ftw_seq_no}",
+                                    "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                                    "InsCarrierEIN": "59-1031071",
+                                    "InsCarrierNAICCode": "67369",
+                                    "InsContractNum": "00626686",
+                                },
+                            )
+                        ],
+                    )
+                return FTWilliamsQueryResponse(
+                    operation=payload.operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    success=False,
+                    raw_response="<ftwLinkResponse />",
+                    statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="59")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        run_async(
+            repo.add_fields(
+                [
+                    field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "22-1629238", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number (PN)", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "12/31/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "CIGNA HEALTH AND LIFE INSURANCE COMPANY", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. EIN", "59-1031071", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1c_naic_code", "1c. NAIC", "67369", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "00626686", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                ]
+            )
+        )
+
+        service = FTWilliamsReviewService(TiedScheduleFTWilliamsService())
+        initial = run_async(service.prepare_review(filing.id, send_queries=True))
+        selected = run_async(
+            service.select_schedule_a_match(
+                filing.id,
+                FTWilliamsScheduleAMatchRequest(ftw_seq_no="2"),
+            )
+        )
+        first_refresh = run_async(service.prepare_review(filing.id, send_queries=True))
+        second_refresh = run_async(service.prepare_review(filing.id, send_queries=True))
+
+        self.assertIsNone(initial.schedule_a_match)
+        self.assertEqual(selected.schedule_a_match["source"], "MANUAL")
+        self.assertEqual(first_refresh.schedule_a_match["ftw_seq_no"], "2")
+        self.assertEqual(first_refresh.schedule_a_match["source"], "MANUAL")
+        self.assertEqual(second_refresh.schedule_a_match["ftw_seq_no"], "2")
+        self.assertEqual(second_refresh.schedule_a_match["source"], "MANUAL")
+
     def test_single_schedule_candidate_with_conflicting_identity_requires_manual_selection(self):
         service = FTWilliamsReviewService()
         fields = [
