@@ -252,6 +252,7 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                     status=FTWilliamsReviewStatus.UPDATE_FAILED,
                     current_query_success=True,
                     error_message="FT Williams rejected the update.",
+                    update_attempted_count=1,
                     plan_lookup=FTWilliamsPlanLookup(company_employer_id="12-3456789", plan_number="501"),
                     fields=[
                         FTWilliamsComparisonField(label="9. Plan funding arrangement", changed=True, update_included=True),
@@ -263,8 +264,31 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                     filing_id=failed.id,
                     event="FTWILLIAMS_UPDATE_FAILED",
                     message="FT Williams update failed.",
-                    details={"error": "FT Williams rejected the update."},
+                    details={"error": "FT Williams rejected the update.", "update_attempted_count": 1},
                     created_at=datetime.utcnow() - timedelta(minutes=5),
+                )
+            )
+
+            blocked = await repo.create_filing(
+                Filing(
+                    file_name="Pre-send Blocked Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/pre-send-blocked",
+                    intake_source="SHAREFILE",
+                    status=FilingStatus.FAILED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=blocked.id,
+                    status=FTWilliamsReviewStatus.UPDATE_FAILED,
+                    current_query_success=True,
+                    error_message="A current FT Williams Schedule A must be matched before sending.",
+                    update_attempted_count=0,
+                    fields=[
+                        FTWilliamsComparisonField(label="3a. Broker", changed=True, update_included=True),
+                    ],
                 )
             )
 
@@ -334,10 +358,11 @@ class FTWilliamsHistoryTests(unittest.TestCase):
             return await failure_queue()
 
         response = run_async(scenario())
-        self.assertEqual(response.total, 2)
+        self.assertEqual(response.total, 3)
         by_name = {item.filing_name: item for item in response.items}
         self.assertEqual(by_name["Failed Schedule A.pdf"].failure_reason, "FT Williams rejected the update.")
         self.assertEqual(by_name["Failed Schedule A.pdf"].attempted_field_count, 1)
+        self.assertEqual(by_name["Pre-send Blocked Schedule A.pdf"].attempted_field_count, 0)
         self.assertEqual(by_name["Failed Schedule A.pdf"].company_employer_id, "12-3456789")
         self.assertEqual(by_name["Unverified Schedule A.pdf"].review_status, FTWilliamsReviewStatus.UPDATE_UNKNOWN)
         self.assertEqual(by_name["Unverified Schedule A.pdf"].last_action_label, "Verification required")

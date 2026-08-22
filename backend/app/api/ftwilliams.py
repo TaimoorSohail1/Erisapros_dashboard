@@ -127,7 +127,7 @@ def _failure_queue_item(
         ftw_customer_id=review.ftw_customer_id,
         ftw_plan_id=review.ftw_plan_id,
         year=review.year or review.comparison_year,
-        attempted_field_count=len([field for field in review.fields if field.changed and field.update_included]),
+        attempted_field_count=review.update_attempted_count,
         failed_at=(failed_audit.created_at if failed_audit else review.updated_at),
         last_action_label="Verification required" if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "Update failed",
     )
