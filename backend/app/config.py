@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     ftwlink_sandbox_ftw_customer_id: str | None = None
     ftwlink_sandbox_ftw_plan_id: str | None = None
     ftwlink_sandbox_year_end: str | None = None
+    # Schedule A writes are replace-style at the vendor. Keep this capability
+    # independently switchable so production can fail closed if FT returns an
+    # ambiguous response or demonstrates destructive behavior.
+    ftwlink_schedule_a_updates_enabled: bool = True
     # FT Williams Schedule A slots are independent. Query a small batch in
     # parallel to reduce latency without flooding the upstream service.
     ftw_slot_query_concurrency: int = 5

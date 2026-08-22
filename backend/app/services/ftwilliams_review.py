@@ -1760,6 +1760,18 @@ class FTWilliamsReviewService:
         if schedule_a_safety_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_safety_error)
             raise ValueError(schedule_a_safety_error)
+        if (
+            review.update_xml_schedule_a
+            and "DOLScheduleAData" in review.update_xml_schedule_a
+            and not get_settings().ftwlink_schedule_a_updates_enabled
+        ):
+            error_message = (
+                "Schedule A sending is temporarily disabled because the FT Williams sandbox returned an "
+                "empty response and removed existing Schedule A records during verified replace-style tests. "
+                "Restore the records in FT Williams and confirm the vendor update contract before enabling sends."
+            )
+            await self._record_update_failure(repo, filing_id, review, error_message)
+            raise ValueError(error_message)
         if not any(
             [
                 bool(review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500),

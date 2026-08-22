@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,6 +25,7 @@ from app.models import (
     FTWilliamsScheduleAMatchRequest,
     FTWilliamsStatusItem,
     ScheduleABrokerRow,
+    ScheduleAContractType,
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService, clear_ftw_current_snapshot_cache
@@ -2909,6 +2912,66 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         error = service._missing_schedule_a_records_for_safe_send(review)
         self.assertIsNotNone(error)
         self.assertIn("XML contains 1 Schedule A record(s) but 2 fetched record(s) must be preserved", error)
+
+    def test_send_update_stops_before_ft_when_production_schedule_a_writes_are_disabled(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(repo.update_filing(filing.id, {"status": FilingStatus.APPROVED}))
+        review = FTWilliamsReview(
+            filing_id=filing.id,
+            status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+            configured=True,
+            current_query_sent=True,
+            current_query_success=True,
+            current_query_complete=True,
+            current_year_exists=True,
+            ftw_editable=True,
+            schedule_a_match={"ftw_seq_no": "1"},
+            schedule_a_candidates=[{"ftw_seq_no": "1"}],
+            schedule_a_records=[
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {
+                        "ScheduleDesc": "CIGNA",
+                        "InsCarrierName": "CIGNA",
+                        "InsContractNum": "00626686",
+                    },
+                }
+            ],
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+            schedule_a_contract_type_confirmed=True,
+            fields=[
+                FTWilliamsComparisonField(
+                    label="3b. Amount of Commissions",
+                    form_type=FormType.SCHEDULE_A,
+                    ftw_tag="CommPdAmt1",
+                    proposed_value="96",
+                    changed=True,
+                    update_included=True,
+                )
+            ],
+            update_xml_schedule_a="""<?xml version="1.0" encoding="utf-8"?>
+<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><ScheduleDesc>CIGNA</ScheduleDesc></DOLScheduleAData></DataBatch></ftwLink>""",
+            ftw_customer_id="1852103620",
+            ftw_plan_id="2239036729",
+            year="2025",
+        )
+        run_async(repo.upsert_ftwilliams_review(review))
+        fake_ftw = FakeFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+
+        with patch.object(service, "prepare_review", AsyncMock(return_value=review)), patch(
+            "app.services.ftwilliams_review.get_settings",
+            return_value=SimpleNamespace(ftwlink_schedule_a_updates_enabled=False),
+        ):
+            with self.assertRaisesRegex(ValueError, "Schedule A sending is temporarily disabled"):
+                run_async(service.approve_and_update(filing.id, send_to_ftw=True))
+
+        updated_review = run_async(repo.get_ftwilliams_review(filing.id))
+        updated_filing = run_async(repo.get_filing(filing.id))
+        self.assertEqual(updated_review.update_attempted_count, 0)
+        self.assertEqual(updated_filing.status, FilingStatus.FAILED)
+        self.assertEqual(fake_ftw.calls, [])
 
     def test_prepare_review_treats_indicator_and_date_format_differences_as_same(self):
         repo = repositories.get_repository()

@@ -349,6 +349,8 @@ Resources:
               Value: !Ref ShareFileWorkQueue
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
+            - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
+              Value: "false"
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
               Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
           Secrets:
@@ -459,6 +461,8 @@ Resources:
               Value: !Ref ShareFileWorkQueue
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
+            - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
+              Value: "false"
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
               Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
           Secrets:
