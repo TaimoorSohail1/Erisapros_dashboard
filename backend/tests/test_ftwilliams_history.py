@@ -428,6 +428,21 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(repo.individual_filing_reads, 0)
         self.assertEqual(repo.individual_audit_reads, 0)
 
+    def test_failure_queue_review_projection_excludes_large_xml_payloads(self):
+        projection = repositories.FTWILLIAMS_REVIEW_SUMMARY_PROJECTION
+        self.assertEqual(projection["filing_id"], 1)
+        self.assertEqual(projection["update_diagnostics"], 1)
+        for large_field in (
+            "query_request_xml",
+            "query_response_xml",
+            "update_xml_5500",
+            "update_xml_schedule_a",
+            "update_response_xml",
+            "update_verification_response_xml",
+            "schedule_a_records",
+        ):
+            self.assertNotIn(large_field, projection)
+
     def test_current_query_refresh_keeps_active_failure_in_queue_with_diagnostics(self):
         async def scenario():
             repo = repositories.get_repository()

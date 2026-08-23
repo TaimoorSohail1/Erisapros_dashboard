@@ -25,6 +25,33 @@ from app.models import (
 )
 
 
+FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
+    "filing_id": 1,
+    "status": 1,
+    "comparison_year": 1,
+    "customer_id": 1,
+    "plan_id": 1,
+    "year": 1,
+    "ftw_customer_id": 1,
+    "ftw_plan_id": 1,
+    "plan_lookup": 1,
+    "update_attempted_count": 1,
+    "update_confirmed_count": 1,
+    "update_diagnostics": 1,
+    "error_message": 1,
+    "client_error": 1,
+    "active_failure": 1,
+    "active_failure_reason": 1,
+    "active_failure_client_error": 1,
+    "active_failure_at": 1,
+    "failure_dismissed_at": 1,
+    "failure_dismissed_reason": 1,
+    "fields": 1,
+    "created_at": 1,
+    "updated_at": 1,
+}
+
+
 def to_mongo(model):
     data = model.model_dump(mode="json", by_alias=False)
     data.pop("id", None)
@@ -169,6 +196,10 @@ class MongoRepository(Repository):
             [("status", 1), ("updated_at", -1)],
             name="ftw_review_status_updated_idx",
         )
+        await self.db.ftwilliams_reviews.create_index(
+            [("active_failure", 1), ("updated_at", -1)],
+            name="ftw_review_active_failure_updated_idx",
+        )
         await self.db.ftwilliams_plan_mappings.create_index(
             [("company_employer_id", 1), ("plan_number", 1)],
             name="ftw_plan_mapping_identity_idx",
@@ -251,7 +282,18 @@ class MongoRepository(Repository):
         object_ids = [ObjectId(value) for value in filing_ids if ObjectId.is_valid(value)]
         if not object_ids:
             return []
-        docs = await self.db.filings.find({"_id": {"$in": object_ids}}).to_list(len(object_ids))
+        docs = await self.db.filings.find(
+            {"_id": {"$in": object_ids}},
+            {
+                "file_name": 1,
+                "content_type": 1,
+                "file_size": 1,
+                "s3_key": 1,
+                "status": 1,
+                "created_at": 1,
+                "updated_at": 1,
+            },
+        ).to_list(len(object_ids))
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
@@ -366,7 +408,10 @@ class MongoRepository(Repository):
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]:
         if not filing_ids:
             return []
-        docs = await self.db.ftwilliams_reviews.find({"filing_id": {"$in": sorted(filing_ids)}}).to_list(len(filing_ids))
+        docs = await self.db.ftwilliams_reviews.find(
+            {"filing_id": {"$in": sorted(filing_ids)}},
+            FTWILLIAMS_REVIEW_SUMMARY_PROJECTION,
+        ).to_list(len(filing_ids))
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
@@ -380,7 +425,8 @@ class MongoRepository(Repository):
                         "status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]},
                     },
                 ]
-            }
+            },
+            FTWILLIAMS_REVIEW_SUMMARY_PROJECTION,
         ).sort("updated_at", -1).to_list(100)
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
