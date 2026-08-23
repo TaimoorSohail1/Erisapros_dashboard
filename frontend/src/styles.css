@@ -10323,6 +10323,12 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   white-space: nowrap;
 }
 
+.workflow-dialog-footer-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 @media (max-width: 600px) {
   .workflow-dialog-backdrop { align-items: flex-end; padding: 0; }
   .workflow-dialog {

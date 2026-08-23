@@ -68,8 +68,28 @@ assert.match(
 );
 assert.match(
   source,
-  /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
-  "Approval must remain available with unresolved fields once processing and Schedule A selection are complete.",
+  /const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
+  "Approval readiness must distinguish an active FTW retry from a failed filing that needs re-approval.",
+);
+assert.match(
+  source,
+  /\{!approved && approvalReady \? \(/,
+  "A recovered failed filing must not be excluded from the approval action solely because its stored filing status is FAILED.",
+);
+assert.doesNotMatch(
+  source,
+  /!approved && !failed && approvalReady/,
+  "The approval action must not permanently disappear for recoverable failed filings.",
+);
+assert.match(
+  source,
+  /<WorkflowDetailDialog[\s\S]*?approvalReady=\{approvalReady\}[\s\S]*?onApprove=\{\(\) => \{/,
+  "The Approval workflow step must receive the same approval action and readiness used by the primary toolbar.",
+);
+assert.match(
+  source,
+  /step === "APPROVAL" && filing\.status !== "APPROVED" && approvalReady \? \([\s\S]*?onClick=\{onApprove\}[\s\S]*?Approve filing/,
+  "The Approval workflow step must render a working approval action when confirmation is pending.",
 );
 assert.match(
   source,
@@ -215,7 +235,7 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /approvalReady=\{!isProcessing && !scheduleSelectionRequired\}/,
+  /approvalReady=\{approvalReady\}/,
   "Approval must remain unavailable while processing is running or Schedule A selection is unresolved.",
 );
 assert.match(

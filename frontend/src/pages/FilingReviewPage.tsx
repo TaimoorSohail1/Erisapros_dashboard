@@ -293,6 +293,7 @@ export function FilingReviewPage() {
   const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
+  const retryingFailedFtwUpdate = filing?.status === "FAILED" && ftwUpdateFailed;
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.client_error || null;
@@ -300,6 +301,7 @@ export function FilingReviewPage() {
   const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
   const scheduleSelectionRequired = scheduleCandidates.length > 0 && !ftwReview?.schedule_a_match;
+  const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;
 
   useEffect(() => {
     if (!toast) return;
@@ -730,7 +732,7 @@ export function FilingReviewPage() {
               <div className="compact-review-toolbar">
               <ReviewPrimaryActions
                 approvalBlocked={approvalBlocked}
-                approvalReady={!isProcessing && !scheduleSelectionRequired}
+                approvalReady={approvalReady}
                 bringForwardRequired={bringForwardRequired}
                 busy={reviewInteractionBusy}
                 decisionAction={decisionAction}
@@ -875,12 +877,18 @@ export function FilingReviewPage() {
       {activeWorkflowStep ? (
         <WorkflowDetailDialog
           actionRequiredCount={actionRequiredRows.length}
+          approvalBlocked={approvalBlocked}
+          approvalReady={approvalReady}
           busy={reviewInteractionBusy}
           filing={filing}
           foundCount={foundCount}
           ftwCurrentLoaded={ftwCurrentLoaded}
           ftwReadyToSend={ftwReadyToSend}
           onClose={() => setActiveWorkflowStep(null)}
+          onApprove={() => {
+            setActiveWorkflowStep(null);
+            handleApproveClick();
+          }}
           onOpenBringForward={openFtwBringForward}
           onQuery={() => prepareFtw(true)}
           onSelectSchedule={selectFtwScheduleMatch}
@@ -1244,7 +1252,7 @@ function ReviewPrimaryActions({
       <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
         {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
       </button>
-      {!approved && !failed && approvalReady ? (
+      {!approved && approvalReady ? (
         <>
           <button
             className={`button ${approvalBlocked ? "button-warn" : ""}`}
@@ -1274,12 +1282,15 @@ function ReviewPrimaryActions({
 
 function WorkflowDetailDialog({
   actionRequiredCount,
+  approvalBlocked,
+  approvalReady,
   busy,
   filing,
   foundCount,
   ftwCurrentLoaded,
   ftwReadyToSend,
   onClose,
+  onApprove,
   onOpenBringForward,
   onQuery,
   onSelectSchedule,
@@ -1290,12 +1301,15 @@ function WorkflowDetailDialog({
   willUpdateCount,
 }: {
   actionRequiredCount: number;
+  approvalBlocked: boolean;
+  approvalReady: boolean;
   busy: boolean;
   filing: FilingDetail;
   foundCount: number;
   ftwCurrentLoaded: boolean;
   ftwReadyToSend: boolean;
   onClose: () => void;
+  onApprove: () => void;
   onOpenBringForward: () => void;
   onQuery: () => void;
   onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string }) => void;
@@ -1507,7 +1521,20 @@ function WorkflowDetailDialog({
         </div>
         <footer>
           <span className="workflow-dialog-footer-note">{footerNotes[step]}</span>
-          <button className="button" type="button" onClick={onClose}>Done</button>
+          <div className="workflow-dialog-footer-actions">
+            {step === "APPROVAL" && filing.status !== "APPROVED" && approvalReady ? (
+              <button
+                className={`button ${approvalBlocked ? "button-warn" : ""}`}
+                type="button"
+                disabled={busy || !ftwCurrentLoaded}
+                title={!ftwCurrentLoaded ? "Query FTW Current before approving." : undefined}
+                onClick={onApprove}
+              >
+                <CheckCircle2 size={15} /> Approve filing
+              </button>
+            ) : null}
+            <button className="button secondary" type="button" onClick={onClose}>Done</button>
+          </div>
         </footer>
       </section>
     </div>
