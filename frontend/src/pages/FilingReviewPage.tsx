@@ -42,6 +42,8 @@ import {
 } from "../api";
 import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
+import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
+import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 import { formatDate, formatFilingDisplayName, percent } from "../utils";
 
 type ReviewTab = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE" | "ALL";
@@ -273,13 +275,13 @@ export function FilingReviewPage() {
     !bringForwardRequired &&
     (form5500CurrentLoaded || scheduleACurrentLoaded),
   );
-  const ftwUpdateFailed = ftwReview?.status === "UPDATE_FAILED";
+  const ftwUpdateFailed = Boolean(ftwReview?.active_failure || ftwReview?.status === "UPDATE_FAILED");
   const ftwUpdateUnknown = ftwReview?.status === "UPDATE_UNKNOWN";
   const autoFtwQueryBusy = filing?.status === "QUERYING_FTW_CURRENT";
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
   const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
-  const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
+  const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown));
   const ftwReadyToSend = Boolean(
     showFtwSendAction &&
     ftwReview?.configured &&
@@ -293,10 +295,10 @@ export function FilingReviewPage() {
   const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
-  const retryingFailedFtwUpdate = filing?.status === "FAILED" && ftwUpdateFailed && ftwReadyToSend;
+  const retryingFailedFtwUpdate = filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown) && ftwReadyToSend;
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
   const lookup = filing?.ftw_review?.plan_lookup || null;
-  const clientError = filing?.ftw_review?.client_error || null;
+  const clientError = filing?.ftw_review?.active_failure_client_error || filing?.ftw_review?.client_error || null;
   const filingClientError = filing?.status === "FAILED" && filing.error_message ? clientErrorFromRaw(filing.error_message, "Processing") : null;
   const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
@@ -601,7 +603,7 @@ export function FilingReviewPage() {
           title: confirmed ? "FT Williams partially updated" : "FT Williams needs attention",
           message: confirmed
             ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need${remaining === 1 ? "s" : ""} review.`
-            : sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+            : sentReview?.active_failure_client_error?.message || sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
         });
         return;
       }
@@ -621,6 +623,7 @@ export function FilingReviewPage() {
         message: errorMessage,
       });
     } finally {
+      void refreshFTWilliamsFailures().catch(() => undefined);
       ftwSendInFlightRef.current = false;
       setFtwBusy(false);
       setFtwSendBusy(false);
@@ -2687,13 +2690,13 @@ function FTWilliamsComparisonPanel({
 }) {
   const changedFields = review?.fields.filter((field) => field.changed && field.update_included) ?? [];
   const lookup = review?.plan_lookup || null;
-  const clientError = review?.client_error || null;
-  const rawError = review?.error_message || lookup?.error_message || null;
+  const clientError = review?.active_failure_client_error || review?.client_error || null;
+  const rawError = review?.active_failure_reason || review?.error_message || lookup?.error_message || null;
   const scheduleMatch = formatScheduleAMatch(review?.schedule_a_match);
   const currentQueryYear = formatCurrentQueryYear(review);
   const scheduleCandidates = review?.schedule_a_candidates ?? [];
   const updateSent = review?.status === "UPDATE_SENT";
-  const updateFailed = review?.status === "UPDATE_FAILED";
+  const updateFailed = Boolean(review?.active_failure || review?.status === "UPDATE_FAILED" || review?.status === "UPDATE_UNKNOWN");
   const [manualMatch, setManualMatch] = useState({
     customer_id: "",
     plan_id: "",
@@ -2823,12 +2826,12 @@ function FTWilliamsComparisonPanel({
               <strong>{clientError?.title || "FT Williams action needs attention"}</strong>
               <small>{clientError?.message || rawError}</small>
               {clientError?.next_action ? <small>Next step: {clientError.next_action}</small> : null}
-              {rawError ? (
-                <details>
-                  <summary>Technical details</summary>
-                  <pre>{rawError}</pre>
-                </details>
-              ) : null}
+              <FTWilliamsDiagnostic
+                errorCode={clientError?.code}
+                message={rawError}
+                operations={review?.update_diagnostics}
+                technicalDetails={clientError?.technical_details}
+              />
             </span>
           </div>
         ) : null}

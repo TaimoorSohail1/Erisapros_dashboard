@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "../router";
-import { listFTWilliamsFailureQueue } from "../api";
+import { dismissFTWilliamsFailure } from "../api";
 import {
   classifyFTWilliamsFailure,
   countFTWilliamsFailureTypes,
@@ -21,13 +21,17 @@ import {
 import type { FTWilliamsFailureQueueItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
+import { refreshFTWilliamsFailures, useFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 
 type FailureTypeFilter = "ALL" | FTWilliamsFailureType;
 type DateFilter = "ALL" | "TODAY" | "LAST_7" | "LAST_30";
 
 export function FTWilliamsFailuresPage() {
-  const [failures, setFailures] = useState<FTWilliamsFailureQueueItem[]>([]);
-  const [message, setMessage] = useState("");
+  const failuresState = useFTWilliamsFailures();
+  const failures = failuresState.data;
+  const [actionMessage, setActionMessage] = useState("");
+  const message = actionMessage || failuresState.error;
+  const [dismissingId, setDismissingId] = useState("");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<FailureTypeFilter>("ALL");
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
@@ -35,22 +39,22 @@ export function FTWilliamsFailuresPage() {
   const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const result = await listFTWilliamsFailureQueue();
-        if (!active) return;
-        setFailures(result.items);
-        setMessage("");
-      } catch (error) {
-        if (active) setMessage(error instanceof Error ? error.message : "Could not load FT Williams failures");
-      }
-    }
-    load();
-    return () => {
-      active = false;
-    };
+    void refreshFTWilliamsFailures().catch(() => undefined);
   }, []);
+
+  async function dismissFailure(item: FTWilliamsFailureQueueItem) {
+    if (!window.confirm("Dismiss this failure from the active queue? The failure remains in Activity for auditing.")) return;
+    setActionMessage("");
+    setDismissingId(item.filing_id);
+    try {
+      await dismissFTWilliamsFailure(item.filing_id);
+      await refreshFTWilliamsFailures();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : "Could not dismiss the FT Williams failure.");
+    } finally {
+      setDismissingId("");
+    }
+  }
 
   const filteredFailures = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -206,7 +210,12 @@ export function FTWilliamsFailuresPage() {
             </thead>
             <tbody>
               {visibleFailures.map((item) => (
-                <FTWilliamsFailureQueueRow item={item} key={`${item.filing_id}-${item.failed_at}`} />
+                <FTWilliamsFailureQueueRow
+                  item={item}
+                  key={`${item.filing_id}-${item.failed_at}`}
+                  dismissing={dismissingId === item.filing_id}
+                  onDismiss={dismissFailure}
+                />
               ))}
             </tbody>
           </table>
@@ -275,7 +284,15 @@ function FailureSummaryCard({
   );
 }
 
-function FTWilliamsFailureQueueRow({ item }: { item: FTWilliamsFailureQueueItem }) {
+function FTWilliamsFailureQueueRow({
+  dismissing,
+  item,
+  onDismiss,
+}: {
+  dismissing: boolean;
+  item: FTWilliamsFailureQueueItem;
+  onDismiss: (item: FTWilliamsFailureQueueItem) => void;
+}) {
   const displayName = formatFilingDisplayName(item.filing_name);
   const failureType = classifyFTWilliamsFailure(item);
   const planIdentity = item.company_employer_id && item.plan_number
@@ -303,7 +320,12 @@ function FTWilliamsFailureQueueRow({ item }: { item: FTWilliamsFailureQueueItem 
       </td>
       <td>
         <div className="ftw-failure-reason-cell">
-          <FTWilliamsDiagnostic message={item.failure_reason} />
+          <FTWilliamsDiagnostic
+            errorCode={item.error_code}
+            message={item.failure_reason}
+            operations={item.operation_diagnostics}
+            technicalDetails={item.technical_details}
+          />
           {item.next_action ? <small>Next: {item.next_action}</small> : null}
         </div>
       </td>
@@ -326,9 +348,16 @@ function FTWilliamsFailureQueueRow({ item }: { item: FTWilliamsFailureQueueItem 
         </div>
       </td>
       <td>
-        <Link className="button danger ftw-failure-review-button" to={`/filings/${item.filing_id}`}>
-          Review / Retry <Eye size={15} />
-        </Link>
+        <div className="ftw-failure-actions">
+          <Link className="button danger ftw-failure-review-button" to={`/filings/${item.filing_id}`}>
+            Review / Retry <Eye size={15} />
+          </Link>
+          {item.can_dismiss !== false ? (
+            <button className="button secondary" disabled={dismissing} onClick={() => onDismiss(item)} type="button">
+              {dismissing ? "Dismissing..." : "Dismiss"}
+            </button>
+          ) : null}
+        </div>
       </td>
     </tr>
   );

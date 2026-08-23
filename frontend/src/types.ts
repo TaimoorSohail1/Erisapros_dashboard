@@ -194,6 +194,21 @@ export interface ClientFacingError {
   rejected_fields?: ClientRejectedField[];
 }
 
+export interface FTWilliamsOperationDiagnostic {
+  operation: string;
+  sent: boolean;
+  http_status?: number | null;
+  outcome_code: string;
+  response_received: boolean;
+  response_content_type?: string | null;
+  response_content_length?: string | null;
+  request_id?: string | null;
+  elapsed_ms?: number | null;
+  error_code?: string | null;
+  error_description?: string | null;
+  response_excerpt?: string | null;
+}
+
 export interface FTWilliamsReview {
   id?: string | null;
   filing_id: string;
@@ -256,10 +271,17 @@ export interface FTWilliamsReview {
     reason?: string | null;
   }>;
   update_retry_count?: number;
+  update_diagnostics?: FTWilliamsOperationDiagnostic[];
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
   error_message?: string | null;
   client_error?: ClientFacingError | null;
+  active_failure?: boolean;
+  active_failure_reason?: string | null;
+  active_failure_client_error?: ClientFacingError | null;
+  active_failure_at?: string | null;
+  failure_dismissed_at?: string | null;
+  failure_dismissed_reason?: string | null;
   fields: FTWilliamsComparisonField[];
   created_at: string;
   updated_at: string;
@@ -315,6 +337,10 @@ export interface FTWilliamsFailureQueueItem {
   attempted_field_count: number;
   failed_at: string;
   last_action_label: string;
+  error_code?: string | null;
+  technical_details?: string | null;
+  operation_diagnostics?: FTWilliamsOperationDiagnostic[];
+  can_dismiss?: boolean;
 }
 
 export interface FTWilliamsFailureQueueResponse {

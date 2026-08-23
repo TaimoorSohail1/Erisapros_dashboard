@@ -4027,6 +4027,12 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   white-space: nowrap;
 }
 
+.ftw-failure-actions {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+}
+
 .ftw-failure-overflow-note {
   border-top: 1px solid #fecaca;
   color: #7f1d1d;
@@ -4306,6 +4312,26 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   max-height: 220px;
   overflow: auto;
   padding: 10px;
+  white-space: pre-wrap;
+}
+
+.ftw-operation-diagnostic {
+  border-top: 1px solid #fecaca;
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.ftw-operation-diagnostic span,
+.ftw-operation-diagnostic small {
+  display: block;
+}
+
+.ftw-operation-diagnostic pre {
+  margin: 4px 0 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -8144,6 +8170,14 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .ftw-side-list {
   display: grid;
   gap: 12px;
+}
+
+.ftw-side-more-count,
+.ftw-side-error-code {
+  color: #64748b !important;
+  font-size: 11px !important;
+  font-weight: 750 !important;
+  margin: 0 !important;
 }
 
 .ftw-side-failure-card {

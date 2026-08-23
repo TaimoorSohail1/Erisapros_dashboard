@@ -1693,7 +1693,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("ATTN: AMS", review.update_xml_schedule_a)
         self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
 
-    def test_prepare_review_clears_stale_failed_update_state(self):
+    def test_prepare_review_preserves_active_failed_update_state(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(repo.update_filing(filing.id, {"status": FilingStatus.FAILED, "error_message": "DOL5500Data error 60: invalid field reg: PLAN_NAME0"}))
@@ -1739,12 +1739,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         events = [audit.event for audit in run_async(repo.list_audit_logs(filing.id))]
 
         self.assertEqual(review.status, FTWilliamsReviewStatus.CURRENT_QUERIED)
-        self.assertIsNone(review.client_error)
-        self.assertEqual(updated_filing.status, FilingStatus.APPROVED)
-        self.assertIsNone(updated_filing.error_message)
-        self.assertIn("FTWILLIAMS_UPDATE_FAILURE_CLEARED", events)
+        self.assertTrue(review.active_failure)
+        self.assertIn("invalid field", review.active_failure_reason)
+        self.assertIsNotNone(review.active_failure_client_error)
+        self.assertEqual(updated_filing.status, FilingStatus.FAILED)
+        self.assertIn("invalid field", updated_filing.error_message)
+        self.assertNotIn("FTWILLIAMS_UPDATE_FAILURE_CLEARED", events)
 
-    def test_prepare_review_clears_stale_update_failure_for_approved_filing(self):
+    def test_prepare_review_does_not_clear_failed_update_just_because_filing_is_approved(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(repo.update_filing(filing.id, {"status": FilingStatus.APPROVED, "error_message": "Old FTW locked error"}))
@@ -1793,8 +1795,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(review.status, FTWilliamsReviewStatus.CURRENT_QUERIED)
         self.assertIsNone(review.client_error)
+        self.assertTrue(review.active_failure)
         self.assertEqual(updated_filing.status, FilingStatus.APPROVED)
-        self.assertIsNone(updated_filing.error_message)
+        self.assertEqual(updated_filing.error_message, "Old FTW locked error")
 
     def test_schedule_candidates_merge_weak_sequence_with_rich_fallback_data(self):
         repo = repositories.get_repository()
@@ -2567,6 +2570,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(result.update_remaining_count, 1)
         self.assertEqual(result.update_retry_count, 0)
         self.assertIn("could not be confirmed", result.error_message or "")
+        self.assertTrue(result.active_failure)
+        self.assertEqual(result.active_failure_client_error.code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
+        self.assertEqual(result.update_diagnostics[0].operation, "update_5500")
+        self.assertEqual(result.update_diagnostics[0].http_status, 200)
+        self.assertEqual(result.update_diagnostics[0].outcome_code, "EMPTY_RESPONSE")
+        self.assertFalse(result.update_diagnostics[0].response_received)
 
     def test_failed_current_refresh_preserves_last_valid_snapshot_without_bring_forward(self):
         class FailingRefreshFTWilliamsService(FakeFTWilliamsService):

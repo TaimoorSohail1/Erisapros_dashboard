@@ -6,6 +6,7 @@ from app.models import (
     AuditLog,
     Filing,
     FilingStatus,
+    FTWilliamsDismissFailureRequest,
     FTWilliamsFailureQueueItem,
     FTWilliamsFailureQueueResponse,
     FTWilliamsHistoryItem,
@@ -17,6 +18,7 @@ from app.models import (
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
+from app.services.ftwilliams_review import FTWilliamsReviewService
 
 
 router = APIRouter(prefix="/ftwilliams", tags=["ftwilliams"])
@@ -40,25 +42,36 @@ async def failure_queue():
     return await retry_repository_read(_build_failure_queue)
 
 
+@router.post("/failure-queue/{filing_id}/dismiss", response_model=FTWilliamsReview)
+async def dismiss_failure(filing_id: str, payload: FTWilliamsDismissFailureRequest):
+    try:
+        return await FTWilliamsReviewService().dismiss_active_failure(filing_id, payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 async def _build_failure_queue(repo):
     items: list[FTWilliamsFailureQueueItem] = []
-    # Failed reviews are normally empty or very small. Query that collection
-    # first instead of loading every filing and issuing two more queries per
-    # row on every dashboard refresh.
-    reviews = await repo.list_failed_ftwilliams_reviews()
-    filing_ids = {review.filing_id for review in reviews}
-    filing_rows, audit_rows = await asyncio.gather(
+    # Persistent failure state is authoritative for new records. Unresolved
+    # lifecycle audits recover older failures that Query Current accidentally
+    # hid before persistent failure state existed.
+    active_reviews, audit_rows = await asyncio.gather(
+        repo.list_failed_ftwilliams_reviews(),
+        repo.list_unresolved_ftwilliams_failure_audits(),
+    )
+    failed_audits = {audit.filing_id: audit for audit in audit_rows if audit.filing_id}
+    filing_ids = {review.filing_id for review in active_reviews} | set(failed_audits)
+    filing_rows, review_rows = await asyncio.gather(
         repo.get_filings_by_ids(filing_ids),
-        repo.list_latest_ftwilliams_failure_audits(filing_ids),
+        repo.get_ftwilliams_reviews_by_filing_ids(filing_ids),
     )
     filings = {filing.id: filing for filing in filing_rows if filing.id}
-    failed_audits = {
-        audit.filing_id: audit
-        for audit in audit_rows
-        if audit.filing_id
-    }
-    for review in reviews:
-        filing = filings.get(review.filing_id)
+    reviews = {review.filing_id: review for review in review_rows}
+    for filing_id in filing_ids:
+        review = reviews.get(filing_id)
+        filing = filings.get(filing_id)
+        if not review:
+            continue
         if not filing or not filing.id or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
             continue
         failed_audit = failed_audits.get(filing.id)
@@ -103,11 +116,12 @@ def _failure_queue_item(
     failed_audit: AuditLog | None,
 ) -> FTWilliamsFailureQueueItem:
     lookup = review.plan_lookup
-    client_error = review.client_error
+    client_error = review.active_failure_client_error or review.client_error
     details = failed_audit.details if failed_audit and failed_audit.details else {}
     error = (
         (client_error.message if client_error else None)
         or _text(details.get("error"))
+        or review.active_failure_reason
         or review.error_message
         or ("FT Williams update requires verification." if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "FT Williams update failed.")
     )
@@ -128,8 +142,16 @@ def _failure_queue_item(
         ftw_plan_id=review.ftw_plan_id,
         year=review.year or review.comparison_year,
         attempted_field_count=review.update_attempted_count,
-        failed_at=(failed_audit.created_at if failed_audit else review.updated_at),
-        last_action_label="Verification required" if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "Update failed",
+        failed_at=(review.active_failure_at or (failed_audit.created_at if failed_audit else review.updated_at)),
+        last_action_label=(
+            "Verification required"
+            if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN
+            or any(item.outcome_code in {"EMPTY_RESPONSE", "MALFORMED_RESPONSE", "NO_RESPONSE"} for item in review.update_diagnostics)
+            else "Update failed"
+        ),
+        error_code=(client_error.code if client_error else _text(details.get("error_code"))),
+        technical_details=(client_error.technical_details if client_error else None),
+        operation_diagnostics=list(review.update_diagnostics or []),
     )
 
 
@@ -183,6 +205,10 @@ def _history_action(audit: AuditLog) -> tuple[str, str]:
         return "Update failed", "failed"
     if audit.event == "FTWILLIAMS_UPDATE_UNKNOWN":
         return "Verification required", "warning"
+    if audit.event == "FTWILLIAMS_UPDATE_FAILURE_DISMISSED":
+        return "Failure dismissed", "info"
+    if audit.event == "FTWILLIAMS_UPDATE_FAILURE_RESOLVED":
+        return "Failure resolved", "success"
     return audit.event.replace("_", " ").title(), "info"
 
 

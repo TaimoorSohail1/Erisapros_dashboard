@@ -60,6 +60,17 @@ class ErrorNormalizerTests(unittest.TestCase):
         self.assertEqual(error.code, "FTW_UPDATE_VERIFICATION_FAILED")
         self.assertIn("Query FTW Current", error.next_action)
 
+    def test_empty_ftw_response_gets_specific_diagnostic_message(self):
+        error = normalize_client_error(
+            "FT Williams received the update request, but its response was empty or malformed, so the update "
+            "could not be confirmed. FTW error PARSE_ERROR: no element found: line 1, column 0"
+        )
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
+        self.assertIn("no usable response", error.title.lower())
+        self.assertIn("Query FTW Current", error.next_action)
+
 
 if __name__ == "__main__":
     unittest.main()

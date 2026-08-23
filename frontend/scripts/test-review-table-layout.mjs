@@ -68,7 +68,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && ftwUpdateFailed && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
+  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\) && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
   "Approval readiness must distinguish an active FTW retry from a failed filing that needs re-approval.",
 );
 assert.match(
@@ -185,7 +185,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const showFtwSendAction = filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && ftwUpdateFailed\);/,
+  /const showFtwSendAction = filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\)\);/,
   "Approved filings must always expose the FT Williams send action, even when the UI readiness snapshot is stale.",
 );
 assert.match(

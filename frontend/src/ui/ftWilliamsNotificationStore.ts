@@ -21,6 +21,10 @@ export function useFTWilliamsFailures() {
   return snapshot;
 }
 
+export function refreshFTWilliamsFailures() {
+  return failuresResource.refresh({ force: true });
+}
+
 export function useFTWilliamsHistory(enabled: boolean) {
   const snapshot = useSyncExternalStore(historyResource.subscribe, historyResource.getSnapshot);
   useEffect(() => {

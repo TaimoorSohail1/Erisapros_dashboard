@@ -20,6 +20,7 @@ from app.models import (
     FormType,
     FTWilliamsComparisonField,
     FTWilliamsManualMatchRequest,
+    FTWilliamsOperationDiagnostic,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
     FTWilliamsPlanMapping,
@@ -149,6 +150,15 @@ class FTWilliamsReviewService:
         new_schedule_desc = str((existing_review.schedule_a_match or {}).get("schedule_desc") or "").strip() if create_new_schedule_a else None
         schedule_a_broker_rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
         schedule_a_worksheet_summaries = self._normalized_schedule_a_worksheet_summaries(filing.schedule_a_worksheet_summaries)
+        legacy_active_failure = bool(
+            existing_review
+            and existing_review.failure_dismissed_at is None
+            and existing_review.status in {
+                FTWilliamsReviewStatus.UPDATE_FAILED,
+                FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+            }
+        )
+        active_failure = bool(existing_review and (existing_review.active_failure or legacy_active_failure))
 
         if not send_queries and existing_review:
             query_request_xmls.extend([existing_review.query_request_xml] if existing_review.query_request_xml else [])
@@ -392,8 +402,28 @@ class FTWilliamsReviewService:
             schedule_a_current_values=schedule_a_current,
             update_xml_5500=update_xml_5500,
             update_xml_schedule_a=update_xml_schedule_a,
+            update_diagnostics=list(existing_review.update_diagnostics or []) if existing_review else [],
             error_message=error_message,
             client_error=self._normalize_review_error(error_message, comparison_fields),
+            active_failure=active_failure,
+            active_failure_reason=(
+                existing_review.active_failure_reason or existing_review.error_message
+                if active_failure and existing_review
+                else None
+            ),
+            active_failure_client_error=(
+                existing_review.active_failure_client_error
+                or existing_review.client_error
+                or self._normalize_review_error(
+                    existing_review.active_failure_reason or existing_review.error_message,
+                    comparison_fields,
+                )
+                if active_failure and existing_review
+                else None
+            ),
+            active_failure_at=(existing_review.active_failure_at or existing_review.updated_at if active_failure and existing_review else None),
+            failure_dismissed_at=(existing_review.failure_dismissed_at if existing_review else None),
+            failure_dismissed_reason=(existing_review.failure_dismissed_reason if existing_review else None),
             fields=comparison_fields,
             **identity,
         )
@@ -417,33 +447,6 @@ class FTWilliamsReviewService:
                 "ftw_schedule_a_contract_type_reason": ftw_contract_classification.reason,
             }
         await repo.update_filing(filing_id, filing_contract_updates)
-        if (
-            existing_review
-            and existing_review.status in {FTWilliamsReviewStatus.UPDATE_FAILED, FTWilliamsReviewStatus.UPDATE_UNKNOWN}
-            and send_queries
-            and review.current_query_success
-            and not review.error_message
-        ):
-            clear_values = {"error_message": None}
-            if filing.status == FilingStatus.FAILED:
-                clear_values["status"] = FilingStatus.APPROVED
-            await repo.update_filing(
-                filing_id,
-                clear_values,
-            )
-            await repo.add_audit(
-                AuditLog(
-                    filing_id=filing_id,
-                    event="FTWILLIAMS_UPDATE_FAILURE_CLEARED",
-                    message="Previous FT Williams update issue was cleared after rebuilding or refreshing the review preview.",
-                    details={
-                        "send_queries": send_queries,
-                        "review_status": review.status,
-                        "current_query_success": review.current_query_success,
-                        "error": review.error_message,
-                    },
-                )
-            )
         await repo.add_audit(
             AuditLog(
                 filing_id=filing_id,
@@ -841,7 +844,14 @@ class FTWilliamsReviewService:
         retrying_failed_ftw_update = bool(
             filing.status == FilingStatus.FAILED
             and review
-            and review.status == FTWilliamsReviewStatus.UPDATE_FAILED
+            and (
+                review.active_failure
+                or review.failure_dismissed_at is not None
+                or review.status in {
+                    FTWilliamsReviewStatus.UPDATE_FAILED,
+                    FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+                }
+            )
         )
         if filing.status != FilingStatus.APPROVED and not retrying_failed_ftw_update:
             raise ValueError("Approve the filing before sending approved values to FT Williams.")
@@ -852,6 +862,46 @@ class FTWilliamsReviewService:
             refresh_current_before_update=payload.refresh_current_before_update,
             run_edit_checks=payload.run_edit_checks,
         )
+
+    async def dismiss_active_failure(self, filing_id: str, reason: str) -> FTWilliamsReview:
+        repo = get_repository()
+        review = await repo.get_ftwilliams_review(filing_id)
+        if not review:
+            raise ValueError("FT Williams review not found")
+        legacy_active = bool(
+            review.failure_dismissed_at is None
+            and review.status in {
+                FTWilliamsReviewStatus.UPDATE_FAILED,
+                FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+            }
+        )
+        if not review.active_failure and not legacy_active:
+            unresolved_audits = await repo.list_unresolved_ftwilliams_failure_audits()
+            legacy_active = any(audit.filing_id == filing_id for audit in unresolved_audits)
+        if not review.active_failure and not legacy_active:
+            raise ValueError("No active FT Williams failure to dismiss")
+        dismissed_reason = reason.strip() or "Dismissed by operator"
+        review.active_failure = False
+        review.failure_dismissed_at = datetime.utcnow()
+        review.failure_dismissed_reason = dismissed_reason
+        await repo.upsert_ftwilliams_review(review)
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_UPDATE_FAILURE_DISMISSED",
+                message="FT Williams update failure was manually dismissed from the active queue.",
+                details={
+                    "reason": dismissed_reason,
+                    "error": review.active_failure_reason or review.error_message,
+                    "error_code": (
+                        review.active_failure_client_error.code
+                        if review.active_failure_client_error
+                        else review.client_error.code if review.client_error else None
+                    ),
+                },
+            )
+        )
+        return review
 
     async def _prepare_plan_lookup(
         self,
@@ -1721,6 +1771,19 @@ class FTWilliamsReviewService:
         # Schedule A updates as a full replacement set, so sending stale XML that
         # only contains the selected schedule can remove the other Schedule A rows.
         existing_review = await repo.get_ftwilliams_review(filing_id)
+        had_active_failure = bool(
+            existing_review
+            and (
+                existing_review.active_failure
+                or (
+                    existing_review.failure_dismissed_at is None
+                    and existing_review.status in {
+                        FTWilliamsReviewStatus.UPDATE_FAILED,
+                        FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+                    }
+                )
+            )
+        )
         can_reuse_current_snapshot = bool(
             refresh_current_before_update
             and existing_review
@@ -1901,9 +1964,19 @@ class FTWilliamsReviewService:
             if key in attempted_fields
         ]
         review.update_retry_count = retry_count
+        review.update_diagnostics = self._operation_diagnostics(responses)
         review.error_message = error_message
         review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
         review.client_error = self._normalize_review_error(review.error_message, review.fields)
+        if success:
+            review.active_failure = False
+            review.active_failure_reason = None
+            review.active_failure_client_error = None
+            review.active_failure_at = None
+            review.failure_dismissed_at = None
+            review.failure_dismissed_reason = None
+        else:
+            self._activate_failure(review, error_message or "FT Williams update failed.")
 
         if success and run_edit_checks:
             edit_checks = await self.ftwilliams.run_query(
@@ -1945,9 +2018,20 @@ class FTWilliamsReviewService:
                     "verification_attempted": review.update_verification_attempted,
                     "verification_success": review.update_verification_success,
                     "verification_mismatch_count": len(review.update_verification_mismatches),
+                    "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
+                    "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
                 },
             )
         )
+        if success and had_active_failure:
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing_id,
+                    event="FTWILLIAMS_UPDATE_FAILURE_RESOLVED",
+                    message="Previous FT Williams update failure was resolved by a verified successful update.",
+                    details={"updated_field_count": confirmed_count},
+                )
+            )
         return review
 
     async def _send_update_payload(self, review: FTWilliamsReview) -> list:
@@ -2411,6 +2495,7 @@ class FTWilliamsReviewService:
         review.status = FTWilliamsReviewStatus.UPDATE_FAILED
         review.error_message = error_message
         review.client_error = self._normalize_review_error(error_message, review.fields)
+        self._activate_failure(review, error_message)
         await repo.upsert_ftwilliams_review(review)
         await repo.update_filing(
             filing_id,
@@ -2419,6 +2504,18 @@ class FTWilliamsReviewService:
                 "approved_at": None,
                 "error_message": error_message,
             },
+        )
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_UPDATE_FAILED",
+                message="FT Williams update failed.",
+                details={
+                    "error": error_message,
+                    "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
+                    "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
+                },
+            )
         )
 
     async def _record_ambiguous_update(
@@ -2460,6 +2557,7 @@ class FTWilliamsReviewService:
         review.update_confirmed_count = 0
         review.update_remaining_count = len(attempted_field_keys)
         review.update_retry_count = 0
+        review.update_diagnostics = self._operation_diagnostics(responses)
         review.update_results = [
             {
                 **attempted_fields[key],
@@ -2471,6 +2569,7 @@ class FTWilliamsReviewService:
         ]
         review.error_message = error_message
         review.client_error = self._normalize_review_error(error_message, review.fields)
+        self._activate_failure(review, error_message)
         await repo.upsert_ftwilliams_review(review)
         await repo.update_filing(
             filing_id,
@@ -2494,10 +2593,72 @@ class FTWilliamsReviewService:
                     "update_retry_count": 0,
                     "verification_attempted": False,
                     "verification_success": None,
+                    "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
+                    "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
                 },
             )
         )
         return review
+
+    def _activate_failure(self, review: FTWilliamsReview, error_message: str) -> None:
+        review.active_failure = True
+        review.active_failure_reason = error_message
+        review.active_failure_client_error = self._normalize_review_error(error_message, review.fields)
+        review.active_failure_at = datetime.utcnow()
+        review.failure_dismissed_at = None
+        review.failure_dismissed_reason = None
+
+    def _operation_diagnostics(self, responses: list) -> list[FTWilliamsOperationDiagnostic]:
+        diagnostics: list[FTWilliamsOperationDiagnostic] = []
+        for response in responses:
+            raw_response = str(response.raw_response or "").strip()
+            parse_failed = any(str(status.error_code or "") == "PARSE_ERROR" for status in response.statuses or [])
+            status_error = next(
+                (status for status in response.statuses or [] if str(status.error_code or "") not in {"", "0"}),
+                None,
+            )
+            if not response.sent:
+                outcome_code = "NOT_SENT"
+            elif response.http_status is None:
+                outcome_code = "NO_RESPONSE"
+            elif not 200 <= response.http_status < 300:
+                outcome_code = "HTTP_ERROR"
+            elif not raw_response:
+                outcome_code = "EMPTY_RESPONSE"
+            elif parse_failed:
+                outcome_code = "MALFORMED_RESPONSE"
+            elif response.success:
+                outcome_code = "ACCEPTED"
+            else:
+                outcome_code = "REJECTED"
+            headers = response.response_headers or {}
+            excerpt = re.sub(r"\s+", " ", self.ftwilliams.mask_key_id(raw_response)).strip()[:1200] or None
+            diagnostics.append(
+                FTWilliamsOperationDiagnostic(
+                    operation=response.operation,
+                    sent=response.sent,
+                    http_status=response.http_status,
+                    outcome_code=outcome_code,
+                    response_received=bool(raw_response),
+                    response_content_type=headers.get("content-type"),
+                    response_content_length=headers.get("content-length"),
+                    request_id=(
+                        headers.get("x-request-id")
+                        or headers.get("x-amzn-requestid")
+                        or headers.get("x-amz-request-id")
+                        or headers.get("cf-ray")
+                    ),
+                    elapsed_ms=response.elapsed_ms,
+                    error_code=(str(status_error.error_code) if status_error and status_error.error_code else None),
+                    error_description=(
+                        status_error.error_desc
+                        if status_error and status_error.error_desc
+                        else response.error
+                    ),
+                    response_excerpt=excerpt,
+                )
+            )
+        return diagnostics
 
     def _normalize_review_error(
         self,
