@@ -38,9 +38,6 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     "BenefitCdSection412Ind",
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
-    "SPONS_DFE_CITY",
-    "SPONS_DFE_STATE",
-    "SPONS_DFE_ZIP_CODE",
 }
 
 SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {"ScheduleDesc"}

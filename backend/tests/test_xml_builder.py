@@ -196,7 +196,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("WELFARE_BENEFIT_PLAN_IND", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_documented_identity_and_contact_fields_are_sent(self):
+    def test_5500_unverified_identity_and_contact_fields_are_not_sent(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -275,13 +275,14 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<PLAN_NAME0>New Plan Name</PLAN_NAME0>", xml)
-        self.assertIn("<SPONSOR_DFE_NAME0>New Sponsor Name</SPONSOR_DFE_NAME0>", xml)
-        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>490B Boston Post Road</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
-        self.assertIn("<ADMIN_NAME0>New Administrator</ADMIN_NAME0>", xml)
+        self.assertNotIn("PLAN_NAME0", xml)
+        self.assertNotIn("SPONSOR_DFE_NAME0", xml)
+        self.assertNotIn("SPONS_DFE_EIN", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
+        self.assertNotIn("ADMIN_NAME0", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_sponsor_ein_uses_documented_update_tag(self):
+    def test_5500_unverified_sponsor_ein_is_not_sent(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1e. Plan Sponsor EIN",
@@ -305,9 +306,10 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"SDEIN": "98-7654321"},
         )
 
-        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
+        self.assertNotIn("SPONS_DFE_EIN", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_combined_address_updates_street_without_corrupting_locality(self):
+    def test_5500_unverified_combined_address_is_not_sent_with_current_locality(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -337,12 +339,13 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>750 E MAIN ST</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertNotIn("<SPONS_DFE_CITY>", xml)
         self.assertNotIn("<SPONS_DFE_STATE>", xml)
         self.assertNotIn("<SPONS_DFE_ZIP_CODE>", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_combined_address_parses_common_unseparated_us_address(self):
+    def test_5500_unverified_combined_address_is_not_sent_without_current_values(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -366,10 +369,11 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={},
         )
 
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>18 CHESTNUT ST. SUITE 500</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
-        self.assertIn("<SPONS_DFE_CITY>WORCESTER</SPONS_DFE_CITY>", xml)
-        self.assertIn("<SPONS_DFE_STATE>MA</SPONS_DFE_STATE>", xml)
-        self.assertIn("<SPONS_DFE_ZIP_CODE>01608</SPONS_DFE_ZIP_CODE>", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
+        self.assertNotIn("SPONS_DFE_CITY", xml)
+        self.assertNotIn("SPONS_DFE_STATE", xml)
+        self.assertNotIn("SPONS_DFE_ZIP_CODE", xml)
+        self.assertIn("No approved FT Williams fields are available yet", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
@@ -504,7 +508,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_documented_plan_administrator_tag_is_sent_with_valid_fields(self):
+    def test_5500_rejected_plan_administrator_tag_is_omitted_without_dropping_valid_fields(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -541,7 +545,8 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"ADMINName": "AMERICAN SECURITIES LLC", "TotActivePartcpCnt": "120"},
         )
 
-        self.assertIn("<ADMIN_NAME0>Charlotte Tallon</ADMIN_NAME0>", xml)
+        self.assertNotIn("ADMIN_NAME0", xml)
+        self.assertNotIn("Charlotte Tallon", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):

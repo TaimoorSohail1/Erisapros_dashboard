@@ -244,10 +244,15 @@ class FTWilliamsSchemaService:
                     normalize_ftw_update_value(form_type, element.tag, value)
                 except FTWPayloadValidationError as exc:
                     reason = exc.issues[0].reason if exc.issues else str(exc)
+                    correction = self._correction(element.tag)
                     if "not approved by FTW contract" in reason:
                         reason = (
-                            f"Field is not present in the trusted {form_type.value} update schema "
-                            f"for {year}."
+                            f"Field is not verified as writable for the {form_type.value} "
+                            f"update operation for {year}."
+                        )
+                        correction = (
+                            "Keep this field read-only until FT Williams accepts it in a sandbox "
+                            "update and read-back verification passes."
                         )
                     issues.append(
                         FTWilliamsSchemaValidationIssue(
@@ -255,7 +260,7 @@ class FTWilliamsSchemaService:
                             value=value,
                             reason=reason,
                             expected_format=self._expected_format(element.tag),
-                            correction=self._correction(element.tag),
+                            correction=correction,
                         )
                     )
 

@@ -1102,7 +1102,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(resolve_ftw_tag(sponsor_field), "SPONSOR_DFE_NAME0")
-        self.assertEqual(resolve_ftw_update_tag(sponsor_field), "SPONSOR_DFE_NAME0")
+        self.assertIsNone(resolve_ftw_update_tag(sponsor_field))
 
     def test_schedule_a_policy_dates_are_writable_when_the_selected_record_year_is_safe(self):
         def schedule_date(rule_key: str, label: str, value: str) -> ExtractedField:
@@ -1212,7 +1212,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         xml = build_proposed_ftw_xml(fields)
 
         self.assertIn("<DOL5500Data>", xml)
-        self.assertIn("<PLAN_NAME0>ABC Plan</PLAN_NAME0>", xml)
+        self.assertNotIn("PLAN_NAME0", xml)
         self.assertIn("<TotPartcpBoyCnt>100</TotPartcpBoyCnt>", xml)
         self.assertIn("<DOLScheduleAData>", xml)
         self.assertIn("<InsCarrierName>ABC Insurance</InsCarrierName>", xml)

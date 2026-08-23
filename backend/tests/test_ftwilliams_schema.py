@@ -148,8 +148,23 @@ class FTWilliamsSchemaTests(unittest.IsolatedAsyncioTestCase):
         by_tag = {issue.tag: issue for issue in result.issues}
         self.assertEqual(by_tag["InsCarrierNAICCode"].value, "ABC")
         self.assertIn("5 digits", by_tag["InsCarrierNAICCode"].expected_format)
-        self.assertIn("not present in the trusted", by_tag["UnknownVendorTag"].reason)
+        self.assertIn("not verified as writable", by_tag["UnknownVendorTag"].reason)
         self.assertEqual(result.schema_source, "DOCUMENTED_STATIC_DOL")
+
+    def test_outgoing_form_5500_blocks_schema_field_not_verified_for_update(self):
+        xml = """<ftwLink><DataBatch><DOL5500Data><TransactionType>2</TransactionType><Year>2025</Year><ADMIN_NAME0>New Administrator</ADMIN_NAME0><TotActivePartcpCnt>125</TotActivePartcpCnt></DOL5500Data></DataBatch></ftwLink>"""
+
+        result = FTWilliamsSchemaService().validate_outgoing_xml(
+            FormType.FORM_5500,
+            "2025",
+            xml,
+        )
+
+        self.assertFalse(result.valid)
+        self.assertEqual([issue.tag for issue in result.issues], ["ADMIN_NAME0"])
+        issue = result.issues[0]
+        self.assertIn("not verified as writable", issue.reason)
+        self.assertIn("read-only", issue.correction)
 
     def test_outgoing_schedule_a_accepts_documented_repeatable_broker_tags(self):
         xml = """<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><Year>2025</Year><DOLSubPartData><Broker><NameXX>NFP Corporate Services</NameXX><AddressLine1XX>PO Box 786677</AddressLine1XX><CityXX>Philadelphia</CityXX><StateXX>PA</StateXX><ZipCodeXX>19178</ZipCodeXX><CommPdAmtXX>18603</CommPdAmtXX><FeesPdAmtXX>1397</FeesPdAmtXX><FeesPdTextXX>COMMISSIONS AND FEES</FeesPdTextXX><CodeXX>3</CodeXX></Broker></DOLSubPartData></DOLScheduleAData></DataBatch></ftwLink>"""
