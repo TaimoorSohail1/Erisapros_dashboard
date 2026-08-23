@@ -78,6 +78,26 @@ assert.match(
 );
 assert.doesNotMatch(
   source,
+  /disabled=\{busy \|\| !ftwCurrentLoaded\}/,
+  "Approval must not be disabled by FTW query state; query safety belongs to the send action.",
+);
+assert.doesNotMatch(
+  source,
+  /title=\{!ftwCurrentLoaded \? "Query FTW Current before approving\." : undefined\}/,
+  "Approval must not tell reviewers to query FTW when field review is already complete.",
+);
+assert.doesNotMatch(
+  source,
+  /function handleApproveClick\(\) \{[\s\S]*?if \(!ftwCurrentLoaded\)[\s\S]*?setShowApproveConfirm\(true\);/,
+  "Opening approval confirmation must not be blocked by FTW query state.",
+);
+assert.match(
+  source,
+  /\{!approved && approvalReady \? \([\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{onApprove\}/,
+  "The primary approval action must only be disabled while another review action is busy.",
+);
+assert.doesNotMatch(
+  source,
   /!approved && !failed && approvalReady/,
   "The approval action must not permanently disappear for recoverable failed filings.",
 );
@@ -88,7 +108,7 @@ assert.match(
 );
 assert.match(
   source,
-  /step === "APPROVAL" && filing\.status !== "APPROVED" && approvalReady \? \([\s\S]*?onClick=\{onApprove\}[\s\S]*?Approve filing/,
+  /step === "APPROVAL" && filing\.status !== "APPROVED" && approvalReady \? \([\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{onApprove\}[\s\S]*?Approve filing/,
   "The Approval workflow step must render a working approval action when confirmation is pending.",
 );
 assert.match(

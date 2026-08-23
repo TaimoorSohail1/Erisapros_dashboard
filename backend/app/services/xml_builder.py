@@ -401,6 +401,17 @@ def update_values_for_form(
                     continue
             values.update(indicator_values)
             continue
+        if (
+            form_type == FormType.FORM_5500
+            and str(field.mapped_rule_key or "") == "form_5500_part_i_1f_plan_sponsor_address"
+            and resolve_ftw_update_tag(field)
+        ):
+            address_values = _form_5500_sponsor_address_values(
+                field.proposed_value,
+                current_values=current_values,
+            )
+            values.update(address_values)
+            continue
         tag = resolve_ftw_update_tag(field)
         if not tag:
             continue
@@ -413,6 +424,115 @@ def update_values_for_form(
                 continue
         values[tag] = proposed
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
+
+
+def _form_5500_sponsor_address_values(
+    proposed_value: object,
+    *,
+    current_values: dict[str, str] | None,
+) -> dict[str, str]:
+    """Expand the dashboard's combined sponsor address into documented FTW fields.
+
+    The dashboard currently has one address rule while FTW stores structured
+    components. We only emit components that can be identified safely. Existing
+    locality values are used to separate the street from un-delimited addresses;
+    ambiguous locality text is retained instead of guessed.
+    """
+    proposed = re.sub(r"\s+", " ", str(proposed_value or "")).strip(" ,")
+    if not proposed:
+        return {}
+
+    current = current_values or {}
+    parsed = _split_form_5500_sponsor_address(proposed, current)
+    candidates = {
+        "SPONS_DFE_MAIL_STR_ADDRESS": parsed.get("street", ""),
+        "SPONS_DFE_CITY": parsed.get("city", ""),
+        "SPONS_DFE_STATE": parsed.get("state", ""),
+        "SPONS_DFE_ZIP_CODE": parsed.get("zip", ""),
+    }
+    current_by_tag = {
+        "SPONS_DFE_MAIL_STR_ADDRESS": current.get("SDAddressLine1", ""),
+        "SPONS_DFE_CITY": current.get("SDCity", ""),
+        "SPONS_DFE_STATE": current.get("SDState", ""),
+        "SPONS_DFE_ZIP_CODE": current.get("SDZipCode", ""),
+    }
+    values: dict[str, str] = {}
+    for tag, raw_value in candidates.items():
+        if not str(raw_value or "").strip():
+            continue
+        normalized = normalize_ftw_update_value(FormType.FORM_5500, tag, raw_value)
+        if current_values is not None and not values_meaningfully_different(
+            current_by_tag.get(tag, ""),
+            normalized,
+            tag=tag,
+        ):
+            continue
+        values[tag] = normalized
+    return values
+
+
+def _split_form_5500_sponsor_address(
+    proposed: str,
+    current_values: dict[str, str],
+) -> dict[str, str]:
+    current_city = str(current_values.get("SDCity") or "").strip()
+    current_state = str(current_values.get("SDState") or "").strip()
+    current_zip = str(current_values.get("SDZipCode") or "").strip()
+    current_line_2 = str(current_values.get("SDAddressLine2") or "").strip()
+
+    if current_city:
+        city_matches = list(re.finditer(rf"\b{re.escape(current_city)}\b", proposed, flags=re.IGNORECASE))
+        if city_matches:
+            city_match = city_matches[-1]
+            street = proposed[: city_match.start()].strip(" ,")
+            if current_line_2:
+                street = re.sub(
+                    rf"(?:,?\s*){re.escape(current_line_2)}$",
+                    "",
+                    street,
+                    flags=re.IGNORECASE,
+                ).strip(" ,")
+            if street:
+                return {
+                    "street": street,
+                    "city": current_city,
+                    "state": current_state,
+                    "zip": current_zip,
+                }
+
+    locality_match = re.fullmatch(
+        r"(?P<street>.+),\s*(?P<city>[A-Za-z][A-Za-z .'-]*?)\s*,?\s+(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
+        proposed,
+    )
+    if locality_match:
+        return {
+            "street": locality_match.group("street").strip(" ,"),
+            "city": locality_match.group("city").strip(" ,"),
+            "state": locality_match.group("state"),
+            "zip": locality_match.group("zip"),
+        }
+
+    suffix_match = re.fullmatch(
+        r"(?P<body>.+?)\s+(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
+        proposed,
+    )
+    if suffix_match:
+        street_city_match = re.fullmatch(
+            r"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?(?:\s+(?:SUITE|STE|UNIT|#)\s*[A-Za-z0-9-]+)?)\s+(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            suffix_match.group("body"),
+            flags=re.IGNORECASE,
+        )
+        if street_city_match:
+            return {
+                "street": street_city_match.group("street").strip(" ,"),
+                "city": street_city_match.group("city").strip(" ,"),
+                "state": suffix_match.group("state"),
+                "zip": suffix_match.group("zip"),
+            }
+
+    # With no trustworthy separator, only the street field can be changed.
+    # Locality fields are deliberately omitted and therefore preserved by FTW.
+    return {"street": proposed}
 
 
 def full_replace_values_for_schedule_a(

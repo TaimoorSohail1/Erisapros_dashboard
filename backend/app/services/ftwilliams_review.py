@@ -2513,6 +2513,10 @@ class FTWilliamsReviewService:
         for field in fields:
             if not field.rule_key:
                 continue
+            if field.rule_key == "form_5500_part_i_1d_plan_sponsor_name":
+                # Preserve labels for errors stored before the FTW schema typo
+                # was corrected from SPONS_DFE_NAME0 to SPONSOR_DFE_NAME0.
+                by_tag.setdefault("SPONS_DFE_NAME0", field)
             for mapping in (
                 FORM_5500_TAGS_BY_RULE,
                 FORM_5500_CURRENT_TAGS_BY_RULE,
@@ -2847,13 +2851,6 @@ class FTWilliamsReviewService:
             return None
         rule_key = str(field.mapped_rule_key or "")
         current = resolve_ftw_current_value(field, current_values)
-
-        if rule_key in {
-            "schedule_a_part_i_1f_policy_year_beginning_date",
-            "schedule_a_part_i_1g_policy_year_ending_date",
-        }:
-            if current and not self._same_date(current, proposed):
-                return "policy date differs from current FTW value"
 
         if rule_key == "schedule_a_part_iv_4c_sponsor_ein":
             carrier_ein = current_values.get("InsCarrierEIN") or self._field_value_by_rule(fields, "schedule_a_part_i_1b_insurance_carrier_ein")
