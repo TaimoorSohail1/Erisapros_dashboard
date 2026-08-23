@@ -840,6 +840,69 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("CommPdAmtXX"), "250")
         self.assertEqual(broker.findtext("AddressLine1XX"), "100 Main Street")
 
+    def test_schedule_a_reviewer_field_edits_override_stale_extracted_broker_rows(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="3a. Name of Agent/Broker/Person",
+                normalized_field_name="broker",
+                mapped_rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
+                mapped_label="3a. Name of Agent/Broker/Person",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Correct Broker",
+                proposed_value="Correct Broker",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="3b. Amount of Commissions",
+                normalized_field_name="commissions",
+                mapped_rule_key="schedule_a_part_i_3b_amount_of_commissions",
+                mapped_label="3b. Amount of Commissions",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="10484",
+                proposed_value="10484",
+            ),
+        ]
+        records = [
+            {
+                "ftw_seq_no": "3",
+                "query_results": {
+                    "InsCarrierName": "Guardian",
+                    "InsContractNum": "0002Z407",
+                    "Name1": "Current Broker",
+                    "CommPdAmt01": "7525",
+                },
+                "query_subparts": {
+                    "Broker": [{"Name1": "Current Broker", "CommPdAmt01": "7525"}]
+                },
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "3",
+            fields,
+            ftw_customer_id="514477581",
+            ftw_plan_id="605520390",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Stale Extracted Broker",
+                    "commission_total": "7525",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        root = ET.fromstring(xml)
+        broker = root.find(".//DOLScheduleAData/DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("NameXX"), "Correct Broker")
+        self.assertEqual(broker.findtext("CommPdAmtXX"), "10484")
+        self.assertEqual(broker.findtext("CodeXX"), "3")
+
     def test_schedule_a_replace_preflight_reports_dropped_fields_and_broker_values(self):
         records = [
             {

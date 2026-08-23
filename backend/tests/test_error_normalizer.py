@@ -8,6 +8,19 @@ from app.services.error_normalizer import normalize_client_error
 
 
 class ErrorNormalizerTests(unittest.TestCase):
+    def test_documented_permission_error_is_mapped_with_specific_recovery(self):
+        error = normalize_client_error("DOLScheduleAData error 53: No permission for TransactionType: 2")
+
+        self.assertEqual(error.code, "FTW_DOL_53")
+        self.assertIn("permission", error.title.lower())
+        self.assertIn("KeyID", error.next_action)
+
+    def test_document_generation_error_is_not_reported_as_unknown(self):
+        error = normalize_client_error("DOL error 79: Could not locate the specified DOL schedule.")
+
+        self.assertEqual(error.code, "FTW_DOCUMENT_79")
+        self.assertIn("schedule", error.message.lower())
+
     def test_locked_ftw_error_gets_actionable_message(self):
         error = normalize_client_error("Error 68: Transaction type 2 is not allowed if the filing is locked.")
 

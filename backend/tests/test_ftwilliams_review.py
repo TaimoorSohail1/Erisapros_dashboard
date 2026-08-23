@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
+from app.config import get_settings
 from app.models import (
     DocumentType,
     ExtractedField,
@@ -1430,6 +1431,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertTrue(review.current_year_exists)
+        self.assertTrue(review.query_access_verified)
+        self.assertEqual(review.update_access_status, "NOT_ATTEMPTED")
         self.assertFalse(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.CURRENT_QUERIED)
         self.assertEqual(by_label["13. Active participants at beginning"].current_value, "249")
@@ -1495,6 +1498,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         # Reviews created before raw current-data snapshots were introduced must
         # still keep their displayed FTW values after a local field decision.
         queried.form_5500_current_values = {}
+        queried.query_access_verified = True
+        queried.update_access_status = "GRANTED"
+        queried.edit_check_baseline_success = True
+        queried.edit_check_final_success = True
+        queried.audit_pdf_status = "AVAILABLE"
+        queried.audit_pdf_key = "ftw-audit/filing/schedule-a.pdf"
+        queried.audit_pdf_sha256 = "abc123"
         run_async(repo.upsert_ftwilliams_review(queried))
 
         call_count = len(fake_ftw.calls)
@@ -1505,6 +1515,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(fake_ftw.calls), call_count)
         self.assertTrue(refreshed.current_query_sent)
         self.assertTrue(refreshed.current_query_success)
+        self.assertTrue(refreshed.query_access_verified)
+        self.assertEqual(refreshed.update_access_status, "GRANTED")
+        self.assertTrue(refreshed.edit_check_baseline_success)
+        self.assertTrue(refreshed.edit_check_final_success)
+        self.assertEqual(refreshed.audit_pdf_status, "AVAILABLE")
+        self.assertEqual(refreshed.audit_pdf_key, "ftw-audit/filing/schedule-a.pdf")
+        self.assertEqual(refreshed.audit_pdf_sha256, "abc123")
         self.assertEqual(refreshed.schedule_a_match["ftw_seq_no"], "1")
         self.assertEqual(refreshed.ftw_seq_no, "1")
         self.assertEqual({record["ftw_seq_no"] for record in refreshed.schedule_a_records}, {"1", "3"})
@@ -2350,12 +2367,34 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
     def test_successful_ftw_update_is_read_back_and_verified(self):
         class VerifyingFTWilliamsService(FakeFTWilliamsService):
-            def __init__(self, *, reflect_updates: bool = True):
+            def __init__(self, *, reflect_updates: bool = True, final_edit_checks_success: bool = True):
                 super().__init__()
                 self.updated = False
                 self.reflect_updates = reflect_updates
+                self.final_edit_checks_success = final_edit_checks_success
+                self.edit_check_calls = 0
 
             async def run_query(self, payload):
+                if payload.operation == "edit_checks_5500":
+                    self.calls.append(payload)
+                    self.edit_check_calls += 1
+                    success = self.final_edit_checks_success or self.edit_check_calls == 1
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml="<ftwLink><KeyID>***</KeyID><EditChecks5500 /></ftwLink>",
+                        http_status=200,
+                        success=success,
+                        raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                        statuses=[
+                            FTWilliamsStatusItem(
+                                type="EditChecks5500",
+                                error_code="0" if success else "92",
+                                error_desc=None if success else "Final Edit Checks failed",
+                            )
+                        ],
+                    )
                 response = await super().run_query(payload)
                 if payload.operation == "query_5500" and response.statuses:
                     response.statuses[0].query_results.update(
@@ -2380,6 +2419,21 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     success=True,
                     raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
                     statuses=[FTWilliamsStatusItem(type=operation, error_code="0")],
+                )
+
+            async def generate_dol_document(self, **_kwargs):
+                return (
+                    FTWilliamsQueryResponse(
+                        operation="generate_dol_document",
+                        configured=True,
+                        sent=True,
+                        request_xml="<ftwLink><KeyID>***</KeyID><GenerateDocument /></ftwLink>",
+                        http_status=200,
+                        success=True,
+                        raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                        statuses=[FTWilliamsStatusItem(type="Document", error_code="0")],
+                    ),
+                    b"%PDF-1.4 verified schedule a",
                 )
 
         repo = repositories.get_repository()
@@ -2414,13 +2468,23 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
-        review = run_async(
-            FTWilliamsReviewService(VerifyingFTWilliamsService()).approve_and_update(
-                filing.id,
-                send_to_ftw=True,
-                refresh_current_before_update=True,
+        verifying_ftw = VerifyingFTWilliamsService()
+        settings = get_settings()
+        with (
+            patch.object(settings, "ftw_pdf_audit_enabled", True),
+            patch(
+                "app.services.ftwilliams_review.StorageService.save_pdf",
+                return_value={"key": "audit/test.pdf", "bucket": "audit-bucket", "uploaded": True},
+            ),
+        ):
+            review = run_async(
+                FTWilliamsReviewService(verifying_ftw).approve_and_update(
+                    filing.id,
+                    send_to_ftw=True,
+                    refresh_current_before_update=True,
+                    run_edit_checks=True,
+                )
             )
-        )
 
         self.assertEqual(review.status, FTWilliamsReviewStatus.UPDATE_SENT, review.update_verification_mismatches)
         self.assertTrue(review.update_verification_attempted)
@@ -2432,6 +2496,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.update_results), 2)
         self.assertTrue(all(item["status"] == "VERIFIED" for item in review.update_results))
         self.assertTrue(all(item.get("label") and item.get("sent_value") for item in review.update_results))
+        self.assertTrue(review.query_access_verified)
+        self.assertEqual(review.update_access_status, "GRANTED")
+        self.assertTrue(review.schema_validation_results)
+        self.assertTrue(all(result.valid for result in review.schema_validation_results))
+        self.assertTrue(review.edit_check_baseline_success)
+        self.assertTrue(review.edit_check_final_success)
+        self.assertEqual(review.audit_pdf_status, "AVAILABLE")
+        self.assertEqual(review.audit_pdf_key, "audit/test.pdf")
+        self.assertEqual(len(review.audit_pdf_sha256 or ""), 64)
 
         clear_ftw_current_snapshot_cache()
         mismatched = run_async(
@@ -2451,6 +2524,24 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             mismatched.update_results,
         )
         self.assertIn("read-back verification", mismatched.error_message or "")
+
+        clear_ftw_current_snapshot_cache()
+        final_checks_failed = run_async(
+            FTWilliamsReviewService(
+                VerifyingFTWilliamsService(final_edit_checks_success=False)
+            ).approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+                run_edit_checks=True,
+            )
+        )
+
+        self.assertEqual(final_checks_failed.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertTrue(final_checks_failed.update_verification_success)
+        self.assertFalse(final_checks_failed.edit_check_final_success)
+        self.assertTrue(final_checks_failed.active_failure)
+        self.assertIn("Edit Checks", final_checks_failed.error_message or "")
 
     def test_ambiguous_ftw_update_preserves_last_valid_schedule_snapshot(self):
         class AmbiguousUpdateFTWilliamsService(FakeFTWilliamsService):

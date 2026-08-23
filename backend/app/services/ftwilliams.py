@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 import asyncio
+import base64
+import binascii
 from html import escape
 import time
 
@@ -86,13 +88,16 @@ class FTWilliamsService:
             )
 
         parsed = self.parse_response(response.text)
+        response_success = self.response_success(parsed)
+        if payload.operation.strip().lower() == "edit_checks_5500":
+            response_success = self.edit_checks_success(parsed)
         return FTWilliamsQueryResponse(
             operation=payload.operation,
             configured=True,
             sent=True,
             request_xml=masked_request_xml,
             http_status=response.status_code,
-            success=response.is_success and self.response_success(parsed),
+            success=response.is_success and response_success,
             statuses=parsed,
             raw_response=response.text,
             error=None if response.is_success else response.text[:500],
@@ -194,7 +199,15 @@ class FTWilliamsService:
             ]
 
         statuses: list[FTWilliamsStatusItem] = []
-        for status in root.findall(".//Status"):
+        # Edit Check results contain a nested leaf named ``Status`` inside
+        # QueryResults. Only elements carrying FT's response envelope fields are
+        # actual response records.
+        status_elements = [
+            status
+            for status in root.findall(".//Status")
+            if status.find("Type") is not None or status.find("ErrorCode") is not None
+        ]
+        for status in status_elements:
             query_results_element = status.find("QueryResults")
             query_results = self._child_text_map(query_results_element)
             status_success = self._text(status, "StatusSuccess")
@@ -325,6 +338,12 @@ class FTWilliamsService:
     def response_success(self, statuses: list[FTWilliamsStatusItem]) -> bool:
         return bool(statuses) and all(str(status.error_code or "") == "0" for status in statuses)
 
+    def edit_checks_success(self, statuses: list[FTWilliamsStatusItem]) -> bool:
+        return self.response_success(statuses) and all(
+            str(status.query_results.get("Status") or "").strip().upper() == "OK"
+            for status in statuses
+        )
+
     def mask_key_id(self, xml: str) -> str:
         key_id = get_settings().ftwlink_key_id
         if not key_id:
@@ -371,6 +390,78 @@ class FTWilliamsService:
             response_headers=self._diagnostic_headers(response),
             elapsed_ms=round((time.perf_counter() - started_at) * 1000),
         )
+
+    def build_generate_dol_request(
+        self,
+        *,
+        ftw_customer_id: str,
+        ftw_plan_id: str,
+        year: str,
+        document: str = "A",
+        ftw_seq_no: str | None = None,
+    ) -> str:
+        document_text = str(document or "ScheduleA").strip()
+        document_code = {
+            "A": "ScheduleA",
+            "SCHEDULEA": "ScheduleA",
+            "ALL": "All",
+        }.get(document_text.upper(), document_text)
+        values = {
+            "FTWCustomerID": str(ftw_customer_id or "").strip(),
+            "FTWPlanID": str(ftw_plan_id or "").strip(),
+            "Type": "DOL",
+            "Document": document_code,
+            "Year": str(year or "").strip(),
+        }
+        if document_code == "ScheduleA":
+            values["FTWSeqNo"] = str(ftw_seq_no or "").strip()
+        missing = [key for key in ("FTWCustomerID", "FTWPlanID", "Year") if not values[key]]
+        if document_code == "ScheduleA" and not values["FTWSeqNo"]:
+            missing.append("FTWSeqNo")
+        if missing:
+            raise ValueError("GenerateDocument requires " + ", ".join(missing))
+        key_id = get_settings().ftwlink_key_id or ""
+        body = "".join(f"<{key}>{escape(value)}</{key}>" for key, value in values.items())
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            f"<ftwLink><KeyID>{escape(key_id)}</KeyID><GenerateDocument>{body}</GenerateDocument></ftwLink>"
+        )
+
+    @staticmethod
+    def parse_document_data(response_xml: str) -> bytes | None:
+        try:
+            root = ET.fromstring(response_xml)
+        except ET.ParseError:
+            return None
+        encoded = "".join((root.findtext(".//DocumentData") or "").split())
+        if not encoded:
+            return None
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    async def generate_dol_document(
+        self,
+        *,
+        ftw_customer_id: str,
+        ftw_plan_id: str,
+        year: str,
+        document: str = "A",
+        ftw_seq_no: str | None = None,
+    ) -> tuple[FTWilliamsQueryResponse, bytes | None]:
+        request_xml = self.build_generate_dol_request(
+            ftw_customer_id=ftw_customer_id,
+            ftw_plan_id=ftw_plan_id,
+            year=year,
+            document=document,
+            ftw_seq_no=ftw_seq_no,
+        )
+        response = await self.send_xml("generate_dol_document", request_xml)
+        data = self.parse_document_data(response.raw_response or "") if response.success else None
+        if data is not None and not data.startswith(b"%PDF"):
+            data = None
+        return response, data
 
     @staticmethod
     def _diagnostic_headers(response: httpx.Response) -> dict[str, str]:

@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+import hashlib
 import re
 import time
 from urllib.parse import parse_qs, quote, urlsplit
@@ -39,6 +40,8 @@ from app.services.error_normalizer import normalize_client_error
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
+from app.services.ftwilliams_schema import FTWilliamsSchemaService
+from app.services.storage import StorageService
 from app.services.ftwilliams_tags import (
     FORM_5500_CURRENT_TAGS_BY_RULE,
     FORM_5500_TAGS_BY_RULE,
@@ -403,6 +406,43 @@ class FTWilliamsReviewService:
             update_xml_5500=update_xml_5500,
             update_xml_schedule_a=update_xml_schedule_a,
             update_diagnostics=list(existing_review.update_diagnostics or []) if existing_review else [],
+            schema_validation_results=(
+                list(existing_review.schema_validation_results or []) if existing_review else []
+            ),
+            schema_validation_blocked=(
+                bool(existing_review.schema_validation_blocked) if existing_review else False
+            ),
+            query_access_verified=bool(
+                current_query_success and current_query_complete is not False
+            ),
+            update_access_status=(
+                existing_review.update_access_status if existing_review else "NOT_ATTEMPTED"
+            ),
+            edit_check_baseline_request_xml=(
+                existing_review.edit_check_baseline_request_xml if existing_review else None
+            ),
+            edit_check_baseline_response_xml=(
+                existing_review.edit_check_baseline_response_xml if existing_review else None
+            ),
+            edit_check_baseline_success=(
+                existing_review.edit_check_baseline_success if existing_review else None
+            ),
+            edit_check_request_xml=(
+                existing_review.edit_check_request_xml if existing_review else None
+            ),
+            edit_check_response_xml=(
+                existing_review.edit_check_response_xml if existing_review else None
+            ),
+            edit_check_final_success=(
+                existing_review.edit_check_final_success if existing_review else None
+            ),
+            audit_pdf_status=(existing_review.audit_pdf_status if existing_review else "NOT_REQUESTED"),
+            audit_pdf_key=(existing_review.audit_pdf_key if existing_review else None),
+            audit_pdf_bucket=(existing_review.audit_pdf_bucket if existing_review else None),
+            audit_pdf_local_path=(existing_review.audit_pdf_local_path if existing_review else None),
+            audit_pdf_sha256=(existing_review.audit_pdf_sha256 if existing_review else None),
+            audit_pdf_created_at=(existing_review.audit_pdf_created_at if existing_review else None),
+            audit_pdf_error=(existing_review.audit_pdf_error if existing_review else None),
             error_message=error_message,
             client_error=self._normalize_review_error(error_message, comparison_fields),
             active_failure=active_failure,
@@ -1851,6 +1891,74 @@ class FTWilliamsReviewService:
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
 
+        settings = get_settings()
+        review.query_access_verified = bool(
+            review.current_query_success and review.current_query_complete is not False
+        )
+        review.schema_validation_results = []
+        review.schema_validation_blocked = False
+        if settings.ftw_schema_validation_enabled:
+            validation_mode = "ENFORCE" if settings.ftw_schema_enforcement_enabled else "OBSERVE"
+            schema_service = FTWilliamsSchemaService()
+            if review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500:
+                review.schema_validation_results.append(
+                    schema_service.validate_outgoing_xml(
+                        FormType.FORM_5500,
+                        review.year or review.comparison_year or "",
+                        review.update_xml_5500,
+                        mode=validation_mode,
+                    )
+                )
+            if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
+                review.schema_validation_results.append(
+                    schema_service.validate_outgoing_xml(
+                        FormType.SCHEDULE_A,
+                        review.year or review.comparison_year or "",
+                        review.update_xml_schedule_a,
+                        mode=validation_mode,
+                    )
+                )
+            schema_issues = [
+                issue
+                for result in review.schema_validation_results
+                for issue in result.issues
+            ]
+            if schema_issues and settings.ftw_schema_enforcement_enabled:
+                review.schema_validation_blocked = True
+                details = "; ".join(
+                    f"{issue.tag}:{issue.value} ({issue.reason}; expected {issue.expected_format or 'documented FT format'})"
+                    for issue in schema_issues
+                )
+                error_message = f"FT Williams schema validation blocked the update: {details}"
+                await self._record_update_failure(repo, filing_id, review, error_message)
+                raise ValueError(error_message)
+
+        effective_edit_checks = bool(run_edit_checks or settings.ftw_auto_edit_checks_enabled)
+        if effective_edit_checks:
+            baseline = await self.ftwilliams.run_query(
+                FTWilliamsQueryRequest(
+                    operation="edit_checks_5500",
+                    ftw_customer_id=review.ftw_customer_id,
+                    ftw_plan_id=review.ftw_plan_id,
+                    year=review.year,
+                    send=True,
+                )
+            )
+            review.edit_check_baseline_request_xml = baseline.request_xml
+            review.edit_check_baseline_response_xml = baseline.raw_response or baseline.error
+            review.edit_check_baseline_success = baseline.success
+            if not baseline.success:
+                error_message = baseline.error or self._status_error(baseline.statuses) or "FT Williams baseline Edit Checks failed."
+                await self._record_update_failure(repo, filing_id, review, error_message)
+                raise ValueError(error_message)
+
+        preserved_validation_results = list(review.schema_validation_results)
+        preserved_baseline = {
+            "request": review.edit_check_baseline_request_xml,
+            "response": review.edit_check_baseline_response_xml,
+            "success": review.edit_check_baseline_success,
+        }
+
         response_parts: list[str] = []
         retry_count = 0
         success = False
@@ -1890,6 +1998,7 @@ class FTWilliamsReviewService:
             if response.raw_response or response.error
         )
         ftw_accepted = bool(responses) and all(response.success for response in responses)
+        review.update_access_status = "GRANTED" if ftw_accepted else "DENIED"
         error_message = None if ftw_accepted else "; ".join(
             filter(None, [response.error or self._status_error(response.statuses) for response in responses])
         )
@@ -1937,6 +2046,15 @@ class FTWilliamsReviewService:
             verification_mismatches = []
 
         review = reconciled
+        review.schema_validation_results = preserved_validation_results
+        review.schema_validation_blocked = False
+        review.query_access_verified = bool(
+            review.current_query_success and review.current_query_complete is not False
+        )
+        review.update_access_status = "GRANTED" if ftw_accepted else "DENIED"
+        review.edit_check_baseline_request_xml = preserved_baseline["request"]
+        review.edit_check_baseline_response_xml = preserved_baseline["response"]
+        review.edit_check_baseline_success = preserved_baseline["success"]
         review.update_response_xml = "\n\n".join(response_parts) or None
         review.update_verification_attempted = verification_attempted
         review.update_verification_success = verification_success
@@ -1965,6 +2083,61 @@ class FTWilliamsReviewService:
         ]
         review.update_retry_count = retry_count
         review.update_diagnostics = self._operation_diagnostics(responses)
+        verified_update = bool(success)
+
+        if verified_update and effective_edit_checks:
+            edit_checks = await self.ftwilliams.run_query(
+                FTWilliamsQueryRequest(
+                    operation="edit_checks_5500",
+                    ftw_customer_id=review.ftw_customer_id,
+                    ftw_plan_id=review.ftw_plan_id,
+                    year=review.year,
+                    send=True,
+                )
+            )
+            review.edit_check_request_xml = edit_checks.request_xml
+            review.edit_check_response_xml = edit_checks.raw_response or edit_checks.error
+            review.edit_check_final_success = edit_checks.success
+            if not edit_checks.success:
+                success = False
+                error_message = (
+                    edit_checks.error
+                    or self._status_error(edit_checks.statuses)
+                    or "FT Williams final Edit Checks failed after the verified update."
+                )
+
+        if verified_update and settings.ftw_pdf_audit_enabled:
+            review.audit_pdf_status = "GENERATING"
+            try:
+                pdf_response, pdf_bytes = await self.ftwilliams.generate_dol_document(
+                    ftw_customer_id=review.ftw_customer_id or "",
+                    ftw_plan_id=review.ftw_plan_id or "",
+                    year=review.year or review.comparison_year or "",
+                    document="A",
+                    ftw_seq_no=review.ftw_seq_no,
+                )
+                if not pdf_response.success or not pdf_bytes:
+                    raise ValueError(
+                        pdf_response.error
+                        or self._status_error(pdf_response.statuses)
+                        or "FT Williams did not return a valid Schedule A PDF."
+                    )
+                stored_pdf = StorageService().save_pdf(
+                    f"{filing_id}-ftw-schedule-a-{review.year or review.comparison_year or 'current'}.pdf",
+                    "application/pdf",
+                    pdf_bytes,
+                )
+                review.audit_pdf_status = "AVAILABLE"
+                review.audit_pdf_key = stored_pdf.get("key")
+                review.audit_pdf_bucket = stored_pdf.get("bucket")
+                review.audit_pdf_local_path = stored_pdf.get("local_path")
+                review.audit_pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+                review.audit_pdf_created_at = datetime.utcnow()
+                review.audit_pdf_error = None
+            except Exception as exc:  # Evidence failure must not turn a verified write into a failed write.
+                review.audit_pdf_status = "FAILED"
+                review.audit_pdf_error = str(exc)
+
         review.error_message = error_message
         review.status = FTWilliamsReviewStatus.UPDATE_SENT if success else FTWilliamsReviewStatus.UPDATE_FAILED
         review.client_error = self._normalize_review_error(review.error_message, review.fields)
@@ -1977,19 +2150,6 @@ class FTWilliamsReviewService:
             review.failure_dismissed_reason = None
         else:
             self._activate_failure(review, error_message or "FT Williams update failed.")
-
-        if success and run_edit_checks:
-            edit_checks = await self.ftwilliams.run_query(
-                FTWilliamsQueryRequest(
-                    operation="edit_checks_5500",
-                    ftw_customer_id=review.ftw_customer_id,
-                    ftw_plan_id=review.ftw_plan_id,
-                    year=review.year,
-                    send=True,
-                )
-            )
-            review.edit_check_request_xml = edit_checks.request_xml
-            review.edit_check_response_xml = edit_checks.raw_response or edit_checks.error
 
         await repo.upsert_ftwilliams_review(review)
         await repo.update_filing(
@@ -2008,7 +2168,7 @@ class FTWilliamsReviewService:
                 message="Approved fields were sent to FT Williams." if success else "FT Williams update failed.",
                 details={
                     "error": review.error_message,
-                    "run_edit_checks": run_edit_checks,
+                    "run_edit_checks": effective_edit_checks,
                     "updated_field_count": confirmed_count,
                     "ftw_accepted": ftw_accepted,
                     "update_attempted_count": attempted_count,
@@ -2020,6 +2180,13 @@ class FTWilliamsReviewService:
                     "verification_mismatch_count": len(review.update_verification_mismatches),
                     "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
                     "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
+                    "schema_validation": [item.model_dump(mode="json") for item in review.schema_validation_results],
+                    "query_access_verified": review.query_access_verified,
+                    "update_access_status": review.update_access_status,
+                    "edit_check_baseline_success": review.edit_check_baseline_success,
+                    "edit_check_final_success": review.edit_check_final_success,
+                    "audit_pdf_status": review.audit_pdf_status,
+                    "audit_pdf_sha256": review.audit_pdf_sha256,
                 },
             )
         )

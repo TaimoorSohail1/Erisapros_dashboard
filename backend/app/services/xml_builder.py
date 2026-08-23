@@ -307,15 +307,19 @@ def _document_xml(
         values = update_values_for_form(fields, form_type, current_values=current_values)
     broker_rows: list[dict[str, str]] = []
     if form_type == FormType.SCHEDULE_A:
-        broker_overrides = {
+        field_broker_overrides = {
             tag: value
             for tag, value in values.items()
             if _schedule_a_broker_tag_index(tag) is not None
         }
-        for tag in broker_overrides:
+        for tag in field_broker_overrides:
             values.pop(tag, None)
+        broker_overrides: dict[str, str] = {}
         if schedule_a_broker_rows:
             broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+        # Reviewer-confirmed field values are authoritative. Structured rows come
+        # from extraction and may be stale or less precise than an explicit edit.
+        broker_overrides.update(field_broker_overrides)
         broker_rows = schedule_a_broker_multipart_rows(
             current_values or {},
             overrides=broker_overrides,
@@ -352,15 +356,19 @@ def _schedule_a_record_document_xml(
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
-    broker_overrides = {
+    field_broker_overrides = {
         tag: value
         for tag, value in values.items()
         if _schedule_a_broker_tag_index(tag) is not None
     }
-    for tag in broker_overrides:
+    for tag in field_broker_overrides:
         values.pop(tag, None)
+    broker_overrides: dict[str, str] = {}
     if schedule_a_broker_rows:
         broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+    # Preserve any additional extracted rows, but never let stale extraction
+    # replace the reviewer's final values for the selected broker fields.
+    broker_overrides.update(field_broker_overrides)
     broker_rows = schedule_a_broker_multipart_rows(
         current_values,
         query_subparts=query_subparts,
