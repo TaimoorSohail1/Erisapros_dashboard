@@ -7,6 +7,7 @@ from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
 from app.services.xml_builder import build_proposed_ftw_xml
@@ -129,11 +130,9 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                 contract_classification.contract_type,
                 rules=rule_snapshot.rules,
             )
+            proposed_xml, preview_validation_issues = build_safe_proposed_ftw_xml(relevant_fields)
             summary = summarize_mapped_fields(relevant_fields)
             fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
-            proposed_xml = build_proposed_ftw_xml(
-                filter_schedule_a_fields_for_contract_type(fields, contract_classification.contract_type, rules=rule_snapshot.rules)
-            )
 
             await repo.update_filing(
                 filing_id,
@@ -188,9 +187,24 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         "schedule_a_contract_type_reason": contract_classification.reason,
                         "schedule_a_contract_type_confidence": contract_classification.confidence,
                         "schedule_a_contract_type_evidence": list(contract_classification.evidence),
+                        "preview_validation_issue_count": len(preview_validation_issues),
                     },
                 )
             )
+            if preview_validation_issues:
+                await repo.add_audit(
+                    AuditLog(
+                        filing_id=filing_id,
+                        event="FTW_PREVIEW_VALIDATION_BLOCKED",
+                        message="Extraction completed, but the FT Williams XML preview needs reviewer corrections before it can be generated.",
+                        details={
+                            "issues": [
+                                {"tag": issue.tag, "value": issue.value, "reason": issue.reason}
+                                for issue in preview_validation_issues
+                            ]
+                        },
+                    )
+                )
             await auto_query_ftw_current(filing_id)
             for document in documents:
                 sharefile_item_id = document.get("sharefile_item_id")
@@ -242,6 +256,30 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         )
                 return
             await asyncio.sleep(5 * attempt)
+
+
+def build_safe_proposed_ftw_xml(fields: list[ExtractedField]):
+    """Build the read-only XML preview without failing document extraction.
+
+    A contract validation error means one or more extracted values require a
+    reviewer. It is not an extraction-system failure. Mark the affected field
+    for review, suppress the unsafe preview, and let the filing continue into
+    the normal review workflow.
+    """
+    try:
+        return build_proposed_ftw_xml(fields), []
+    except FTWPayloadValidationError as exc:
+        issues_by_tag = {issue.tag: issue for issue in exc.issues}
+        for field in fields:
+            tag = str(field.ftw_resolved_tag or field.xml_tag or "")
+            issue = issues_by_tag.get(tag)
+            if not issue:
+                continue
+            field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+            field.confidence = min(field.confidence, 0.5)
+            field.status_reason = f"FT Williams pre-send validation: {issue.reason}"
+            field.updated_at = datetime.utcnow()
+        return None, list(exc.issues)
 
 
 async def process_extraction_batch(packages: list[tuple[str, str, list[dict]]]) -> None:

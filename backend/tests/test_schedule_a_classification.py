@@ -88,6 +88,22 @@ class ScheduleAClassificationTests(unittest.TestCase):
             ["EXPLICIT_NONEXPERIENCE_RATED"],
         )
 
+    def test_not_applicable_experience_heading_does_not_override_nonexperience_record(self):
+        signals = classification_signals_from_text(
+            "9. Experience-Rated Contracts This section not applicable for this Plan "
+            "10. Non Experience - Rated contracts"
+        )
+
+        self.assertEqual(signals, ["EXPLICIT_NONEXPERIENCE_RATED"])
+
+    def test_conditional_experience_rating_in_instructions_is_not_classification_evidence(self):
+        signals = classification_signals_from_text(
+            "Contracts may be combined for reporting if such contracts are experience rated as a unit. "
+            "This record is Non Experience Rated."
+        )
+
+        self.assertEqual(signals, ["EXPLICIT_NONEXPERIENCE_RATED"])
+
     def test_a_line_9_value_without_9a_or_premium_and_claim_evidence_defaults_to_nonexperience(self):
         classification = classify_schedule_a_fields([
             extracted_field("schedule_a_part_iii_9d_2_claim_reserves", "109724")

@@ -1825,6 +1825,16 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     # this the amounts were parsed and then thrown away.
     fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
     fields.extend(extract_commission_fee_total_fields(page_texts))
+    cigna_fields = extract_cigna_schedule_a_fields(page_texts)
+    if cigna_fields:
+        # Cigna reporting packages contain a consolidated Schedule A followed
+        # by state-carrier appendices. Those appendix EIN/NAIC/lives values are
+        # supporting detail, not alternative primary Schedule A records.
+        # Remove every broad-parser value for fields owned by the consolidated
+        # parser so a later appendix can never replace the primary record.
+        authoritative_names = {field.field_name for field in cigna_fields}
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(cigna_fields)
     return dedupe_fields(
         [
             field
@@ -2012,6 +2022,9 @@ def extract_commission_fee_total_fields(page_texts: list[tuple[int, str]]) -> li
 
 def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[ScheduleABrokerRow]:
     page_texts = extract_pdf_text_pages(file_bytes)
+    cigna_rows = extract_cigna_schedule_a_broker_rows(page_texts)
+    if cigna_rows:
+        return cigna_rows
     full_text = "\n\n".join(text for _, text in page_texts)
     return dedupe_schedule_a_broker_rows(
         [
@@ -2026,6 +2039,169 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_compensation_table_broker_rows(page_texts),
         ]
     )
+
+
+def _cigna_primary_schedule_a_page(page_texts: list[tuple[int, str]]) -> tuple[int, str] | None:
+    """Return Cigna's consolidated Schedule A page, never a state appendix.
+
+    Cigna packages repeat the same contract number and dates on a series of
+    appendix pages, each with a state carrier EIN/NAIC. Only the page that
+    contains the Part I totals, broker table, Part III, and Part IV is the
+    primary record sent to FT Williams.
+    """
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        lowered = normalized.lower()
+        if (
+            "cigna health and life insurance company" in lowered
+            and "summary of all insurance contracts included in part iii" in lowered
+            and "insurance fees and commissions information" in lowered
+            and "part iii welfare benefit contract information" in lowered
+            and "appendix to 1a" not in lowered
+            and "schedule a insurance information - footnotes" not in lowered
+        ):
+            return page, normalized
+    return None
+
+
+def _cigna_primary_broker_name(text: str) -> str | None:
+    start = re.search(r"Non\s+Experience\s*-\s*Rated", text, flags=re.IGNORECASE)
+    search_text = text[start.end() :] if start else text
+    for line in search_text.splitlines():
+        candidate = line.strip().rstrip(",").strip()
+        if not candidate or candidate.upper() != candidate:
+            continue
+        if not re.search(r"\b(?:LLC|INC|CORP|SERVICES|ASSOCIATES|AGENCY|BROKER)\b", candidate):
+            continue
+        if is_probable_person_or_entity_name(candidate):
+            return candidate
+    return None
+
+
+def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    primary = _cigna_primary_schedule_a_page(page_texts)
+    if not primary:
+        return []
+    page, text = primary
+    source_text = text[:1600]
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if clean and not is_blank_extraction_value(clean):
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    confidence=0.995,
+                    page=page,
+                    source_text=source_text,
+                )
+            )
+
+    add("1a. Name of Insurance Company", "Cigna Health and Life Insurance Company")
+    coverage = re.search(
+        r"(?P<ein>\d{2}-\d{7})\s+(?P<naic>\d{4,6})\s+"
+        r"(?P<contract>[A-Za-z0-9-]+)\s+(?P<covered>[\d,]+)\s+Employees?\s+"
+        r"(?P<from>\d{1,2}/\d{1,2}/\d{4})\s*-?\s*(?P<to>\d{1,2}/\d{1,2}/\d{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if coverage:
+        add("1b. Insurance Carrier EIN", coverage.group("ein"))
+        add("1c. NAIC Code", coverage.group("naic"))
+        add("1d. Contract/Policy Number", coverage.group("contract"))
+        add("1e. Persons Covered (End of Policy Year)", coverage.group("covered"))
+        add("1f. Policy Year Beginning Date", coverage.group("from"))
+        add("1g. Policy Year Ending Date", coverage.group("to"))
+    else:
+        # The production PDF text layer places each label above its value
+        # instead of returning a visual row. Parse the same primary page by
+        # labels; it is already isolated from all state appendix pages.
+        add("1b. Insurance Carrier EIN", regex_first(text, [r"\(b\)\s*EIN\s+(\d{2}-\d{7})"], flags=re.IGNORECASE))
+        add("1c. NAIC Code", regex_first(text, [r"\(c\)\s*NAIC\s+Code\s+(\d{4,6})"], flags=re.IGNORECASE))
+        add(
+            "1d. Contract/Policy Number",
+            regex_first(text, [r"Identification\s+Number\s+([A-Za-z0-9-]+)"], flags=re.IGNORECASE),
+        )
+        add(
+            "1e. Persons Covered (End of Policy Year)",
+            regex_first(text, [r"at\s+end\s+of\s+policy\s+or\s+contract\s+year\s+([\d,]+)\s+Employees?"], flags=re.IGNORECASE),
+        )
+        dates = regex_first(
+            text,
+            [r"\(f\)\s*From\s+\(g\)\s*To\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})"],
+            flags=re.IGNORECASE,
+            groups=True,
+        )
+        if isinstance(dates, tuple) and len(dates) >= 2:
+            add("1f. Policy Year Beginning Date", dates[0])
+            add("1g. Policy Year Ending Date", dates[1])
+
+    totals = re.search(
+        r"Total\s+Amount\s+of\s+commissions\s+paid\s*\$?\s*(?P<commissions>[\d,]+(?:\.\d{2})?).{0,160}?"
+        r"Total\s+Amount\s+of\s+fees\s+paid\s*\$?\s*(?P<fees>[\d,]+(?:\.\d{2})?)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if totals:
+        add("3b. Amount of Commissions", money_value(totals.group("commissions")))
+        add("3c. Amount of Fees", money_value(totals.group("fees")))
+
+    add("3a. Name of Agent/Broker/Person", _cigna_primary_broker_name(text))
+    purpose = regex_first(text, [r"\$[\d,]+\s+\$[\d,]+\s+([A-Za-z][A-Za-z ]+?)\s+3-Insurance\s+Agent"], flags=re.IGNORECASE)
+    add("3d. Purpose", purpose or "General Agent Payments")
+    add("3e. Organizational Code", "3")
+
+    premium = regex_first(
+        text,
+        [r"Total\s+premiums?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrier\s*\$?\s*([\d,]+(?:\.\d{2})?)"],
+        flags=re.IGNORECASE,
+    )
+    add("10a. Total premiums or subscription charges paid to carrier", money_value(premium) if premium else None)
+    if re.search(r"information\s+not\s+provided.*Not\s+Applicable", text, flags=re.IGNORECASE | re.DOTALL):
+        add("11. Did the insurance company fail to provide any information necessary to complete Schedule A?", "No")
+    return fields
+
+
+def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    primary = _cigna_primary_schedule_a_page(page_texts)
+    if not primary:
+        return []
+    page, text = primary
+    name = _cigna_primary_broker_name(text)
+    if not name:
+        return []
+    totals = re.search(
+        r"Total\s+Amount\s+of\s+commissions\s+paid\s*\$?\s*(?P<commissions>[\d,]+(?:\.\d{2})?).{0,160}?"
+        r"Total\s+Amount\s+of\s+fees\s+paid\s*\$?\s*(?P<fees>[\d,]+(?:\.\d{2})?)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    commissions = money_value(totals.group("commissions")) if totals else None
+    fees = money_value(totals.group("fees")) if totals else None
+    address = re.search(
+        r"(?P<address>PO\s+BOX\s+\d+)\s*,\s*(?P<city>[A-Z][A-Z ]+)\s*,\s*(?P<state>[A-Z]{2})\s*,.*?\n\s*(?P<zip>\d{5})\b",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    purpose = "General Agent Payments"
+    return [
+        ScheduleABrokerRow(
+            name=name,
+            address_line_1=clean_extracted_value(address.group("address")) if address else None,
+            city=clean_extracted_value(address.group("city")) if address else None,
+            state=address.group("state").upper() if address else None,
+            zip_code=address.group("zip") if address else None,
+            organization_code="3",
+            commission_rows=[ScheduleABrokerMoneyRow(amount=commissions, purpose=purpose)] if commissions else [],
+            fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose=purpose)] if fees else [],
+            commission_total=commissions,
+            fee_total=fees,
+            source_page=page,
+            confidence=0.995,
+        )
+    ]
 
 
 def extract_compensation_table_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
