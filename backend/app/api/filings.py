@@ -315,6 +315,9 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     await repo.update_filing(
         filing_id,
         {
+            "status": summary["status"],
+            "approved_at": None,
+            "error_message": None,
             "proposed_xml": proposed_xml,
             "schedule_a_contract_type": classification.contract_type,
             "schedule_a_contract_type_reason": classification.reason,

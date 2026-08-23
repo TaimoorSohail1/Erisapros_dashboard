@@ -240,6 +240,46 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(marked_missing["field"].status_reason, "Marked missing by reviewer.")
         self.assertEqual([event.type for event in events[-2:]], ["EDIT", "MARK_MISSING"])
 
+    def test_field_edit_recovers_failed_filing_for_reapproval(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Recovered Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/recovered",
+                    intake_source="SHAREFILE",
+                    status=FilingStatus.FAILED,
+                    error_message="Previous FT Williams update failed.",
+                )
+            )
+            field = (
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1e. Persons Covered",
+                            normalized_field_name="persons_covered",
+                            mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                            mapped_label="1e. Persons Covered",
+                            form_type=FormType.SCHEDULE_A,
+                            priority="HIGH",
+                            status=ExtractedFieldStatus.MISSING,
+                        )
+                    ]
+                )
+            )[0]
+
+            await update_field(filing.id, field.id, FieldEditRequest(proposed_value="10"))
+            return await repo.get_filing(filing.id)
+
+        updated = run_async(scenario())
+
+        self.assertEqual(updated.status, FilingStatus.READY_FOR_APPROVAL)
+        self.assertIsNone(updated.approved_at)
+        self.assertIsNone(updated.error_message)
+
     def test_filing_detail_reads_independent_collections_concurrently(self):
         class ConcurrentReadRepository(repositories.MemoryRepository):
             def __init__(self):
