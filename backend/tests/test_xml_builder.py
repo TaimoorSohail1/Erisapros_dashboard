@@ -196,7 +196,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("WELFARE_BENEFIT_PLAN_IND", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_query_only_and_unsupported_static_tags_are_not_sent(self):
+    def test_5500_documented_identity_and_contact_fields_are_sent(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -211,14 +211,47 @@ class XmlBuilderTests(unittest.TestCase):
             ),
             ExtractedField(
                 filing_id="filing",
+                source_field_name="1d. Plan Sponsor Name",
+                normalized_field_name="sponsor_name",
+                mapped_rule_key="form_5500_part_i_1d_plan_sponsor_name",
+                mapped_label="1d. Plan Sponsor Name",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="New Sponsor Name",
+                proposed_value="New Sponsor Name",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="1e. Plan Sponsor EIN",
+                normalized_field_name="sponsor_ein",
+                mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+                mapped_label="1e. Plan Sponsor EIN",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="12-3456789",
+                proposed_value="12-3456789",
+            ),
+            ExtractedField(
+                filing_id="filing",
                 source_field_name="1f. Plan Sponsor Address",
                 normalized_field_name="sponsor_address",
                 mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
                 mapped_label="1f. Plan Sponsor Address",
                 form_type=FormType.FORM_5500,
                 priority=FieldPriority.HIGH,
-                value="490B Boston Post Road",
-                proposed_value="490B Boston Post Road",
+                value="490B Boston Post Road, Sudbury MA 01776",
+                proposed_value="490B Boston Post Road, Sudbury MA 01776",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="2a. Plan Administrator Name",
+                normalized_field_name="administrator_name",
+                mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+                mapped_label="2a. Plan Administrator Name",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.HIGH,
+                value="New Administrator",
+                proposed_value="New Administrator",
             ),
         ]
 
@@ -230,14 +263,25 @@ class XmlBuilderTests(unittest.TestCase):
             customer_id="04-2909410",
             plan_id="04-2909410501",
             year="2024",
-            current_values={"PlanName": "Old Plan Name", "SDAddressLine1": "Old Address"},
+            current_values={
+                "PlanName": "Old Plan Name",
+                "SDName": "Old Sponsor Name",
+                "SDEIN": "98-7654321",
+                "SDAddressLine1": "Old Address",
+                "SDCity": "Sudbury",
+                "SDState": "MA",
+                "SDZipCode": "01776",
+                "ADMINName": "Old Administrator",
+            },
         )
 
-        self.assertNotIn("PLAN_NAME0", xml)
-        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<PLAN_NAME0>New Plan Name</PLAN_NAME0>", xml)
+        self.assertIn("<SPONSOR_DFE_NAME0>New Sponsor Name</SPONSOR_DFE_NAME0>", xml)
+        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
+        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>490B Boston Post Road</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
+        self.assertIn("<ADMIN_NAME0>New Administrator</ADMIN_NAME0>", xml)
 
-    def test_5500_sponsor_ein_rejected_by_ftw_is_never_sent(self):
+    def test_5500_sponsor_ein_uses_documented_update_tag(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1e. Plan Sponsor EIN",
@@ -261,8 +305,71 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"SDEIN": "98-7654321"},
         )
 
-        self.assertNotIn("SPONS_DFE_EIN", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
+
+    def test_5500_combined_address_updates_street_without_corrupting_locality(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="750 E MAIN ST SUITE 200 STAMFORD CT 069023831",
+            proposed_value="750 E MAIN ST SUITE 200 STAMFORD CT 069023831",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+            current_values={
+                "SDAddressLine1": "OLD MAIN ST",
+                "SDAddressLine2": "SUITE 200",
+                "SDCity": "STAMFORD",
+                "SDState": "CT",
+                "SDZipCode": "06902-3831",
+            },
+        )
+
+        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>750 E MAIN ST</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
+        self.assertNotIn("<SPONS_DFE_CITY>", xml)
+        self.assertNotIn("<SPONS_DFE_STATE>", xml)
+        self.assertNotIn("<SPONS_DFE_ZIP_CODE>", xml)
+
+    def test_5500_combined_address_parses_common_unseparated_us_address(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="18 CHESTNUT ST. SUITE 500 WORCESTER MA 01608",
+            proposed_value="18 CHESTNUT ST. SUITE 500 WORCESTER MA 01608",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="12-3456789",
+            plan_id="12-3456789501",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>18 CHESTNUT ST. SUITE 500</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
+        self.assertIn("<SPONS_DFE_CITY>WORCESTER</SPONS_DFE_CITY>", xml)
+        self.assertIn("<SPONS_DFE_STATE>MA</SPONS_DFE_STATE>", xml)
+        self.assertIn("<SPONS_DFE_ZIP_CODE>01608</SPONS_DFE_ZIP_CODE>", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
@@ -397,7 +504,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_rejected_plan_administrator_tag_is_omitted_without_dropping_valid_fields(self):
+    def test_5500_documented_plan_administrator_tag_is_sent_with_valid_fields(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -434,8 +541,7 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"ADMINName": "AMERICAN SECURITIES LLC", "TotActivePartcpCnt": "120"},
         )
 
-        self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertNotIn("Charlotte Tallon", xml)
+        self.assertIn("<ADMIN_NAME0>Charlotte Tallon</ADMIN_NAME0>", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):

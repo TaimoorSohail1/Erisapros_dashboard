@@ -377,16 +377,6 @@ export function FilingReviewPage() {
       setShowUnapproveConfirm(true);
       return;
     }
-    if (!ftwCurrentLoaded) {
-      setToast({
-        tone: "error",
-        title: bringForwardRequired ? "Bring Forward required in FT Williams" : "FT Williams current data required",
-        message: bringForwardRequired
-          ? "Open FT Williams, complete its native Bring Forward action, then refresh FTW data before approving."
-          : "Query FTW Current before approving this filing. At least one current FT Williams form must load.",
-      });
-      return;
-    }
     setMessage("");
     setShowApproveConfirm(true);
   }
@@ -737,7 +727,6 @@ export function FilingReviewPage() {
                 busy={reviewInteractionBusy}
                 decisionAction={decisionAction}
                 filingStatus={filing.status}
-                ftwCurrentLoaded={ftwCurrentLoaded}
                 ftwReadyToSend={ftwReadyToSend}
                 ftwSendBusy={ftwSendBusy}
                 queryBusy={ftwInteractionBusy}
@@ -1200,7 +1189,6 @@ function ReviewPrimaryActions({
   busy,
   decisionAction,
   filingStatus,
-  ftwCurrentLoaded,
   ftwReadyToSend,
   ftwSendBusy,
   onApprove,
@@ -1223,7 +1211,6 @@ function ReviewPrimaryActions({
   busy: boolean;
   decisionAction: "approve" | "reject" | "unapprove" | null;
   filingStatus: string;
-  ftwCurrentLoaded: boolean;
   ftwReadyToSend: boolean;
   ftwSendBusy: boolean;
   onApprove: () => void;
@@ -1256,8 +1243,7 @@ function ReviewPrimaryActions({
         <>
           <button
             className={`button ${approvalBlocked ? "button-warn" : ""}`}
-            disabled={busy || !ftwCurrentLoaded}
-            title={!ftwCurrentLoaded ? "Query FTW Current before approving." : undefined}
+            disabled={busy}
             onClick={onApprove}
           >
             {decisionAction === "approve" ? <InlineLoader label="Approving" /> : <><CheckCircle2 size={16} /> Approve Filing</>}
@@ -1526,8 +1512,7 @@ function WorkflowDetailDialog({
               <button
                 className={`button ${approvalBlocked ? "button-warn" : ""}`}
                 type="button"
-                disabled={busy || !ftwCurrentLoaded}
-                title={!ftwCurrentLoaded ? "Query FTW Current before approving." : undefined}
+                disabled={busy}
                 onClick={onApprove}
               >
                 <CheckCircle2 size={15} /> Approve filing

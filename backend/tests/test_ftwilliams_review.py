@@ -94,7 +94,10 @@ class FakeFTWilliamsService(FTWilliamsService):
                         error_code="0",
                         ftw_customer_id=payload.ftw_customer_id,
                         ftw_plan_id=payload.ftw_plan_id,
-                        query_results={"PLAN_NAME0": "Crest Discount Foods, Inc. Flexible Benefits Plan"},
+                        query_results={
+                            "PlanName": "Crest Discount Foods, Inc. Flexible Benefits Plan",
+                            "SDEIN": "73-0759701",
+                        },
                     )
                 ],
             )
@@ -1097,10 +1100,46 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             proposed_value="ABC Sponsor",
         )
 
-        self.assertEqual(resolve_ftw_tag(sponsor_field), "SPONS_DFE_NAME0")
-        self.assertIsNone(
-            resolve_ftw_update_tag(sponsor_field),
-            "FT Williams rejects Plan Sponsor Name through the update contract, so it must remain review-only.",
+        self.assertEqual(resolve_ftw_tag(sponsor_field), "SPONSOR_DFE_NAME0")
+        self.assertEqual(resolve_ftw_update_tag(sponsor_field), "SPONSOR_DFE_NAME0")
+
+    def test_schedule_a_policy_dates_are_writable_when_the_selected_record_year_is_safe(self):
+        def schedule_date(rule_key: str, label: str, value: str) -> ExtractedField:
+            return ExtractedField(
+                filing_id="filing",
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        fields = [
+            schedule_date(
+                "schedule_a_part_i_1f_policy_year_beginning_date",
+                "1f. Policy Year Beginning Date",
+                "01/01/2025",
+            ),
+            schedule_date(
+                "schedule_a_part_i_1g_policy_year_ending_date",
+                "1g. Policy Year Ending Date",
+                "12/31/2025",
+            ),
+        ]
+
+        safe = FTWilliamsReviewService()._safe_update_fields(
+            fields,
+            FormType.SCHEDULE_A,
+            {"InsPolicyFromDate": "01/01/2024", "InsPolicyToDate": "12/31/2024"},
+        )
+
+        self.assertEqual(
+            {field.mapped_rule_key for field in safe},
+            {field.mapped_rule_key for field in fields},
         )
 
     def test_prepare_review_reports_pre_send_validation_without_crashing(self):
@@ -1172,7 +1211,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         xml = build_proposed_ftw_xml(fields)
 
         self.assertIn("<DOL5500Data>", xml)
-        self.assertNotIn("<PLAN_NAME0>ABC Plan</PLAN_NAME0>", xml)
+        self.assertIn("<PLAN_NAME0>ABC Plan</PLAN_NAME0>", xml)
         self.assertIn("<TotPartcpBoyCnt>100</TotPartcpBoyCnt>", xml)
         self.assertIn("<DOLScheduleAData>", xml)
         self.assertIn("<InsCarrierName>ABC Insurance</InsCarrierName>", xml)

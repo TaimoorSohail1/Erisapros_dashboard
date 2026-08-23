@@ -24,7 +24,7 @@ def test_catalog_covers_every_supported_field_rule_once() -> None:
 def test_catalog_records_update_support_and_read_only_reason() -> None:
     catalog = field_catalog()
 
-    assert sum(entry.update_supported for entry in catalog) == 57
+    assert sum(entry.update_supported for entry in catalog if entry.catalog_tier == "VERIFIED") == 61
     assert sum(not entry.update_supported for entry in catalog) > 5
     assert all(entry.update_tag for entry in catalog if entry.update_supported)
     assert all(entry.read_only_reason for entry in catalog if not entry.update_supported)
@@ -45,9 +45,9 @@ def test_catalog_preserves_every_observed_current_tag_without_promoting_write_ac
     catalog = field_catalog()
     discovered = [entry for entry in catalog if entry.catalog_tier == "DISCOVERED"]
 
-    assert len(catalog) == 354
-    assert len(discovered) == 292
-    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 352
+    assert len(catalog) == 353
+    assert len(discovered) == 291
+    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 351
     assert all(not entry.update_supported and entry.update_tag is None for entry in discovered)
 
 

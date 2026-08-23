@@ -54,7 +54,7 @@ FORM_5500_TAGS_BY_RULE = {
     "form_5500_part_i_1a_plan_name": "PLAN_NAME0",
     "form_5500_part_i_1b_plan_number_pn": "SPONS_DFE_PN",
     "form_5500_part_i_1c_plan_effective_date": "PLAN_EFF_DATE",
-    "form_5500_part_i_1d_plan_sponsor_name": "SPONS_DFE_NAME0",
+    "form_5500_part_i_1d_plan_sponsor_name": "SPONSOR_DFE_NAME0",
     "form_5500_part_i_1e_plan_sponsor_ein": "SPONS_DFE_EIN",
     "form_5500_part_i_1f_plan_sponsor_address": "SPONS_DFE_MAIL_STR_ADDRESS",
     "form_5500_part_i_1g_business_code": "BUSINESS_CODE",
@@ -125,6 +125,7 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
     "form_5500_part_i_1c_plan_effective_date": "PlanEffDate",
     "form_5500_part_i_1d_plan_sponsor_name": "SDName",
     "form_5500_part_i_1e_plan_sponsor_ein": "SDEIN",
+    "form_5500_part_i_1f_plan_sponsor_address": "SDAddressLine1",
     "form_5500_part_i_1g_business_code": "BusinessCode",
     "form_5500_part_i_2a_plan_administrator_name": "ADMINName",
     "form_5500_part_i_6_plan_year_beginning_date": "PlanYearBeginDate",
@@ -140,13 +141,7 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
     "form_5500_part_ii_16_other_retired_separated_participants_entitled_to_benefits": "RtdSepPartcpFutCnt",
 }
 
-FORM_5500_UNSUPPORTED_UPDATE_RULES = {
-    "form_5500_part_i_1a_plan_name",
-    "form_5500_part_i_1d_plan_sponsor_name",
-    "form_5500_part_i_1e_plan_sponsor_ein",
-    "form_5500_part_i_1f_plan_sponsor_address",
-    "form_5500_part_i_2a_plan_administrator_name",
-}
+FORM_5500_UNSUPPORTED_UPDATE_RULES: set[str] = set()
 
 FORM_5500_UPDATE_TAGS_BY_RULE = {
     rule_key: tag

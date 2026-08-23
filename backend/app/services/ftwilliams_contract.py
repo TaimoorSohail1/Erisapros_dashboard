@@ -38,6 +38,9 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     "BenefitCdSection412Ind",
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
+    "SPONS_DFE_CITY",
+    "SPONS_DFE_STATE",
+    "SPONS_DFE_ZIP_CODE",
 }
 
 SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {"ScheduleDesc"}
@@ -62,7 +65,7 @@ INTEGER_TAGS = {
     "InsPrsnCoveredEoyCnt",
 }
 
-EIN_TAGS = {"InsCarrierEIN", "EIN"}
+EIN_TAGS = {"InsCarrierEIN", "EIN", "SPONS_DFE_EIN"}
 NAIC_TAGS = {"InsCarrierNAICCode"}
 PLAN_NUMBER_TAGS = {"SPONS_DFE_PN", "PlanNum"}
 BUSINESS_CODE_TAGS = {"BUSINESS_CODE"}
@@ -79,7 +82,13 @@ ZERO_ONE_INDICATOR_TAGS = {
 ONE_TWO_INDICATOR_TAGS = {"InsFailProvideInfoInd"}
 
 TEXT_LIMITS = {
-    "SPONS_DFE_NAME0": 70,
+    "PLAN_NAME0": 140,
+    "SPONSOR_DFE_NAME0": 70,
+    "SPONS_DFE_MAIL_STR_ADDRESS": 35,
+    "SPONS_DFE_CITY": 30,
+    "SPONS_DFE_STATE": 2,
+    "SPONS_DFE_ZIP_CODE": 10,
+    "ADMIN_NAME0": 70,
     "InsCarrierName": 70,
     "InsContractNum": 40,
     "PlanName": 140,
@@ -124,6 +133,17 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
         if not re.fullmatch(r"\d{6}", text):
             _raise(tag, text, "expected exactly 6 digits")
         return text
+
+    if tag == "SPONS_DFE_STATE":
+        if not re.fullmatch(r"[A-Za-z]{2}", text):
+            _raise(tag, text, "expected a two-letter US state code")
+        return text.upper()
+
+    if tag == "SPONS_DFE_ZIP_CODE":
+        digits = re.sub(r"\D", "", text)
+        if len(digits) not in {5, 9} or re.search(r"[A-Za-z]", text):
+            _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
+        return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
 
     if tag in ZERO_ONE_INDICATOR_TAGS:
         mapped = _normalized_choice(text, {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"})
