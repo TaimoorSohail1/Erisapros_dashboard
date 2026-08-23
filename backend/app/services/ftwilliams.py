@@ -190,7 +190,8 @@ class FTWilliamsService:
 
         statuses: list[FTWilliamsStatusItem] = []
         for status in root.findall(".//Status"):
-            query_results = self._child_text_map(status.find("QueryResults"))
+            query_results_element = status.find("QueryResults")
+            query_results = self._child_text_map(query_results_element)
             status_success = self._text(status, "StatusSuccess")
             statuses.append(
                 FTWilliamsStatusItem(
@@ -207,6 +208,8 @@ class FTWilliamsService:
                     status_success=status_success,
                     successful_fields=self._field_list(status_success),
                     query_results=query_results,
+                    query_subparts=self._child_record_lists(query_results_element),
+                    query_result_record_count=self._query_result_record_count(query_results_element),
                 )
             )
         return statuses
@@ -510,6 +513,42 @@ class FTWilliamsService:
             values[element.tag] = text
         for child in children:
             self._collect_child_text(values, child)
+
+    def _child_record_lists(self, element: ET.Element | None) -> dict[str, list[dict[str, str]]]:
+        if element is None:
+            return {}
+        records: dict[str, list[dict[str, str]]] = {}
+
+        def add_record(record: ET.Element) -> None:
+            values = self._child_text_map(record)
+            records.setdefault(record.tag, []).append(values)
+
+        for child in list(element):
+            if not list(child):
+                continue
+            if child.tag == "DOLSubPartData":
+                for record in list(child):
+                    add_record(record)
+            else:
+                add_record(child)
+        return records
+
+    def _query_result_record_count(self, element: ET.Element | None) -> int:
+        """Detect FT's combined Schedule A response without flattening records together.
+
+        A no-sequence Schedule A query can return multiple records inside one
+        QueryResults element by repeating every direct document field. Nested
+        Broker rows are intentionally excluded because a single Schedule A can
+        legitimately contain several of them.
+        """
+        if element is None:
+            return 1
+        direct_leaf_counts: dict[str, int] = {}
+        for child in list(element):
+            if list(child):
+                continue
+            direct_leaf_counts[child.tag] = direct_leaf_counts.get(child.tag, 0) + 1
+        return max(direct_leaf_counts.values(), default=1)
 
     def _field_list(self, value: str | None) -> list[str]:
         if not value:

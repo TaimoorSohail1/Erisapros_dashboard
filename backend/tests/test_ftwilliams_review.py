@@ -1001,6 +1001,52 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
         self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
 
+    def test_schedule_a_readback_verifies_broker_multipart_rows(self) -> None:
+        service = FTWilliamsReviewService()
+        expected = {
+            "InsCarrierName": "Cigna",
+            "__subparts__": {
+                "Broker": [
+                    {"NameXX": "First Broker", "CommPdAmtXX": "250"},
+                    {"NameXX": "Second Broker", "FeesPdAmtXX": "200"},
+                ]
+            },
+        }
+        actual = {
+            "InsCarrierName": "Cigna",
+            "Name1": "First Broker",
+            "CommPdAmt01": "250",
+            "Name02": "Second Broker",
+            "FeesPdAmt02": "200",
+        }
+        actual_subparts = {
+            "Broker": [
+                {"Name1": "First Broker", "CommPdAmt01": "250"},
+                {"Name02": "Second Broker", "FeesPdAmt02": "200"},
+            ]
+        }
+
+        matches = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            expected,
+            actual,
+            actual_subparts=actual_subparts,
+        )
+        mismatches = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            expected,
+            actual,
+            actual_subparts={
+                "Broker": [
+                    {"Name1": "First Broker", "CommPdAmt01": "999"},
+                    {"Name02": "Second Broker", "FeesPdAmt02": "200"},
+                ]
+            },
+        )
+
+        self.assertEqual(matches, [])
+        self.assertTrue(any(item["tag"] == "Broker[1]/CommPdAmtXX" for item in mismatches))
+
     def setUp(self):
         clear_ftw_current_snapshot_cache()
         repositories._repository = repositories.MemoryRepository()
@@ -1500,7 +1546,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual({record["ftw_seq_no"] for record in review.schedule_a_records}, {"1", "3"})
         self.assertEqual(review.update_xml_schedule_a.count("<DOLScheduleAData>"), 2)
         self.assertNotIn("<FTWSeqNo>", review.update_xml_schedule_a)
-        self.assertIn("<Name1>New Broker Name</Name1>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>New Broker Name</NameXX>", review.update_xml_schedule_a)
         self.assertIn("<InsCarrierName>Other Carrier</InsCarrierName>", review.update_xml_schedule_a)
         self.assertIn("<InsContractNum>OTHER-3</InsContractNum>", review.update_xml_schedule_a)
 
@@ -1553,17 +1599,17 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].update_included)
         self.assertFalse(by_label["3b. Amount of Commissions"].update_included)
-        self.assertIn("<Name1>NFP CORPORATE SERVICES NY LLC</Name1>", review.update_xml_schedule_a)
-        self.assertIn("<CommPdAmt1>1576</CommPdAmt1>", review.update_xml_schedule_a)
-        self.assertNotIn("<CommPdAmt1>1,576</CommPdAmt1>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdAmt1>44</FeesPdAmt1>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdText1>COMMISSIONS AND FEES</FeesPdText1>", review.update_xml_schedule_a)
-        self.assertIn("<Code1>03</Code1>", review.update_xml_schedule_a)
-        self.assertIn("<Name2>NFP INS SERVICES INC</Name2>", review.update_xml_schedule_a)
-        self.assertIn("<CommPdAmt2>422</CommPdAmt2>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdAmt2>0</FeesPdAmt2>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdText2>COMMISSIONS</FeesPdText2>", review.update_xml_schedule_a)
-        self.assertNotIn("<CommPdAmt1>1,998</CommPdAmt1>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", review.update_xml_schedule_a)
+        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", review.update_xml_schedule_a)
+        self.assertNotIn("<CommPdAmtXX>1,576</CommPdAmtXX>", review.update_xml_schedule_a)
+        self.assertIn("<FeesPdAmtXX>44</FeesPdAmtXX>", review.update_xml_schedule_a)
+        self.assertIn("<FeesPdTextXX>COMMISSIONS AND FEES</FeesPdTextXX>", review.update_xml_schedule_a)
+        self.assertIn("<CodeXX>03</CodeXX>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", review.update_xml_schedule_a)
+        self.assertIn("<CommPdAmtXX>422</CommPdAmtXX>", review.update_xml_schedule_a)
+        self.assertIn("<FeesPdAmtXX>0</FeesPdAmtXX>", review.update_xml_schedule_a)
+        self.assertIn("<FeesPdTextXX>COMMISSIONS</FeesPdTextXX>", review.update_xml_schedule_a)
+        self.assertNotIn("<CommPdAmtXX>1,998</CommPdAmtXX>", review.update_xml_schedule_a)
         self.assertIn("<InsCarrierName>Other Carrier</InsCarrierName>", review.update_xml_schedule_a)
 
     def test_prepare_review_excludes_broker_name_when_it_contains_address_text(self):
@@ -1606,7 +1652,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].update_included)
         self.assertNotIn("ATTN: AMS", review.update_xml_schedule_a)
-        self.assertIn("<Name1>NFP LLC</Name1>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
 
     def test_prepare_review_clears_stale_failed_update_state(self):
         repo = repositories.get_repository()
@@ -1868,6 +1914,36 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(candidates["1"]["carrier"], "CIGNA HEALTH AND LIFE INSURANCE COMPANY")
         self.assertEqual(candidates["2"]["carrier"], "GUARDIAN")
         self.assertEqual(review.schedule_a_match["ftw_seq_no"], "1")
+
+    def test_combined_fallback_never_overwrites_an_explicit_schedule_sequence(self):
+        service = FTWilliamsReviewService()
+        explicit = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="2",
+            query_results={
+                "ScheduleDesc": "GUARDIAN",
+                "InsCarrierName": "GUARDIAN",
+                "InsContractNum": "00564017",
+            },
+        )
+        combined = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="2",
+            query_result_record_count=2,
+            query_results={
+                "ScheduleDesc": "CIGNA",
+                "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                "InsContractNum": "00626686",
+                "Name1": "PREFERRED BENEFITS INC",
+                "FeesPdAmt1": "116838",
+            },
+        )
+
+        merged = service._merge_schedule_statuses([explicit], [combined])
+
+        self.assertEqual(merged, [explicit])
 
     def test_manual_schedule_selection_survives_repeated_current_data_refreshes(self):
         class TiedScheduleFTWilliamsService(FakeFTWilliamsService):
@@ -4466,7 +4542,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("<FTWSeqNo>", review.update_xml_schedule_a or "")
         self.assertIn("<InsCarrierName>UnitedHealthcare Insurance Company</InsCarrierName>", review.update_xml_schedule_a or "")
         self.assertIn("<InsContractNum>1246876</InsContractNum>", review.update_xml_schedule_a or "")
-        self.assertIn("<Name1>New Broker Name</Name1>", review.update_xml_schedule_a or "")
+        self.assertIn("<NameXX>New Broker Name</NameXX>", review.update_xml_schedule_a or "")
 
     def test_prepare_review_prefers_package_filing_year_for_ftw_queries(self):
         repo = repositories.get_repository()

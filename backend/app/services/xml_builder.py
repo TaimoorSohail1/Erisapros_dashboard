@@ -1,6 +1,7 @@
 from datetime import datetime
 from html import escape
 import re
+import xml.etree.ElementTree as ET
 from app.config import get_settings
 from app.models import ExtractedField, FieldPriority, FormType
 from app.services.ftwilliams_contract import normalize_ftw_update_value
@@ -54,9 +55,39 @@ FORM_5500_INDICATOR_GROUPS = {
     ],
 }
 
-SCHEDULE_A_PRESERVED_METADATA_TAGS = {
-    "ScheduleDesc",
+SCHEDULE_A_REPLACEMENT_CONTROL_TAGS = {
+    "TransactionType",
+    "EditCheck",
+    "CustomerID",
+    "PlanID",
+    "FTWCustomerID",
+    "FTWPlanID",
+    "FTWSeqNo",
+    "Year",
+    "Type",
+    "ErrorCode",
+    "ErrorDesc",
+    "StatusSuccess",
+    "Broker",
+    "DOLSubPartData",
 }
+
+SCHEDULE_A_BROKER_FIELD_BASES = (
+    "ProvinceOrState",
+    "AddressLine1",
+    "AddressLine2",
+    "FeesPdText",
+    "CommPdAmt",
+    "FeesPdAmt",
+    "ForeignAddy",
+    "PostalCode",
+    "ZipCode",
+    "Country",
+    "State",
+    "City",
+    "Code",
+    "Name",
+)
 
 
 def build_proposed_ftw_xml(fields: list[ExtractedField]) -> str:
@@ -207,6 +238,7 @@ def build_schedule_a_records_update_xml(
             ftw_customer_id=ftw_customer_id,
             ftw_plan_id=ftw_plan_id,
             schedule_a_broker_rows=schedule_a_broker_rows if update_fields else None,
+            query_subparts=record.get("query_subparts") or {},
         )
         if document_xml:
             documents.append(document_xml)
@@ -273,10 +305,24 @@ def _document_xml(
         values = full_replace_values_for_schedule_a(fields, current_values)
     else:
         values = update_values_for_form(fields, form_type, current_values=current_values)
-    if form_type == FormType.SCHEDULE_A and schedule_a_broker_rows:
-        values.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+    broker_rows: list[dict[str, str]] = []
+    if form_type == FormType.SCHEDULE_A:
+        broker_overrides = {
+            tag: value
+            for tag, value in values.items()
+            if _schedule_a_broker_tag_index(tag) is not None
+        }
+        for tag in broker_overrides:
+            values.pop(tag, None)
+        if schedule_a_broker_rows:
+            broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+        broker_rows = schedule_a_broker_multipart_rows(
+            current_values or {},
+            overrides=broker_overrides,
+        )
     if not values:
-        return ""
+        if not broker_rows:
+            return ""
 
     xml_lines = [
         f"      <TransactionType>{escape(transaction_type)}</TransactionType>",
@@ -285,6 +331,7 @@ def _document_xml(
         f"      <Year>{escape(str(year or '[Year]'))}</Year>",
     ]
     xml_lines.extend(f"      <{tag}>{escape(value)}</{tag}>" for tag, value in sorted(values.items()))
+    xml_lines.extend(_schedule_a_subpart_xml_lines(broker_rows))
     joined = "\n".join(xml_lines)
     return f"""    <{data_tag}>
 {joined}
@@ -302,11 +349,24 @@ def _schedule_a_record_document_xml(
     ftw_customer_id: str | None,
     ftw_plan_id: str | None,
     schedule_a_broker_rows: list | None = None,
+    query_subparts: dict[str, list[dict[str, str]]] | None = None,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
+    broker_overrides = {
+        tag: value
+        for tag, value in values.items()
+        if _schedule_a_broker_tag_index(tag) is not None
+    }
+    for tag in broker_overrides:
+        values.pop(tag, None)
     if schedule_a_broker_rows:
-        values.update(schedule_a_broker_update_values(schedule_a_broker_rows))
-    if not values:
+        broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+    broker_rows = schedule_a_broker_multipart_rows(
+        current_values,
+        query_subparts=query_subparts,
+        overrides=broker_overrides,
+    )
+    if not values and not broker_rows:
         return ""
     xml_lines = [
         f"      <TransactionType>{escape(transaction_type)}</TransactionType>",
@@ -315,6 +375,7 @@ def _schedule_a_record_document_xml(
         f"      <Year>{escape(str(year or '[Year]'))}</Year>",
     ]
     xml_lines.extend(f"      <{tag}>{escape(value)}</{tag}>" for tag, value in sorted(values.items()))
+    xml_lines.extend(_schedule_a_subpart_xml_lines(broker_rows))
     joined = "\n".join(xml_lines)
     return f"""    <DOLScheduleAData>
 {joined}
@@ -436,19 +497,17 @@ def current_values_for_schedule_a_update(current_values: dict[str, str]) -> dict
         if rule_key in SCHEDULE_A_TAGS_BY_RULE
     }
     values: dict[str, str] = {}
-    for current_tag, update_tag in current_to_update_tags.items():
-        current_value = current_values.get(current_tag)
-        if current_value is None and current_tag != update_tag:
-            current_value = current_values.get(update_tag)
+    for tag, current_value in current_values.items():
+        update_tag = current_to_update_tags.get(tag, tag)
+        if update_tag in SCHEDULE_A_REPLACEMENT_CONTROL_TAGS:
+            continue
+        if _schedule_a_broker_tag_index(update_tag) is not None:
+            continue
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", update_tag):
+            raise ValueError(f"FT Williams returned an invalid Schedule A field name: {update_tag}")
         normalized = _normalize_ftw_xml_value(update_tag, current_value)
         if str(normalized or "").strip():
             values[update_tag] = normalized
-    for tag, current_value in current_values.items():
-        if tag not in SCHEDULE_A_PRESERVED_METADATA_TAGS and not _looks_like_ftw_indicator_tag(tag):
-            continue
-        text = str(current_value or "").strip()
-        if text:
-            values.setdefault(tag, text)
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
 
 
@@ -459,6 +518,152 @@ def schedule_a_broker_update_values(rows: list) -> dict[str, str]:
         if row_values:
             values.update(row_values)
     return values
+
+
+def schedule_a_broker_multipart_rows(
+    current_values: dict[str, str],
+    *,
+    query_subparts: dict[str, list[dict[str, str]]] | None = None,
+    overrides: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
+    source_rows = list((query_subparts or {}).get("Broker") or [])
+    if not source_rows:
+        source_rows = _broker_rows_from_flat_values(current_values)
+
+    rows: list[dict[str, str]] = []
+    for index, source in enumerate(source_rows, start=1):
+        multipart: dict[str, str] = {}
+        for tag, value in source.items():
+            parsed = _schedule_a_broker_tag_index(tag)
+            text = str(value or "").strip()
+            if not parsed or not text:
+                continue
+            _, field_index = parsed
+            if field_index != index:
+                raise ValueError(
+                    f"FT Williams broker field {tag} belongs to row {field_index}, not row {index}."
+                )
+            multipart[_schedule_a_broker_multipart_tag(tag)] = text
+        rows.append(multipart)
+
+    for tag, value in (overrides or {}).items():
+        parsed = _schedule_a_broker_tag_index(tag)
+        if not parsed:
+            continue
+        _, index = parsed
+        while len(rows) < index:
+            rows.append({})
+        text = str(value or "").strip()
+        multipart_tag = _schedule_a_broker_multipart_tag(tag)
+        if text:
+            rows[index - 1][multipart_tag] = text
+        else:
+            rows[index - 1].pop(multipart_tag, None)
+    return [row for row in rows if row]
+
+
+def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> list[str]:
+    if not xml:
+        return ["Schedule A replacement XML is missing"]
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return ["Schedule A replacement XML is malformed"]
+    documents = root.findall(".//DOLScheduleAData")
+    ordered_records = sorted(records or [], key=lambda item: _record_sort_key(item.get("ftw_seq_no")))
+    gaps: list[str] = []
+    if len(documents) < len(ordered_records):
+        gaps.append(
+            f"replacement contains {len(documents)} record(s) for {len(ordered_records)} current record(s)"
+        )
+    for record, document in zip(ordered_records, documents):
+        sequence = str(record.get("ftw_seq_no") or "?").strip() or "?"
+        current_values = record.get("query_results") or {}
+        expected_fields = current_values_for_schedule_a_update(current_values)
+        actual_fields = {
+            child.tag
+            for child in list(document)
+            if child.tag != "DOLSubPartData" and str(child.text or "").strip()
+        }
+        for tag in sorted(set(expected_fields) - actual_fields):
+            gaps.append(f"sequence {sequence} missing field {tag}")
+
+        expected_brokers = schedule_a_broker_multipart_rows(
+            current_values,
+            query_subparts=record.get("query_subparts") or {},
+        )
+        actual_brokers = [
+            {
+                child.tag: str(child.text or "").strip()
+                for child in list(broker)
+                if str(child.text or "").strip()
+            }
+            for broker in document.findall("./DOLSubPartData/Broker")
+        ]
+        if len(actual_brokers) < len(expected_brokers):
+            gaps.append(
+                f"sequence {sequence} has {len(actual_brokers)} broker row(s) for {len(expected_brokers)} current row(s)"
+            )
+        for index, expected_broker in enumerate(expected_brokers):
+            actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
+            for tag in sorted(set(expected_broker) - set(actual_broker)):
+                gaps.append(f"sequence {sequence} missing broker row {index + 1} field {tag}")
+    return gaps
+
+
+def _broker_rows_from_flat_values(current_values: dict[str, str]) -> list[dict[str, str]]:
+    grouped: dict[int, dict[str, str]] = {}
+    for tag, value in current_values.items():
+        parsed = _schedule_a_broker_tag_index(tag)
+        text = str(value or "").strip()
+        if not parsed or not text:
+            continue
+        _, index = parsed
+        grouped.setdefault(index, {})[tag] = text
+    if not grouped:
+        return []
+    rows: list[dict[str, str]] = []
+    for index in range(1, max(grouped) + 1):
+        rows.append(grouped.get(index, {}))
+    return rows
+
+
+def _schedule_a_broker_tag_index(tag: object) -> tuple[str, int] | None:
+    text = str(tag or "").strip()
+    for base in SCHEDULE_A_BROKER_FIELD_BASES:
+        if not text.startswith(base):
+            continue
+        suffix = text[len(base):]
+        if not re.fullmatch(r"\d{1,2}", suffix):
+            continue
+        index = int(suffix)
+        if index > 0:
+            return base, index
+    return None
+
+
+def _schedule_a_broker_multipart_tag(tag: object) -> str:
+    parsed = _schedule_a_broker_tag_index(tag)
+    if not parsed:
+        raise ValueError(f"Unsupported FT Williams Schedule A broker field: {tag}")
+    base, _ = parsed
+    return f"{base}XX"
+
+
+def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
+    if not rows:
+        return []
+    lines = ["      <DOLSubPartData>"]
+    for row in rows:
+        lines.append("        <Broker>")
+        lines.extend(
+            f"          <{tag}>{escape(value)}</{tag}>"
+            for tag, value in sorted(row.items())
+            if str(value or "").strip()
+        )
+        lines.append("        </Broker>")
+    lines.append("      </DOLSubPartData>")
+    return lines
 
 
 def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
@@ -530,10 +735,6 @@ def _money_to_float(value: object) -> float:
     except ValueError:
         return 0.0
     return -amount if negative else amount
-
-
-def _looks_like_ftw_indicator_tag(tag: object) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9]*Ind\d*", str(tag or "").strip()))
 
 
 def _record_sort_key(value: object) -> tuple[int, str]:

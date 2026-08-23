@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -10,6 +11,7 @@ from app.services.xml_builder import (
     build_ftw_update_xml,
     build_single_document_update_xml,
     build_schedule_a_records_update_xml,
+    schedule_a_replacement_data_gaps,
 )
 
 
@@ -518,7 +520,8 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<InsCarrierName>Existing Carrier</InsCarrierName>", xml)
         self.assertIn("<InsCarrierEIN>36-2739571</InsCarrierEIN>", xml)
         self.assertIn("<InsContractNum>1246876</InsContractNum>", xml)
-        self.assertIn("<CommPdAmt1>222000</CommPdAmt1>", xml)
+        self.assertIn("<DOLSubPartData>", xml)
+        self.assertIn("<CommPdAmtXX>222000</CommPdAmtXX>", xml)
         self.assertNotIn("<CommPdAmt01>", xml)
         self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml)
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml)
@@ -662,10 +665,96 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(xml.count("<DOLScheduleAData>"), 2)
         self.assertNotIn("<FTWSeqNo>", xml)
         self.assertIn("<InsCarrierName>Kaiser</InsCarrierName>", xml)
-        self.assertIn("<Name1>New Broker</Name1>", xml)
+        self.assertIn("<NameXX>New Broker</NameXX>", xml)
         self.assertIn("<InsCarrierName>Principal</InsCarrierName>", xml)
-        self.assertIn("<Name1>Principal Broker</Name1>", xml)
+        self.assertIn("<NameXX>Principal Broker</NameXX>", xml)
         self.assertNotIn("<Name1>Old Broker</Name1>", xml)
+
+    def test_schedule_a_replace_preserves_all_current_fields_and_uses_broker_multipart_rows(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="3b. Amount of Commissions",
+                normalized_field_name="commissions",
+                mapped_rule_key="schedule_a_part_i_3b_amount_of_commissions",
+                mapped_label="3b. Amount of Commissions",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="250",
+                proposed_value="250",
+            ),
+        ]
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "ScheduleDesc": "CIGNA",
+                    "InsCarrierName": "Cigna",
+                    "InsContractNum": "ABC123",
+                    "PlanSponsorName": "Existing Sponsor",
+                    "FootNotePage1": "Existing footnote",
+                    "PensionEndPrevBalAmt": "1000",
+                    "WlfrTypeBnftOthText": "Existing other benefit",
+                    "Name1": "First Broker",
+                    "CommPdAmt01": "100",
+                    "AddressLine101": "100 Main Street",
+                },
+                "query_subparts": {
+                    "Broker": [
+                        {
+                            "Name1": "First Broker",
+                            "CommPdAmt01": "100",
+                            "AddressLine101": "100 Main Street",
+                        }
+                    ]
+                },
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            fields,
+            ftw_customer_id="1852103620",
+            ftw_plan_id="2239036729",
+            year="2025",
+        )
+
+        root = ET.fromstring(xml)
+        schedule = root.find(".//DOLScheduleAData")
+        self.assertIsNotNone(schedule)
+        self.assertEqual(schedule.findtext("PlanSponsorName"), "Existing Sponsor")
+        self.assertEqual(schedule.findtext("FootNotePage1"), "Existing footnote")
+        self.assertEqual(schedule.findtext("PensionEndPrevBalAmt"), "1000")
+        self.assertEqual(schedule.findtext("WlfrTypeBnftOthText"), "Existing other benefit")
+        self.assertIsNone(schedule.find("Name1"))
+        broker = schedule.find("./DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("NameXX"), "First Broker")
+        self.assertEqual(broker.findtext("CommPdAmtXX"), "250")
+        self.assertEqual(broker.findtext("AddressLine1XX"), "100 Main Street")
+
+    def test_schedule_a_replace_preflight_reports_dropped_fields_and_broker_values(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "InsCarrierName": "Cigna",
+                    "PlanSponsorName": "Existing Sponsor",
+                    "Name1": "First Broker",
+                },
+                "query_subparts": {"Broker": [{"Name1": "First Broker"}]},
+            }
+        ]
+        incomplete_xml = """<ftwLink><DataBatch><DOLScheduleAData>
+          <TransactionType>2</TransactionType>
+          <InsCarrierName>Cigna</InsCarrierName>
+        </DOLScheduleAData></DataBatch></ftwLink>"""
+
+        gaps = schedule_a_replacement_data_gaps(records, incomplete_xml)
+
+        self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
+        self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
 
     def test_schedule_a_records_update_preserves_all_existing_records_with_no_selected_changes(self):
         records = [
