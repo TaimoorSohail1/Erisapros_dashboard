@@ -217,6 +217,60 @@ class FTWilliamsServiceTests(unittest.TestCase):
         self.assertEqual(statuses[0].query_results["Name1"], "NFP LLC")
         self.assertEqual(statuses[0].query_results["CommPdAmt01"], "111893")
 
+    def test_parse_response_preserves_each_schedule_a_broker_row(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>ScheduleA</Type>
+    <ErrorCode>0</ErrorCode>
+    <QueryResults>
+      <InsCarrierName>Carrier</InsCarrierName>
+      <Broker>
+        <Name1>First Broker</Name1>
+        <CommPdAmt01>100</CommPdAmt01>
+      </Broker>
+      <Broker>
+        <Name02>Second Broker</Name02>
+        <FeesPdAmt02>200</FeesPdAmt02>
+      </Broker>
+    </QueryResults>
+  </Status>
+</ftwLinkResponse>"""
+
+        statuses = self.service.parse_response(response_xml)
+
+        self.assertEqual(
+            statuses[0].query_subparts,
+            {
+                "Broker": [
+                    {"Name1": "First Broker", "CommPdAmt01": "100"},
+                    {"Name02": "Second Broker", "FeesPdAmt02": "200"},
+                ]
+            },
+        )
+
+    def test_parse_response_marks_combined_schedule_a_query_results_as_multiple_records(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>ScheduleA</Type>
+    <ErrorCode>0</ErrorCode>
+    <FTWSeqNo>2</FTWSeqNo>
+    <QueryResults>
+      <ScheduleDesc>CIGNA</ScheduleDesc>
+      <InsCarrierName>CIGNA HEALTH AND LIFE INSURANCE COMPANY</InsCarrierName>
+      <Broker><Name1>First Broker</Name1></Broker>
+      <ScheduleDesc>GUARDIAN</ScheduleDesc>
+      <InsCarrierName>GUARDIAN LIFE INSURANCE COMPANY</InsCarrierName>
+      <Broker><Name1>Second Broker</Name1></Broker>
+    </QueryResults>
+  </Status>
+</ftwLinkResponse>"""
+
+        statuses = self.service.parse_response(response_xml)
+
+        self.assertEqual(statuses[0].query_result_record_count, 2)
+
     def test_run_query_reuses_http_client_across_requests(self):
         class FakeAsyncClient:
             def __init__(self, *args, **kwargs):

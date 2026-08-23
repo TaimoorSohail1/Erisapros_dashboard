@@ -428,6 +428,8 @@ class FTWilliamsStatusItem(BaseModel):
     status_success: str | None = None
     successful_fields: list[str] = Field(default_factory=list)
     query_results: dict[str, str] = Field(default_factory=dict)
+    query_subparts: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    query_result_record_count: int = Field(default=1, ge=1)
 
 
 class FTWilliamsQueryResponse(BaseModel):

@@ -58,7 +58,13 @@ from app.services.schedule_a_classification import (
     filter_schedule_a_fields_for_contract_type,
     schedule_a_contract_type_allows_rule,
 )
-from app.services.xml_builder import build_single_document_update_xml, build_schedule_a_records_update_xml, combine_ftw_update_xml
+from app.services.xml_builder import (
+    build_single_document_update_xml,
+    build_schedule_a_records_update_xml,
+    combine_ftw_update_xml,
+    schedule_a_broker_multipart_rows,
+    schedule_a_replacement_data_gaps,
+)
 
 
 _CURRENT_DATA_SNAPSHOT_CACHE: dict[tuple[str, ...], tuple[float, dict]] = {}
@@ -1756,10 +1762,6 @@ class FTWilliamsReviewService:
         if schedule_a_required_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_required_error)
             raise ValueError(schedule_a_required_error)
-        schedule_a_safety_error = self._missing_schedule_a_records_for_safe_send(review)
-        if schedule_a_safety_error:
-            await self._record_update_failure(repo, filing_id, review, schedule_a_safety_error)
-            raise ValueError(schedule_a_safety_error)
         if (
             review.update_xml_schedule_a
             and "DOLScheduleAData" in review.update_xml_schedule_a
@@ -1772,6 +1774,10 @@ class FTWilliamsReviewService:
             )
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
+        schedule_a_safety_error = self._missing_schedule_a_records_for_safe_send(review)
+        if schedule_a_safety_error:
+            await self._record_update_failure(repo, filing_id, review, schedule_a_safety_error)
+            raise ValueError(schedule_a_safety_error)
         if not any(
             [
                 bool(review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500),
@@ -2084,6 +2090,7 @@ class FTWilliamsReviewService:
                         FormType.SCHEDULE_A,
                         document,
                         matched.query_results,
+                        actual_subparts=matched.query_subparts,
                     )
                 )
 
@@ -2152,7 +2159,7 @@ class FTWilliamsReviewService:
                     errors.append(error)
         return statuses, request_xmls, response_xmls, "; ".join(errors) or None
 
-    def _update_documents(self, xml: str | None, data_tag: str) -> list[dict[str, str]]:
+    def _update_documents(self, xml: str | None, data_tag: str) -> list[dict]:
         if not xml:
             return []
         try:
@@ -2169,13 +2176,25 @@ class FTWilliamsReviewService:
             "FTWSeqNo",
             "Year",
         }
-        documents: list[dict[str, str]] = []
+        documents: list[dict] = []
         for element in root.findall(f".//{data_tag}"):
             values = {
                 child.tag: str(child.text or "").strip()
                 for child in list(element)
                 if child.tag not in metadata and str(child.text or "").strip()
             }
+            subparts: dict[str, list[dict[str, str]]] = {}
+            for container in element.findall("./DOLSubPartData"):
+                for record in list(container):
+                    row = {
+                        child.tag: str(child.text or "").strip()
+                        for child in list(record)
+                        if str(child.text or "").strip()
+                    }
+                    if row:
+                        subparts.setdefault(record.tag, []).append(row)
+            if subparts:
+                values["__subparts__"] = subparts
             if values:
                 documents.append(values)
         return documents
@@ -2217,11 +2236,15 @@ class FTWilliamsReviewService:
     def _compare_readback_document(
         self,
         form_type: FormType,
-        expected: dict[str, str],
+        expected: dict,
         actual: dict[str, str],
+        *,
+        actual_subparts: dict[str, list[dict[str, str]]] | None = None,
     ) -> list[dict]:
         mismatches: list[dict] = []
         for tag, expected_value in expected.items():
+            if tag == "__subparts__":
+                continue
             actual_value = self._readback_value(actual, form_type, tag)
             if actual_value is None:
                 mismatches.append(
@@ -2244,6 +2267,36 @@ class FTWilliamsReviewService:
                         "reason": "FT Williams returned a different value after the update.",
                     }
                 )
+        expected_brokers = list((expected.get("__subparts__") or {}).get("Broker") or [])
+        if form_type == FormType.SCHEDULE_A and expected_brokers:
+            actual_brokers = schedule_a_broker_multipart_rows(
+                actual,
+                query_subparts=actual_subparts,
+            )
+            if len(actual_brokers) != len(expected_brokers):
+                mismatches.append(
+                    {
+                        "form": form_type.value,
+                        "tag": "DOLSubPartData/Broker",
+                        "expected": len(expected_brokers),
+                        "actual": len(actual_brokers),
+                        "reason": "FT Williams returned a different broker row count after the update.",
+                    }
+                )
+            for index, expected_broker in enumerate(expected_brokers):
+                actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
+                for tag, expected_value in expected_broker.items():
+                    actual_value = actual_broker.get(tag)
+                    if actual_value is None or not self._readback_values_equal(expected_value, actual_value):
+                        mismatches.append(
+                            {
+                                "form": form_type.value,
+                                "tag": f"Broker[{index + 1}]/{tag}",
+                                "expected": expected_value,
+                                "actual": actual_value,
+                                "reason": "FT Williams returned a different broker value after the update.",
+                            }
+                        )
         return mismatches
 
     def _readback_value(
@@ -3018,7 +3071,12 @@ class FTWilliamsReviewService:
     ) -> list[FTWilliamsStatusItem]:
         merged: dict[str, FTWilliamsStatusItem] = {}
         anonymous: list[FTWilliamsStatusItem] = []
-        for status in [*primary, *fallback]:
+        safe_fallback = [
+            status
+            for status in fallback
+            if status.query_result_record_count == 1
+        ]
+        for status in [*primary, *safe_fallback]:
             seq = str(status.ftw_seq_no or "").strip()
             if not seq:
                 anonymous.append(status)
@@ -3240,6 +3298,10 @@ class FTWilliamsReviewService:
                     "carrier_ein": status.query_results.get("InsCarrierEIN") or status.query_results.get("INS_CARRIER_EIN"),
                     "contract": status.query_results.get("InsContractNum") or status.query_results.get("INS_CONTRACT_NUM"),
                     "query_results": dict(status.query_results),
+                    "query_subparts": {
+                        name: [dict(row) for row in rows]
+                        for name, rows in (status.query_subparts or {}).items()
+                    },
                 }
             )
         return sorted(records, key=lambda item: self._sequence_sort_key(item.get("ftw_seq_no")))
@@ -3365,6 +3427,15 @@ class FTWilliamsReviewService:
                 f"Cannot safely send Schedule A because XML contains {xml_schedule_count} Schedule A record(s) "
                 f"but {len(record_seqs)} fetched record(s) must be preserved."
             )
+        replacement_gaps = schedule_a_replacement_data_gaps(
+            list(review.schedule_a_records or []),
+            review.update_xml_schedule_a,
+        )
+        if replacement_gaps:
+            details = "; ".join(replacement_gaps[:5])
+            if len(replacement_gaps) > 5:
+                details += f"; and {len(replacement_gaps) - 5} more"
+            return f"Cannot safely send Schedule A because replacement data is incomplete: {details}."
         if is_new_schedule:
             return None
         selected_seq = str(review.schedule_a_match.get("ftw_seq_no") or "").strip()
