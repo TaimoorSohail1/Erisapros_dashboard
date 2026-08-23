@@ -185,6 +185,21 @@ assert.match(
 );
 assert.match(
   source,
+  /const showFtwSendAction = filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && ftwUpdateFailed\);/,
+  "Approved filings must always expose the FT Williams send action, even when the UI readiness snapshot is stale.",
+);
+assert.match(
+  source,
+  /showFtwSendAction=\{showFtwSendAction\}[\s\S]*?onSend=\{sendFtwUpdate\}/,
+  "The toolbar must receive approved-state send visibility independently from the strict workflow readiness signal.",
+);
+assert.match(
+  source,
+  /\{showFtwSendAction \? \([\s\S]*?Send to FT Williams/,
+  "An approved filing must render the send button and let the backend enforce the final safety preflight.",
+);
+assert.match(
+  source,
   /ftwReview\.current_query_complete !== false/,
   "Sending must remain locked when FT Williams returned only a partial current-data snapshot.",
 );

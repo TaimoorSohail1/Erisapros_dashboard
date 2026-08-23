@@ -279,9 +279,9 @@ export function FilingReviewPage() {
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
   const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
-  const ftwSendStatusReady = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
+  const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && ftwUpdateFailed);
   const ftwReadyToSend = Boolean(
-    ftwSendStatusReady &&
+    showFtwSendAction &&
     ftwReview?.configured &&
     ftwReview.current_query_success &&
     ftwReview.current_query_complete !== false &&
@@ -727,7 +727,7 @@ export function FilingReviewPage() {
                 busy={reviewInteractionBusy}
                 decisionAction={decisionAction}
                 filingStatus={filing.status}
-                ftwReadyToSend={ftwReadyToSend}
+                showFtwSendAction={showFtwSendAction}
                 ftwSendBusy={ftwSendBusy}
                 queryBusy={ftwInteractionBusy}
                 retryBusy={retryBusy}
@@ -1189,7 +1189,7 @@ function ReviewPrimaryActions({
   busy,
   decisionAction,
   filingStatus,
-  ftwReadyToSend,
+  showFtwSendAction,
   ftwSendBusy,
   onApprove,
   onOpenBringForward,
@@ -1211,7 +1211,7 @@ function ReviewPrimaryActions({
   busy: boolean;
   decisionAction: "approve" | "reject" | "unapprove" | null;
   filingStatus: string;
-  ftwReadyToSend: boolean;
+  showFtwSendAction: boolean;
   ftwSendBusy: boolean;
   onApprove: () => void;
   onOpenBringForward: () => void;
@@ -1254,7 +1254,7 @@ function ReviewPrimaryActions({
         </>
       ) : null}
       {approved ? <span className="review-approved-badge"><CheckCircle2 size={16} /> Approved</span> : null}
-      {ftwReadyToSend ? (
+      {showFtwSendAction ? (
         <button className="button" disabled={busy} onClick={onSend}>
           {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> {failed ? "Retry remaining" : "Send to FT Williams"}</>}
         </button>
