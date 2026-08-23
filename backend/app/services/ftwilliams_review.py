@@ -1910,12 +1910,14 @@ class FTWilliamsReviewService:
                     )
                 )
             if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
+                trusted_preserved_values = self._trusted_schedule_a_preserved_values(review)
                 review.schema_validation_results.append(
                     schema_service.validate_outgoing_xml(
                         FormType.SCHEDULE_A,
                         review.year or review.comparison_year or "",
                         review.update_xml_schedule_a,
                         mode=validation_mode,
+                        trusted_preserved_values=trusted_preserved_values,
                     )
                 )
             schema_issues = [
@@ -3284,6 +3286,30 @@ class FTWilliamsReviewService:
         if not current_query_sent:
             return True
         return bool(current_values)
+
+    def _trusted_schedule_a_preserved_values(
+        self, review: FTWilliamsReview
+    ) -> set[tuple[str, str]]:
+        """Return exact FT-originated values that a replace payload may echo.
+
+        These pairs are preservation evidence, not writable mappings. A changed
+        value remains subject to the static FT contract, while repeatable broker
+        rows are converted to the documented ``*XX`` multipart field names used
+        in outgoing Schedule A XML.
+        """
+        trusted: set[tuple[str, str]] = set()
+        for record in review.schedule_a_records or []:
+            current_values = record.get("query_results") or record.get("values") or {}
+            for tag, value in current_values.items():
+                text = str(value or "").strip()
+                if text:
+                    trusted.add((str(tag), text))
+            for broker in schedule_a_broker_multipart_rows(current_values):
+                for tag, value in broker.items():
+                    text = str(value or "").strip()
+                    if text:
+                        trusted.add((str(tag), text))
+        return trusted
 
     def _ftw_editability_status(self, current_values: dict[str, str]) -> dict[str, object]:
         values_by_key = {

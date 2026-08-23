@@ -45,6 +45,23 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
 
 SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {"ScheduleDesc"}
 
+SCHEDULE_A_REPEATABLE_BROKER_TAG_BASES = {
+    "ProvinceOrState",
+    "AddressLine1",
+    "AddressLine2",
+    "FeesPdText",
+    "CommPdAmt",
+    "FeesPdAmt",
+    "ForeignAddy",
+    "PostalCode",
+    "ZipCode",
+    "Country",
+    "State",
+    "City",
+    "Code",
+    "Name",
+}
+
 DATE_TAGS = {
     "PLAN_EFF_DATE",
     "FORM_PLAN_YEAR_BEGIN_DATE",
@@ -185,8 +202,9 @@ def _tag_is_allowed(form_type: FormType, tag: str) -> bool:
     if form_type == FormType.FORM_5500:
         return tag in FORM_5500_ALLOWED_UPDATE_TAGS
     if form_type == FormType.SCHEDULE_A:
+        repeatable = "|".join(sorted(SCHEDULE_A_REPEATABLE_BROKER_TAG_BASES))
         return tag in SCHEDULE_A_ALLOWED_UPDATE_TAGS or bool(
-            re.fullmatch(r"(?:Name|CommPdAmt|FeesPdAmt|FeesPdText|Code)\d+", tag)
+            re.fullmatch(rf"(?:{repeatable})(?:\d+|XX)", tag)
         )
     return False
 
@@ -226,15 +244,17 @@ def _normalize_money(tag: str, value: str) -> str:
 
 
 def _is_money_tag(tag: str) -> bool:
-    return tag.endswith("Amt") or bool(re.fullmatch(r"(?:CommPdAmt|FeesPdAmt)\d+", tag))
+    return tag.endswith("Amt") or bool(
+        re.fullmatch(r"(?:CommPdAmt|FeesPdAmt)(?:\d+|XX)", tag)
+    )
 
 
 def _text_limit(tag: str) -> int:
-    if re.fullmatch(r"Name\d+", tag):
+    if re.fullmatch(r"Name(?:\d+|XX)", tag):
         return 70
-    if re.fullmatch(r"FeesPdText\d+", tag):
+    if re.fullmatch(r"FeesPdText(?:\d+|XX)", tag):
         return 70
-    if re.fullmatch(r"Code\d+", tag):
+    if re.fullmatch(r"Code(?:\d+|XX)", tag):
         return 3
     return TEXT_LIMITS.get(tag, 250)
 

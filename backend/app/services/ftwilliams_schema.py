@@ -170,8 +170,10 @@ class FTWilliamsSchemaService:
         request_xml: str,
         *,
         mode: str = "OBSERVE",
+        trusted_preserved_values: set[tuple[str, str]] | None = None,
     ) -> FTWilliamsSchemaValidationResult:
         issues: list[FTWilliamsSchemaValidationIssue] = []
+        trusted_preserved_values = trusted_preserved_values or set()
         try:
             root = ET.fromstring(request_xml)
         except ET.ParseError as exc:
@@ -231,6 +233,13 @@ class FTWilliamsSchemaService:
                 if element is container or element.tag in ignored or list(element):
                     continue
                 value = (element.text or "").strip()
+                # FT Williams Schedule A updates replace the complete record set.
+                # Existing fields returned by FT must be echoed even when they are
+                # outside our writable mapping. Exact tag/value pairs from the
+                # fresh read-back are trusted for preservation only; changing the
+                # value still requires a verified writable contract entry.
+                if (element.tag, value) in trusted_preserved_values:
+                    continue
                 try:
                     normalize_ftw_update_value(form_type, element.tag, value)
                 except FTWPayloadValidationError as exc:

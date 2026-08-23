@@ -151,6 +151,35 @@ class FTWilliamsSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not present in the trusted", by_tag["UnknownVendorTag"].reason)
         self.assertEqual(result.schema_source, "DOCUMENTED_STATIC_DOL")
 
+    def test_outgoing_schedule_a_accepts_documented_repeatable_broker_tags(self):
+        xml = """<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><Year>2025</Year><DOLSubPartData><Broker><NameXX>NFP Corporate Services</NameXX><AddressLine1XX>PO Box 786677</AddressLine1XX><CityXX>Philadelphia</CityXX><StateXX>PA</StateXX><ZipCodeXX>19178</ZipCodeXX><CommPdAmtXX>18603</CommPdAmtXX><FeesPdAmtXX>1397</FeesPdAmtXX><FeesPdTextXX>COMMISSIONS AND FEES</FeesPdTextXX><CodeXX>3</CodeXX></Broker></DOLSubPartData></DOLScheduleAData></DataBatch></ftwLink>"""
+
+        result = FTWilliamsSchemaService().validate_outgoing_xml(
+            FormType.SCHEDULE_A, "2025", xml
+        )
+
+        self.assertTrue(result.valid, result.issues)
+
+    def test_outgoing_schedule_a_allows_only_exact_trusted_preserved_value(self):
+        xml = """<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><Year>2025</Year><VendorReturnedField>unchanged</VendorReturnedField></DOLScheduleAData></DataBatch></ftwLink>"""
+        service = FTWilliamsSchemaService()
+
+        preserved = service.validate_outgoing_xml(
+            FormType.SCHEDULE_A,
+            "2025",
+            xml,
+            trusted_preserved_values={("VendorReturnedField", "unchanged")},
+        )
+        changed = service.validate_outgoing_xml(
+            FormType.SCHEDULE_A,
+            "2025",
+            xml.replace("unchanged", "changed"),
+            trusted_preserved_values={("VendorReturnedField", "unchanged")},
+        )
+
+        self.assertTrue(preserved.valid)
+        self.assertFalse(changed.valid)
+
 
 if __name__ == "__main__":
     unittest.main()
