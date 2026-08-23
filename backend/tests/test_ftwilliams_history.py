@@ -14,6 +14,7 @@ from app.models import (
     Filing,
     FilingStatus,
     FTWilliamsComparisonField,
+    FTWilliamsEditCheckIssue,
     FTWilliamsPlanLookup,
     FTWilliamsOperationDiagnostic,
     FTWilliamsSendUpdateRequest,
@@ -480,6 +481,20 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                             elapsed_ms=412,
                         )
                     ],
+                    edit_check_baseline_issues=[
+                        FTWilliamsEditCheckIssue(
+                            code="FW-117",
+                            message="Number of Persons Covered may not be blank.",
+                            status_type="DOLScheduleA_10_Data",
+                            form_type="SCHEDULE_A",
+                            schedule_seq_no="10",
+                            schedule_desc="3341244",
+                            field_line="1e",
+                            field_label="1e. Persons Covered (End of Policy Year)",
+                            current_value="Blank",
+                            correction="Enter the number of people covered at year end.",
+                        )
+                    ],
                 )
             )
             return await failure_queue()
@@ -492,6 +507,8 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(item.error_code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
         self.assertEqual(item.operation_diagnostics[0].outcome_code, "EMPTY_RESPONSE")
         self.assertEqual(item.operation_diagnostics[0].request_id, "request-123")
+        self.assertEqual(item.edit_check_issues[0].code, "FW-117")
+        self.assertEqual(item.edit_check_issues[0].schedule_seq_no, "10")
 
     def test_failure_queue_recovers_legacy_failure_hidden_by_current_query(self):
         async def scenario():

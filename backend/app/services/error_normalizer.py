@@ -178,6 +178,22 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             code="FTW_UPDATE_VERIFICATION_FAILED",
         )
 
+    if "ft williams baseline edit checks failed" in lowered:
+        return build(
+            "Existing FT Williams data failed Edit Checks",
+            "The existing FT Williams Form 5500 or Schedule A data contains validation problems, so no update was sent.",
+            next_action="Correct the listed FT Williams fields, run Edit Checks again, then retry the update.",
+            code="FTW_EDIT_CHECK_BASELINE_FAILED",
+        )
+
+    if "ft williams final edit checks failed" in lowered:
+        return build(
+            "Updated FT Williams data failed final Edit Checks",
+            "The update was read back, but FT Williams still reports validation problems.",
+            next_action="Review the listed FT Williams fields, correct them, and run Edit Checks again.",
+            code="FTW_EDIT_CHECK_FINAL_FAILED",
+        )
+
     if (
         "response was empty or malformed" in lowered
         or "returned no usable confirmation" in lowered

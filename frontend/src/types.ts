@@ -209,6 +209,19 @@ export interface FTWilliamsOperationDiagnostic {
   response_excerpt?: string | null;
 }
 
+export interface FTWilliamsEditCheckIssue {
+  code: string;
+  message: string;
+  status_type?: string | null;
+  form_type: string;
+  schedule_seq_no?: string | null;
+  schedule_desc?: string | null;
+  field_line?: string | null;
+  field_label?: string | null;
+  current_value?: string | null;
+  correction?: string | null;
+}
+
 export interface FTWilliamsSchemaValidationIssue {
   tag: string;
   value: string;
@@ -296,9 +309,11 @@ export interface FTWilliamsReview {
   edit_check_baseline_request_xml?: string | null;
   edit_check_baseline_response_xml?: string | null;
   edit_check_baseline_success?: boolean | null;
+  edit_check_baseline_issues?: FTWilliamsEditCheckIssue[];
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
   edit_check_final_success?: boolean | null;
+  edit_check_final_issues?: FTWilliamsEditCheckIssue[];
   audit_pdf_status?: string;
   audit_pdf_sha256?: string | null;
   audit_pdf_created_at?: string | null;
@@ -369,6 +384,7 @@ export interface FTWilliamsFailureQueueItem {
   error_code?: string | null;
   technical_details?: string | null;
   operation_diagnostics?: FTWilliamsOperationDiagnostic[];
+  edit_check_issues?: FTWilliamsEditCheckIssue[];
   can_dismiss?: boolean;
 }
 

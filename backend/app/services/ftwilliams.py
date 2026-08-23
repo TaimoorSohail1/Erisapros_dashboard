@@ -5,12 +5,13 @@ import asyncio
 import base64
 import binascii
 from html import escape
+import re
 import time
 
 import httpx
 
 from app.config import get_settings
-from app.models import FTWilliamsQueryRequest, FTWilliamsQueryResponse, FTWilliamsStatusItem
+from app.models import FTWilliamsEditCheckIssue, FTWilliamsQueryRequest, FTWilliamsQueryResponse, FTWilliamsStatusItem
 
 
 FTWILLIAMS_QUERY_OPERATIONS = {
@@ -23,6 +24,34 @@ FTWILLIAMS_QUERY_OPERATIONS = {
     "query_5500",
     "edit_checks_5500",
     "run_all_tests",
+}
+
+
+_EDIT_CHECK_GUIDANCE: dict[str, tuple[str, str, str, str]] = {
+    "FW-117": (
+        "1e",
+        "1e. Persons Covered (End of Policy Year)",
+        "Blank",
+        "Enter the number of people covered at the end of the policy or contract year.",
+    ),
+    "FW-410": (
+        "10a",
+        "10a. Total premiums or subscription charges paid to carrier",
+        "Blank",
+        "Enter the total premiums or subscription charges paid to the carrier.",
+    ),
+    "FW-999": (
+        "3c/3d",
+        "3c/3d. Broker fee amount or purpose",
+        "Blank or incomplete",
+        "Complete the broker fee amount and its purpose for every applicable broker row.",
+    ),
+    "FW-617": (
+        "3",
+        "3. Brokers and service providers",
+        "Not in descending payment order",
+        "Order broker/provider rows in descending order, from the highest amount paid to the lowest, in FT Williams.",
+    ),
 }
 
 
@@ -343,6 +372,51 @@ class FTWilliamsService:
             str(status.query_results.get("Status") or "").strip().upper() == "OK"
             for status in statuses
         )
+
+    def parse_edit_check_issues(self, statuses: list[FTWilliamsStatusItem]) -> list[FTWilliamsEditCheckIssue]:
+        issues: list[FTWilliamsEditCheckIssue] = []
+        for status in statuses:
+            status_type = str(status.type or "").strip() or None
+            query_results = status.query_results or {}
+            form_type = (
+                "SCHEDULE_A"
+                if str(status_type or "").upper().startswith("DOLSCHEDULEA")
+                else "FORM_5500"
+                if str(status_type or "").upper().startswith("DOL5500")
+                else "FTW"
+            )
+            sequence_match = re.search(r"DOLScheduleA_(\d+)_Data", str(status_type or ""), re.IGNORECASE)
+            schedule_seq_no = str(
+                query_results.get("SeqNo")
+                or status.ftw_seq_no
+                or (sequence_match.group(1) if sequence_match else "")
+            ).strip() or None
+            schedule_desc = str(query_results.get("ScheduleDesc") or "").strip() or None
+            for code, raw_message in query_results.items():
+                clean_code = str(code or "").strip().upper()
+                if not re.fullmatch(r"FW-\d+", clean_code):
+                    continue
+                message = re.sub(r"^\s*(?:Warning|Error)\s*:::\s*", "", str(raw_message or ""), flags=re.IGNORECASE)
+                message = re.sub(r"<br\s*/?>", " ", message, flags=re.IGNORECASE)
+                message = re.sub(r"\s+", " ", message).strip()
+                guidance = _EDIT_CHECK_GUIDANCE.get(clean_code)
+                line_match = re.search(r"\bLine\s+([0-9]+[A-Za-z]?(?:\([^)]*\))?)", message, re.IGNORECASE)
+                field_line = guidance[0] if guidance else (line_match.group(1) if line_match else None)
+                issues.append(
+                    FTWilliamsEditCheckIssue(
+                        code=clean_code,
+                        message=message or "FT Williams reported an Edit Check issue.",
+                        status_type=status_type,
+                        form_type=form_type,
+                        schedule_seq_no=schedule_seq_no,
+                        schedule_desc=schedule_desc,
+                        field_line=field_line,
+                        field_label=guidance[1] if guidance else (f"Line {field_line}" if field_line else "FT Williams field"),
+                        current_value=guidance[2] if guidance else "Invalid or incomplete",
+                        correction=guidance[3] if guidance else (message or "Correct this value in FT Williams, then run Edit Checks again."),
+                    )
+                )
+        return issues
 
     def mask_key_id(self, xml: str) -> str:
         key_id = get_settings().ftwlink_key_id

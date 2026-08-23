@@ -8,6 +8,13 @@ from app.services.error_normalizer import normalize_client_error
 
 
 class ErrorNormalizerTests(unittest.TestCase):
+    def test_baseline_edit_check_failure_has_actionable_client_error(self):
+        error = normalize_client_error("FT Williams baseline Edit Checks failed: 4 Schedule As contain 14 issues.")
+
+        self.assertEqual(error.code, "FTW_EDIT_CHECK_BASELINE_FAILED")
+        self.assertIn("existing FT Williams", error.message)
+        self.assertIn("correct", error.next_action.lower())
+
     def test_documented_permission_error_is_mapped_with_specific_recovery(self):
         error = normalize_client_error("DOLScheduleAData error 53: No permission for TransactionType: 2")
 

@@ -1,31 +1,59 @@
 import { summarizeFTWilliamsMessage } from "../utils";
-import type { FTWilliamsOperationDiagnostic } from "../types";
+import type { FTWilliamsEditCheckIssue, FTWilliamsOperationDiagnostic } from "../types";
 
 export function FTWilliamsDiagnostic({
   errorCode,
+  editCheckIssues = [],
   message,
   operations = [],
   technicalDetails,
 }: {
   errorCode?: string | null;
+  editCheckIssues?: FTWilliamsEditCheckIssue[];
   message?: string | null;
   operations?: FTWilliamsOperationDiagnostic[];
   technicalDetails?: string | null;
 }) {
-  if (!message?.trim()) return null;
-  const summary = summarizeFTWilliamsMessage(message);
-  const hasMore = summary !== message.replace(/\s+/g, " ").trim() || Boolean(errorCode || technicalDetails || operations.length);
+  if (!message?.trim() && !editCheckIssues.length) return null;
+  const normalizedMessage = message?.trim() || "FT Williams Edit Checks require corrections.";
+  const summary = summarizeFTWilliamsMessage(normalizedMessage);
+  const hasMore = summary !== normalizedMessage.replace(/\s+/g, " ").trim() || Boolean(errorCode || technicalDetails || operations.length);
 
   return (
     <div className="ftw-diagnostic">
       <p>{summary}</p>
+      {editCheckIssues.length ? (
+        <section className="ftw-edit-check-summary" aria-label="FT Williams Edit Check issues">
+          <strong>What needs fixing ({editCheckIssues.length})</strong>
+          <div className="ftw-edit-check-list">
+            {editCheckIssues.map((issue, index) => {
+              const scheduleName = [
+                issue.schedule_desc,
+                issue.schedule_seq_no ? `Schedule A #${issue.schedule_seq_no}` : null,
+              ].filter(Boolean).join(" · ");
+              return (
+                <article className="ftw-edit-check-issue" key={`${issue.code}-${issue.schedule_seq_no || "form"}-${index}`}>
+                  <div>
+                    <span className="ftw-edit-check-code">{issue.code}</span>
+                    <strong>{issue.field_label || "FT Williams field"}</strong>
+                  </div>
+                  {scheduleName ? <small>{scheduleName}</small> : null}
+                  <p>{issue.message}</p>
+                  {issue.current_value ? <small><b>Current value:</b> {issue.current_value}</small> : null}
+                  {issue.correction ? <small><b>Fix:</b> {issue.correction}</small> : null}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
       {hasMore ? (
         <details>
           <summary>Technical details</summary>
           <div className="ftw-diagnostic-details">
             {errorCode ? <p><strong>Error code:</strong> {errorCode}</p> : null}
             {technicalDetails ? <p>{technicalDetails}</p> : null}
-            <p>{message}</p>
+            <p>{normalizedMessage}</p>
             {operations.map((operation, index) => (
               <div className="ftw-operation-diagnostic" key={`${operation.operation}-${index}`}>
                 <strong>{operation.operation}</strong>

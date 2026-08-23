@@ -318,6 +318,33 @@ class FTWilliamsServiceTests(unittest.TestCase):
         self.assertEqual(statuses[1].query_results["Status"], "NOT-OK")
         self.assertEqual(statuses[1].query_results["FW-651"], "Warning text")
 
+    def test_parse_edit_check_issues_keeps_schedule_field_and_correction(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>DOLScheduleA_10_Data</Type><ErrorCode>0</ErrorCode>
+    <QueryResults>
+      <ScheduleDesc>3341244</ScheduleDesc><SeqNo>10</SeqNo>
+      <FW-117>Warning:::Number of Persons Covered may not be blank.</FW-117>
+      <FW-617>Warning:::Part 1, Line 3 Brokers must start with the highest amount paid and work in descending order.</FW-617>
+      <Status>NOT-OK</Status>
+    </QueryResults>
+  </Status>
+</ftwLinkResponse>"""
+
+        issues = self.service.parse_edit_check_issues(self.service.parse_response(response_xml))
+
+        self.assertEqual(len(issues), 2)
+        persons_covered = next(issue for issue in issues if issue.code == "FW-117")
+        self.assertEqual(persons_covered.schedule_seq_no, "10")
+        self.assertEqual(persons_covered.schedule_desc, "3341244")
+        self.assertEqual(persons_covered.field_label, "1e. Persons Covered (End of Policy Year)")
+        self.assertEqual(persons_covered.current_value, "Blank")
+        self.assertIn("Enter", persons_covered.correction)
+        broker_order = next(issue for issue in issues if issue.code == "FW-617")
+        self.assertEqual(broker_order.field_line, "3")
+        self.assertIn("descending", broker_order.correction.lower())
+
     def test_edit_checks_succeed_when_every_result_is_ok(self):
         response_xml = """<ftwLinkResponse><Status>
           <Type>DOL5500Data</Type><ErrorCode>0</ErrorCode>

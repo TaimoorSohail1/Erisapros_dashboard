@@ -174,6 +174,7 @@ def _failure_queue_item(
         error_code=(client_error.code if client_error else _text(details.get("error_code"))),
         technical_details=(client_error.technical_details if client_error else None),
         operation_diagnostics=list(review.update_diagnostics or []),
+        edit_check_issues=list(review.edit_check_final_issues or review.edit_check_baseline_issues or []),
     )
 
 

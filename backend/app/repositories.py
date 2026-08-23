@@ -39,6 +39,8 @@ FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
     "update_attempted_count": 1,
     "update_confirmed_count": 1,
     "update_diagnostics": 1,
+    "edit_check_baseline_issues": 1,
+    "edit_check_final_issues": 1,
     "error_message": 1,
     "client_error": 1,
     "active_failure": 1,

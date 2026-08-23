@@ -503,6 +503,19 @@ class FTWilliamsOperationDiagnostic(BaseModel):
     response_excerpt: str | None = None
 
 
+class FTWilliamsEditCheckIssue(BaseModel):
+    code: str
+    message: str
+    status_type: str | None = None
+    form_type: str = "FTW"
+    schedule_seq_no: str | None = None
+    schedule_desc: str | None = None
+    field_line: str | None = None
+    field_label: str | None = None
+    current_value: str | None = None
+    correction: str | None = None
+
+
 class FTWilliamsHistoryItem(BaseModel):
     id: str | None = None
     filing_id: str
@@ -554,6 +567,7 @@ class FTWilliamsFailureQueueItem(BaseModel):
     error_code: str | None = None
     technical_details: str | None = None
     operation_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
+    edit_check_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     can_dismiss: bool = True
 
 
@@ -679,9 +693,11 @@ class FTWilliamsReview(BaseModel):
     edit_check_baseline_request_xml: str | None = None
     edit_check_baseline_response_xml: str | None = None
     edit_check_baseline_success: bool | None = None
+    edit_check_baseline_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     edit_check_request_xml: str | None = None
     edit_check_response_xml: str | None = None
     edit_check_final_success: bool | None = None
+    edit_check_final_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     audit_pdf_status: str = "NOT_REQUESTED"
     audit_pdf_key: str | None = None
     audit_pdf_bucket: str | None = None

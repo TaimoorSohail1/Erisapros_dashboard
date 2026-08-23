@@ -2390,8 +2390,18 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                         statuses=[
                             FTWilliamsStatusItem(
                                 type="EditChecks5500",
-                                error_code="0" if success else "92",
-                                error_desc=None if success else "Final Edit Checks failed",
+                                error_code="0",
+                                error_desc=None,
+                                query_results=(
+                                    {}
+                                    if success
+                                    else {
+                                        "Status": "NOT-OK",
+                                        "SeqNo": "2",
+                                        "ScheduleDesc": "Y00979",
+                                        "FW-410": "Warning:::Part III, Line 10a Total premiums may not be blank.",
+                                    }
+                                ),
                             )
                         ],
                     )
@@ -2540,6 +2550,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(final_checks_failed.status, FTWilliamsReviewStatus.UPDATE_FAILED)
         self.assertTrue(final_checks_failed.update_verification_success)
         self.assertFalse(final_checks_failed.edit_check_final_success)
+        self.assertEqual(len(final_checks_failed.edit_check_final_issues), 1)
+        self.assertEqual(final_checks_failed.edit_check_final_issues[0].code, "FW-410")
+        self.assertEqual(final_checks_failed.edit_check_final_issues[0].schedule_seq_no, "2")
+        self.assertEqual(final_checks_failed.client_error.code, "FTW_EDIT_CHECK_FINAL_FAILED")
         self.assertTrue(final_checks_failed.active_failure)
         self.assertIn("Edit Checks", final_checks_failed.error_message or "")
 

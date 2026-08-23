@@ -2880,6 +2880,11 @@ function FTWilliamsComparisonPanel({
               {clientError?.next_action ? <small>Next step: {clientError.next_action}</small> : null}
               <FTWilliamsDiagnostic
                 errorCode={clientError?.code}
+                editCheckIssues={
+                  review?.edit_check_final_issues?.length
+                    ? review.edit_check_final_issues
+                    : review?.edit_check_baseline_issues
+                }
                 message={rawError}
                 operations={review?.update_diagnostics}
                 technicalDetails={clientError?.technical_details}

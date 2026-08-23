@@ -427,6 +427,9 @@ class FTWilliamsReviewService:
             edit_check_baseline_success=(
                 existing_review.edit_check_baseline_success if existing_review else None
             ),
+            edit_check_baseline_issues=(
+                list(existing_review.edit_check_baseline_issues or []) if existing_review else []
+            ),
             edit_check_request_xml=(
                 existing_review.edit_check_request_xml if existing_review else None
             ),
@@ -435,6 +438,9 @@ class FTWilliamsReviewService:
             ),
             edit_check_final_success=(
                 existing_review.edit_check_final_success if existing_review else None
+            ),
+            edit_check_final_issues=(
+                list(existing_review.edit_check_final_issues or []) if existing_review else []
             ),
             audit_pdf_status=(existing_review.audit_pdf_status if existing_review else "NOT_REQUESTED"),
             audit_pdf_key=(existing_review.audit_pdf_key if existing_review else None),
@@ -1949,8 +1955,31 @@ class FTWilliamsReviewService:
             review.edit_check_baseline_request_xml = baseline.request_xml
             review.edit_check_baseline_response_xml = baseline.raw_response or baseline.error
             review.edit_check_baseline_success = baseline.success
+            review.edit_check_baseline_issues = self.ftwilliams.parse_edit_check_issues(
+                baseline.statuses or []
+            )
+            review.update_diagnostics = self._operation_diagnostics([baseline])
             if not baseline.success:
-                error_message = baseline.error or self._status_error(baseline.statuses) or "FT Williams baseline Edit Checks failed."
+                issue_count = len(review.edit_check_baseline_issues)
+                schedule_count = len(
+                    {
+                        (item.schedule_seq_no, item.schedule_desc)
+                        for item in review.edit_check_baseline_issues
+                    }
+                )
+                detailed_message = (
+                    f"FT Williams baseline Edit Checks failed: {schedule_count} existing "
+                    f"Schedule A record{'s' if schedule_count != 1 else ''} contain "
+                    f"{issue_count} issue{'s' if issue_count != 1 else ''}."
+                    if issue_count
+                    else None
+                )
+                error_message = (
+                    baseline.error
+                    or self._status_error(baseline.statuses)
+                    or detailed_message
+                    or "FT Williams baseline Edit Checks failed."
+                )
                 await self._record_update_failure(repo, filing_id, review, error_message)
                 raise ValueError(error_message)
 
@@ -1959,6 +1988,7 @@ class FTWilliamsReviewService:
             "request": review.edit_check_baseline_request_xml,
             "response": review.edit_check_baseline_response_xml,
             "success": review.edit_check_baseline_success,
+            "issues": list(review.edit_check_baseline_issues or []),
         }
 
         response_parts: list[str] = []
@@ -2057,6 +2087,7 @@ class FTWilliamsReviewService:
         review.edit_check_baseline_request_xml = preserved_baseline["request"]
         review.edit_check_baseline_response_xml = preserved_baseline["response"]
         review.edit_check_baseline_success = preserved_baseline["success"]
+        review.edit_check_baseline_issues = preserved_baseline["issues"]
         review.update_response_xml = "\n\n".join(response_parts) or None
         review.update_verification_attempted = verification_attempted
         review.update_verification_success = verification_success
@@ -2100,11 +2131,23 @@ class FTWilliamsReviewService:
             review.edit_check_request_xml = edit_checks.request_xml
             review.edit_check_response_xml = edit_checks.raw_response or edit_checks.error
             review.edit_check_final_success = edit_checks.success
+            review.edit_check_final_issues = self.ftwilliams.parse_edit_check_issues(
+                edit_checks.statuses or []
+            )
+            review.update_diagnostics.extend(self._operation_diagnostics([edit_checks]))
             if not edit_checks.success:
                 success = False
+                issue_count = len(review.edit_check_final_issues)
+                detailed_message = (
+                    f"FT Williams final Edit Checks failed after the verified update: "
+                    f"{issue_count} issue{'s' if issue_count != 1 else ''} remain."
+                    if issue_count
+                    else None
+                )
                 error_message = (
                     edit_checks.error
                     or self._status_error(edit_checks.statuses)
+                    or detailed_message
                     or "FT Williams final Edit Checks failed after the verified update."
                 )
 
@@ -2683,6 +2726,14 @@ class FTWilliamsReviewService:
                     "error": error_message,
                     "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
                     "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
+                    "edit_check_issues": [
+                        item.model_dump(mode="json")
+                        for item in (
+                            review.edit_check_final_issues
+                            or review.edit_check_baseline_issues
+                            or []
+                        )
+                    ],
                 },
             )
         )
@@ -2782,6 +2833,11 @@ class FTWilliamsReviewService:
         for response in responses:
             raw_response = str(response.raw_response or "").strip()
             parse_failed = any(str(status.error_code or "") == "PARSE_ERROR" for status in response.statuses or [])
+            edit_check_issues = (
+                self.ftwilliams.parse_edit_check_issues(response.statuses or [])
+                if str(response.operation or "").startswith("edit_checks")
+                else []
+            )
             status_error = next(
                 (status for status in response.statuses or [] if str(status.error_code or "") not in {"", "0"}),
                 None,
@@ -2796,6 +2852,8 @@ class FTWilliamsReviewService:
                 outcome_code = "EMPTY_RESPONSE"
             elif parse_failed:
                 outcome_code = "MALFORMED_RESPONSE"
+            elif edit_check_issues:
+                outcome_code = "EDIT_CHECK_FAILED"
             elif response.success:
                 outcome_code = "ACCEPTED"
             else:
@@ -2818,11 +2876,21 @@ class FTWilliamsReviewService:
                         or headers.get("cf-ray")
                     ),
                     elapsed_ms=response.elapsed_ms,
-                    error_code=(str(status_error.error_code) if status_error and status_error.error_code else None),
+                    error_code=(
+                        str(status_error.error_code)
+                        if status_error and status_error.error_code
+                        else ", ".join(dict.fromkeys(item.code for item in edit_check_issues)) or None
+                    ),
                     error_description=(
                         status_error.error_desc
                         if status_error and status_error.error_desc
                         else response.error
+                        or (
+                            f"FT Williams returned {len(edit_check_issues)} Edit Check "
+                            f"issue{'s' if len(edit_check_issues) != 1 else ''}."
+                            if edit_check_issues
+                            else None
+                        )
                     ),
                     response_excerpt=excerpt,
                 )
