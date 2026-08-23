@@ -10,10 +10,12 @@ import app.repositories as repositories
 from app.api.ftwilliams import failure_queue, history
 from app.models import (
     AuditLog,
+    ClientFacingError,
     Filing,
     FilingStatus,
     FTWilliamsComparisonField,
     FTWilliamsPlanLookup,
+    FTWilliamsOperationDiagnostic,
     FTWilliamsSendUpdateRequest,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
@@ -392,6 +394,10 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                 self.batch_audit_reads += 1
                 return await super().list_latest_ftwilliams_failure_audits(filing_ids)
 
+            async def list_unresolved_ftwilliams_failure_audits(self):
+                self.batch_audit_reads += 1
+                return await super().list_unresolved_ftwilliams_failure_audits()
+
         async def scenario():
             repo = CountingRepository()
             repositories._repository = repo
@@ -421,6 +427,210 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         self.assertEqual(repo.batch_audit_reads, 1)
         self.assertEqual(repo.individual_filing_reads, 0)
         self.assertEqual(repo.individual_audit_reads, 0)
+
+    def test_current_query_refresh_keeps_active_failure_in_queue_with_diagnostics(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Guardian Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/guardian-current",
+                    status=FilingStatus.FAILED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+                    current_query_success=True,
+                    active_failure=True,
+                    active_failure_reason="FT Williams returned an empty response.",
+                    active_failure_client_error=ClientFacingError(
+                        title="FT Williams returned no usable response",
+                        message="The update outcome is unknown.",
+                        code="FTW_EMPTY_OR_MALFORMED_RESPONSE",
+                        technical_details="HTTP 200 with an empty body",
+                    ),
+                    active_failure_at=datetime.utcnow(),
+                    update_diagnostics=[
+                        FTWilliamsOperationDiagnostic(
+                            operation="update_schedule_a",
+                            sent=True,
+                            http_status=200,
+                            outcome_code="EMPTY_RESPONSE",
+                            response_received=False,
+                            request_id="request-123",
+                            elapsed_ms=412,
+                        )
+                    ],
+                )
+            )
+            return await failure_queue()
+
+        response = run_async(scenario())
+
+        self.assertEqual(response.total, 1)
+        item = response.items[0]
+        self.assertEqual(item.review_status, FTWilliamsReviewStatus.CURRENT_QUERIED)
+        self.assertEqual(item.error_code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
+        self.assertEqual(item.operation_diagnostics[0].outcome_code, "EMPTY_RESPONSE")
+        self.assertEqual(item.operation_diagnostics[0].request_id, "request-123")
+
+    def test_failure_queue_recovers_legacy_failure_hidden_by_current_query(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Legacy Guardian Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/legacy-guardian",
+                    status=FilingStatus.APPROVED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+                    current_query_success=True,
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_UPDATE_FAILED",
+                    message="FT Williams update failed.",
+                    details={
+                        "error": "FT Williams returned an empty response.",
+                        "error_code": "FTW_EMPTY_OR_MALFORMED_RESPONSE",
+                    },
+                    created_at=datetime.utcnow() - timedelta(minutes=2),
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_CURRENT_QUERIED",
+                    message="Current values refreshed after the failure.",
+                    created_at=datetime.utcnow() - timedelta(minutes=1),
+                )
+            )
+            return await failure_queue()
+
+        response = run_async(scenario())
+
+        self.assertEqual(response.total, 1)
+        self.assertEqual(response.items[0].filing_name, "Legacy Guardian Schedule A.pdf")
+        self.assertEqual(response.items[0].error_code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
+
+    def test_later_resolution_event_prevents_legacy_failure_recovery(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Resolved Legacy Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/resolved-legacy",
+                    status=FilingStatus.APPROVED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_UPDATE_FAILED",
+                    message="FT Williams update failed.",
+                    created_at=datetime.utcnow() - timedelta(minutes=2),
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_UPDATE_FAILURE_DISMISSED",
+                    message="Operator dismissed the failure.",
+                    created_at=datetime.utcnow() - timedelta(minutes=1),
+                )
+            )
+            return await failure_queue()
+
+        response = run_async(scenario())
+        self.assertEqual(response.total, 0)
+
+    def test_operator_can_dismiss_recovered_legacy_failure(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Dismiss Recovered Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/dismiss-recovered",
+                    status=FilingStatus.APPROVED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+                )
+            )
+            await repo.add_audit(
+                AuditLog(
+                    filing_id=filing.id,
+                    event="FTWILLIAMS_UPDATE_FAILED",
+                    message="Legacy failure.",
+                )
+            )
+            review = await FTWilliamsReviewService().dismiss_active_failure(
+                filing.id,
+                "Reviewed legacy failure",
+            )
+            return review, await failure_queue()
+
+        review, response = run_async(scenario())
+        self.assertIsNotNone(review.failure_dismissed_at)
+        self.assertEqual(response.total, 0)
+
+    def test_operator_can_dismiss_active_failure_without_erasing_audit_history(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Dismiss Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/dismiss",
+                    status=FilingStatus.FAILED,
+                )
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+                    active_failure=True,
+                    active_failure_reason="Vendor response failed.",
+                )
+            )
+            service = FTWilliamsReviewService()
+            review = await service.dismiss_active_failure(filing.id, "Reviewed with FT support")
+            queue = await failure_queue()
+            audits = await repo.list_audit_logs(filing.id)
+            return review, queue, audits
+
+        review, queue, audits = run_async(scenario())
+
+        self.assertFalse(review.active_failure)
+        self.assertIsNotNone(review.failure_dismissed_at)
+        self.assertEqual(queue.total, 0)
+        self.assertIn("FTWILLIAMS_UPDATE_FAILURE_DISMISSED", [audit.event for audit in audits])
 
     def test_failed_ftw_update_can_be_retried(self):
         async def scenario():

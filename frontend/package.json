@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "smoke:build": "node scripts/smoke-built-app.mjs",
     "test:performance": "node scripts/test-shared-polling-resource.mjs",
-    "test:review-ui": "node scripts/test-review-table-layout.mjs",
+    "test:review-ui": "node scripts/test-review-table-layout.mjs && node scripts/test-ftw-failure-diagnostics.mjs",
     "test:dashboard-ui": "node scripts/test-dashboard-responsive-layout.mjs && node scripts/test-dashboard-company-groups.mjs",
     "test:field-rules-ui": "node scripts/test-field-rule-client-creation.mjs",
     "typecheck": "tsc --noEmit"

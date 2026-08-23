@@ -111,6 +111,19 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             code="FTW_UPDATE_VERIFICATION_FAILED",
         )
 
+    if (
+        "response was empty or malformed" in lowered
+        or "returned no usable confirmation" in lowered
+        or "parse_error" in lowered
+        or "no element found" in lowered
+    ):
+        return build(
+            "FT Williams returned no usable response",
+            "The request reached FT Williams, but its response was empty or malformed, so the update outcome is unknown.",
+            next_action="Click Query FTW Current to verify the values before retrying. If this repeats, share the operation diagnostics with FT Williams support.",
+            code="FTW_EMPTY_OR_MALFORMED_RESPONSE",
+        )
+
     if "endpoint and keyid" in lowered or "must be configured" in lowered:
         return build(
             "FT Williams connection is not configured",

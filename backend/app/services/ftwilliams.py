@@ -3,6 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 import asyncio
 from html import escape
+import time
 
 import httpx
 
@@ -71,6 +72,7 @@ class FTWilliamsService:
                 error="FTWLINK_KEY_ID and FTWLINK_ENDPOINT_URL must be configured before sending requests.",
             )
 
+        started_at = time.perf_counter()
         try:
             response = await self._post_xml(settings.ftwlink_endpoint_url, request_xml)
         except httpx.HTTPError as exc:
@@ -80,6 +82,7 @@ class FTWilliamsService:
                 sent=True,
                 request_xml=masked_request_xml,
                 error=str(exc),
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
 
         parsed = self.parse_response(response.text)
@@ -93,6 +96,8 @@ class FTWilliamsService:
             statuses=parsed,
             raw_response=response.text,
             error=None if response.is_success else response.text[:500],
+            response_headers=self._diagnostic_headers(response),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000),
         )
 
     def build_request_xml(self, payload: FTWilliamsQueryRequest) -> str:
@@ -339,6 +344,7 @@ class FTWilliamsService:
                 error="FTWLINK_KEY_ID and FTWLINK_ENDPOINT_URL must be configured before sending requests.",
             )
 
+        started_at = time.perf_counter()
         try:
             response = await self._post_xml(settings.ftwlink_endpoint_url, request_xml)
         except httpx.HTTPError as exc:
@@ -348,6 +354,7 @@ class FTWilliamsService:
                 sent=True,
                 request_xml=masked_request_xml,
                 error=str(exc),
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
 
         parsed = self.parse_response(response.text)
@@ -361,7 +368,25 @@ class FTWilliamsService:
             statuses=parsed,
             raw_response=response.text,
             error=None if response.is_success else response.text[:500],
+            response_headers=self._diagnostic_headers(response),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000),
         )
+
+    @staticmethod
+    def _diagnostic_headers(response: httpx.Response) -> dict[str, str]:
+        allowed = {
+            "content-type",
+            "content-length",
+            "x-request-id",
+            "x-amzn-requestid",
+            "x-amz-request-id",
+            "cf-ray",
+        }
+        return {
+            key.lower(): value
+            for key, value in response.headers.items()
+            if key.lower() in allowed
+        }
 
     async def _post_xml(self, endpoint_url: str, request_xml: str) -> httpx.Response:
         last_error: httpx.HTTPError | None = None

@@ -40,6 +40,14 @@ export async function listFTWilliamsFailureQueue(): Promise<FTWilliamsFailureQue
   return request<FTWilliamsFailureQueueResponse>("/ftwilliams/failure-queue");
 }
 
+export async function dismissFTWilliamsFailure(filingId: string, reason = "Dismissed by operator"): Promise<FTWilliamsReview> {
+  return request<FTWilliamsReview>(`/ftwilliams/failure-queue/${filingId}/dismiss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export async function getFiling(id: string): Promise<FilingDetail> {
   return request<FilingDetail>("/filings/" + id);
 }

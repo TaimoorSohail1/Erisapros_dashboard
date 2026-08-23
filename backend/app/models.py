@@ -442,6 +442,23 @@ class FTWilliamsQueryResponse(BaseModel):
     statuses: list[FTWilliamsStatusItem] = Field(default_factory=list)
     raw_response: str | None = None
     error: str | None = None
+    response_headers: dict[str, str] = Field(default_factory=dict)
+    elapsed_ms: int | None = None
+
+
+class FTWilliamsOperationDiagnostic(BaseModel):
+    operation: str
+    sent: bool = False
+    http_status: int | None = None
+    outcome_code: str
+    response_received: bool = False
+    response_content_type: str | None = None
+    response_content_length: str | None = None
+    request_id: str | None = None
+    elapsed_ms: int | None = None
+    error_code: str | None = None
+    error_description: str | None = None
+    response_excerpt: str | None = None
 
 
 class FTWilliamsHistoryItem(BaseModel):
@@ -492,6 +509,10 @@ class FTWilliamsFailureQueueItem(BaseModel):
     attempted_field_count: int = 0
     failed_at: datetime
     last_action_label: str = "Update failed"
+    error_code: str | None = None
+    technical_details: str | None = None
+    operation_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
+    can_dismiss: bool = True
 
 
 class FTWilliamsFailureQueueResponse(BaseModel):
@@ -608,10 +629,17 @@ class FTWilliamsReview(BaseModel):
     update_remaining_count: int = 0
     update_results: list[dict] = Field(default_factory=list)
     update_retry_count: int = 0
+    update_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
     edit_check_request_xml: str | None = None
     edit_check_response_xml: str | None = None
     error_message: str | None = None
     client_error: ClientFacingError | None = None
+    active_failure: bool = False
+    active_failure_reason: str | None = None
+    active_failure_client_error: ClientFacingError | None = None
+    active_failure_at: datetime | None = None
+    failure_dismissed_at: datetime | None = None
+    failure_dismissed_reason: str | None = None
     fields: list[FTWilliamsComparisonField] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -647,6 +675,10 @@ class FTWilliamsSendUpdateRequest(BaseModel):
     reason: str = ""
     refresh_current_before_update: bool = True
     run_edit_checks: bool = False
+
+
+class FTWilliamsDismissFailureRequest(BaseModel):
+    reason: str = "Dismissed by operator"
 
 
 class FTWilliamsPlanMapping(BaseModel):

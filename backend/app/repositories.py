@@ -63,6 +63,7 @@ class Repository:
     async def list_audit_logs(self, filing_id: str) -> list[AuditLog]: ...
     async def list_ftwilliams_audit_logs(self, since: datetime, limit: int = 100) -> list[AuditLog]: ...
     async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]: ...
+    async def list_unresolved_ftwilliams_failure_audits(self) -> list[AuditLog]: ...
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]: ...
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]: ...
@@ -339,6 +340,25 @@ class MongoRepository(Repository):
         docs = await self.db.audit_logs.aggregate(pipeline).to_list(len(filing_ids))
         return [from_mongo(doc, AuditLog) for doc in docs]
 
+    async def list_unresolved_ftwilliams_failure_audits(self) -> list[AuditLog]:
+        pipeline = [
+            {"$match": {"event": {"$in": sorted(FTWILLIAMS_FAILURE_LIFECYCLE_EVENTS)}, "filing_id": {"$ne": None}}},
+            {"$sort": {"created_at": -1, "_id": -1}},
+            {"$group": {"_id": "$filing_id", "record": {"$first": "$$ROOT"}}},
+            {
+                "$match": {
+                    "record.event": {
+                        "$in": ["FTWILLIAMS_UPDATE_FAILED", "FTWILLIAMS_UPDATE_UNKNOWN"]
+                    }
+                }
+            },
+            {"$replaceRoot": {"newRoot": "$record"}},
+            {"$sort": {"created_at": -1}},
+            {"$limit": 100},
+        ]
+        docs = await self.db.audit_logs.aggregate(pipeline).to_list(100)
+        return [from_mongo(doc, AuditLog) for doc in docs]
+
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         doc = await self.db.ftwilliams_reviews.find_one({"filing_id": filing_id})
         return from_mongo(doc, FTWilliamsReview) if doc else None
@@ -351,7 +371,16 @@ class MongoRepository(Repository):
 
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]:
         docs = await self.db.ftwilliams_reviews.find(
-            {"status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]}}
+            {
+                "$or": [
+                    {"active_failure": True},
+                    {
+                        "active_failure": {"$exists": False},
+                        "failure_dismissed_at": {"$exists": False},
+                        "status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]},
+                    },
+                ]
+            }
         ).sort("updated_at", -1).to_list(100)
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
@@ -729,6 +758,21 @@ class MemoryRepository(Repository):
                 latest[audit.filing_id] = audit
         return list(latest.values())
 
+    async def list_unresolved_ftwilliams_failure_audits(self) -> list[AuditLog]:
+        latest: dict[str, AuditLog] = {}
+        for audit in self.audit:
+            if audit.event not in FTWILLIAMS_FAILURE_LIFECYCLE_EVENTS or not audit.filing_id:
+                continue
+            current = latest.get(audit.filing_id)
+            if current is None or audit.created_at >= current.created_at:
+                latest[audit.filing_id] = audit
+        unresolved = [
+            audit
+            for audit in latest.values()
+            if audit.event in {"FTWILLIAMS_UPDATE_FAILED", "FTWILLIAMS_UPDATE_UNKNOWN"}
+        ]
+        return sorted(unresolved, key=lambda item: item.created_at, reverse=True)[:100]
+
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         return self.ftwilliams_reviews.get(filing_id)
 
@@ -740,7 +784,11 @@ class MemoryRepository(Repository):
             (
                 review
                 for review in self.ftwilliams_reviews.values()
-                if review.status.value in {"UPDATE_FAILED", "UPDATE_UNKNOWN"}
+                if review.active_failure
+                or (
+                    review.failure_dismissed_at is None
+                    and review.status.value in {"UPDATE_FAILED", "UPDATE_UNKNOWN"}
+                )
             ),
             key=lambda item: item.updated_at,
             reverse=True,
@@ -978,4 +1026,14 @@ FTWILLIAMS_HISTORY_EVENTS = {
     "FTWILLIAMS_UPDATE_SENT",
     "FTWILLIAMS_UPDATE_FAILED",
     "FTWILLIAMS_UPDATE_UNKNOWN",
+    "FTWILLIAMS_UPDATE_FAILURE_DISMISSED",
+    "FTWILLIAMS_UPDATE_FAILURE_RESOLVED",
+}
+
+FTWILLIAMS_FAILURE_LIFECYCLE_EVENTS = {
+    "FTWILLIAMS_UPDATE_FAILED",
+    "FTWILLIAMS_UPDATE_UNKNOWN",
+    "FTWILLIAMS_UPDATE_SENT",
+    "FTWILLIAMS_UPDATE_FAILURE_DISMISSED",
+    "FTWILLIAMS_UPDATE_FAILURE_RESOLVED",
 }

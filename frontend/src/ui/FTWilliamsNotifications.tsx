@@ -4,7 +4,7 @@ import { Link } from "../router";
 import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { useDialogFocus } from "./useDialogFocus";
-import { useFTWilliamsFailures, useFTWilliamsHistory } from "./ftWilliamsNotificationStore";
+import { refreshFTWilliamsFailures, useFTWilliamsFailures, useFTWilliamsHistory } from "./ftWilliamsNotificationStore";
 
 type FTWPanelTab = "failures" | "activity";
 
@@ -27,7 +27,10 @@ export function FTWilliamsNotifications() {
         ref={triggerRef}
         className="ftw-notification-trigger topbar-ftw-notification"
         type="button"
-        onClick={() => setIsOpen(true)}
+        onClick={() => {
+          setIsOpen(true);
+          void refreshFTWilliamsFailures().catch(() => undefined);
+        }}
         aria-expanded={isOpen}
         aria-label="Open FT Williams notifications"
       >
@@ -112,6 +115,9 @@ function FTWilliamsSidePanel({
               <small>Failed sends will appear here automatically.</small>
             </div>
           )}
+          {failures.length > previewFailures.length ? (
+            <p className="ftw-side-more-count">+{failures.length - previewFailures.length} more active failures</p>
+          ) : null}
           <Link className="button secondary ftw-side-footer-action" to="/ftwilliams/failures">
             View all failures <Eye size={15} />
           </Link>
@@ -159,6 +165,7 @@ function FTWilliamsFailureCard({ item }: { item: FTWilliamsFailureQueueItem }) {
         <time>{shortDate(item.failed_at)}<small>{shortTime(item.failed_at)}</small></time>
       </div>
       <p>{plainFailureReason(item.failure_reason)}</p>
+      {item.error_code ? <small className="ftw-side-error-code">{item.error_code}</small> : null}
       <div className="ftw-side-card-bottom">
         <span>{item.attempted_field_count} fields attempted</span>
         <Link className="button danger" to={`/filings/${item.filing_id}`}>
