@@ -293,7 +293,7 @@ export function FilingReviewPage() {
   const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
-  const retryingFailedFtwUpdate = filing?.status === "FAILED" && ftwUpdateFailed;
+  const retryingFailedFtwUpdate = filing?.status === "FAILED" && ftwUpdateFailed && ftwReadyToSend;
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.client_error || null;

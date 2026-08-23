@@ -68,7 +68,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
+  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && ftwUpdateFailed && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
   "Approval readiness must distinguish an active FTW retry from a failed filing that needs re-approval.",
 );
 assert.match(
