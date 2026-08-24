@@ -429,6 +429,13 @@ def update_values_for_form(
             if not values_meaningfully_different(current_value, proposed, tag=tag):
                 continue
         values[tag] = proposed
+        if (
+            form_type == FormType.FORM_5500
+            and str(field.mapped_rule_key or "") == "form_5500_part_i_2a_plan_administrator_name"
+        ):
+            sponsor_name = str((current_values or {}).get("SDName") or "").strip()
+            if sponsor_name and values_meaningfully_different(sponsor_name, proposed, tag="ADMINName"):
+                values["AdminNameSameAsPlanSponsInd"] = "0"
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
 
 
