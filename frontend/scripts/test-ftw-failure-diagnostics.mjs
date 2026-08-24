@@ -23,6 +23,8 @@ assert.match(failuresPage, /editCheckIssues=\{item\.edit_check_issues\}/, "The f
 assert.match(filingReview, /active_failure_client_error/, "The filing page must prefer the persistent active failure details.");
 assert.match(filingReview, /editCheckIssues=\{[\s\S]*?edit_check_baseline_issues/, "The filing review must show baseline FT Edit Check issues.");
 assert.match(filingReview, /edit_check_final_issues/, "The filing review must prefer final FT Edit Check issues when present.");
+assert.match(filingReview, /edit_check_final_success === false[\s\S]*?<FTWilliamsDiagnostic/, "The FTW Update workflow step must show final Edit Check diagnostics.");
+assert.match(filingReview, /comparison\.update_exclusion_reason/, "Conditionally blocked FTW fields must show their exact exclusion reason.");
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
 
 console.log("FT Williams failure diagnostics workflow passed.");

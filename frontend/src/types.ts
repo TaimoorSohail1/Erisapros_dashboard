@@ -156,6 +156,7 @@ export interface FTWilliamsComparisonField {
   extraction_status: string;
   changed: boolean;
   update_included: boolean;
+  update_exclusion_reason?: string | null;
 }
 
 export interface FTWilliamsPlanLookup {

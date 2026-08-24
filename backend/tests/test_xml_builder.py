@@ -344,6 +344,37 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<ADMINName>Leslie Hanley</ADMINName>", xml)
         self.assertIn("<AdminNameSameAsPlanSponsInd>0</AdminNameSameAsPlanSponsInd>", xml)
 
+    def test_5500_administrator_restore_sets_same_as_sponsor_indicator(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="2a. Plan Administrator Name",
+            normalized_field_name="administrator_name",
+            mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+            mapped_label="2a. Plan Administrator Name",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="NEW YORK YANKEES PARTNERSHIP",
+            proposed_value="NEW YORK YANKEES PARTNERSHIP",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="34-1122131",
+            plan_id="34-1122131501",
+            year="2025",
+            current_values={
+                "ADMINName": "LESLIE HANLEY",
+                "SDName": "NEW YORK YANKEES PARTNERSHIP",
+                "AdminNameSameAsPlanSponsInd": "0",
+            },
+        )
+
+        self.assertIn("<ADMINName>NEW YORK YANKEES PARTNERSHIP</ADMINName>", xml)
+        self.assertIn("<AdminNameSameAsPlanSponsInd>1</AdminNameSameAsPlanSponsInd>", xml)
+
     def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
             filing_id="filing",

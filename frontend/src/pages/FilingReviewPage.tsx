@@ -1930,6 +1930,15 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
             </div>
           </details>
         ) : null}
+        {review?.edit_check_final_success === false || review?.edit_check_final_issues?.length ? (
+          <FTWilliamsDiagnostic
+            errorCode={review.client_error?.code}
+            editCheckIssues={review.edit_check_final_issues || []}
+            message={review.error_message}
+            operations={review.update_diagnostics || []}
+            technicalDetails={review.client_error?.technical_details}
+          />
+        ) : null}
         {!complete ? <div className="workflow-dialog-actions"><button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button></div> : null}
       </section>
     );
@@ -3152,6 +3161,7 @@ function groupForExtractedField(field: ExtractedField): ReviewRowGroup {
 function issueForComparison(comparison: FTWilliamsComparisonField, field: ExtractedField | undefined, group: ReviewRowGroup) {
   if (field?.status === "EDITED" && group === "WILL_UPDATE") return "Reviewer confirmed this FT Williams update.";
   if (field?.status === "EDITED" && comparison.changed && !comparison.update_included) {
+    if (comparison.update_exclusion_reason) return comparison.update_exclusion_reason;
     return "Reviewed successfully. This field is not supported for FT Williams updates.";
   }
   if (field?.status === "EDITED" && group === "SAME") return "Reviewer confirmed the current FT Williams value.";
@@ -3173,6 +3183,7 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
+  if (comparison?.changed && comparison.update_exclusion_reason) return "Review only · more FTW details required";
   if (comparison?.changed && !comparison.update_included) return "Review only · not supported";
   if (group === "WILL_UPDATE") return "Resolved · will update";
   if (group === "SAME") return "Resolved · keeps FTW";
