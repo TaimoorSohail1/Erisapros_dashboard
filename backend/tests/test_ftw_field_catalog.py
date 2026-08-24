@@ -6,6 +6,10 @@ from app.services.ftw_field_catalog import (
     field_catalog_entry,
     field_catalog_version,
 )
+from app.services.ftwilliams_tags import (
+    FORM_5500_VERIFIED_UPDATE_RULES,
+    SCHEDULE_A_TAGS_BY_RULE,
+)
 
 
 def test_catalog_covers_every_supported_field_rule_once() -> None:
@@ -24,23 +28,30 @@ def test_catalog_covers_every_supported_field_rule_once() -> None:
 def test_catalog_records_update_support_and_read_only_reason() -> None:
     catalog = field_catalog()
 
-    assert sum(entry.update_supported for entry in catalog if entry.catalog_tier == "VERIFIED") == 56
+    expected_update_rules = set(FORM_5500_VERIFIED_UPDATE_RULES) | set(SCHEDULE_A_TAGS_BY_RULE)
+    supported_rules = {
+        entry.key
+        for entry in catalog
+        if entry.catalog_tier == "VERIFIED" and entry.update_supported
+    }
+
+    assert supported_rules == expected_update_rules
     assert sum(not entry.update_supported for entry in catalog) > 5
     assert all(entry.update_tag for entry in catalog if entry.update_supported)
     assert all(entry.read_only_reason for entry in catalog if not entry.update_supported)
 
-    unverified_form_5500_writes = {
+    verified_form_5500_writes = {
         "form_5500_part_i_1a_plan_name",
         "form_5500_part_i_1d_plan_sponsor_name",
         "form_5500_part_i_1e_plan_sponsor_ein",
         "form_5500_part_i_1f_plan_sponsor_address",
         "form_5500_part_i_2a_plan_administrator_name",
     }
-    for rule_key in unverified_form_5500_writes:
+    for rule_key in verified_form_5500_writes:
         entry = field_catalog_entry(rule_key)
         assert entry is not None
-        assert entry.update_supported is False
-        assert entry.update_tag is None
+        assert entry.update_supported is True
+        assert entry.update_tag
         assert entry.current_tag
 
 
@@ -59,9 +70,9 @@ def test_catalog_preserves_every_observed_current_tag_without_promoting_write_ac
     catalog = field_catalog()
     discovered = [entry for entry in catalog if entry.catalog_tier == "DISCOVERED"]
 
-    assert len(catalog) == 353
-    assert len(discovered) == 291
-    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 351
+    assert len(catalog) == 352
+    assert len(discovered) == 290
+    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 350
     assert all(not entry.update_supported and entry.update_tag is None for entry in discovered)
 
 

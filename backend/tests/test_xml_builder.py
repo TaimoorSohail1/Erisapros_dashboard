@@ -313,6 +313,37 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_EIN", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
 
+    def test_5500_administrator_change_clears_same_as_sponsor_indicator(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="2a. Plan Administrator Name",
+            normalized_field_name="administrator_name",
+            mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+            mapped_label="2a. Plan Administrator Name",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="Leslie Hanley",
+            proposed_value="Leslie Hanley",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="34-1122131",
+            plan_id="34-1122131501",
+            year="2025",
+            current_values={
+                "ADMINName": "NEW YORK YANKEES PARTNERSHIP",
+                "SDName": "NEW YORK YANKEES PARTNERSHIP",
+                "AdminNameSameAsPlanSponsInd": "1",
+            },
+        )
+
+        self.assertIn("<ADMINName>Leslie Hanley</ADMINName>", xml)
+        self.assertIn("<AdminNameSameAsPlanSponsInd>0</AdminNameSameAsPlanSponsInd>", xml)
+
     def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
             filing_id="filing",

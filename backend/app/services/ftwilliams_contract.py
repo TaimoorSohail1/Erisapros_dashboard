@@ -34,6 +34,9 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     "SDCity",
     "SDState",
     "SDZipCode",
+    # ADMINName is ignored while FTW still treats the administrator as the sponsor.
+    # Emit this companion indicator when changing the administrator name.
+    "AdminNameSameAsPlanSponsInd",
     "FundingInsuranceInd",
     "FundingCdSection412Ind",
     "FundingTrustInd",
@@ -86,6 +89,7 @@ NAIC_TAGS = {"InsCarrierNAICCode"}
 PLAN_NUMBER_TAGS = {"SponsDfePlanNum", "PlanNum"}
 BUSINESS_CODE_TAGS = {"BusinessCode"}
 ZERO_ONE_INDICATOR_TAGS = {
+    "AdminNameSameAsPlanSponsInd",
     "FundingInsuranceInd",
     "FundingCdSection412Ind",
     "FundingTrustInd",
