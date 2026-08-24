@@ -13,11 +13,11 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "../router";
-import { listFTWilliamsHistory } from "../api";
 import type { FTWilliamsHistoryItem, FTWilliamsHistoryRange } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
-import { InlineLoader } from "../ui/Loading";
+import { InlineLoader, Skeleton } from "../ui/Loading";
+import { useFTWilliamsHistory } from "../ui/ftWilliamsNotificationStore";
 
 type HistoryStatusFilter = "ALL" | "success" | "warning" | "failed" | "info";
 type HistoryActionFilter =
@@ -30,36 +30,16 @@ type HistoryActionFilter =
   | "PLAN_MATCH_SAVED";
 
 export function FTWilliamsActivityPage() {
-  const [history, setHistory] = useState<FTWilliamsHistoryItem[]>([]);
-  const [message, setMessage] = useState("");
   const [range, setRange] = useState<FTWilliamsHistoryRange>("30d");
+  const historyState = useFTWilliamsHistory(true, range);
+  const history = historyState.data;
+  const message = historyState.error;
+  const initialLoad = historyState.loading && !historyState.updatedAt;
   const [statusFilter, setStatusFilter] = useState<HistoryStatusFilter>("ALL");
   const [actionFilter, setActionFilter] = useState<HistoryActionFilter>("ALL");
   const [search, setSearch] = useState("");
   const [rowsLimit, setRowsLimit] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      setLoading(true);
-      try {
-        const result = await listFTWilliamsHistory(range);
-        if (!active) return;
-        setHistory(result.items);
-        setMessage("");
-      } catch (error) {
-        if (active) setMessage(error instanceof Error ? error.message : "Could not load FT Williams activity");
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-    load();
-    return () => {
-      active = false;
-    };
-  }, [range]);
 
   const filteredHistory = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -90,6 +70,12 @@ export function FTWilliamsActivityPage() {
   const pageStartIndex = filteredHistory.length ? (currentPage - 1) * rowsLimit : 0;
   const pageEndIndex = Math.min(pageStartIndex + rowsLimit, filteredHistory.length);
   const visibleHistory = filteredHistory.slice(pageStartIndex, pageEndIndex);
+  const activityCounts = useMemo(() => ({
+    total: history.length,
+    success: history.filter((item) => item.status === "success").length,
+    warning: history.filter((item) => item.status === "warning").length,
+    failed: history.filter((item) => item.status === "failed").length,
+  }), [history]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -111,11 +97,32 @@ export function FTWilliamsActivityPage() {
 
       {message ? <div className="dashboard-message card">{message}</div> : null}
 
+      {initialLoad ? (
+        <section className="ftw-activity-summary-grid ftw-summary-loading" aria-label="Loading activity summary">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div className="ftw-activity-summary-card" key={index}>
+              <Skeleton className="ftw-summary-label-skeleton" />
+              <Skeleton className="ftw-summary-value-skeleton" />
+            </div>
+          ))}
+        </section>
+      ) : (
+        <section className="ftw-activity-summary-grid" aria-label="Activity summary">
+          <ActivitySummaryCard label="Total actions" value={activityCounts.total} tone="info" />
+          <ActivitySummaryCard label="Successful" value={activityCounts.success} tone="success" />
+          <ActivitySummaryCard label="Warnings" value={activityCounts.warning} tone="warning" />
+          <ActivitySummaryCard label="Failed" value={activityCounts.failed} tone="danger" />
+        </section>
+      )}
+
       <section className="dashboard-table-panel card">
         <div className="dashboard-table-head ftw-activity-head">
           <div>
             <h2>Activity History</h2>
-            <p>{loading ? "Loading FT Williams activity..." : `${filteredHistory.length} matching action${filteredHistory.length === 1 ? "" : "s"} in the selected range.`}</p>
+            <p>
+              {initialLoad ? "Loading FT Williams activity..." : `${filteredHistory.length} matching action${filteredHistory.length === 1 ? "" : "s"} in the selected range.`}
+              {historyState.loading && historyState.updatedAt ? <InlineLoader label="Refreshing" /> : null}
+            </p>
           </div>
           <div className="dashboard-table-controls">
             <label className="dashboard-search ftw-activity-search">
@@ -181,7 +188,7 @@ export function FTWilliamsActivityPage() {
           </div>
         </div>
 
-        <div className="dashboard-table-wrap" aria-busy={loading}>
+        <div className="dashboard-table-wrap" aria-busy={historyState.loading}>
           <table className="dashboard-filings-table ftw-history-table ftw-activity-table">
             <thead>
               <tr>
@@ -195,7 +202,7 @@ export function FTWilliamsActivityPage() {
               </tr>
             </thead>
             <tbody>
-              {loading ? <tr><td colSpan={7} className="ftw-history-loading"><InlineLoader label="Loading activity" /></td></tr> : null}
+              {initialLoad ? <ActivityTableLoadingRows /> : null}
               {visibleHistory.map((item) => (
                 <FTWilliamsActivityRow item={item} key={item.id || `${item.filing_id}-${item.created_at}-${item.action}`} />
               ))}
@@ -203,7 +210,7 @@ export function FTWilliamsActivityPage() {
           </table>
         </div>
 
-        {!loading && !visibleHistory.length ? (
+        {!initialLoad && !visibleHistory.length ? (
           <div className="empty-state ftw-history-empty">
             <Activity size={18} /> No FT Williams activity matches these filters.
           </div>
@@ -246,6 +253,29 @@ export function FTWilliamsActivityPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function ActivitySummaryCard({ label, tone, value }: { label: string; tone: "info" | "success" | "warning" | "danger"; value: number }) {
+  return (
+    <div className={`ftw-activity-summary-card summary-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ActivityTableLoadingRows() {
+  return (
+    <>
+      {Array.from({ length: 4 }, (_, row) => (
+        <tr className="ftw-table-skeleton-row" key={row}>
+          {Array.from({ length: 7 }, (_, column) => (
+            <td key={column}><Skeleton className={column === 1 ? "wide" : ""} /></td>
+          ))}
+        </tr>
+      ))}
+    </>
   );
 }
 

@@ -33,6 +33,9 @@ const resource = createSharedPollingResource({
   clearIntervalFn: () => { cleared += 1; },
 });
 
+assert.equal(resource.getSnapshot().loading, true, "a new shared resource must expose initial loading before its first request completes");
+assert.equal(resource.getSnapshot().updatedAt, 0, "a new shared resource must not look like a completed empty response");
+
 const releaseFirst = resource.acquirePolling();
 const releaseSecond = resource.acquirePolling();
 const concurrentRefresh = resource.refresh();
@@ -41,6 +44,7 @@ assert.equal(intervals, 1, "multiple consumers must share one polling timer");
 resolveLoad(["loaded"]);
 await concurrentRefresh;
 assert.deepEqual(resource.getSnapshot().data, ["loaded"]);
+assert.equal(resource.getSnapshot().loading, false, "a completed first request must leave the initial loading state");
 
 await resource.refresh();
 assert.equal(calls, 1, "fresh cached data must prevent an immediate duplicate request");

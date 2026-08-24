@@ -8671,6 +8671,432 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   text-align: center;
 }
 
+/* FT Williams operator experience: stable loading states and compact, usable queues. */
+.ftw-side-panel.ftw-notification-drawer {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  width: min(480px, 100vw);
+}
+
+.ftw-side-head {
+  background: #fff;
+  padding: 18px 20px 15px;
+}
+
+.ftw-side-head h2 {
+  color: #102033;
+  font-size: 19px;
+  line-height: 1.2;
+}
+
+.ftw-side-tabs {
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ftw-side-tabs button {
+  border-bottom-color: transparent;
+  min-height: 48px;
+}
+
+.ftw-side-content {
+  display: grid;
+  gap: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.ftw-side-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  scrollbar-gutter: stable;
+}
+
+.ftw-side-footer {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.98);
+  border-top: 1px solid #e2e8f0;
+  display: grid;
+  gap: 9px;
+  padding: 12px 16px 14px;
+}
+
+.ftw-side-footer .inline-loader {
+  color: #64748b;
+  font-size: 11px;
+  justify-self: center;
+}
+
+.ftw-side-list {
+  gap: 10px;
+}
+
+.ftw-side-failure-card {
+  border-color: #fecaca;
+  border-left: 4px solid #ef4444;
+  border-radius: 10px;
+  gap: 8px;
+  padding: 12px;
+}
+
+.ftw-side-card-top {
+  align-items: start;
+}
+
+.ftw-side-card-top strong {
+  color: #102033;
+  line-height: 1.25;
+}
+
+.ftw-side-status {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 900;
+  justify-self: start;
+  letter-spacing: 0.02em;
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
+.ftw-side-status.type-needs-data-fix {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.ftw-side-status.type-needs-plan-match {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.ftw-side-status.type-needs-service-check {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.ftw-side-status.type-needs-retry {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.ftw-side-failure-card p {
+  display: -webkit-box;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.ftw-side-card-bottom {
+  border-top: 1px solid #fee2e2;
+  padding-top: 9px;
+}
+
+.ftw-side-activity-list {
+  border-left: 2px solid #e2e8f0;
+  margin-left: 15px;
+  padding-left: 16px;
+}
+
+.ftw-side-activity-item {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  margin-bottom: 10px;
+  padding: 11px;
+  position: relative;
+}
+
+.ftw-side-activity-item::before {
+  background: #fff;
+  border: 2px solid #94a3b8;
+  border-radius: 999px;
+  content: "";
+  height: 8px;
+  left: -23px;
+  position: absolute;
+  top: 22px;
+  width: 8px;
+}
+
+.ftw-side-loading {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  display: grid;
+  gap: 14px;
+  padding: 22px 16px;
+}
+
+.ftw-side-loading .inline-loader {
+  color: #475569;
+  font-weight: 800;
+}
+
+.ftw-side-loading-line {
+  background: #e9eef5;
+  border-radius: 999px;
+  display: block;
+  height: 10px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.ftw-side-loading-line::after {
+  animation: ui-skeleton-shimmer 1.35s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.8) 48%, transparent 100%);
+  content: "";
+  inset: 0;
+  position: absolute;
+  transform: translateX(-100%);
+}
+
+.ftw-side-loading-line.short {
+  width: 62%;
+}
+
+.ftw-failures-page,
+.ftw-activity-page {
+  gap: 18px;
+}
+
+.ftw-failure-summary-grid,
+.ftw-activity-summary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ftw-failure-summary-card,
+.ftw-activity-summary-card {
+  background: #fff;
+  border: 1px solid #dce3ea;
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(16, 32, 51, 0.05);
+  display: grid;
+  gap: 7px;
+  min-height: 94px;
+  padding: 16px 18px;
+}
+
+.ftw-activity-summary-card span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.ftw-activity-summary-card strong {
+  color: #102033;
+  font-size: 32px;
+  line-height: 1;
+}
+
+.ftw-activity-summary-card.summary-info {
+  box-shadow: inset 0 -4px 0 #3b82f6, 0 8px 22px rgba(16, 32, 51, 0.05);
+}
+
+.ftw-activity-summary-card.summary-success {
+  box-shadow: inset 0 -4px 0 #059669, 0 8px 22px rgba(16, 32, 51, 0.05);
+}
+
+.ftw-activity-summary-card.summary-warning {
+  box-shadow: inset 0 -4px 0 #f59e0b, 0 8px 22px rgba(16, 32, 51, 0.05);
+}
+
+.ftw-activity-summary-card.summary-danger {
+  box-shadow: inset 0 -4px 0 #dc2626, 0 8px 22px rgba(16, 32, 51, 0.05);
+}
+
+.ftw-summary-loading .ui-skeleton,
+.ftw-table-skeleton-row .ui-skeleton {
+  display: block;
+}
+
+.ftw-summary-label-skeleton {
+  height: 11px;
+  width: 45%;
+}
+
+.ftw-summary-value-skeleton {
+  height: 32px;
+  width: 24%;
+}
+
+.ftw-table-skeleton-row td {
+  height: 88px;
+}
+
+.ftw-table-skeleton-row .ui-skeleton {
+  height: 12px;
+  width: 70%;
+}
+
+.ftw-table-skeleton-row .ui-skeleton.wide {
+  width: 92%;
+}
+
+.ftw-failures-page .dashboard-table-head p,
+.ftw-activity-page .dashboard-table-head p {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ftw-failures-page .dashboard-table-head .inline-loader,
+.ftw-activity-page .dashboard-table-head .inline-loader {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.ftw-failures-table {
+  min-width: 1240px;
+}
+
+.ftw-activity-table {
+  min-width: 1220px;
+}
+
+.ftw-failures-table td,
+.ftw-activity-table td {
+  vertical-align: top;
+}
+
+.ftw-failure-reason-cell {
+  max-width: 430px;
+}
+
+/* Keep wide operator tables contained by their own scroll region. Grid items
+   otherwise use the table's min-content width and widen the entire page. */
+.ftw-failures-page,
+.ftw-activity-page {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.ftw-failures-page > *,
+.ftw-activity-page > *,
+.ftw-failures-page .dashboard-table-head > *,
+.ftw-activity-page .dashboard-table-head > *,
+.ftw-failures-page .dashboard-table-controls > *,
+.ftw-activity-page .dashboard-table-controls > * {
+  min-width: 0;
+}
+
+.dashboard-v3.ftw-failures-page .dashboard-v2-hero,
+.dashboard-v3.ftw-activity-page .dashboard-v2-hero,
+.dashboard-v3.ftw-failures-page .dashboard-table-panel,
+.dashboard-v3.ftw-activity-page .dashboard-table-panel,
+.ftw-failures-page .dashboard-table-head,
+.ftw-activity-page .dashboard-table-head,
+.ftw-failures-page .dashboard-table-controls,
+.ftw-activity-page .dashboard-table-controls,
+.ftw-failures-page .dashboard-table-wrap,
+.ftw-activity-page .dashboard-table-wrap {
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.dashboard-v3.ftw-failures-page .dashboard-table-panel,
+.dashboard-v3.ftw-activity-page .dashboard-table-panel {
+  overflow: hidden;
+}
+
+.ftw-failures-page .dashboard-table-wrap,
+.ftw-activity-page .dashboard-table-wrap {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 1100px) {
+  .ftw-failure-summary-grid,
+  .ftw-activity-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .ftw-side-panel.ftw-notification-drawer {
+    width: 100vw;
+  }
+
+  .ftw-side-head {
+    padding-inline: 16px;
+  }
+
+  .ftw-side-scroll,
+  .ftw-side-footer {
+    padding-inline: 12px;
+  }
+
+  .ftw-side-card-top {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .ftw-side-card-top time {
+    grid-column: 2;
+  }
+
+  .ftw-side-card-bottom {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .ftw-side-card-bottom .button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .ftw-side-activity-item {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .ftw-side-activity-item time {
+    grid-column: 2;
+  }
+
+  .ftw-failure-summary-grid,
+  .ftw-activity-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-v3.ftw-failures-page .dashboard-v2-hero,
+  .dashboard-v3.ftw-activity-page .dashboard-v2-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ftw-failures-page .dashboard-table-head,
+  .ftw-activity-page .dashboard-table-head,
+  .ftw-failures-page .dashboard-table-controls,
+  .ftw-activity-page .dashboard-table-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ftw-failures-page .dashboard-search,
+  .ftw-activity-page .dashboard-search,
+  .ftw-failures-page .filter-dropdown,
+  .ftw-activity-page .filter-dropdown,
+  .ftw-failures-page .dashboard-table-controls .button,
+  .ftw-activity-page .dashboard-table-controls .button {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 .clickable-row:focus-visible,
 .field-review-table tr:focus-visible,
 .field-rules-table tr:focus-visible {

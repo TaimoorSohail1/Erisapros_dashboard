@@ -21,6 +21,7 @@ import {
 import type { FTWilliamsFailureQueueItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
+import { InlineLoader, Skeleton } from "../ui/Loading";
 import { refreshFTWilliamsFailures, useFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 
 type FailureTypeFilter = "ALL" | FTWilliamsFailureType;
@@ -29,6 +30,7 @@ type DateFilter = "ALL" | "TODAY" | "LAST_7" | "LAST_30";
 export function FTWilliamsFailuresPage() {
   const failuresState = useFTWilliamsFailures();
   const failures = failuresState.data;
+  const initialLoad = failuresState.loading && !failuresState.updatedAt;
   const [actionMessage, setActionMessage] = useState("");
   const message = actionMessage || failuresState.error;
   const [dismissingId, setDismissingId] = useState("");
@@ -37,10 +39,6 @@ export function FTWilliamsFailuresPage() {
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [rowsLimit, setRowsLimit] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
-
-  useEffect(() => {
-    void refreshFTWilliamsFailures().catch(() => undefined);
-  }, []);
 
   async function dismissFailure(item: FTWilliamsFailureQueueItem) {
     if (!window.confirm("Dismiss this failure from the active queue? The failure remains in Activity for auditing.")) return;
@@ -120,13 +118,22 @@ export function FTWilliamsFailuresPage() {
         </div>
       </header>
 
-      {failures.length ? (
+      {initialLoad ? (
+        <section className="ftw-failure-summary-grid ftw-summary-loading" aria-label="Loading failure summary">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div className="ftw-failure-summary-card" key={index}>
+              <Skeleton className="ftw-summary-label-skeleton" />
+              <Skeleton className="ftw-summary-value-skeleton" />
+            </div>
+          ))}
+        </section>
+      ) : failures.length ? (
         <section className="ftw-failure-summary-grid">
           {summaryCards.map((card) => (
             <FailureSummaryCard key={card.label} label={card.label} value={card.value} tone={card.tone} />
           ))}
         </section>
-      ) : (
+      ) : !message ? (
         <section className="ftw-failure-clear-state card">
           <span><Check size={22} /></span>
           <div>
@@ -134,7 +141,7 @@ export function FTWilliamsFailuresPage() {
             <p>New failed sends will appear here automatically when operator review is needed.</p>
           </div>
         </section>
-      )}
+      ) : null}
 
       {message ? <div className="dashboard-message card">{message}</div> : null}
 
@@ -142,7 +149,12 @@ export function FTWilliamsFailuresPage() {
         <div className="dashboard-table-head ftw-failures-head">
           <div>
             <h2>Active Failure Queue</h2>
-            <p>{filteredFailures.length} unresolved failure{filteredFailures.length === 1 ? "" : "s"} match this view.</p>
+            <p>
+              {initialLoad
+                ? "Loading active failures..."
+                : `${filteredFailures.length} unresolved failure${filteredFailures.length === 1 ? "" : "s"} match this view.`}
+              {failuresState.loading && failuresState.updatedAt ? <InlineLoader label="Refreshing" /> : null}
+            </p>
           </div>
           <div className="dashboard-table-controls">
             <label className="dashboard-search ftw-failures-search">
@@ -195,7 +207,7 @@ export function FTWilliamsFailuresPage() {
           </div>
         </div>
 
-        <div className="dashboard-table-wrap">
+        <div className="dashboard-table-wrap" aria-busy={failuresState.loading}>
           <table className="dashboard-filings-table ftw-failures-table">
             <thead>
               <tr>
@@ -209,6 +221,7 @@ export function FTWilliamsFailuresPage() {
               </tr>
             </thead>
             <tbody>
+              {initialLoad ? <FailureTableLoadingRows /> : null}
               {visibleFailures.map((item) => (
                 <FTWilliamsFailureQueueRow
                   item={item}
@@ -221,7 +234,7 @@ export function FTWilliamsFailuresPage() {
           </table>
         </div>
 
-        {!visibleFailures.length ? (
+        {!initialLoad && !visibleFailures.length ? (
           <div className="empty-state ftw-history-empty">
             <AlertTriangle size={18} /> No unresolved FT Williams failures match these filters.
           </div>
@@ -264,6 +277,20 @@ export function FTWilliamsFailuresPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function FailureTableLoadingRows() {
+  return (
+    <>
+      {Array.from({ length: 4 }, (_, row) => (
+        <tr className="ftw-table-skeleton-row" key={row}>
+          {Array.from({ length: 7 }, (_, column) => (
+            <td key={column}><Skeleton className={column === 2 ? "wide" : ""} /></td>
+          ))}
+        </tr>
+      ))}
+    </>
   );
 }
 

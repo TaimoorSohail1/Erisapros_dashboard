@@ -5,11 +5,18 @@ const failuresPage = await readFile(new URL("../src/pages/FTWilliamsFailuresPage
 const notifications = await readFile(new URL("../src/ui/FTWilliamsNotifications.tsx", import.meta.url), "utf8");
 const diagnostics = await readFile(new URL("../src/ui/FTWilliamsDiagnostic.tsx", import.meta.url), "utf8");
 const filingReview = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
+const activityPage = await readFile(new URL("../src/pages/FTWilliamsActivityPage.tsx", import.meta.url), "utf8");
 
 assert.match(failuresPage, /useFTWilliamsFailures\(\)/, "The full failure page must use the shared failure resource.");
 assert.doesNotMatch(failuresPage, /listFTWilliamsFailureQueue/, "The full failure page must not maintain a separate stale queue.");
 assert.match(notifications, /refreshFTWilliamsFailures\(\)/, "Opening the drawer must fetch fresh failures.");
 assert.match(notifications, /failures\.slice\(0, 3\)/, "The drawer must remain a three-item preview.");
+assert.match(notifications, /failuresState\.loading/, "The drawer must distinguish initial loading from a truly empty queue.");
+assert.match(notifications, /historyState\.loading/, "The Activity drawer must distinguish initial loading from a truly empty history.");
+assert.match(failuresPage, /const initialLoad = failuresState\.loading && !failuresState\.updatedAt;/, "The failure page must not announce an empty queue before the shared request completes.");
+assert.match(failuresPage, /aria-busy=\{failuresState\.loading\}/, "The failure queue must expose its refresh state accessibly.");
+assert.match(activityPage, /useFTWilliamsHistory\(true, range\)/, "The Activity page must use the same shared history snapshot as the drawer.");
+assert.doesNotMatch(activityPage, /listFTWilliamsHistory/, "The Activity page must not maintain a separate request state.");
 assert.match(failuresPage, /dismissFTWilliamsFailure/, "Operators must be able to dismiss an acknowledged active failure.");
 assert.match(diagnostics, /operation\.outcome_code/, "Technical details must show the normalized FT outcome.");
 assert.match(diagnostics, /operation\.request_id/, "Technical details must show the vendor request identifier when available.");
