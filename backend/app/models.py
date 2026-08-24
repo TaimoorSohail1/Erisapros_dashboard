@@ -591,6 +591,7 @@ class FTWilliamsComparisonField(BaseModel):
     extraction_status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED
     changed: bool = False
     update_included: bool = False
+    update_exclusion_reason: str | None = None
 
 
 class ClientRejectedField(BaseModel):

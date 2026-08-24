@@ -2975,6 +2975,11 @@ class FTWilliamsReviewService:
             # column while still excluding blank extraction fields from updates.
             proposed_value = extracted_proposed_value if extracted_proposed_value.strip() else current_value
             update_allowed = update_field_ids is None or id(field) in update_field_ids
+            update_exclusion_reason = (
+                self._unsafe_form_5500_field_reason(field, current_values)
+                if field.form_type == FormType.FORM_5500 and not update_allowed
+                else None
+            )
             contract_type_allowed = (
                 field.form_type != FormType.SCHEDULE_A
                 or schedule_a_contract_type is None
@@ -3002,6 +3007,7 @@ class FTWilliamsReviewService:
                         and update_allowed
                         and contract_type_allowed
                     ),
+                    update_exclusion_reason=update_exclusion_reason,
                 )
             )
         return comparison
@@ -3022,6 +3028,8 @@ class FTWilliamsReviewService:
             if not resolve_ftw_update_tag(field):
                 continue
             if form_type != FormType.SCHEDULE_A:
+                if self._unsafe_form_5500_field_reason(field, current_values):
+                    continue
                 safe_fields.append(field)
                 continue
             if schedule_update_blocked:
@@ -3032,6 +3040,26 @@ class FTWilliamsReviewService:
                 continue
             safe_fields.append(field)
         return safe_fields
+
+    @staticmethod
+    def _unsafe_form_5500_field_reason(
+        field: ExtractedField,
+        current_values: dict[str, str],
+    ) -> str | None:
+        if str(field.mapped_rule_key or "") != "form_5500_part_i_2a_plan_administrator_name":
+            return None
+        if str(current_values.get("AdminNameSameAsPlanSponsInd") or "").strip() != "1":
+            return None
+        sponsor_name = str(current_values.get("SDName") or "").strip()
+        proposed_name = str(field.proposed_value or "").strip()
+        if not sponsor_name or not proposed_name:
+            return None
+        if not values_meaningfully_different(sponsor_name, proposed_name, tag="ADMINName"):
+            return None
+        return (
+            "Changing the administrator from the plan sponsor requires the complete FT Williams "
+            "administrator contact block, including a phone number. This filing only provides the name."
+        )
 
     def _is_schedule_a_broker_flat_field(self, field: ExtractedField) -> bool:
         return str(field.mapped_rule_key or "") in {

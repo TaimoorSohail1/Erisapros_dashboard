@@ -1184,6 +1184,72 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             {field.mapped_rule_key for field in fields},
         )
 
+    def test_administrator_name_change_is_blocked_when_ft_requires_full_contact_block(self):
+        administrator = ExtractedField(
+            filing_id="filing",
+            source_field_name="2a. Plan Administrator Name",
+            normalized_field_name="administrator_name",
+            mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+            mapped_label="2a. Plan Administrator Name",
+            form_type=FormType.FORM_5500,
+            source_document_type=DocumentType.PLAN_WORKSHEET,
+            priority=FieldPriority.HIGH,
+            value="LESLIE HANLEY",
+            proposed_value="LESLIE HANLEY",
+        )
+
+        safe = FTWilliamsReviewService()._safe_update_fields(
+            [administrator],
+            FormType.FORM_5500,
+            {
+                "ADMINName": "NEW YORK YANKEES PARTNERSHIP",
+                "SDName": "NEW YORK YANKEES PARTNERSHIP",
+                "AdminNameSameAsPlanSponsInd": "1",
+            },
+        )
+
+        self.assertEqual(safe, [])
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [administrator],
+            {
+                "ADMINName": "NEW YORK YANKEES PARTNERSHIP",
+                "SDName": "NEW YORK YANKEES PARTNERSHIP",
+                "AdminNameSameAsPlanSponsInd": "1",
+            },
+            {},
+            update_fields=safe,
+        )
+
+        self.assertFalse(comparison[0].update_included)
+        self.assertIn("complete FT Williams administrator contact block", comparison[0].update_exclusion_reason or "")
+
+    def test_administrator_name_can_restore_same_as_sponsor(self):
+        administrator = ExtractedField(
+            filing_id="filing",
+            source_field_name="2a. Plan Administrator Name",
+            normalized_field_name="administrator_name",
+            mapped_rule_key="form_5500_part_i_2a_plan_administrator_name",
+            mapped_label="2a. Plan Administrator Name",
+            form_type=FormType.FORM_5500,
+            source_document_type=DocumentType.PLAN_WORKSHEET,
+            priority=FieldPriority.HIGH,
+            value="NEW YORK YANKEES PARTNERSHIP",
+            proposed_value="NEW YORK YANKEES PARTNERSHIP",
+        )
+
+        safe = FTWilliamsReviewService()._safe_update_fields(
+            [administrator],
+            FormType.FORM_5500,
+            {
+                "ADMINName": "LESLIE HANLEY",
+                "SDName": "NEW YORK YANKEES PARTNERSHIP",
+                "AdminNameSameAsPlanSponsInd": "0",
+            },
+        )
+
+        self.assertEqual(safe, [administrator])
+
     def test_prepare_review_reports_pre_send_validation_without_crashing(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
