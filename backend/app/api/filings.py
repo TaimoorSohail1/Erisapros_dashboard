@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from urllib.parse import urlsplit
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from app.auth import require_field_rule_admin
 from app.models import (
     ApproveRequest,
@@ -542,3 +542,25 @@ async def send_approved_ftwilliams_update(filing_id: str, payload: FTWilliamsSen
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return {"ftw_review": review}
+
+
+@router.get("/{filing_id}/ftw/audit-pdf")
+async def download_ftwilliams_audit_pdf(filing_id: str):
+    review = await get_repository().get_ftwilliams_review(filing_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="FT Williams review not found")
+    if review.audit_pdf_status != "AVAILABLE" or not review.audit_pdf_key:
+        raise HTTPException(status_code=404, detail="Verified FT Williams Schedule A PDF is not available")
+    try:
+        pdf = StorageService().load_pdf(
+            review.audit_pdf_key,
+            review.audit_pdf_bucket,
+            review.audit_pdf_local_path,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="ftw-schedule-a-{review.year or "current"}.pdf"'},
+    )

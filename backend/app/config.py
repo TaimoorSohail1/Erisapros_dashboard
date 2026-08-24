@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     # independently switchable so production can fail closed if FT returns an
     # ambiguous response or demonstrates destructive behavior.
     ftwlink_schedule_a_updates_enabled: bool = True
+    # Live checklist schemas are cached for one day. DOL Schedule A writes use
+    # the separately published, versioned DOL contract until FT exposes an
+    # equivalent live schema endpoint for DOL forms.
+    ftw_schema_cache_ttl_seconds: int = 86400
+    ftw_schema_validation_enabled: bool = True
+    # Release schema enforcement in observation mode first. Invalid values are
+    # always recorded; this flag decides whether a send is blocked.
+    ftw_schema_enforcement_enabled: bool = False
+    ftw_auto_edit_checks_enabled: bool = False
+    ftw_pdf_audit_enabled: bool = False
     # FT Williams Schedule A slots are independent. Query a small batch in
     # parallel to reduce latency without flooding the upstream service.
     ftw_slot_query_concurrency: int = 5

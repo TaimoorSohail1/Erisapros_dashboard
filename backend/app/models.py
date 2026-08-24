@@ -446,6 +446,48 @@ class FTWilliamsQueryResponse(BaseModel):
     elapsed_ms: int | None = None
 
 
+class FTWilliamsSchemaField(BaseModel):
+    var: str
+    prompt_text: str | None = None
+    required: bool = False
+    field_type: str | None = None
+    expected_format: str | None = None
+    max_length: int | None = None
+    allowed_values: list[str] = Field(default_factory=list)
+    section: str | None = None
+    default_value: str | None = None
+
+
+class FTWilliamsSchemaSnapshot(BaseModel):
+    cache_key: str
+    checklist: str
+    plan_type: str
+    checklist_version: str
+    status: str = "FRESH"
+    source: str = "FTW_DOC_SCHEMA"
+    fields: list[FTWilliamsSchemaField] = Field(default_factory=list)
+    fetched_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime
+    last_error: str | None = None
+
+
+class FTWilliamsSchemaValidationIssue(BaseModel):
+    tag: str
+    value: str = ""
+    reason: str
+    expected_format: str | None = None
+    correction: str | None = None
+
+
+class FTWilliamsSchemaValidationResult(BaseModel):
+    valid: bool = True
+    mode: str = "OBSERVE"
+    schema_source: str
+    schema_version: str | None = None
+    issues: list[FTWilliamsSchemaValidationIssue] = Field(default_factory=list)
+    validated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class FTWilliamsOperationDiagnostic(BaseModel):
     operation: str
     sent: bool = False
@@ -459,6 +501,19 @@ class FTWilliamsOperationDiagnostic(BaseModel):
     error_code: str | None = None
     error_description: str | None = None
     response_excerpt: str | None = None
+
+
+class FTWilliamsEditCheckIssue(BaseModel):
+    code: str
+    message: str
+    status_type: str | None = None
+    form_type: str = "FTW"
+    schedule_seq_no: str | None = None
+    schedule_desc: str | None = None
+    field_line: str | None = None
+    field_label: str | None = None
+    current_value: str | None = None
+    correction: str | None = None
 
 
 class FTWilliamsHistoryItem(BaseModel):
@@ -512,6 +567,7 @@ class FTWilliamsFailureQueueItem(BaseModel):
     error_code: str | None = None
     technical_details: str | None = None
     operation_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
+    edit_check_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     can_dismiss: bool = True
 
 
@@ -630,8 +686,25 @@ class FTWilliamsReview(BaseModel):
     update_results: list[dict] = Field(default_factory=list)
     update_retry_count: int = 0
     update_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
+    schema_validation_results: list[FTWilliamsSchemaValidationResult] = Field(default_factory=list)
+    schema_validation_blocked: bool = False
+    query_access_verified: bool = False
+    update_access_status: str = "NOT_ATTEMPTED"
+    edit_check_baseline_request_xml: str | None = None
+    edit_check_baseline_response_xml: str | None = None
+    edit_check_baseline_success: bool | None = None
+    edit_check_baseline_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     edit_check_request_xml: str | None = None
     edit_check_response_xml: str | None = None
+    edit_check_final_success: bool | None = None
+    edit_check_final_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
+    audit_pdf_status: str = "NOT_REQUESTED"
+    audit_pdf_key: str | None = None
+    audit_pdf_bucket: str | None = None
+    audit_pdf_local_path: str | None = None
+    audit_pdf_sha256: str | None = None
+    audit_pdf_created_at: datetime | None = None
+    audit_pdf_error: str | None = None
     error_message: str | None = None
     client_error: ClientFacingError | None = None
     active_failure: bool = False

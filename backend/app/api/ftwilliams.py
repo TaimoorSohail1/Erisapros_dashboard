@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.auth import require_field_rule_admin
 
 from app.models import (
     AuditLog,
@@ -15,10 +17,12 @@ from app.models import (
     FTWilliamsQueryResponse,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
+    FTWilliamsSchemaSnapshot,
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_schema import FTWilliamsSchemaService
 
 
 router = APIRouter(prefix="/ftwilliams", tags=["ftwilliams"])
@@ -48,6 +52,24 @@ async def dismiss_failure(filing_id: str, payload: FTWilliamsDismissFailureReque
         return await FTWilliamsReviewService().dismiss_active_failure(filing_id, payload.reason)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/schema/refresh", response_model=FTWilliamsSchemaSnapshot)
+async def refresh_schema(
+    checklist: str,
+    plan_type: str,
+    checklist_version: str,
+    _claims: dict = Depends(require_field_rule_admin),
+):
+    try:
+        return await FTWilliamsSchemaService().get_doc_schema(
+            checklist,
+            plan_type,
+            checklist_version,
+            force_refresh=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 async def _build_failure_queue(repo):
@@ -152,6 +174,7 @@ def _failure_queue_item(
         error_code=(client_error.code if client_error else _text(details.get("error_code"))),
         technical_details=(client_error.technical_details if client_error else None),
         operation_diagnostics=list(review.update_diagnostics or []),
+        edit_check_issues=list(review.edit_check_final_issues or review.edit_check_baseline_issues or []),
     )
 
 

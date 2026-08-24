@@ -196,7 +196,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("WELFARE_BENEFIT_PLAN_IND", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_documented_identity_and_contact_fields_are_sent(self):
+    def test_5500_verified_identity_and_contact_fields_use_current_ft_tags(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -275,13 +275,18 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<PLAN_NAME0>New Plan Name</PLAN_NAME0>", xml)
-        self.assertIn("<SPONSOR_DFE_NAME0>New Sponsor Name</SPONSOR_DFE_NAME0>", xml)
-        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>490B Boston Post Road</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
-        self.assertIn("<ADMIN_NAME0>New Administrator</ADMIN_NAME0>", xml)
+        self.assertNotIn("PLAN_NAME0", xml)
+        self.assertNotIn("SPONSOR_DFE_NAME0", xml)
+        self.assertNotIn("SPONS_DFE_EIN", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
+        self.assertNotIn("ADMIN_NAME0", xml)
+        self.assertIn("<PlanName>New Plan Name</PlanName>", xml)
+        self.assertIn("<SDName>New Sponsor Name</SDName>", xml)
+        self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
+        self.assertIn("<SDAddressLine1>490B Boston Post Road</SDAddressLine1>", xml)
+        self.assertIn("<ADMINName>New Administrator</ADMINName>", xml)
 
-    def test_5500_sponsor_ein_uses_documented_update_tag(self):
+    def test_5500_verified_sponsor_ein_uses_current_ft_tag(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1e. Plan Sponsor EIN",
@@ -305,9 +310,10 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"SDEIN": "98-7654321"},
         )
 
-        self.assertIn("<SPONS_DFE_EIN>12-3456789</SPONS_DFE_EIN>", xml)
+        self.assertNotIn("SPONS_DFE_EIN", xml)
+        self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
 
-    def test_5500_combined_address_updates_street_without_corrupting_locality(self):
+    def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -337,12 +343,16 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>750 E MAIN ST</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertNotIn("<SPONS_DFE_CITY>", xml)
         self.assertNotIn("<SPONS_DFE_STATE>", xml)
         self.assertNotIn("<SPONS_DFE_ZIP_CODE>", xml)
+        self.assertIn("<SDAddressLine1>750 E MAIN ST</SDAddressLine1>", xml)
+        self.assertNotIn("<SDCity>", xml)
+        self.assertNotIn("<SDState>", xml)
+        self.assertNotIn("<SDZipCode>", xml)
 
-    def test_5500_combined_address_parses_common_unseparated_us_address(self):
+    def test_5500_combined_address_uses_verified_current_ft_component_tags(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -366,10 +376,14 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={},
         )
 
-        self.assertIn("<SPONS_DFE_MAIL_STR_ADDRESS>18 CHESTNUT ST. SUITE 500</SPONS_DFE_MAIL_STR_ADDRESS>", xml)
-        self.assertIn("<SPONS_DFE_CITY>WORCESTER</SPONS_DFE_CITY>", xml)
-        self.assertIn("<SPONS_DFE_STATE>MA</SPONS_DFE_STATE>", xml)
-        self.assertIn("<SPONS_DFE_ZIP_CODE>01608</SPONS_DFE_ZIP_CODE>", xml)
+        self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
+        self.assertNotIn("SPONS_DFE_CITY", xml)
+        self.assertNotIn("SPONS_DFE_STATE", xml)
+        self.assertNotIn("SPONS_DFE_ZIP_CODE", xml)
+        self.assertIn("<SDAddressLine1>18 CHESTNUT ST. SUITE 500</SDAddressLine1>", xml)
+        self.assertIn("<SDCity>WORCESTER</SDCity>", xml)
+        self.assertIn("<SDState>MA</SDState>", xml)
+        self.assertIn("<SDZipCode>01608</SDZipCode>", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
@@ -504,7 +518,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_documented_plan_administrator_tag_is_sent_with_valid_fields(self):
+    def test_5500_plan_administrator_uses_verified_current_ft_tag(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -541,7 +555,8 @@ class XmlBuilderTests(unittest.TestCase):
             current_values={"ADMINName": "AMERICAN SECURITIES LLC", "TotActivePartcpCnt": "120"},
         )
 
-        self.assertIn("<ADMIN_NAME0>Charlotte Tallon</ADMIN_NAME0>", xml)
+        self.assertNotIn("ADMIN_NAME0", xml)
+        self.assertIn("<ADMINName>Charlotte Tallon</ADMINName>", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):
@@ -840,6 +855,69 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("CommPdAmtXX"), "250")
         self.assertEqual(broker.findtext("AddressLine1XX"), "100 Main Street")
 
+    def test_schedule_a_reviewer_field_edits_override_stale_extracted_broker_rows(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="3a. Name of Agent/Broker/Person",
+                normalized_field_name="broker",
+                mapped_rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
+                mapped_label="3a. Name of Agent/Broker/Person",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Correct Broker",
+                proposed_value="Correct Broker",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="3b. Amount of Commissions",
+                normalized_field_name="commissions",
+                mapped_rule_key="schedule_a_part_i_3b_amount_of_commissions",
+                mapped_label="3b. Amount of Commissions",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="10484",
+                proposed_value="10484",
+            ),
+        ]
+        records = [
+            {
+                "ftw_seq_no": "3",
+                "query_results": {
+                    "InsCarrierName": "Guardian",
+                    "InsContractNum": "0002Z407",
+                    "Name1": "Current Broker",
+                    "CommPdAmt01": "7525",
+                },
+                "query_subparts": {
+                    "Broker": [{"Name1": "Current Broker", "CommPdAmt01": "7525"}]
+                },
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "3",
+            fields,
+            ftw_customer_id="514477581",
+            ftw_plan_id="605520390",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Stale Extracted Broker",
+                    "commission_total": "7525",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        root = ET.fromstring(xml)
+        broker = root.find(".//DOLScheduleAData/DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("NameXX"), "Correct Broker")
+        self.assertEqual(broker.findtext("CommPdAmtXX"), "10484")
+        self.assertEqual(broker.findtext("CodeXX"), "3")
+
     def test_schedule_a_replace_preflight_reports_dropped_fields_and_broker_values(self):
         records = [
             {
@@ -1030,8 +1108,8 @@ class XmlBuilderTests(unittest.TestCase):
             year="2024",
         )
 
-        self.assertIn("<FORM_PLAN_YEAR_BEGIN_DATE>10/01/2024</FORM_PLAN_YEAR_BEGIN_DATE>", xml_5500)
-        self.assertIn("<FORM_TAX_PRD>09/30/2025</FORM_TAX_PRD>", xml_5500)
+        self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_5500)
+        self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_5500)
         self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_schedule_a)
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_schedule_a)
 

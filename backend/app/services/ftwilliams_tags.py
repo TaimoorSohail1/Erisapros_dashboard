@@ -130,6 +130,8 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
     "form_5500_part_i_2a_plan_administrator_name": "ADMINName",
     "form_5500_part_i_6_plan_year_beginning_date": "PlanYearBeginDate",
     "form_5500_part_i_7_plan_year_ending_date": "PlanYearEndDate",
+    "form_5500_part_ii_4_plan_characteristic_codes": "TypeWelfareBnftCode1",
+    "form_5500_part_ii_8c_welfare_benefit_features": "TypeWelfareBnftCode1",
     "form_5500_part_ii_9_plan_funding_arrangement": "FundingInsuranceInd",
     "form_5500_part_ii_10a_plan_benefit_arrangement": "BenefitInsuranceInd",
     "form_5500_part_ii_10b_schedules_attached": "SchAAttachedInd",
@@ -141,12 +143,47 @@ FORM_5500_CURRENT_TAGS_BY_RULE = {
     "form_5500_part_ii_16_other_retired_separated_participants_entitled_to_benefits": "RtdSepPartcpFutCnt",
 }
 
-FORM_5500_UNSUPPORTED_UPDATE_RULES: set[str] = set()
+# A field appearing in Doc_Schema or current-data responses does not prove that
+# ftwLink accepts it in a DOL5500Data update. Keep this operation-specific
+# allow-list deliberately explicit: add a rule only after a sandbox write is
+# accepted and the value is confirmed by read-back. These rules were verified
+# against the 2025 FT sandbox using one-field writes, immediate read-back, and
+# clean Edit Checks. The legacy static-schema VAR names remain read aliases but
+# FT rejected them with error 60 for this update operation.
+FORM_5500_VERIFIED_UPDATE_RULES = frozenset(
+    {
+        "form_5500_part_i_1a_plan_name",
+        "form_5500_part_i_1b_plan_number_pn",
+        "form_5500_part_i_1c_plan_effective_date",
+        "form_5500_part_i_1d_plan_sponsor_name",
+        "form_5500_part_i_1e_plan_sponsor_ein",
+        "form_5500_part_i_1f_plan_sponsor_address",
+        "form_5500_part_i_1g_business_code",
+        "form_5500_part_i_2a_plan_administrator_name",
+        "form_5500_part_i_6_plan_year_beginning_date",
+        "form_5500_part_i_7_plan_year_ending_date",
+        "form_5500_part_ii_4_plan_characteristic_codes",
+        "form_5500_part_ii_8c_welfare_benefit_features",
+        "form_5500_part_ii_9_plan_funding_arrangement",
+        "form_5500_part_ii_10a_plan_benefit_arrangement",
+        "form_5500_part_ii_10b_schedules_attached",
+        "form_5500_part_ii_11_total_participants_at_beginning_of_year",
+        "form_5500_part_ii_12_total_participants_at_end_of_year",
+        "form_5500_part_ii_13_active_participants_at_beginning",
+        "form_5500_part_ii_14_active_participants_at_end",
+        "form_5500_part_ii_15_retired_separated_participants_receiving_benefits",
+        "form_5500_part_ii_16_other_retired_separated_participants_entitled_to_benefits",
+    }
+)
+
+FORM_5500_UNSUPPORTED_UPDATE_RULES = (
+    set(FORM_5500_TAGS_BY_RULE) - set(FORM_5500_VERIFIED_UPDATE_RULES)
+)
 
 FORM_5500_UPDATE_TAGS_BY_RULE = {
     rule_key: tag
-    for rule_key, tag in FORM_5500_TAGS_BY_RULE.items()
-    if rule_key not in FORM_5500_UNSUPPORTED_UPDATE_RULES
+    for rule_key, tag in FORM_5500_CURRENT_TAGS_BY_RULE.items()
+    if rule_key in FORM_5500_VERIFIED_UPDATE_RULES
 }
 
 

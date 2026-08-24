@@ -15,6 +15,7 @@ from app.models import (
     ExtractedFieldStatus,
     ExtractionJob,
     FTWilliamsReview,
+    FTWilliamsSchemaSnapshot,
     FTWilliamsPlanMapping,
     RawExtraction,
     Filing,
@@ -38,6 +39,8 @@ FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
     "update_attempted_count": 1,
     "update_confirmed_count": 1,
     "update_diagnostics": 1,
+    "edit_check_baseline_issues": 1,
+    "edit_check_final_issues": 1,
     "error_message": 1,
     "client_error": 1,
     "active_failure": 1,
@@ -95,6 +98,8 @@ class Repository:
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]: ...
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
+    async def get_ftwilliams_schema(self, cache_key: str) -> FTWilliamsSchemaSnapshot | None: ...
+    async def upsert_ftwilliams_schema(self, snapshot: FTWilliamsSchemaSnapshot) -> FTWilliamsSchemaSnapshot: ...
     async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None: ...
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping: ...
     async def create_extraction_job(self, job: ExtractionJob) -> ExtractionJob: ...
@@ -141,6 +146,9 @@ class MongoRepository(Repository):
         self.db = self.client[db_name]
 
     async def ensure_indexes(self) -> None:
+        await self.db.ftwilliams_schemas.create_index(
+            "cache_key", name="ftwilliams_schema_cache_key_idx", unique=True
+        )
         await self.db.sharefile_file_index.create_index(
             "item_id", name="sharefile_item_id_idx"
         )
@@ -442,6 +450,20 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, FTWilliamsReview)
 
+    async def get_ftwilliams_schema(self, cache_key: str) -> FTWilliamsSchemaSnapshot | None:
+        doc = await self.db.ftwilliams_schemas.find_one({"cache_key": cache_key})
+        return from_mongo(doc, FTWilliamsSchemaSnapshot) if doc else None
+
+    async def upsert_ftwilliams_schema(self, snapshot: FTWilliamsSchemaSnapshot) -> FTWilliamsSchemaSnapshot:
+        values = to_mongo(snapshot)
+        doc = await self.db.ftwilliams_schemas.find_one_and_update(
+            {"cache_key": snapshot.cache_key},
+            {"$set": self._mongo_safe_value(values)},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWilliamsSchemaSnapshot)
+
     async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None:
         doc = await self.db.ftwilliams_plan_mappings.find_one(
             {"company_employer_id": company_employer_id, "plan_number": plan_number}
@@ -697,6 +719,7 @@ class MemoryRepository(Repository):
         self.jobs: dict[str, ExtractionJob] = {}
         self.raw_extractions: dict[str, RawExtraction] = {}
         self.ftwilliams_reviews: dict[str, FTWilliamsReview] = {}
+        self.ftwilliams_schemas: dict[str, FTWilliamsSchemaSnapshot] = {}
         self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
@@ -821,6 +844,15 @@ class MemoryRepository(Repository):
 
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None:
         return self.ftwilliams_reviews.get(filing_id)
+
+    async def get_ftwilliams_schema(self, cache_key: str) -> FTWilliamsSchemaSnapshot | None:
+        snapshot = self.ftwilliams_schemas.get(cache_key)
+        return snapshot.model_copy(deep=True) if snapshot else None
+
+    async def upsert_ftwilliams_schema(self, snapshot: FTWilliamsSchemaSnapshot) -> FTWilliamsSchemaSnapshot:
+        stored = snapshot.model_copy(deep=True)
+        self.ftwilliams_schemas[snapshot.cache_key] = stored
+        return stored.model_copy(deep=True)
 
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]:
         return [self.ftwilliams_reviews[filing_id] for filing_id in filing_ids if filing_id in self.ftwilliams_reviews]

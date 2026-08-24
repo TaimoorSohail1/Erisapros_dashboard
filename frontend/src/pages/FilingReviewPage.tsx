@@ -29,6 +29,7 @@ import {
   approveFiling,
   getFiling,
   getFTWilliamsBringForwardLink,
+  openFTWilliamsAuditPDF,
   prepareFTWilliamsReview,
   regenerateXml,
   reEvaluateFilingRules,
@@ -590,7 +591,7 @@ export function FilingReviewPage() {
       const sendResult = await sendApprovedFTWilliamsUpdate(id, {
         reason,
         refresh_current_before_update: true,
-        run_edit_checks: false,
+        run_edit_checks: true,
       });
       const sentReview = sendResult.ftw_review;
       const updatedFiling = await getFiling(id);
@@ -627,6 +628,19 @@ export function FilingReviewPage() {
       ftwSendInFlightRef.current = false;
       setFtwBusy(false);
       setFtwSendBusy(false);
+    }
+  }
+
+  async function viewFtwAuditPdf() {
+    if (!id) return;
+    try {
+      await openFTWilliamsAuditPDF(id);
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Verified PDF is unavailable",
+        message: error instanceof Error ? error.message : "Generate the FT Williams evidence again.",
+      });
     }
   }
 
@@ -883,6 +897,7 @@ export function FilingReviewPage() {
           }}
           onOpenBringForward={openFtwBringForward}
           onQuery={() => prepareFtw(true)}
+          onViewAuditPDF={viewFtwAuditPdf}
           onSelectSchedule={selectFtwScheduleMatch}
           onShowTab={(tab) => {
             setActiveTab(tab);
@@ -1282,6 +1297,7 @@ function WorkflowDetailDialog({
   onApprove,
   onOpenBringForward,
   onQuery,
+  onViewAuditPDF,
   onSelectSchedule,
   onShowTab,
   scheduleCandidates,
@@ -1301,6 +1317,7 @@ function WorkflowDetailDialog({
   onApprove: () => void;
   onOpenBringForward: () => void;
   onQuery: () => void;
+  onViewAuditPDF: () => void;
   onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string }) => void;
   onShowTab: (tab: ReviewTab) => void;
   scheduleCandidates: Array<Record<string, unknown>>;
@@ -1494,7 +1511,32 @@ function WorkflowDetailDialog({
                 `${attempted} field${attempted === 1 ? "" : "s"} attempted`,
                 `${confirmed} field${confirmed === 1 ? "" : "s"} verified`,
                 `${remaining} field${remaining === 1 ? "" : "s"} need review`,
+                review?.schema_validation_results?.length
+                  ? review.schema_validation_results.every((result) => result.valid)
+                    ? "Outgoing FTW schema validation passed"
+                    : "Outgoing FTW schema validation needs attention"
+                  : "Outgoing FTW schema validation not run",
+                review?.edit_check_baseline_success === true
+                  ? "Baseline Edit Checks passed"
+                  : review?.edit_check_baseline_success === false
+                    ? "Baseline Edit Checks failed"
+                    : "Baseline Edit Checks not run",
+                review?.edit_check_final_success === true
+                  ? "Final Edit Checks passed"
+                  : review?.edit_check_final_success === false
+                    ? "Final Edit Checks failed"
+                    : "Final Edit Checks not run",
               ]} />
+              {(review?.schema_validation_results || []).flatMap((result) => result.issues || []).length ? (
+                <div className="workflow-result-list" aria-label="FT Williams schema validation issues">
+                  {(review?.schema_validation_results || []).flatMap((result) => result.issues || []).map((issue, index) => (
+                    <div key={`${issue.tag}-${index}`} className="needs-review">
+                      <AlertTriangle size={16} />
+                      <span><strong>{issue.tag}: {issue.value || "blank"}</strong><small>{issue.reason} Expected: {issue.expected_format || "documented FT format"}. {issue.correction || ""}</small></span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {(review?.update_results || []).length ? (
                 <div className="workflow-result-list">
                   {(review?.update_results || []).map((result, index) => (
@@ -1504,6 +1546,16 @@ function WorkflowDetailDialog({
                     </div>
                   ))}
                 </div>
+              ) : null}
+              {review?.audit_pdf_status === "AVAILABLE" ? (
+                <div className="workflow-dialog-actions">
+                  <button className="button secondary" type="button" onClick={onViewAuditPDF}>
+                    <FileText size={15} /> View verified PDF
+                  </button>
+                  {review.audit_pdf_sha256 ? <small>SHA-256 {review.audit_pdf_sha256.slice(0, 12)}…</small> : null}
+                </div>
+              ) : review?.audit_pdf_status === "FAILED" ? (
+                <p className="workflow-schedule-decision-note">The FTW update was verified, but PDF evidence could not be generated: {review.audit_pdf_error}</p>
               ) : null}
             </>
           ) : null}
@@ -2828,6 +2880,11 @@ function FTWilliamsComparisonPanel({
               {clientError?.next_action ? <small>Next step: {clientError.next_action}</small> : null}
               <FTWilliamsDiagnostic
                 errorCode={clientError?.code}
+                editCheckIssues={
+                  review?.edit_check_final_issues?.length
+                    ? review.edit_check_final_issues
+                    : review?.edit_check_baseline_issues
+                }
                 message={rawError}
                 operations={review?.update_diagnostics}
                 technicalDetails={clientError?.technical_details}

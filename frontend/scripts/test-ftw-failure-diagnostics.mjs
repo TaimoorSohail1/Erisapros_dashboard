@@ -14,7 +14,15 @@ assert.match(failuresPage, /dismissFTWilliamsFailure/, "Operators must be able t
 assert.match(diagnostics, /operation\.outcome_code/, "Technical details must show the normalized FT outcome.");
 assert.match(diagnostics, /operation\.request_id/, "Technical details must show the vendor request identifier when available.");
 assert.match(diagnostics, /operation\.response_excerpt/, "Technical details must expose the masked response excerpt.");
+assert.match(diagnostics, /editCheckIssues/, "Diagnostics must render parsed FT Edit Check issues.");
+assert.match(diagnostics, /issue\.schedule_desc/, "Diagnostics must identify the affected Schedule A.");
+assert.match(diagnostics, /issue\.field_label/, "Diagnostics must identify the affected field.");
+assert.match(diagnostics, /issue\.current_value/, "Diagnostics must show the current invalid value.");
+assert.match(diagnostics, /issue\.correction/, "Diagnostics must show the required correction.");
+assert.match(failuresPage, /editCheckIssues=\{item\.edit_check_issues\}/, "The full failure queue must pass FT Edit Check issues to diagnostics.");
 assert.match(filingReview, /active_failure_client_error/, "The filing page must prefer the persistent active failure details.");
+assert.match(filingReview, /editCheckIssues=\{[\s\S]*?edit_check_baseline_issues/, "The filing review must show baseline FT Edit Check issues.");
+assert.match(filingReview, /edit_check_final_issues/, "The filing review must prefer final FT Edit Check issues when present.");
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
 
 console.log("FT Williams failure diagnostics workflow passed.");

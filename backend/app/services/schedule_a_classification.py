@@ -91,8 +91,25 @@ def classification_signals_from_text(text: str | None) -> list[str]:
     if re.search(nonexperience_pattern, normalized):
         signals.add("EXPLICIT_NONEXPERIENCE_RATED")
     without_nonexperience = re.sub(nonexperience_pattern, " ", normalized)
-    if re.search(r"\bexperience\s*rated\b", without_nonexperience):
+    # A carrier worksheet may print the line 9 heading followed by "not
+    # applicable" immediately before its line 10 values. That form heading is
+    # not evidence that the contract itself is experience-rated.
+    without_nonexperience = re.sub(
+        r"\bexperience\s*rated(?:\s+contracts?)?\b.{0,80}?\b(?:not\s+applicable|n\s+a)\b",
+        " ",
+        without_nonexperience,
+    )
+    for match in re.finditer(r"\bexperience\s*rated\b", without_nonexperience):
+        before = without_nonexperience[max(0, match.start() - 80) : match.start()]
+        after = without_nonexperience[match.end() : match.end() + 100]
+        # Explanatory instructions such as "may be combined if contracts are
+        # experience rated" describe a possible filing rule, not this record.
+        if re.search(r"\b(?:if|may|might|could|when|where)\b", before):
+            continue
+        if re.search(r"\b(?:not\s+applicable|n\s+a)\b", after):
+            continue
         signals.add("EXPLICIT_EXPERIENCE_RATED")
+        break
     return sorted(signals)
 
 

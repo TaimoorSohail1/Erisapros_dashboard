@@ -11,6 +11,7 @@ import app.repositories as repositories
 from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FormType, FTWilliamsReview
 from app.services.filing_pipeline import (
     auto_query_ftw_current,
+    build_safe_proposed_ftw_xml,
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
     process_extraction_batch,
@@ -80,6 +81,32 @@ class FilingPipelineTests(unittest.TestCase):
         self.assertEqual(updated.source_document_type, DocumentType.PLAN_WORKSHEET)
         self.assertEqual(updated.form_type, FormType.SCHEDULE_A)
         self.assertEqual(updated.status, ExtractedFieldStatus.MATCHED)
+
+    def test_invalid_xml_preview_routes_field_to_review_without_failing_extraction(self):
+        field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="1a. Name of Insurance Company",
+            normalized_field_name="1a name of insurance company",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            mapped_label="1a. Name of Insurance Company",
+            ftw_field="1a. Name of Insurance Company",
+            xml_tag="InsCarrierName",
+            priority=FieldPriority.HIGH,
+            value='Cigna Health and Life Insurance Company and affiliates ("Cigna")',
+            proposed_value='Cigna Health and Life Insurance Company and affiliates ("Cigna")',
+            confidence=0.95,
+            source_document_type=DocumentType.SCHEDULE_A,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.MATCHED,
+        )
+
+        proposed_xml, issues = build_safe_proposed_ftw_xml([field])
+
+        self.assertIsNone(proposed_xml)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].tag, "InsCarrierName")
+        self.assertEqual(field.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertIn("FT Williams pre-send validation", field.status_reason)
 
     def test_schedule_a_purpose_is_derived_from_commissions_and_fees(self):
         purpose_field = ExtractedField(

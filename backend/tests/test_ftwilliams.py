@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -70,6 +71,29 @@ class FTWilliamsServiceTests(unittest.TestCase):
         self.assertIn("<FTWPlanID>3456</FTWPlanID>", xml)
         self.assertIn("<TransactionType>Q</TransactionType>", xml)
         self.assertIn("<YearEnd>2024-12-31</YearEnd>", xml)
+
+    def test_builds_dol_schedule_a_pdf_request_and_decodes_pdf(self):
+        xml = self.service.build_generate_dol_request(
+            ftw_customer_id="1234",
+            ftw_plan_id="5678",
+            year="2025",
+            document="A",
+            ftw_seq_no="3",
+        )
+        encoded = base64.b64encode(b"%PDF-1.7\nverified").decode("ascii")
+        wrapped_encoded = f"{encoded[:8]}\n{encoded[8:]}"
+        response = (
+            "<ftwLinkResponse><Status><Type>DOL</Type><Document>A</Document>"
+            f"<ErrorCode>0</ErrorCode><DocumentData>{wrapped_encoded}</DocumentData>"
+            "</Status></ftwLinkResponse>"
+        )
+
+        self.assertIn("<GenerateDocument>", xml)
+        self.assertIn("<FTWCustomerID>1234</FTWCustomerID>", xml)
+        self.assertIn("<FTWPlanID>5678</FTWPlanID>", xml)
+        self.assertIn("<Type>DOL</Type><Document>ScheduleA</Document><Year>2025</Year>", xml)
+        self.assertIn("<FTWSeqNo>3</FTWSeqNo>", xml)
+        self.assertEqual(self.service.parse_document_data(response), b"%PDF-1.7\nverified")
 
     def test_builds_archive_5500_get_data_lookup_xml(self):
         xml = self.service.build_request_xml(
@@ -270,6 +294,66 @@ class FTWilliamsServiceTests(unittest.TestCase):
         statuses = self.service.parse_response(response_xml)
 
         self.assertEqual(statuses[0].query_result_record_count, 2)
+
+    def test_parse_edit_checks_ignores_nested_result_status_elements(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>DOL5500Data</Type>
+    <ErrorCode>0</ErrorCode>
+    <QueryResults><Status>OK</Status></QueryResults>
+  </Status>
+  <Status>
+    <Type>DOLScheduleA_1_Data</Type>
+    <ErrorCode>0</ErrorCode>
+    <QueryResults><Status>NOT-OK</Status><FW-651>Warning text</FW-651></QueryResults>
+  </Status>
+</ftwLinkResponse>"""
+
+        statuses = self.service.parse_response(response_xml)
+
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(self.service.response_success(statuses))
+        self.assertFalse(self.service.edit_checks_success(statuses))
+        self.assertEqual(statuses[1].query_results["Status"], "NOT-OK")
+        self.assertEqual(statuses[1].query_results["FW-651"], "Warning text")
+
+    def test_parse_edit_check_issues_keeps_schedule_field_and_correction(self):
+        response_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+<ftwLinkResponse>
+  <Status>
+    <Type>DOLScheduleA_10_Data</Type><ErrorCode>0</ErrorCode>
+    <QueryResults>
+      <ScheduleDesc>3341244</ScheduleDesc><SeqNo>10</SeqNo>
+      <FW-117>Warning:::Number of Persons Covered may not be blank.</FW-117>
+      <FW-617>Warning:::Part 1, Line 3 Brokers must start with the highest amount paid and work in descending order.</FW-617>
+      <Status>NOT-OK</Status>
+    </QueryResults>
+  </Status>
+</ftwLinkResponse>"""
+
+        issues = self.service.parse_edit_check_issues(self.service.parse_response(response_xml))
+
+        self.assertEqual(len(issues), 2)
+        persons_covered = next(issue for issue in issues if issue.code == "FW-117")
+        self.assertEqual(persons_covered.schedule_seq_no, "10")
+        self.assertEqual(persons_covered.schedule_desc, "3341244")
+        self.assertEqual(persons_covered.field_label, "1e. Persons Covered (End of Policy Year)")
+        self.assertEqual(persons_covered.current_value, "Blank")
+        self.assertIn("Enter", persons_covered.correction)
+        broker_order = next(issue for issue in issues if issue.code == "FW-617")
+        self.assertEqual(broker_order.field_line, "3")
+        self.assertIn("descending", broker_order.correction.lower())
+
+    def test_edit_checks_succeed_when_every_result_is_ok(self):
+        response_xml = """<ftwLinkResponse><Status>
+          <Type>DOL5500Data</Type><ErrorCode>0</ErrorCode>
+          <QueryResults><Status>OK</Status></QueryResults>
+        </Status></ftwLinkResponse>"""
+
+        statuses = self.service.parse_response(response_xml)
+
+        self.assertTrue(self.service.edit_checks_success(statuses))
 
     def test_run_query_reuses_http_client_across_requests(self):
         class FakeAsyncClient:

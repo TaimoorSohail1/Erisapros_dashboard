@@ -40,6 +40,20 @@ export async function listFTWilliamsFailureQueue(): Promise<FTWilliamsFailureQue
   return request<FTWilliamsFailureQueueResponse>("/ftwilliams/failure-queue");
 }
 
+export async function openFTWilliamsAuditPDF(filingId: string): Promise<void> {
+  const headers = new Headers();
+  const idToken = await getIdToken();
+  if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
+  const response = await fetch(`${API_BASE}/filings/${filingId}/ftw/audit-pdf`, { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Verified FT Williams PDF is not available");
+  }
+  const url = URL.createObjectURL(await response.blob());
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export async function dismissFTWilliamsFailure(filingId: string, reason = "Dismissed by operator"): Promise<FTWilliamsReview> {
   return request<FTWilliamsReview>(`/ftwilliams/failure-queue/${filingId}/dismiss`, {
     method: "POST",

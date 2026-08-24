@@ -322,6 +322,7 @@ function FTWilliamsFailureQueueRow({
         <div className="ftw-failure-reason-cell">
           <FTWilliamsDiagnostic
             errorCode={item.error_code}
+            editCheckIssues={item.edit_check_issues}
             message={item.failure_reason}
             operations={item.operation_diagnostics}
             technicalDetails={item.technical_details}

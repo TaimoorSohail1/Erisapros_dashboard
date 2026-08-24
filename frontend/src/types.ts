@@ -209,6 +209,36 @@ export interface FTWilliamsOperationDiagnostic {
   response_excerpt?: string | null;
 }
 
+export interface FTWilliamsEditCheckIssue {
+  code: string;
+  message: string;
+  status_type?: string | null;
+  form_type: string;
+  schedule_seq_no?: string | null;
+  schedule_desc?: string | null;
+  field_line?: string | null;
+  field_label?: string | null;
+  current_value?: string | null;
+  correction?: string | null;
+}
+
+export interface FTWilliamsSchemaValidationIssue {
+  tag: string;
+  value: string;
+  reason: string;
+  expected_format?: string | null;
+  correction?: string | null;
+}
+
+export interface FTWilliamsSchemaValidationResult {
+  valid: boolean;
+  mode: "OBSERVE" | "ENFORCE" | string;
+  schema_source: string;
+  schema_version?: string | null;
+  issues: FTWilliamsSchemaValidationIssue[];
+  validated_at: string;
+}
+
 export interface FTWilliamsReview {
   id?: string | null;
   filing_id: string;
@@ -272,8 +302,22 @@ export interface FTWilliamsReview {
   }>;
   update_retry_count?: number;
   update_diagnostics?: FTWilliamsOperationDiagnostic[];
+  schema_validation_results?: FTWilliamsSchemaValidationResult[];
+  schema_validation_blocked?: boolean;
+  query_access_verified?: boolean;
+  update_access_status?: string;
+  edit_check_baseline_request_xml?: string | null;
+  edit_check_baseline_response_xml?: string | null;
+  edit_check_baseline_success?: boolean | null;
+  edit_check_baseline_issues?: FTWilliamsEditCheckIssue[];
   edit_check_request_xml?: string | null;
   edit_check_response_xml?: string | null;
+  edit_check_final_success?: boolean | null;
+  edit_check_final_issues?: FTWilliamsEditCheckIssue[];
+  audit_pdf_status?: string;
+  audit_pdf_sha256?: string | null;
+  audit_pdf_created_at?: string | null;
+  audit_pdf_error?: string | null;
   error_message?: string | null;
   client_error?: ClientFacingError | null;
   active_failure?: boolean;
@@ -340,6 +384,7 @@ export interface FTWilliamsFailureQueueItem {
   error_code?: string | null;
   technical_details?: string | null;
   operation_diagnostics?: FTWilliamsOperationDiagnostic[];
+  edit_check_issues?: FTWilliamsEditCheckIssue[];
   can_dismiss?: boolean;
 }
 

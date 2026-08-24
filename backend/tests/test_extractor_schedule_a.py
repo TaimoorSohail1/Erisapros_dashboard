@@ -7,6 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField
 from app.services.extractor import (
+    extract_cigna_schedule_a_broker_rows,
+    extract_cigna_schedule_a_fields,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
     extract_bcbs_michigan_schedule_a_summaries,
@@ -44,6 +46,78 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_cigna_summary_page_wins_over_state_appendices(self):
+        pages = [
+            (
+                1,
+                """
+                Cigna Health and Life Insurance Company
+                Schedule A Insurance Information
+                Part I Information Concerning Insurance Contract Coverage, Fees and Commissions
+                (Summary of All Insurance Contracts Included in Part III)
+                1. Coverage Information (a) Name of Insurance Carrier: Cigna Health and Life Insurance Company and affiliates (\"Cigna\")
+                (b) EIN
+                59-1031071
+                (c) NAIC Code
+                67369
+                (d) Contract or Identification Number
+                3341244
+                (e) Approx. no. of persons covered at end of policy or contract year
+                475 Employees
+                Policy/Contract Year
+                (f) From (g) To
+                01/01/2025 12/31/2025
+                2. Insurance fees and commissions information.
+                (a) Total Amount of commissions paid $18,603 (b) Total Amount of fees paid $1,397
+                3. Persons receiving commissions and fees.
+                Non Experience - Rated
+                NFP CORPORATE SERVICES (NY), LLC,
+                PO BOX 786677, PHILADELPHIA, PA, $18,603 $1,397 General Agent Payments 3-Insurance Agent or Broker
+                19178
+                Part III Welfare Benefit Contract Information
+                9. Experience-Rated Contracts This section not applicable for this Plan
+                10. Nonexperience-rated contracts
+                (a) Total premiums or subscriptions charges paid to carrier $375,747
+                PART IV Provision of Information
+                11. Did the insurance company fail to provide any information necessary to complete Schedule A? Yes No
+                12. If the answer to line 11 is \"Yes\", specify the information not provided. Answer \"Not Applicable\"
+                """,
+            ),
+            (
+                2,
+                """
+                Appendix to 1a, b and c
+                Cigna Health and Life Insurance Company
+                06-1141174 95660 3341244 1 Employees 01/01/2025 12/31/2025
+                """,
+            ),
+        ]
+
+        fields = extract_cigna_schedule_a_fields(pages)
+        by_name = {field.field_name: field.value for field in fields}
+        rows = extract_cigna_schedule_a_broker_rows(pages)
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "59-1031071")
+        self.assertEqual(by_name["1c. NAIC Code"], "67369")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "3341244")
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "475")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(by_name["3b. Amount of Commissions"], "18,603")
+        self.assertEqual(by_name["3c. Amount of Fees"], "1,397")
+        self.assertEqual(by_name["3d. Purpose"], "General Agent Payments")
+        self.assertEqual(by_name["3e. Organizational Code"], "3")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "375,747")
+        self.assertEqual(
+            by_name["11. Did the insurance company fail to provide any information necessary to complete Schedule A?"],
+            "No",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "NFP CORPORATE SERVICES (NY), LLC")
+        self.assertEqual(rows[0].commission_total, "18,603")
+        self.assertEqual(rows[0].fee_total, "1,397")
+
     def test_equitable_schedule_a_worksheet_extracts_coverage_period_and_checkbox_no_values(self):
         health_rule = FieldRule(
             key="ftw_discovered_schedule_a_health_ind",

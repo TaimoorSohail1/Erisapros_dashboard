@@ -20,6 +20,22 @@ Parameters:
   FieldRulesAdminEmails:
     Type: String
     Default: support@highlandtech.ai
+  FtwSchemaValidationEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  FtwSchemaEnforcementEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwAutoEditChecksEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwPdfAuditEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
 
 Resources:
   FrontendBucket:
@@ -351,6 +367,14 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: "true"
+            - Name: FTW_SCHEMA_VALIDATION_ENABLED
+              Value: !Ref FtwSchemaValidationEnabled
+            - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED
+              Value: !Ref FtwSchemaEnforcementEnabled
+            - Name: FTW_AUTO_EDIT_CHECKS_ENABLED
+              Value: !Ref FtwAutoEditChecksEnabled
+            - Name: FTW_PDF_AUDIT_ENABLED
+              Value: !Ref FtwPdfAuditEnabled
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
               Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
           Secrets:
@@ -463,6 +487,14 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: "true"
+            - Name: FTW_SCHEMA_VALIDATION_ENABLED
+              Value: !Ref FtwSchemaValidationEnabled
+            - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED
+              Value: !Ref FtwSchemaEnforcementEnabled
+            - Name: FTW_AUTO_EDIT_CHECKS_ENABLED
+              Value: !Ref FtwAutoEditChecksEnabled
+            - Name: FTW_PDF_AUDIT_ENABLED
+              Value: !Ref FtwPdfAuditEnabled
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
               Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
           Secrets:

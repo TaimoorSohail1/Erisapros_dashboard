@@ -16,9 +16,7 @@ from app.services.ftwilliams_tags import (
 
 
 FTW_DATE_TAGS = {
-    "PLAN_EFF_DATE",
-    "FORM_PLAN_YEAR_BEGIN_DATE",
-    "FORM_TAX_PRD",
+    "PlanEffDate",
     "InsPolicyFromDate",
     "InsPolicyToDate",
     "PlanYearBeginDate",
@@ -307,15 +305,19 @@ def _document_xml(
         values = update_values_for_form(fields, form_type, current_values=current_values)
     broker_rows: list[dict[str, str]] = []
     if form_type == FormType.SCHEDULE_A:
-        broker_overrides = {
+        field_broker_overrides = {
             tag: value
             for tag, value in values.items()
             if _schedule_a_broker_tag_index(tag) is not None
         }
-        for tag in broker_overrides:
+        for tag in field_broker_overrides:
             values.pop(tag, None)
+        broker_overrides: dict[str, str] = {}
         if schedule_a_broker_rows:
             broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+        # Reviewer-confirmed field values are authoritative. Structured rows come
+        # from extraction and may be stale or less precise than an explicit edit.
+        broker_overrides.update(field_broker_overrides)
         broker_rows = schedule_a_broker_multipart_rows(
             current_values or {},
             overrides=broker_overrides,
@@ -352,15 +354,19 @@ def _schedule_a_record_document_xml(
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
-    broker_overrides = {
+    field_broker_overrides = {
         tag: value
         for tag, value in values.items()
         if _schedule_a_broker_tag_index(tag) is not None
     }
-    for tag in broker_overrides:
+    for tag in field_broker_overrides:
         values.pop(tag, None)
+    broker_overrides: dict[str, str] = {}
     if schedule_a_broker_rows:
         broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
+    # Preserve any additional extracted rows, but never let stale extraction
+    # replace the reviewer's final values for the selected broker fields.
+    broker_overrides.update(field_broker_overrides)
     broker_rows = schedule_a_broker_multipart_rows(
         current_values,
         query_subparts=query_subparts,
@@ -445,16 +451,16 @@ def _form_5500_sponsor_address_values(
     current = current_values or {}
     parsed = _split_form_5500_sponsor_address(proposed, current)
     candidates = {
-        "SPONS_DFE_MAIL_STR_ADDRESS": parsed.get("street", ""),
-        "SPONS_DFE_CITY": parsed.get("city", ""),
-        "SPONS_DFE_STATE": parsed.get("state", ""),
-        "SPONS_DFE_ZIP_CODE": parsed.get("zip", ""),
+        "SDAddressLine1": parsed.get("street", ""),
+        "SDCity": parsed.get("city", ""),
+        "SDState": parsed.get("state", ""),
+        "SDZipCode": parsed.get("zip", ""),
     }
     current_by_tag = {
-        "SPONS_DFE_MAIL_STR_ADDRESS": current.get("SDAddressLine1", ""),
-        "SPONS_DFE_CITY": current.get("SDCity", ""),
-        "SPONS_DFE_STATE": current.get("SDState", ""),
-        "SPONS_DFE_ZIP_CODE": current.get("SDZipCode", ""),
+        "SDAddressLine1": current.get("SDAddressLine1", ""),
+        "SDCity": current.get("SDCity", ""),
+        "SDState": current.get("SDState", ""),
+        "SDZipCode": current.get("SDZipCode", ""),
     }
     values: dict[str, str] = {}
     for tag, raw_value in candidates.items():

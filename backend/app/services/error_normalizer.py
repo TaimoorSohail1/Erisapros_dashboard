@@ -5,6 +5,73 @@ import re
 from app.models import ClientFacingError, ClientRejectedField
 
 
+_DOCUMENTED_FTW_ERRORS: dict[tuple[str, str], str] = {
+    **{("COMPANY", code): description for code, description in {
+        "10": "Invalid transaction type", "11": "Company ID is required", "12": "Customer company ID is not valid",
+        "13": "FTW company ID is not valid", "14": "Company ID is already on file", "15": "One or more company fields are invalid",
+        "16": "A company with plans cannot be deleted", "17": "The KeyID does not permit this company transaction", "29": "Unspecified company error",
+    }.items()},
+    **{("PLAN", code): description for code, description in {
+        "30": "Invalid transaction type", "31": "Invalid checklist or plan type", "32": "Company ID is required",
+        "33": "Customer company ID is not valid", "34": "FTW company ID is not valid", "35": "The existing plan could not be located",
+        "36": "Plan ID is already on file for the company", "37": "The document must be converted before update",
+        "38": "One or more plan fields are invalid", "39": "The KeyID does not permit this plan transaction", "49": "Unspecified plan error",
+    }.items()},
+    **{("DOL", code): description for code, description in {
+        "50": "Only Schedule A may contain multiple entries", "51": "TransactionType is missing",
+        "52": "Transaction type 1 is not allowed for multi-part DOL forms", "53": "The KeyID does not permit this DOL transaction",
+        "54": "Customer company ID is not valid", "55": "FTW company ID is not valid", "56": "The existing plan could not be located",
+        "57": "Year is required", "58": "The filing year is invalid", "59": "The requested form could not be located for this year",
+        "60": "One or more DOL fields are invalid", "61": "The multi-part node is invalid", "62": "A DOL field has an invalid format",
+        "68": "Locked or signed filing status prevents this change", "69": "Unspecified DOL error",
+    }.items()},
+    **{("DOCUMENT", code): description for code, description in {
+        "70": "No company was found", "71": "The FTW plan ID could not be located for the supplied plan ID",
+        "72": "No plan matches the supplied identifiers", "73": "The KeyID does not permit document generation",
+        "74": "Document Type was not provided", "75": "Document or Type is missing", "76": "Document name or type is invalid",
+        "77": "FTWSeqNo, Document, or Year is missing", "78": "The document year is invalid",
+        "79": "The specified DOL schedule could not be located", "80": "No DOL documents could be located",
+    }.items()},
+    **{("PORTALUSER", code): description for code, description in {
+        "10": "The KeyID does not permit this portal-user transaction", "12": "Portal transaction type is invalid or missing",
+        "14": "Portal resource is invalid or missing", "16": "No company was found", "18": "The FTW plan ID could not be located",
+        "20": "The portal plan could not be located", "22": "The portal user could not be found", "24": "The portal user already exists",
+        "25": "Signers are already configured", "26": "Signers cannot change after signing begins", "30": "A required portal node is missing",
+        "35": "A portal field value is invalid",
+    }.items()},
+    **{("GENERAL", code): description for code, description in {
+        "90": "FT Williams could not read the XML request", "91": "FT Williams could not process the XML document",
+        "92": "The KeyID is invalid", "93": "A required root request node is missing", "99": "FT Williams reported a database error",
+    }.items()},
+    **{("COMPLIANCE", code): description for code, description in {
+        "101": "No client-package configuration exists", "102": "Participants have missing or invalid birth dates",
+        "103": "No applicable compliance reports are available",
+    }.items()},
+}
+
+
+def _documented_error(text: str) -> tuple[str, str, str] | None:
+    match = re.search(r"(?:(Company|Plan|DOL(?:[A-Za-z0-9]+Data)?|Document|PortalUser|General|Compliance)\s+)?error\s+(\d+)", text, re.IGNORECASE)
+    if not match:
+        return None
+    raw_type, code = match.groups()
+    if 70 <= int(code) <= 80:
+        subsystem = "DOCUMENT"
+    elif 50 <= int(code) <= 69:
+        subsystem = "DOL"
+    elif 30 <= int(code) <= 49:
+        subsystem = "PLAN"
+    elif 90 <= int(code) <= 99:
+        subsystem = "GENERAL"
+    elif 101 <= int(code) <= 103:
+        subsystem = "COMPLIANCE"
+    else:
+        normalized_type = (raw_type or "").upper()
+        subsystem = "DOL" if normalized_type.startswith("DOL") else normalized_type
+    description = _DOCUMENTED_FTW_ERRORS.get((subsystem, code))
+    return (subsystem, code, description) if description else None
+
+
 def _field_validation_hint(tag: str, value: str | None) -> tuple[str, str | None]:
     clean_tag = tag.strip()
     clean_value = (value or "").strip()
@@ -109,6 +176,22 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             "FT Williams accepted the request, but the values returned afterward did not match the sent update.",
             next_action="Click Query FTW Current and review the returned values before retrying the update.",
             code="FTW_UPDATE_VERIFICATION_FAILED",
+        )
+
+    if "ft williams baseline edit checks failed" in lowered:
+        return build(
+            "Existing FT Williams data failed Edit Checks",
+            "The existing FT Williams Form 5500 or Schedule A data contains validation problems, so no update was sent.",
+            next_action="Correct the listed FT Williams fields, run Edit Checks again, then retry the update.",
+            code="FTW_EDIT_CHECK_BASELINE_FAILED",
+        )
+
+    if "ft williams final edit checks failed" in lowered:
+        return build(
+            "Updated FT Williams data failed final Edit Checks",
+            "The update was read back, but FT Williams still reports validation problems.",
+            next_action="Review the listed FT Williams fields, correct them, and run Edit Checks again.",
+            code="FTW_EDIT_CHECK_FINAL_FAILED",
         )
 
     if (
@@ -255,6 +338,23 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
             "The folder upload was not delivered to the backend webhook.",
             next_action="Confirm the webhook is registered and online, then re-upload or run folder discovery.",
             code="SHAREFILE_WEBHOOK_MISSED",
+        )
+
+    documented = _documented_error(text)
+    if documented:
+        subsystem, error_code, description = documented
+        permission_error = error_code in {"17", "39", "53", "73", "92"} or "permit" in description.casefold()
+        next_action = (
+            "Ask FT Williams to grant this KeyID the required query/update permission, then retry."
+            if permission_error
+            else "Verify the selected FT Williams company, plan, year and field values, then retry."
+        )
+        return build(
+            "FT Williams permission is missing" if permission_error else f"FT Williams {subsystem.lower()} request failed",
+            description + ".",
+            next_action=next_action,
+            code=f"FTW_{subsystem}_{error_code}",
+            rejected=rejected_fields,
         )
 
     return build(
