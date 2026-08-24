@@ -196,7 +196,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("WELFARE_BENEFIT_PLAN_IND", xml)
         self.assertIn("No approved FT Williams fields are available yet", xml)
 
-    def test_5500_unverified_identity_and_contact_fields_are_not_sent(self):
+    def test_5500_verified_identity_and_contact_fields_use_current_ft_tags(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -280,9 +280,13 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_EIN", xml)
         self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<PlanName>New Plan Name</PlanName>", xml)
+        self.assertIn("<SDName>New Sponsor Name</SDName>", xml)
+        self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
+        self.assertIn("<SDAddressLine1>490B Boston Post Road</SDAddressLine1>", xml)
+        self.assertIn("<ADMINName>New Administrator</ADMINName>", xml)
 
-    def test_5500_unverified_sponsor_ein_is_not_sent(self):
+    def test_5500_verified_sponsor_ein_uses_current_ft_tag(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1e. Plan Sponsor EIN",
@@ -307,9 +311,9 @@ class XmlBuilderTests(unittest.TestCase):
         )
 
         self.assertNotIn("SPONS_DFE_EIN", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
 
-    def test_5500_unverified_combined_address_is_not_sent_with_current_locality(self):
+    def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -343,9 +347,12 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("<SPONS_DFE_CITY>", xml)
         self.assertNotIn("<SPONS_DFE_STATE>", xml)
         self.assertNotIn("<SPONS_DFE_ZIP_CODE>", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<SDAddressLine1>750 E MAIN ST</SDAddressLine1>", xml)
+        self.assertNotIn("<SDCity>", xml)
+        self.assertNotIn("<SDState>", xml)
+        self.assertNotIn("<SDZipCode>", xml)
 
-    def test_5500_unverified_combined_address_is_not_sent_without_current_values(self):
+    def test_5500_combined_address_uses_verified_current_ft_component_tags(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="1f. Plan Sponsor Address",
@@ -373,7 +380,10 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_CITY", xml)
         self.assertNotIn("SPONS_DFE_STATE", xml)
         self.assertNotIn("SPONS_DFE_ZIP_CODE", xml)
-        self.assertIn("No approved FT Williams fields are available yet", xml)
+        self.assertIn("<SDAddressLine1>18 CHESTNUT ST. SUITE 500</SDAddressLine1>", xml)
+        self.assertIn("<SDCity>WORCESTER</SDCity>", xml)
+        self.assertIn("<SDState>MA</SDState>", xml)
+        self.assertIn("<SDZipCode>01608</SDZipCode>", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
@@ -508,7 +518,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_rejected_plan_administrator_tag_is_omitted_without_dropping_valid_fields(self):
+    def test_5500_plan_administrator_uses_verified_current_ft_tag(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -546,7 +556,7 @@ class XmlBuilderTests(unittest.TestCase):
         )
 
         self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertNotIn("Charlotte Tallon", xml)
+        self.assertIn("<ADMINName>Charlotte Tallon</ADMINName>", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):
@@ -1098,8 +1108,8 @@ class XmlBuilderTests(unittest.TestCase):
             year="2024",
         )
 
-        self.assertIn("<FORM_PLAN_YEAR_BEGIN_DATE>10/01/2024</FORM_PLAN_YEAR_BEGIN_DATE>", xml_5500)
-        self.assertIn("<FORM_TAX_PRD>09/30/2025</FORM_TAX_PRD>", xml_5500)
+        self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_5500)
+        self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_5500)
         self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_schedule_a)
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_schedule_a)
 

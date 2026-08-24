@@ -16,9 +16,7 @@ from app.services.ftwilliams_tags import (
 
 
 FTW_DATE_TAGS = {
-    "PLAN_EFF_DATE",
-    "FORM_PLAN_YEAR_BEGIN_DATE",
-    "FORM_TAX_PRD",
+    "PlanEffDate",
     "InsPolicyFromDate",
     "InsPolicyToDate",
     "PlanYearBeginDate",
@@ -453,16 +451,16 @@ def _form_5500_sponsor_address_values(
     current = current_values or {}
     parsed = _split_form_5500_sponsor_address(proposed, current)
     candidates = {
-        "SPONS_DFE_MAIL_STR_ADDRESS": parsed.get("street", ""),
-        "SPONS_DFE_CITY": parsed.get("city", ""),
-        "SPONS_DFE_STATE": parsed.get("state", ""),
-        "SPONS_DFE_ZIP_CODE": parsed.get("zip", ""),
+        "SDAddressLine1": parsed.get("street", ""),
+        "SDCity": parsed.get("city", ""),
+        "SDState": parsed.get("state", ""),
+        "SDZipCode": parsed.get("zip", ""),
     }
     current_by_tag = {
-        "SPONS_DFE_MAIL_STR_ADDRESS": current.get("SDAddressLine1", ""),
-        "SPONS_DFE_CITY": current.get("SDCity", ""),
-        "SPONS_DFE_STATE": current.get("SDState", ""),
-        "SPONS_DFE_ZIP_CODE": current.get("SDZipCode", ""),
+        "SDAddressLine1": current.get("SDAddressLine1", ""),
+        "SDCity": current.get("SDCity", ""),
+        "SDState": current.get("SDState", ""),
+        "SDZipCode": current.get("SDZipCode", ""),
     }
     values: dict[str, str] = {}
     for tag, raw_value in candidates.items():

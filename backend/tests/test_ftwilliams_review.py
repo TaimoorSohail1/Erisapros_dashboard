@@ -30,7 +30,12 @@ from app.models import (
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService, clear_ftw_current_snapshot_cache
-from app.services.ftwilliams_tags import resolve_ftw_tag, resolve_ftw_update_tag, values_meaningfully_different
+from app.services.ftwilliams_tags import (
+    FORM_5500_UPDATE_TAGS_BY_RULE,
+    resolve_ftw_tag,
+    resolve_ftw_update_tag,
+    values_meaningfully_different,
+)
 from app.services.xml_builder import build_proposed_ftw_xml, build_single_document_update_xml
 
 
@@ -1102,7 +1107,43 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(resolve_ftw_tag(sponsor_field), "SPONSOR_DFE_NAME0")
-        self.assertIsNone(resolve_ftw_update_tag(sponsor_field))
+        self.assertEqual(resolve_ftw_update_tag(sponsor_field), "SDName")
+
+    def test_form_5500_update_map_uses_sandbox_verified_current_tags(self):
+        expected = {
+            "form_5500_part_i_1a_plan_name": "PlanName",
+            "form_5500_part_i_1b_plan_number_pn": "SponsDfePlanNum",
+            "form_5500_part_i_1c_plan_effective_date": "PlanEffDate",
+            "form_5500_part_i_1d_plan_sponsor_name": "SDName",
+            "form_5500_part_i_1e_plan_sponsor_ein": "SDEIN",
+            "form_5500_part_i_1f_plan_sponsor_address": "SDAddressLine1",
+            "form_5500_part_i_1g_business_code": "BusinessCode",
+            "form_5500_part_i_2a_plan_administrator_name": "ADMINName",
+            "form_5500_part_i_6_plan_year_beginning_date": "PlanYearBeginDate",
+            "form_5500_part_i_7_plan_year_ending_date": "PlanYearEndDate",
+            "form_5500_part_ii_4_plan_characteristic_codes": "TypeWelfareBnftCode1",
+            "form_5500_part_ii_8c_welfare_benefit_features": "TypeWelfareBnftCode1",
+            "form_5500_part_ii_10b_schedules_attached": "SchAAttachedInd",
+        }
+
+        for rule_key, tag in expected.items():
+            self.assertEqual(FORM_5500_UPDATE_TAGS_BY_RULE.get(rule_key), tag)
+
+        rejected_legacy_tags = {
+            "PLAN_NAME0",
+            "SPONS_DFE_PN",
+            "PLAN_EFF_DATE",
+            "SPONSOR_DFE_NAME0",
+            "SPONS_DFE_EIN",
+            "SPONS_DFE_MAIL_STR_ADDRESS",
+            "BUSINESS_CODE",
+            "ADMIN_NAME0",
+            "FORM_PLAN_YEAR_BEGIN_DATE",
+            "FORM_TAX_PRD",
+            "TYPE_WELFARE_BNFT_CODE1",
+            "SCH_A_ATTACHED_IND",
+        }
+        self.assertTrue(rejected_legacy_tags.isdisjoint(FORM_5500_UPDATE_TAGS_BY_RULE.values()))
 
     def test_schedule_a_policy_dates_are_writable_when_the_selected_record_year_is_safe(self):
         def schedule_date(rule_key: str, label: str, value: str) -> ExtractedField:

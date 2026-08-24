@@ -202,7 +202,7 @@ class FieldRuleAdminTests(unittest.TestCase):
         self.assertNotIn(published.key, {rule.key for rule in active})
         self.assertEqual(history[0].status, FieldRuleStatus.DISABLED)
 
-    def test_read_only_capability_overrides_stale_update_behavior(self):
+    def test_verified_capability_preserves_update_behavior(self):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
             await service.ensure_seeded()
@@ -230,9 +230,9 @@ class FieldRuleAdminTests(unittest.TestCase):
 
         rule = run_async(scenario())
 
-        self.assertEqual(rule.existing_behavior, "Review Only")
-        self.assertEqual(rule.new_behavior, "Keep FTW")
-        self.assertIsNone(FieldRuleService.approved_update_tag(rule.key))
+        self.assertEqual(rule.existing_behavior, "Update")
+        self.assertEqual(rule.new_behavior, "Add")
+        self.assertEqual(FieldRuleService.approved_update_tag(rule.key), "ADMINName")
 
     def test_discovered_form_5500_field_keeps_its_fixed_catalog_label(self):
         async def scenario():

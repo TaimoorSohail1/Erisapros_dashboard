@@ -30,6 +30,10 @@ class FTWPayloadValidationError(ValueError):
 
 
 FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
+    # Structured components emitted by the dashboard's combined sponsor-address rule.
+    "SDCity",
+    "SDState",
+    "SDZipCode",
     "FundingInsuranceInd",
     "FundingCdSection412Ind",
     "FundingTrustInd",
@@ -60,9 +64,7 @@ SCHEDULE_A_REPEATABLE_BROKER_TAG_BASES = {
 }
 
 DATE_TAGS = {
-    "PLAN_EFF_DATE",
-    "FORM_PLAN_YEAR_BEGIN_DATE",
-    "FORM_TAX_PRD",
+    "PlanEffDate",
     "InsPolicyFromDate",
     "InsPolicyToDate",
     "PlanYearBeginDate",
@@ -79,10 +81,10 @@ INTEGER_TAGS = {
     "InsPrsnCoveredEoyCnt",
 }
 
-EIN_TAGS = {"InsCarrierEIN", "EIN", "SPONS_DFE_EIN"}
+EIN_TAGS = {"InsCarrierEIN", "EIN", "SDEIN"}
 NAIC_TAGS = {"InsCarrierNAICCode"}
-PLAN_NUMBER_TAGS = {"SPONS_DFE_PN", "PlanNum"}
-BUSINESS_CODE_TAGS = {"BUSINESS_CODE"}
+PLAN_NUMBER_TAGS = {"SponsDfePlanNum", "PlanNum"}
+BUSINESS_CODE_TAGS = {"BusinessCode"}
 ZERO_ONE_INDICATOR_TAGS = {
     "FundingInsuranceInd",
     "FundingCdSection412Ind",
@@ -92,17 +94,18 @@ ZERO_ONE_INDICATOR_TAGS = {
     "BenefitCdSection412Ind",
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
+    "SchAAttachedInd",
 }
 ONE_TWO_INDICATOR_TAGS = {"InsFailProvideInfoInd"}
 
 TEXT_LIMITS = {
-    "PLAN_NAME0": 140,
-    "SPONSOR_DFE_NAME0": 70,
-    "SPONS_DFE_MAIL_STR_ADDRESS": 35,
-    "SPONS_DFE_CITY": 30,
-    "SPONS_DFE_STATE": 2,
-    "SPONS_DFE_ZIP_CODE": 10,
-    "ADMIN_NAME0": 70,
+    "SDName": 70,
+    "SDAddressLine1": 35,
+    "SDCity": 30,
+    "SDState": 2,
+    "SDZipCode": 10,
+    "ADMINName": 70,
+    "TypeWelfareBnftCode1": 2,
     "InsCarrierName": 70,
     "InsContractNum": 40,
     "PlanName": 140,
@@ -148,19 +151,22 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
             _raise(tag, text, "expected exactly 6 digits")
         return text
 
-    if tag == "SPONS_DFE_STATE":
+    if tag == "SDState":
         if not re.fullmatch(r"[A-Za-z]{2}", text):
             _raise(tag, text, "expected a two-letter US state code")
         return text.upper()
 
-    if tag == "SPONS_DFE_ZIP_CODE":
+    if tag == "SDZipCode":
         digits = re.sub(r"\D", "", text)
         if len(digits) not in {5, 9} or re.search(r"[A-Za-z]", text):
             _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
         return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
 
     if tag in ZERO_ONE_INDICATOR_TAGS:
-        mapped = _normalized_choice(text, {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"})
+        choices = {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"}
+        if tag == "SchAAttachedInd":
+            choices.update({"a": "1", "attached": "1", "schedule a": "1"})
+        mapped = _normalized_choice(text, choices)
         if mapped is None:
             _raise(tag, text, "expected a yes/no indicator")
         return mapped
