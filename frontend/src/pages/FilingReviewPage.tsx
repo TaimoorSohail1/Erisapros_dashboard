@@ -609,12 +609,13 @@ export function FilingReviewPage() {
         return;
       }
       const updateCount = sentReview.update_confirmed_count || sentReview.update_attempted_count || 0;
+      const validationOutcome = ftwEditCheckOutcome(sentReview);
       setToast({
-        tone: "success",
+        tone: validationOutcome?.tone === "attention" ? "warning" : "success",
         title: "FT Williams updated successfully",
-        message: updateCount
+        message: validationOutcome?.summary || (updateCount
           ? `${updateCount} field${updateCount === 1 ? "" : "s"} verified. Current FTW values are now refreshed.`
-          : "Current FTW values were refreshed and verified successfully.",
+          : "Current FTW values were refreshed and verified successfully."),
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
@@ -1519,12 +1520,12 @@ function WorkflowDetailDialog({
                 review?.edit_check_baseline_success === true
                   ? "Baseline Edit Checks passed"
                   : review?.edit_check_baseline_success === false
-                    ? "Baseline Edit Checks failed"
+                    ? `${review.edit_check_baseline_issues?.length || 0} baseline FT issue${review.edit_check_baseline_issues?.length === 1 ? "" : "s"} recorded as warning${review.edit_check_baseline_issues?.length === 1 ? "" : "s"}`
                     : "Baseline Edit Checks not run",
                 review?.edit_check_final_success === true
                   ? "Final Edit Checks passed"
                   : review?.edit_check_final_success === false
-                    ? "Final Edit Checks failed"
+                    ? ftwEditCheckOutcome(review)?.title || "Final Edit Checks need attention"
                     : "Final Edit Checks not run",
               ]} />
               {(review?.schema_validation_results || []).flatMap((result) => result.issues || []).length ? (
@@ -1883,6 +1884,8 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
   const remaining = review?.update_remaining_count || 0;
   const results = review?.update_results || [];
   const complete = attempted > 0 && remaining === 0 && review?.update_verification_success !== false;
+  const validationOutcome = ftwEditCheckOutcome(review);
+  const finalEditCheckIssues = review?.edit_check_final_issues || [];
 
   if (compact && !verificationAttempted) {
     return (
@@ -1930,14 +1933,18 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
             </div>
           </details>
         ) : null}
-        {review?.edit_check_final_success === false || review?.edit_check_final_issues?.length ? (
-          <FTWilliamsDiagnostic
-            errorCode={review.client_error?.code}
-            editCheckIssues={review.edit_check_final_issues || []}
-            message={review.error_message}
-            operations={review.update_diagnostics || []}
-            technicalDetails={review.client_error?.technical_details}
-          />
+        {validationOutcome ? (
+          <div className={`ftw-validation-outcome ${validationOutcome.tone}`}>
+            <strong>{validationOutcome.title}</strong>
+            <small>{validationOutcome.detail}</small>
+            {review?.edit_check_final_success === false || finalEditCheckIssues.length ? (
+              <FTWilliamsDiagnostic
+                editCheckIssues={finalEditCheckIssues}
+                message={validationOutcome.summary}
+                operations={review?.update_diagnostics || []}
+              />
+            ) : null}
+          </div>
         ) : null}
         {!complete ? <div className="workflow-dialog-actions"><button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button></div> : null}
       </section>
@@ -1965,10 +1972,57 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
             </div>
           </details>
         ) : null}
+        {validationOutcome ? (
+          <div className={`ftw-validation-outcome ${validationOutcome.tone}`}>
+            <strong>{validationOutcome.title}</strong>
+            <small>{validationOutcome.detail}</small>
+          </div>
+        ) : null}
       </div>
       {!complete ? <button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button> : null}
     </section>
   );
+}
+
+function ftwEditCheckOutcome(review: FTWilliamsReview | null | undefined): {
+  detail: string;
+  summary: string;
+  title: string;
+  tone: "attention" | "warning";
+} | null {
+  switch (review?.edit_check_validation_status) {
+    case "EXISTING_ISSUES":
+      return {
+        title: "Update verified — existing FT Williams issues remain",
+        summary: "The approved data was updated and verified. Existing FT Williams validation issues remain.",
+        detail: "These issues existed before this update and did not prevent the approved values from being saved.",
+        tone: "warning",
+      };
+    case "IMPROVED":
+      return {
+        title: "Update verified — fewer FT Williams issues remain",
+        summary: "The approved data was updated and verified, and some existing FT Williams issues were resolved.",
+        detail: "Any remaining validation issues can be corrected separately.",
+        tone: "warning",
+      };
+    case "NEW_ISSUES":
+      return {
+        title: "Update verified — new FT Williams validation issues need attention",
+        summary: "The approved data was updated and verified, but final FT Williams checks reported new issues.",
+        detail: "Review the new issues before the filing is finalized. The verified update itself was successful.",
+        tone: "attention",
+      };
+    case "CHECK_UNAVAILABLE":
+    case "CANNOT_COMPARE":
+      return {
+        title: "Update verified — FT Williams validation could not be confirmed",
+        summary: "The approved data was updated and verified, but FT Williams validation results were unavailable.",
+        detail: "Run Edit Checks again before the filing is finalized.",
+        tone: "attention",
+      };
+    default:
+      return null;
+  }
 }
 
 function PanelHeading({ icon, title }: { icon: ReactNode; title: string }) {

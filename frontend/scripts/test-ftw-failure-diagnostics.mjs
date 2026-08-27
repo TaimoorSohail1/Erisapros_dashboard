@@ -31,6 +31,9 @@ assert.match(filingReview, /active_failure_client_error/, "The filing page must 
 assert.match(filingReview, /editCheckIssues=\{[\s\S]*?edit_check_baseline_issues/, "The filing review must show baseline FT Edit Check issues.");
 assert.match(filingReview, /edit_check_final_issues/, "The filing review must prefer final FT Edit Check issues when present.");
 assert.match(filingReview, /edit_check_final_success === false[\s\S]*?<FTWilliamsDiagnostic/, "The FTW Update workflow step must show final Edit Check diagnostics.");
+assert.match(filingReview, /edit_check_validation_status/, "The filing review must distinguish update verification from FT validation status.");
+assert.match(filingReview, /Update verified[^\n]*existing FT Williams issues remain/, "Existing FT issues must be shown as warnings after a verified update.");
+assert.match(filingReview, /Update verified[^\n]*new FT Williams validation issues need attention/, "New FT issues must be clearly identified without misreporting the update as failed.");
 assert.match(filingReview, /comparison\.update_exclusion_reason/, "Conditionally blocked FTW fields must show their exact exclusion reason.");
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
 

@@ -699,6 +699,9 @@ class FTWilliamsReview(BaseModel):
     edit_check_response_xml: str | None = None
     edit_check_final_success: bool | None = None
     edit_check_final_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
+    edit_check_validation_status: str = "NOT_RUN"
+    edit_check_new_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
+    edit_check_resolved_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     audit_pdf_status: str = "NOT_REQUESTED"
     audit_pdf_key: str | None = None
     audit_pdf_bucket: str | None = None

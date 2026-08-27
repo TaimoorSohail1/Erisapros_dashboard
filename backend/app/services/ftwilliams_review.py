@@ -20,6 +20,7 @@ from app.models import (
     FilingStatus,
     FormType,
     FTWilliamsComparisonField,
+    FTWilliamsEditCheckIssue,
     FTWilliamsManualMatchRequest,
     FTWilliamsOperationDiagnostic,
     FTWilliamsPlanLookup,
@@ -88,6 +89,46 @@ def clear_ftw_current_snapshot_cache() -> None:
 class FTWilliamsReviewService:
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
         self.ftwilliams = ftwilliams or FTWilliamsService()
+
+    @staticmethod
+    def _edit_check_issue_key(issue: FTWilliamsEditCheckIssue) -> tuple[str, ...]:
+        fallback_message = re.sub(r"\s+", " ", str(issue.message or "")).strip().upper()
+        field_identity = str(issue.field_line or issue.field_label or fallback_message).strip().upper()
+        return (
+            str(issue.code or "").strip().upper(),
+            str(issue.form_type or "").strip().upper(),
+            str(issue.status_type or "").strip().upper(),
+            str(issue.schedule_seq_no or "").strip(),
+            field_identity,
+        )
+
+    @classmethod
+    def _classify_edit_check_result(cls, review: FTWilliamsReview) -> None:
+        baseline = list(review.edit_check_baseline_issues or [])
+        final = list(review.edit_check_final_issues or [])
+        baseline_by_key = {cls._edit_check_issue_key(issue): issue for issue in baseline}
+        final_by_key = {cls._edit_check_issue_key(issue): issue for issue in final}
+        review.edit_check_new_issues = [
+            issue for key, issue in final_by_key.items() if key not in baseline_by_key
+        ]
+        review.edit_check_resolved_issues = [
+            issue for key, issue in baseline_by_key.items() if key not in final_by_key
+        ]
+
+        if review.edit_check_final_success is None:
+            review.edit_check_validation_status = "NOT_RUN"
+        elif review.edit_check_final_success:
+            review.edit_check_validation_status = "RESOLVED" if baseline else "CLEAN"
+        elif not final:
+            review.edit_check_validation_status = "CHECK_UNAVAILABLE"
+        elif review.edit_check_baseline_success is False and not baseline:
+            review.edit_check_validation_status = "CANNOT_COMPARE"
+        elif review.edit_check_new_issues:
+            review.edit_check_validation_status = "NEW_ISSUES"
+        elif review.edit_check_resolved_issues:
+            review.edit_check_validation_status = "IMPROVED"
+        else:
+            review.edit_check_validation_status = "EXISTING_ISSUES"
 
     async def prepare_review(
         self,
@@ -441,6 +482,15 @@ class FTWilliamsReviewService:
             ),
             edit_check_final_issues=(
                 list(existing_review.edit_check_final_issues or []) if existing_review else []
+            ),
+            edit_check_validation_status=(
+                existing_review.edit_check_validation_status if existing_review else "NOT_RUN"
+            ),
+            edit_check_new_issues=(
+                list(existing_review.edit_check_new_issues or []) if existing_review else []
+            ),
+            edit_check_resolved_issues=(
+                list(existing_review.edit_check_resolved_issues or []) if existing_review else []
             ),
             audit_pdf_status=(existing_review.audit_pdf_status if existing_review else "NOT_REQUESTED"),
             audit_pdf_key=(existing_review.audit_pdf_key if existing_review else None),
@@ -1959,29 +2009,6 @@ class FTWilliamsReviewService:
                 baseline.statuses or []
             )
             review.update_diagnostics = self._operation_diagnostics([baseline])
-            if not baseline.success:
-                issue_count = len(review.edit_check_baseline_issues)
-                schedule_count = len(
-                    {
-                        (item.schedule_seq_no, item.schedule_desc)
-                        for item in review.edit_check_baseline_issues
-                    }
-                )
-                detailed_message = (
-                    f"FT Williams baseline Edit Checks failed: {schedule_count} existing "
-                    f"Schedule A record{'s' if schedule_count != 1 else ''} contain "
-                    f"{issue_count} issue{'s' if issue_count != 1 else ''}."
-                    if issue_count
-                    else None
-                )
-                error_message = (
-                    baseline.error
-                    or self._status_error(baseline.statuses)
-                    or detailed_message
-                    or "FT Williams baseline Edit Checks failed."
-                )
-                await self._record_update_failure(repo, filing_id, review, error_message)
-                raise ValueError(error_message)
 
         preserved_validation_results = list(review.schema_validation_results)
         preserved_baseline = {
@@ -2088,6 +2115,11 @@ class FTWilliamsReviewService:
         review.edit_check_baseline_response_xml = preserved_baseline["response"]
         review.edit_check_baseline_success = preserved_baseline["success"]
         review.edit_check_baseline_issues = preserved_baseline["issues"]
+        review.edit_check_final_success = None
+        review.edit_check_final_issues = []
+        review.edit_check_validation_status = "NOT_RUN"
+        review.edit_check_new_issues = []
+        review.edit_check_resolved_issues = []
         review.update_response_xml = "\n\n".join(response_parts) or None
         review.update_verification_attempted = verification_attempted
         review.update_verification_success = verification_success
@@ -2135,21 +2167,7 @@ class FTWilliamsReviewService:
                 edit_checks.statuses or []
             )
             review.update_diagnostics.extend(self._operation_diagnostics([edit_checks]))
-            if not edit_checks.success:
-                success = False
-                issue_count = len(review.edit_check_final_issues)
-                detailed_message = (
-                    f"FT Williams final Edit Checks failed after the verified update: "
-                    f"{issue_count} issue{'s' if issue_count != 1 else ''} remain."
-                    if issue_count
-                    else None
-                )
-                error_message = (
-                    edit_checks.error
-                    or self._status_error(edit_checks.statuses)
-                    or detailed_message
-                    or "FT Williams final Edit Checks failed after the verified update."
-                )
+            self._classify_edit_check_result(review)
 
         if verified_update and settings.ftw_pdf_audit_enabled:
             review.audit_pdf_status = "GENERATING"
@@ -2230,6 +2248,9 @@ class FTWilliamsReviewService:
                     "update_access_status": review.update_access_status,
                     "edit_check_baseline_success": review.edit_check_baseline_success,
                     "edit_check_final_success": review.edit_check_final_success,
+                    "edit_check_validation_status": review.edit_check_validation_status,
+                    "edit_check_new_issue_count": len(review.edit_check_new_issues),
+                    "edit_check_resolved_issue_count": len(review.edit_check_resolved_issues),
                     "audit_pdf_status": review.audit_pdf_status,
                     "audit_pdf_sha256": review.audit_pdf_sha256,
                 },

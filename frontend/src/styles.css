@@ -10740,6 +10740,27 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   border-color: #f4d58d;
 }
 
+.ftw-validation-outcome {
+  background: #fffbeb;
+  border: 1px solid #f4d58d;
+  border-radius: 8px;
+  color: #78350f;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.ftw-validation-outcome.attention {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+
+.ftw-validation-outcome > small {
+  color: inherit;
+  line-height: 1.45;
+}
+
 .workflow-review-metrics {
   display: grid;
   gap: 7px;

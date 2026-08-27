@@ -2474,10 +2474,17 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
     def test_successful_ftw_update_is_read_back_and_verified(self):
         class VerifyingFTWilliamsService(FakeFTWilliamsService):
-            def __init__(self, *, reflect_updates: bool = True, final_edit_checks_success: bool = True):
+            def __init__(
+                self,
+                *,
+                reflect_updates: bool = True,
+                baseline_edit_checks_success: bool = True,
+                final_edit_checks_success: bool = True,
+            ):
                 super().__init__()
                 self.updated = False
                 self.reflect_updates = reflect_updates
+                self.baseline_edit_checks_success = baseline_edit_checks_success
                 self.final_edit_checks_success = final_edit_checks_success
                 self.edit_check_calls = 0
 
@@ -2485,7 +2492,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 if payload.operation == "edit_checks_5500":
                     self.calls.append(payload)
                     self.edit_check_calls += 1
-                    success = self.final_edit_checks_success or self.edit_check_calls == 1
+                    success = (
+                        self.baseline_edit_checks_success
+                        if self.edit_check_calls == 1
+                        else self.final_edit_checks_success
+                    )
                     return FTWilliamsQueryResponse(
                         operation=payload.operation,
                         configured=True,
@@ -2624,6 +2635,49 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.audit_pdf_sha256 or ""), 64)
 
         clear_ftw_current_snapshot_cache()
+        baseline_warning_ftw = VerifyingFTWilliamsService(
+            baseline_edit_checks_success=False,
+        )
+        baseline_warning = run_async(
+            FTWilliamsReviewService(baseline_warning_ftw).approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+                run_edit_checks=True,
+            )
+        )
+
+        self.assertTrue(baseline_warning_ftw.updated)
+        self.assertEqual(baseline_warning.status, FTWilliamsReviewStatus.UPDATE_SENT)
+        self.assertFalse(baseline_warning.edit_check_baseline_success)
+        self.assertTrue(baseline_warning.edit_check_final_success)
+        self.assertEqual(baseline_warning.edit_check_validation_status, "RESOLVED")
+        self.assertTrue(baseline_warning.update_verification_success)
+        self.assertFalse(baseline_warning.active_failure)
+
+        clear_ftw_current_snapshot_cache()
+        existing_warning_ftw = VerifyingFTWilliamsService(
+            baseline_edit_checks_success=False,
+            final_edit_checks_success=False,
+        )
+        existing_warning = run_async(
+            FTWilliamsReviewService(existing_warning_ftw).approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+                run_edit_checks=True,
+            )
+        )
+
+        self.assertTrue(existing_warning_ftw.updated)
+        self.assertEqual(existing_warning.status, FTWilliamsReviewStatus.UPDATE_SENT)
+        self.assertEqual(existing_warning.edit_check_validation_status, "EXISTING_ISSUES")
+        self.assertEqual(existing_warning.edit_check_new_issues, [])
+        self.assertEqual(existing_warning.edit_check_resolved_issues, [])
+        self.assertTrue(existing_warning.update_verification_success)
+        self.assertFalse(existing_warning.active_failure)
+
+        clear_ftw_current_snapshot_cache()
         mismatched = run_async(
             FTWilliamsReviewService(VerifyingFTWilliamsService(reflect_updates=False)).approve_and_update(
                 filing.id,
@@ -2654,15 +2708,17 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(final_checks_failed.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertEqual(final_checks_failed.status, FTWilliamsReviewStatus.UPDATE_SENT)
         self.assertTrue(final_checks_failed.update_verification_success)
         self.assertFalse(final_checks_failed.edit_check_final_success)
         self.assertEqual(len(final_checks_failed.edit_check_final_issues), 1)
         self.assertEqual(final_checks_failed.edit_check_final_issues[0].code, "FW-410")
         self.assertEqual(final_checks_failed.edit_check_final_issues[0].schedule_seq_no, "2")
-        self.assertEqual(final_checks_failed.client_error.code, "FTW_EDIT_CHECK_FINAL_FAILED")
-        self.assertTrue(final_checks_failed.active_failure)
-        self.assertIn("Edit Checks", final_checks_failed.error_message or "")
+        self.assertEqual(final_checks_failed.edit_check_validation_status, "NEW_ISSUES")
+        self.assertEqual(len(final_checks_failed.edit_check_new_issues), 1)
+        self.assertIsNone(final_checks_failed.client_error)
+        self.assertFalse(final_checks_failed.active_failure)
+        self.assertIsNone(final_checks_failed.error_message)
 
     def test_ambiguous_ftw_update_preserves_last_valid_schedule_snapshot(self):
         class AmbiguousUpdateFTWilliamsService(FakeFTWilliamsService):
