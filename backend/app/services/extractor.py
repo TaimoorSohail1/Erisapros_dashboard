@@ -2629,16 +2629,18 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
     policy_from = regex_first(
         text,
         [
+            r"\b(?:Contract/Policy|Contract|Policy)\s+Year\s+From\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\(\s*f\s*\)\s*From\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
-            r"\bFrom\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
+            r"\bFrom\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
         ],
         flags=re.IGNORECASE,
     )
     policy_to = regex_first(
         text,
         [
+            r"\b(?:Contract/Policy|Contract|Policy)\s+Year\s+To\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\(\s*g\s*\)\s*To\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
-            r"\bTo\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
+            r"\bTo\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
         ],
         flags=re.IGNORECASE,
     )

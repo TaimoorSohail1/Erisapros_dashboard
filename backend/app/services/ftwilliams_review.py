@@ -324,7 +324,8 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
-        safe_form_5500_fields = [] if form_5500_block_reason else self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
+        candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
+        safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         if apply_automatic_derivations:
             automatic_field_state = self._automatic_field_state(fields)
             computed_contract_classification = apply_schedule_a_classification(
@@ -354,7 +355,6 @@ class FTWilliamsReviewService:
                 fields,
                 FormType.SCHEDULE_A,
                 schedule_a_current,
-                schedule_update_blocked=bool(schedule_a_block_reason),
                 has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
             ),
             extracted_contract_classification.contract_type,
@@ -364,7 +364,10 @@ class FTWilliamsReviewService:
             fields,
             form_5500_current,
             schedule_a_current,
-            update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
+            # A filing-level safety block controls send readiness, not whether a
+            # mapped field is writable. Keep supported decisions visible as
+            # updates while the final payload remains locked by the block.
+            update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
@@ -738,7 +741,8 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
-        safe_form_5500_fields = [] if form_5500_block_reason else self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
+        candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
+        safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         automatic_field_state = self._automatic_field_state(fields)
         computed_contract_classification = apply_schedule_a_classification(
             fields,
@@ -758,7 +762,6 @@ class FTWilliamsReviewService:
                 fields,
                 FormType.SCHEDULE_A,
                 schedule_a_current,
-                schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
             ),
             extracted_contract_classification.contract_type,
@@ -768,7 +771,7 @@ class FTWilliamsReviewService:
             fields,
             form_5500_current,
             schedule_a_current,
-            update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
+            update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)

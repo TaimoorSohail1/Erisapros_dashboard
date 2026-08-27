@@ -494,6 +494,24 @@ class ScheduleAExtractionTests(unittest.TestCase):
             "12,013.49",
         )
 
+    def test_annual_policy_report_extracts_colon_labelled_policy_year_dates(self):
+        text = """
+        Annual Policy Information Report
+        Name of Insurance Carrier
+        Life Insurance Company of North America
+        EIN 23-1503749
+        NAIC Code 65498
+        Contract/Policy Number FLX0966852
+        Contract/Policy Year From: 01/01/2025
+        Contract/Policy Year To: 12/31/2025
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+
     def test_groundx_ocr_maps_nonparticipating_subscription_charge_wording_to_line_10a(self):
         text = """
         Official ERISA Notification

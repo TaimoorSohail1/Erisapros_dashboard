@@ -5006,7 +5006,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("<DOLScheduleAData>", review.update_xml_schedule_a or "")
         changed_schedule_fields = [field for field in review.fields if field.form_type == FormType.SCHEDULE_A and field.changed]
         self.assertTrue(changed_schedule_fields)
-        self.assertFalse(any(field.update_included for field in changed_schedule_fields))
+        by_rule = {field.rule_key: field for field in review.fields}
+        policy_begin = by_rule["schedule_a_part_i_1f_policy_year_beginning_date"]
+        self.assertTrue(policy_begin.changed)
+        self.assertTrue(policy_begin.update_included)
 
 
 if __name__ == "__main__":
