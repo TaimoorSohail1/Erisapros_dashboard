@@ -31,6 +31,7 @@ class FTWPayloadValidationError(ValueError):
 
 FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     # Structured components emitted by the dashboard's combined sponsor-address rule.
+    "SDAddressLine2",
     "SDCity",
     "SDState",
     "SDZipCode",
@@ -105,6 +106,7 @@ ONE_TWO_INDICATOR_TAGS = {"InsFailProvideInfoInd"}
 TEXT_LIMITS = {
     "SDName": 70,
     "SDAddressLine1": 35,
+    "SDAddressLine2": 35,
     "SDCity": 30,
     "SDState": 2,
     "SDZipCode": 10,

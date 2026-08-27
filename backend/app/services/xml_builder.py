@@ -462,12 +462,14 @@ def _form_5500_sponsor_address_values(
     parsed = _split_form_5500_sponsor_address(proposed, current)
     candidates = {
         "SDAddressLine1": parsed.get("street", ""),
+        "SDAddressLine2": parsed.get("line2", ""),
         "SDCity": parsed.get("city", ""),
         "SDState": parsed.get("state", ""),
         "SDZipCode": parsed.get("zip", ""),
     }
     current_by_tag = {
         "SDAddressLine1": current.get("SDAddressLine1", ""),
+        "SDAddressLine2": current.get("SDAddressLine2", ""),
         "SDCity": current.get("SDCity", ""),
         "SDState": current.get("SDState", ""),
         "SDZipCode": current.get("SDZipCode", ""),
@@ -501,16 +503,23 @@ def _split_form_5500_sponsor_address(
         if city_matches:
             city_match = city_matches[-1]
             street = proposed[: city_match.start()].strip(" ,")
+            line_2 = ""
             if current_line_2:
-                street = re.sub(
+                street_without_line_2 = re.sub(
                     rf"(?:,?\s*){re.escape(current_line_2)}$",
                     "",
                     street,
                     flags=re.IGNORECASE,
                 ).strip(" ,")
+                if street_without_line_2 != street:
+                    street = street_without_line_2
+                    line_2 = current_line_2
+            if not line_2:
+                street, line_2 = _split_form_5500_street_and_line_2(street)
             if street:
                 return {
                     "street": street,
+                    "line2": line_2,
                     "city": current_city,
                     "state": current_state,
                     "zip": current_zip,
@@ -521,8 +530,12 @@ def _split_form_5500_sponsor_address(
         proposed,
     )
     if locality_match:
+        street, line_2 = _split_form_5500_street_and_line_2(
+            locality_match.group("street").strip(" ,")
+        )
         return {
-            "street": locality_match.group("street").strip(" ,"),
+            "street": street,
+            "line2": line_2,
             "city": locality_match.group("city").strip(" ,"),
             "state": locality_match.group("state"),
             "zip": locality_match.group("zip"),
@@ -533,14 +546,21 @@ def _split_form_5500_sponsor_address(
         proposed,
     )
     if suffix_match:
+        secondary = (
+            r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
+            r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
+            r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
+            r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
+        )
         street_city_match = re.fullmatch(
-            r"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?(?:\s+(?:SUITE|STE|UNIT|#)\s*[A-Za-z0-9-]+)?)\s+(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?)\s+(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
             suffix_match.group("body"),
             flags=re.IGNORECASE,
         )
         if street_city_match:
             return {
                 "street": street_city_match.group("street").strip(" ,"),
+                "line2": str(street_city_match.group("line2") or "").strip(" ,"),
                 "city": street_city_match.group("city").strip(" ,"),
                 "state": suffix_match.group("state"),
                 "zip": suffix_match.group("zip"),
@@ -549,6 +569,23 @@ def _split_form_5500_sponsor_address(
     # With no trustworthy separator, only the street field can be changed.
     # Locality fields are deliberately omitted and therefore preserved by FTW.
     return {"street": proposed}
+
+
+def _split_form_5500_street_and_line_2(value: str) -> tuple[str, str]:
+    secondary = (
+        r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
+        r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
+        r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
+        r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
+    )
+    match = re.fullmatch(
+        rf"(?P<street>.+?)\s+(?P<line2>{secondary})",
+        str(value or "").strip(" ,"),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return str(value or "").strip(" ,"), ""
+    return match.group("street").strip(" ,"), match.group("line2").strip(" ,")
 
 
 def full_replace_values_for_schedule_a(

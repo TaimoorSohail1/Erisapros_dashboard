@@ -482,10 +482,41 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_CITY", xml)
         self.assertNotIn("SPONS_DFE_STATE", xml)
         self.assertNotIn("SPONS_DFE_ZIP_CODE", xml)
-        self.assertIn("<SDAddressLine1>18 CHESTNUT ST. SUITE 500</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine1>18 CHESTNUT ST.</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>SUITE 500</SDAddressLine2>", xml)
         self.assertIn("<SDCity>WORCESTER</SDCity>", xml)
         self.assertIn("<SDState>MA</SDState>", xml)
         self.assertIn("<SDZipCode>01608</SDZipCode>", xml)
+
+    def test_5500_combined_address_splits_floor_into_address_line_2_without_current_snapshot(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+            proposed_value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="13-0417693",
+            plan_id="13-0417693501",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SDAddressLine1>815 2ND AVENUE</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>9TH FLOOR</SDAddressLine2>", xml)
+        self.assertIn("<SDCity>NEW YORK</SDCity>", xml)
+        self.assertIn("<SDState>NY</SDState>", xml)
+        self.assertIn("<SDZipCode>10017-4503</SDZipCode>", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(

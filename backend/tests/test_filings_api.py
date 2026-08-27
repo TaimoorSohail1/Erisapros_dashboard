@@ -311,7 +311,7 @@ class FilingsApiTests(unittest.TestCase):
                         mapped_label="1f. Plan Sponsor Address",
                         form_type=FormType.FORM_5500,
                         ftw_resolved_tag="SDAddressLine1",
-                        proposed_value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+                        proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS",
                     ),
                 ]
             )
