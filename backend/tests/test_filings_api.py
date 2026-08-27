@@ -280,6 +280,60 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIsNone(updated.approved_at)
         self.assertIsNone(updated.error_message)
 
+    def test_field_edit_saves_when_another_field_fails_ftw_preview_validation(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Independent field decision.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/independent-field-decision",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered",
+                        form_type=FormType.SCHEDULE_A,
+                        proposed_value="9",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1f. Plan Sponsor Address",
+                        normalized_field_name="sponsor_address",
+                        mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                        mapped_label="1f. Plan Sponsor Address",
+                        form_type=FormType.FORM_5500,
+                        ftw_resolved_tag="SDAddressLine1",
+                        proposed_value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+                    ),
+                ]
+            )
+
+            response = await update_field(
+                filing.id,
+                fields[0].id,
+                FieldEditRequest(proposed_value="10"),
+            )
+            saved = await repo.list_fields(filing.id)
+            return response, saved
+
+        response, saved = run_async(scenario())
+
+        edited = next(field for field in saved if field.mapped_rule_key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year")
+        invalid_address = next(field for field in saved if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address")
+        self.assertEqual(response["field"].proposed_value, "10")
+        self.assertEqual(edited.status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(edited.proposed_value, "10")
+        self.assertEqual(invalid_address.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertIsNone(response["proposed_xml"])
+
     def test_filing_detail_reads_independent_collections_concurrently(self):
         class ConcurrentReadRepository(repositories.MemoryRepository):
             def __init__(self):

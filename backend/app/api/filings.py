@@ -25,6 +25,7 @@ from app.models import (
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.filing_pipeline import (
+    build_safe_proposed_ftw_xml,
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
     process_package_extraction_job,
@@ -296,6 +297,12 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         if item.id
     }
     classification = apply_schedule_a_classification(fields, filing.schedule_a_classification_signals)
+    relevant_fields = filter_schedule_a_fields_for_contract_type(
+        fields,
+        classification.contract_type,
+        rules=published_rules,
+    )
+    proposed_xml, _preview_validation_issues = build_safe_proposed_ftw_xml(relevant_fields)
     for item in fields:
         if not item.id or before_automatic.get(item.id) == (item.proposed_value, item.status, item.status_reason):
             continue
@@ -306,13 +313,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
             status=item.status,
             status_reason=item.status_reason,
         )
-    relevant_fields = filter_schedule_a_fields_for_contract_type(
-        fields,
-        classification.contract_type,
-        rules=published_rules,
-    )
     summary = summarize_mapped_fields(relevant_fields)
-    proposed_xml = build_proposed_ftw_xml(relevant_fields)
     await repo.update_filing(
         filing_id,
         {
