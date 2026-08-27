@@ -23,6 +23,12 @@ assert.equal(
 );
 assert.doesNotMatch(source, /<th>Decision<\/th>/, "Decision controls must be inline below Proposed To Send.");
 
+const brokerRowsPosition = source.indexOf("<ScheduleABrokerRowsPanel");
+const comparisonTablePosition = source.indexOf('<table className="approval-decision-table">');
+const comparisonFooterPosition = source.indexOf('<div className="approval-preview-footer">');
+assert.ok(brokerRowsPosition > comparisonTablePosition, "Schedule A broker rows must appear below the field comparison table.");
+assert.ok(brokerRowsPosition > comparisonFooterPosition, "Schedule A broker rows must appear at the bottom of the comparison workspace.");
+
 assert.match(
   source,
   /<td>\{row\.extracted \|\|[\s\S]*?<\/td>\s*<td>\{row\.currentFtw \|\|/,

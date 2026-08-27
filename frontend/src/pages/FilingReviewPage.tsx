@@ -809,13 +809,6 @@ export function FilingReviewPage() {
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
 
-            <ScheduleABrokerRowsPanel
-              busy={ftwBusy}
-              matches={scheduleABrokerMatches}
-              onConfirm={saveScheduleABrokerMatch}
-              rows={scheduleABrokerRows}
-            />
-
             <div className="field-filter-row approval-filter-row">
               <SelectFilter label="Form" value={formFilter} onChange={setFormFilter} options={["SCHEDULE_A", "FORM_5500"]} />
               <SelectFilter label="Contract" value={contractTypeFilter} onChange={(value) => setContractTypeFilter(value as ContractTypeFilter)} options={["EXPERIENCE_RATED", "NONEXPERIENCE_RATED", "NEEDS_REVIEW", "UNKNOWN"]} />
@@ -886,6 +879,13 @@ export function FilingReviewPage() {
                 </nav>
               ) : null}
             </div>
+
+            <ScheduleABrokerRowsPanel
+              busy={ftwBusy}
+              matches={scheduleABrokerMatches}
+              onConfirm={saveScheduleABrokerMatch}
+              rows={scheduleABrokerRows}
+            />
           </section>
         )}
 
