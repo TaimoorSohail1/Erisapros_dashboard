@@ -16,6 +16,46 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_schedule_a_new_broker_row_writes_complete_address(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "MetLife", "InsContractNum": "5955240"},
+                "query_subparts": {"Broker": []},
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "NFP INS SERVICES INC",
+                    "address_line_1": "1250 S CAPITAL OF TEXAS HWY",
+                    "address_line_2": "BLDG 2 STE 125",
+                    "city": "AUSTIN",
+                    "state": "TX",
+                    "zip_code": "78746-6446",
+                    "organization_code": "03",
+                    "commission_total": "422",
+                    "fee_total": "0",
+                }
+            ],
+        )
+
+        broker = ET.fromstring(xml).find(".//DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("NameXX"), "NFP INS SERVICES INC")
+        self.assertEqual(broker.findtext("AddressLine1XX"), "1250 S CAPITAL OF TEXAS HWY")
+        self.assertEqual(broker.findtext("AddressLine2XX"), "BLDG 2 STE 125")
+        self.assertEqual(broker.findtext("CityXX"), "AUSTIN")
+        self.assertEqual(broker.findtext("StateXX"), "TX")
+        self.assertEqual(broker.findtext("ZipCodeXX"), "78746-6446")
+
     def test_discovered_comparison_field_never_enters_ftw_xml(self):
         field = ExtractedField(
             filing_id="filing",

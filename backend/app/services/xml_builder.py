@@ -222,7 +222,8 @@ def build_schedule_a_records_update_xml(
     documents: list[str] = []
     for record in sorted(records, key=lambda item: _record_sort_key(item.get("ftw_seq_no"))):
         record_seq = str(record.get("ftw_seq_no") or "").strip()
-        update_fields = fields if matched_seq and record_seq == matched_seq else []
+        selected_record = bool(matched_seq and record_seq == matched_seq)
+        update_fields = fields if selected_record else []
         current_values = record.get("query_results") or {}
         if not isinstance(current_values, dict) or not current_values:
             continue
@@ -235,7 +236,7 @@ def build_schedule_a_records_update_xml(
             year=filing_year,
             ftw_customer_id=ftw_customer_id,
             ftw_plan_id=ftw_plan_id,
-            schedule_a_broker_rows=schedule_a_broker_rows if update_fields else None,
+            schedule_a_broker_rows=schedule_a_broker_rows if selected_record else None,
             query_subparts=record.get("query_subparts") or {},
         )
         if document_xml:
@@ -803,6 +804,11 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
 
 def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
     name = _broker_row_attr(row, "name")
+    address_line_1 = _broker_row_attr(row, "address_line_1")
+    address_line_2 = _broker_row_attr(row, "address_line_2")
+    city = _broker_row_attr(row, "city")
+    state = _broker_row_attr(row, "state")
+    zip_code = _broker_row_attr(row, "zip_code")
     commission = _broker_row_attr(row, "commission_total")
     fees = _broker_row_attr(row, "fee_total")
     code = _broker_row_attr(row, "organization_code")
@@ -810,6 +816,11 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
 
     values = {
         f"Name{index}": name,
+        f"AddressLine1{index}": address_line_1,
+        f"AddressLine2{index}": address_line_2,
+        f"City{index}": city,
+        f"State{index}": state,
+        f"ZipCode{index}": zip_code,
         f"CommPdAmt{index}": commission,
         f"FeesPdAmt{index}": fees,
         f"FeesPdText{index}": purpose,

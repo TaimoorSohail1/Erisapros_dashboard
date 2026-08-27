@@ -6357,6 +6357,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .schedule-a-broker-panel {
   display: grid;
   gap: 12px;
+  margin: 12px 16px;
   padding: 16px;
 }
 
@@ -8669,6 +8670,43 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .ftw-history-loading {
   height: 180px;
   text-align: center;
+}
+
+.broker-match-status {
+  color: #9a6700;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.broker-match-ready {
+  color: #08775a;
+}
+
+.broker-match-reason {
+  color: #64748b;
+  display: block;
+  margin-top: 5px;
+  max-width: 300px;
+}
+
+.broker-match-decision {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.broker-match-decision select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+}
+
+.broker-match-decision .button {
+  min-height: 34px;
+  padding: 0 10px;
 }
 
 /* FT Williams operator experience: stable loading states and compact, usable queues. */

@@ -15,6 +15,7 @@ from app.models import (
     FilingStatus,
     NormalizedExtractionField,
     FTWilliamsManualMatchRequest,
+    FTWilliamsBrokerMatchesRequest,
     FTWilliamsPrepareReviewRequest,
     FTWilliamsScheduleAContractTypeRequest,
     FTWilliamsScheduleAMatchRequest,
@@ -518,6 +519,16 @@ async def apply_manual_ftwilliams_match(filing_id: str, payload: FTWilliamsManua
 async def select_ftwilliams_schedule_a_match(filing_id: str, payload: FTWilliamsScheduleAMatchRequest):
     try:
         review = await FTWilliamsReviewService().select_schedule_a_match(filing_id, payload)
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Filing not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {"ftw_review": review}
+
+
+@router.post("/{filing_id}/ftw/schedule-a-broker-matches")
+async def set_ftwilliams_schedule_a_broker_matches(filing_id: str, payload: FTWilliamsBrokerMatchesRequest):
+    try:
+        review = await FTWilliamsReviewService().set_schedule_a_broker_matches(filing_id, payload)
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

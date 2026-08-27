@@ -17,6 +17,8 @@ from app.models import (
     Filing,
     FilingStatus,
     FormType,
+    FTWilliamsBrokerMatchDecision,
+    FTWilliamsBrokerMatchesRequest,
     FTWilliamsManualMatchRequest,
     FTWilliamsComparisonField,
     FTWilliamsPlanLookupStatus,
@@ -1756,24 +1758,35 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         ]
         run_async(repo.add_fields(fields))
 
-        review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
+        service = FTWilliamsReviewService(FakeFTWilliamsCurrentTagService())
+        review = run_async(service.prepare_review(filing.id, send_queries=True))
         by_label = {field.label: field for field in review.fields}
 
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].update_included)
         self.assertFalse(by_label["3b. Amount of Commissions"].update_included)
-        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", review.update_xml_schedule_a)
-        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", review.update_xml_schedule_a)
-        self.assertNotIn("<CommPdAmtXX>1,576</CommPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdAmtXX>44</FeesPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdTextXX>COMMISSIONS AND FEES</FeesPdTextXX>", review.update_xml_schedule_a)
-        self.assertIn("<CodeXX>03</CodeXX>", review.update_xml_schedule_a)
-        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", review.update_xml_schedule_a)
-        self.assertIn("<CommPdAmtXX>422</CommPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdAmtXX>0</FeesPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<FeesPdTextXX>COMMISSIONS</FeesPdTextXX>", review.update_xml_schedule_a)
-        self.assertNotIn("<CommPdAmtXX>1,998</CommPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<InsCarrierName>Other Carrier</InsCarrierName>", review.update_xml_schedule_a)
+        self.assertFalse(review.schedule_a_broker_match_complete)
+        self.assertEqual([match.status for match in review.schedule_a_broker_matches], ["NEEDS_CONFIRMATION", "NEEDS_CONFIRMATION"])
+        self.assertEqual(review.update_xml_schedule_a, "")
+        self.assertIn("broker rows need confirmation", review.error_message)
+
+        confirmed = run_async(
+            service.set_schedule_a_broker_matches(
+                filing.id,
+                FTWilliamsBrokerMatchesRequest(
+                    decisions=[
+                        FTWilliamsBrokerMatchDecision(extracted_index=0, ftw_index=0),
+                        FTWilliamsBrokerMatchDecision(extracted_index=1, create_new=True),
+                    ]
+                ),
+            )
+        )
+
+        self.assertTrue(confirmed.schedule_a_broker_match_complete)
+        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", confirmed.update_xml_schedule_a)
+        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", confirmed.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", confirmed.update_xml_schedule_a)
+        self.assertEqual(confirmed.update_xml_schedule_a.count("<Broker>"), 2)
 
     def test_prepare_review_excludes_broker_name_when_it_contains_address_text(self):
         repo = repositories.get_repository()

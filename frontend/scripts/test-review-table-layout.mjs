@@ -172,6 +172,10 @@ assert.match(
   "A reviewer-confirmed field must enter Will Update only when the FTW update contract includes it.",
 );
 assert.match(source, /Review only · not supported/, "Unsupported FTW fields must be labelled as review-only rather than resolved.");
+assert.match(source, /Managed in broker rows/, "Structured multi-broker fields must not be labelled as unsupported.");
+assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
+assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
+assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
 assert.doesNotMatch(source, /Resolved · not sent to FTW/, "Unsupported FTW fields must not appear as successfully resolved updates.");
 assert.match(
   source,

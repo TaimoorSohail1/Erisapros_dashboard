@@ -194,6 +194,16 @@ class ScheduleABrokerRow(BaseModel):
     confidence: float = 0.9
 
 
+class ScheduleABrokerMatch(BaseModel):
+    extracted_index: int
+    ftw_index: int | None = None
+    status: str
+    resolved: bool = False
+    reason: str = ""
+    candidate_ftw_indexes: list[int] = Field(default_factory=list)
+    current_row: ScheduleABrokerRow | None = None
+
+
 class ScheduleAWorksheetValue(BaseModel):
     label: str
     value: str
@@ -653,6 +663,8 @@ class FTWilliamsReview(BaseModel):
     schedule_a_candidates: list[dict] = Field(default_factory=list)
     schedule_a_records: list[dict] = Field(default_factory=list)
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
+    schedule_a_broker_match_complete: bool = True
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
@@ -741,6 +753,16 @@ class FTWilliamsScheduleAMatchRequest(BaseModel):
     contract: str | None = None
     create_new: bool = False
     schedule_desc: str | None = None
+
+
+class FTWilliamsBrokerMatchDecision(BaseModel):
+    extracted_index: int
+    ftw_index: int | None = None
+    create_new: bool = False
+
+
+class FTWilliamsBrokerMatchesRequest(BaseModel):
+    decisions: list[FTWilliamsBrokerMatchDecision] = Field(default_factory=list)
 
 
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):

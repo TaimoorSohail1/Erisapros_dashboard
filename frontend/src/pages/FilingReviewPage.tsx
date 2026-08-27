@@ -37,11 +37,12 @@ import {
   retryExtraction,
   saveManualFTWilliamsMatch,
   selectFTWilliamsScheduleAMatch,
+  setFTWilliamsScheduleABrokerMatches,
   sendApprovedFTWilliamsUpdate,
   unapproveFiling,
   updateField,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
@@ -188,6 +189,7 @@ export function FilingReviewPage() {
   const ftwReview = filing?.ftw_review || null;
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
+  const scheduleABrokerMatches = ftwReview?.schedule_a_broker_matches || [];
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
   const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
   const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
@@ -266,6 +268,7 @@ export function FilingReviewPage() {
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
+  const scheduleABrokersReady = !scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false;
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
   const bringForwardRequired = Boolean(ftwReview?.bring_forward_required);
   const ftwCurrentLoaded = Boolean(
@@ -290,7 +293,8 @@ export function FilingReviewPage() {
     ftwReview.current_query_complete !== false &&
     ftwReview.ftw_editable !== false &&
     form5500SafetyReady &&
-    scheduleASafetyReady,
+    scheduleASafetyReady &&
+    scheduleABrokersReady,
   );
   const foundCount = extracted.length;
   const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
@@ -580,6 +584,40 @@ export function FilingReviewPage() {
     }
   }
 
+  async function saveScheduleABrokerMatch(extractedIndex: number, ftwIndex?: number, createNew = false) {
+    if (!id || !ftwReview) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      const decisions = (ftwReview.schedule_a_broker_matches || [])
+        .filter((match) => match.status === "CONFIRMED" || match.status === "CONFIRMED_NEW")
+        .filter((match) => match.extracted_index !== extractedIndex)
+        .map((match) => ({
+          extracted_index: match.extracted_index,
+          ftw_index: match.ftw_index ?? undefined,
+          create_new: match.status === "CONFIRMED_NEW",
+        }));
+      decisions.push({ extracted_index: extractedIndex, ftw_index: ftwIndex, create_new: createNew });
+      await setFTWilliamsScheduleABrokerMatches(id, decisions);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Broker match saved",
+        message: createNew ? "The broker will be added as a new FT Williams row." : "The broker is linked to the selected FT Williams row.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Broker match was not saved",
+        message: error instanceof Error ? error.message : "Select a different FT Williams broker row and try again.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function sendFtwUpdate() {
     if (!id || ftwSendInFlightRef.current) return;
     ftwSendInFlightRef.current = true;
@@ -770,6 +808,13 @@ export function FilingReviewPage() {
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
+
+            <ScheduleABrokerRowsPanel
+              busy={ftwBusy}
+              matches={scheduleABrokerMatches}
+              onConfirm={saveScheduleABrokerMatch}
+              rows={scheduleABrokerRows}
+            />
 
             <div className="field-filter-row approval-filter-row">
               <SelectFilter label="Form" value={formFilter} onChange={setFormFilter} options={["SCHEDULE_A", "FORM_5500"]} />
@@ -2719,7 +2764,17 @@ function ScheduleAWorksheetSummaryPanel({ summaries }: { summaries: ScheduleAWor
   );
 }
 
-function ScheduleABrokerRowsPanel({ rows }: { rows: ScheduleABrokerRow[] }) {
+function ScheduleABrokerRowsPanel({
+  busy,
+  matches,
+  onConfirm,
+  rows,
+}: {
+  busy: boolean;
+  matches: ScheduleABrokerMatch[];
+  onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+  rows: ScheduleABrokerRow[];
+}) {
   if (!rows.length) return null;
   return (
     <section className="schedule-a-broker-panel card">
@@ -2736,25 +2791,67 @@ function ScheduleABrokerRowsPanel({ rows }: { rows: ScheduleABrokerRow[] }) {
               <th>Org</th>
               <th>Commissions</th>
               <th>Fees</th>
+              <th>FT Williams row</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, index) => (
+            {rows.map((row, index) => {
+              const match = matches.find((candidate) => candidate.extracted_index === index);
+              return (
               <tr key={`${row.name}-${row.zip_code || ""}-${index}`}>
                 <td>{row.name}</td>
                 <td>{formatBrokerAddress(row)}</td>
                 <td>{row.organization_code || "-"}</td>
                 <td>{row.commission_total || "0"}</td>
                 <td>{row.fee_total || "0"}</td>
+                <td>
+                  {match?.resolved ? (
+                    <span className="broker-match-status broker-match-ready">
+                      {match.status === "CONFIRMED_NEW" ? "New broker row" : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
+                    </span>
+                  ) : match ? (
+                    <BrokerMatchDecision match={match} busy={busy} onConfirm={onConfirm} />
+                  ) : (
+                    <span className="broker-match-status">Load current FTW data to match</span>
+                  )}
+                  {match?.reason ? <small className="broker-match-reason">{match.reason}</small> : null}
+                </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
       {rows.length > 1 ? (
-        <p>Multiple broker rows are held separately so the single-row FT Williams broker fields are not overwritten.</p>
+        <p>Each extracted broker is matched separately. Existing unmatched FT Williams broker rows are preserved.</p>
       ) : null}
     </section>
+  );
+}
+
+function BrokerMatchDecision({
+  busy,
+  match,
+  onConfirm,
+}: {
+  busy: boolean;
+  match: ScheduleABrokerMatch;
+  onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+}) {
+  const candidates = match.candidate_ftw_indexes || [];
+  const [selected, setSelected] = useState(candidates[0]?.toString() || "");
+  return (
+    <div className="broker-match-decision">
+      {candidates.length ? (
+        <>
+          <select value={selected} onChange={(event) => setSelected(event.target.value)} disabled={busy} aria-label="FT Williams broker row">
+            {candidates.map((index) => <option key={index} value={index}>FT Williams row {index + 1}</option>)}
+          </select>
+          <button className="button secondary" type="button" disabled={busy || selected === ""} onClick={() => onConfirm(match.extracted_index, Number(selected), false)}>Match row</button>
+        </>
+      ) : null}
+      <button className="button secondary" type="button" disabled={busy} onClick={() => onConfirm(match.extracted_index, undefined, true)}>Add as new</button>
+    </div>
   );
 }
 
@@ -3196,6 +3293,7 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 }
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
+  if (comparison.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "SAME";
   if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
   if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") return "LOW_CONFIDENCE";
@@ -3236,6 +3334,7 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 }
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
+  if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
   if (comparison?.changed && comparison.update_exclusion_reason) return "Review only · more FTW details required";
   if (comparison?.changed && !comparison.update_included) return "Review only · not supported";

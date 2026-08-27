@@ -22,6 +22,7 @@ from app.models import (
     FTWilliamsComparisonField,
     FTWilliamsEditCheckIssue,
     FTWilliamsManualMatchRequest,
+    FTWilliamsBrokerMatchesRequest,
     FTWilliamsOperationDiagnostic,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
@@ -30,6 +31,8 @@ from app.models import (
     FTWilliamsReview,
     FTWilliamsReviewStatus,
     ScheduleAContractType,
+    ScheduleABrokerMatch,
+    ScheduleABrokerRow,
     FTWilliamsScheduleAContractTypeRequest,
     FTWilliamsScheduleAMatchRequest,
     FTWilliamsSendUpdateRequest,
@@ -62,6 +65,11 @@ from app.services.schedule_a_classification import (
     classify_schedule_a_current,
     filter_schedule_a_fields_for_contract_type,
     schedule_a_contract_type_allows_rule,
+)
+from app.services.schedule_a_broker_matching import (
+    current_schedule_a_broker_rows,
+    match_schedule_a_brokers,
+    resolved_schedule_a_broker_rows,
 )
 from app.services.xml_builder import (
     build_single_document_update_xml,
@@ -346,6 +354,7 @@ class FTWilliamsReviewService:
             update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
+        self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
         include_5500_update = not bring_forward_required and self._should_build_update_payload(send_queries, form_5500_current)
         include_schedule_a_update = not bring_forward_required and (
             self._should_build_update_payload(send_queries, schedule_a_current) or (
@@ -356,6 +365,20 @@ class FTWilliamsReviewService:
         if existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
+        broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
+            schedule_a_broker_rows,
+            schedule_a_records,
+            identity.get("ftw_seq_no"),
+            existing_review.schedule_a_broker_matches if existing_review else [],
+            create_new=create_new_schedule_a,
+        )
+        broker_match_complete = all(match.resolved for match in broker_matches)
+        broker_match_blocked = bool(schedule_a_broker_rows) and not broker_match_complete
+        if broker_match_blocked:
+            error_message = "; ".join(filter(None, [
+                error_message,
+                "Schedule A broker rows need confirmation before FT Williams can be updated.",
+            ]))
         ftw_plan_url = self._ftw_plan_page_url(identity, identity.get("year")) if bring_forward_required else None
         payload_validation_issues: list[FTWFieldValidationIssue] = []
         try:
@@ -376,10 +399,10 @@ class FTWilliamsReviewService:
                 schedule_a_records,
                 identity.get("ftw_seq_no"),
                 identity,
-                schedule_update_blocked=bool(schedule_a_block_reason),
+                schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 add_new_schedule_a=create_new_schedule_a,
                 new_schedule_desc=new_schedule_desc,
-                schedule_a_broker_rows=schedule_a_broker_rows,
+                schedule_a_broker_rows=resolved_broker_rows,
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -430,6 +453,8 @@ class FTWilliamsReviewService:
             schedule_a_candidates=schedule_a_candidates,
             schedule_a_records=schedule_a_records,
             schedule_a_broker_rows=schedule_a_broker_rows,
+            schedule_a_broker_matches=broker_matches,
+            schedule_a_broker_match_complete=broker_match_complete,
             schedule_a_worksheet_summaries=schedule_a_worksheet_summaries,
             schedule_a_contract_type=extracted_contract_classification.contract_type,
             schedule_a_contract_type_reason=extracted_contract_classification.reason,
@@ -670,6 +695,25 @@ class FTWilliamsReviewService:
                 "schedule_desc": schedule_a_current.get("ScheduleDesc") or schedule_a_current.get("SCHEDULE_DESC") or payload.schedule_desc,
                 "source": "MANUAL",
             }
+        previous_broker_matches = (
+            review.schedule_a_broker_matches
+            if self._same_schedule_a_selection(review.schedule_a_match, schedule_a_match)
+            else []
+        )
+        broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
+            schedule_a_broker_rows,
+            schedule_a_records,
+            payload.ftw_seq_no,
+            previous_broker_matches,
+            create_new=payload.create_new,
+        )
+        broker_match_complete = all(match.resolved for match in broker_matches)
+        broker_match_blocked = bool(schedule_a_broker_rows) and not broker_match_complete
+        if broker_match_blocked:
+            error_message = "; ".join(filter(None, [
+                error_message,
+                "Schedule A broker rows need confirmation before FT Williams can be updated.",
+            ]))
         fields = self._fields_with_schedule_a_summary_override(
             fields,
             schedule_a_worksheet_summaries,
@@ -701,7 +745,7 @@ class FTWilliamsReviewService:
                 fields,
                 FormType.SCHEDULE_A,
                 schedule_a_current,
-                schedule_update_blocked=bool(schedule_a_block_reason),
+                schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
             ),
             extracted_contract_classification.contract_type,
@@ -714,6 +758,7 @@ class FTWilliamsReviewService:
             update_fields=[*safe_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
+        self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
         include_5500_update = self._should_build_update_payload(review.current_query_sent, form_5500_current)
         include_schedule_a_update = self._should_build_update_payload(review.current_query_sent, schedule_a_current) or (
             payload.create_new and review.current_query_sent and bool(schedule_a_records)
@@ -737,10 +782,10 @@ class FTWilliamsReviewService:
                 schedule_a_records,
                 payload.ftw_seq_no,
                 update_identity,
-                schedule_update_blocked=bool(schedule_a_block_reason),
+                schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 add_new_schedule_a=payload.create_new,
                 new_schedule_desc=new_schedule_desc,
-                schedule_a_broker_rows=schedule_a_broker_rows,
+                schedule_a_broker_rows=resolved_broker_rows,
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -760,6 +805,8 @@ class FTWilliamsReviewService:
                 "schedule_a_candidates": schedule_a_candidates,
                 "schedule_a_records": schedule_a_records,
                 "schedule_a_broker_rows": schedule_a_broker_rows,
+                "schedule_a_broker_matches": broker_matches,
+                "schedule_a_broker_match_complete": broker_match_complete,
                 "schedule_a_worksheet_summaries": schedule_a_worksheet_summaries,
                 "schedule_a_contract_type": extracted_contract_classification.contract_type,
                 "schedule_a_contract_type_reason": extracted_contract_classification.reason,
@@ -810,6 +857,63 @@ class FTWilliamsReviewService:
                 event="FTWILLIAMS_SCHEDULE_A_MATCH_SELECTED",
                 message="Reviewer selected the FT Williams Schedule A sequence." if not payload.create_new else "Reviewer marked the uploaded Schedule A as a new FT Williams Schedule A.",
                 details=schedule_a_match,
+            )
+        )
+        return updated_review
+
+    async def set_schedule_a_broker_matches(
+        self,
+        filing_id: str,
+        payload: FTWilliamsBrokerMatchesRequest,
+    ) -> FTWilliamsReview:
+        repo = get_repository()
+        if not await repo.get_filing(filing_id):
+            raise ValueError("Filing not found")
+        review = await repo.get_ftwilliams_review(filing_id)
+        if not review:
+            review = await self.prepare_review(filing_id, send_queries=False)
+
+        seen_extracted: set[int] = set()
+        seen_ftw: set[int] = set()
+        decisions: list[ScheduleABrokerMatch] = []
+        for decision in payload.decisions:
+            if decision.extracted_index in seen_extracted:
+                raise ValueError(f"Extracted broker row {decision.extracted_index + 1} was submitted more than once.")
+            seen_extracted.add(decision.extracted_index)
+            if decision.create_new:
+                decisions.append(
+                    ScheduleABrokerMatch(
+                        extracted_index=decision.extracted_index,
+                        status="CONFIRMED_NEW",
+                        resolved=True,
+                        reason="Reviewer confirmed this is a new FT Williams broker row.",
+                    )
+                )
+                continue
+            if decision.ftw_index is None:
+                raise ValueError("Each broker decision must select an FT Williams row or add a new row.")
+            if decision.ftw_index in seen_ftw:
+                raise ValueError(f"FT Williams broker row {decision.ftw_index + 1} was assigned more than once.")
+            seen_ftw.add(decision.ftw_index)
+            decisions.append(
+                ScheduleABrokerMatch(
+                    extracted_index=decision.extracted_index,
+                    ftw_index=decision.ftw_index,
+                    status="CONFIRMED",
+                    resolved=True,
+                    reason="Reviewer confirmed the FT Williams broker row.",
+                )
+            )
+
+        review.schedule_a_broker_matches = decisions
+        await repo.upsert_ftwilliams_review(review)
+        updated_review = await self.prepare_review(filing_id, send_queries=False)
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_SCHEDULE_A_BROKERS_MATCHED",
+                message="Schedule A broker row decisions saved.",
+                details={"decision_count": len(decisions)},
             )
         )
         return updated_review
@@ -3091,6 +3195,22 @@ class FTWilliamsReviewService:
             "schedule_a_part_i_3e_organizational_code",
         }
 
+    def _mark_structured_broker_comparisons(self, comparisons: list[FTWilliamsComparisonField], rows: list) -> None:
+        if len(rows or []) <= 1:
+            return
+        broker_rules = {
+            "schedule_a_part_i_3a_name_of_agent_broker_person",
+            "schedule_a_part_i_3b_amount_of_commissions",
+            "schedule_a_part_i_3c_amount_of_fees",
+            "schedule_a_part_i_3d_purpose",
+            "schedule_a_part_i_3e_organizational_code",
+        }
+        for comparison in comparisons:
+            if comparison.rule_key in broker_rules and not comparison.update_included:
+                comparison.update_exclusion_reason = (
+                    "Managed in the Schedule A broker rows section so each broker is matched and updated separately."
+                )
+
     def _normalized_schedule_a_broker_rows(self, rows) -> list:
         normalized = []
         for row in rows or []:
@@ -3099,6 +3219,50 @@ class FTWilliamsReviewService:
             elif isinstance(row, dict):
                 normalized.append(row)
         return normalized
+
+    def _resolve_schedule_a_brokers(
+        self,
+        rows: list,
+        records: list[dict],
+        ftw_seq_no: object,
+        previous_matches: list[ScheduleABrokerMatch],
+        *,
+        create_new: bool,
+    ) -> tuple[list[ScheduleABrokerMatch], list[ScheduleABrokerRow | None]]:
+        extracted_rows = [
+            row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
+            for row in rows or []
+        ]
+        if not extracted_rows:
+            return [], []
+        sequence = str(ftw_seq_no or "").strip()
+        selected_record = next(
+            (
+                record for record in records or []
+                if sequence and str(record.get("ftw_seq_no") or "").strip() == sequence
+            ),
+            None,
+        )
+        current_rows = [] if create_new else current_schedule_a_broker_rows(selected_record)
+        decisions: dict[int, dict[str, object]] = {}
+        for match in previous_matches or []:
+            if match.status == "CONFIRMED_NEW":
+                decisions[match.extracted_index] = {"create_new": True}
+            elif match.status == "CONFIRMED" and match.ftw_index is not None:
+                decisions[match.extracted_index] = {"ftw_index": match.ftw_index}
+        if create_new:
+            decisions = {index: {"create_new": True} for index in range(len(extracted_rows))}
+        matches = match_schedule_a_brokers(extracted_rows, current_rows, decisions=decisions)
+        if not all(match.resolved for match in matches):
+            return matches, []
+        return matches, resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+    def _same_schedule_a_selection(self, previous: dict | None, current: dict | None) -> bool:
+        if bool((previous or {}).get("create_new")) != bool((current or {}).get("create_new")):
+            return False
+        return str((previous or {}).get("ftw_seq_no") or "").strip() == str(
+            (current or {}).get("ftw_seq_no") or ""
+        ).strip()
 
     def _normalized_schedule_a_worksheet_summaries(self, rows) -> list:
         normalized = []
@@ -3861,6 +4025,8 @@ class FTWilliamsReviewService:
         )
 
     def _missing_schedule_a_records_for_safe_send(self, review: FTWilliamsReview) -> str | None:
+        if review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete:
+            return "Every extracted Schedule A broker must be matched to an FT Williams row or confirmed as new before sending."
         has_schedule_xml = bool(review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
         has_schedule_updates = any(
             field.form_type == FormType.SCHEDULE_A and field.update_included

@@ -696,6 +696,32 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[2].fee_total, "299")
         self.assertEqual(rows[3].fee_total, "2")
 
+    def test_schedule_a_parser_stops_last_broker_before_part_iii(self):
+        text = """
+        Name and address of the agents, brokers or other persons to whom commissions or fees were paid
+        Name: NFP CORPORATE SERVICES LLC Address Line 1: 200 PARK AVE RM 3202
+        Address Line 2: ATTN ACCOUNTING City: NEW YORK State: NY
+        Zip Code: 10166-3201 Organization code: 03
+        Commissions Paid
+        Coverage Amount Purpose
+        0 Sub Total
+        Fees Paid
+        Coverage Amount Purpose
+        Vision 2 Marketing Fees
+        2 Sub Total
+        Part III Welfare Benefit Contract Information
+        Vision 15,870
+        If more than one contract covers the same group of employees, complete the information below.
+        """
+
+        rows = extract_schedule_a_broker_rows(text)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].fee_total, "2")
+        self.assertEqual(rows[0].fee_rows, [])
+        self.assertNotIn("15,870", str(rows[0].model_dump()))
+        self.assertNotIn("Welfare Benefit Contract Information", str(rows[0].model_dump()))
+
     def test_schedule_a_parser_extracts_bcbsma_worksheet_experience_rated_fields(self):
         text = """
         ACCOUNT NAME: R. H. White Construction Co. I

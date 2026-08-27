@@ -4195,6 +4195,12 @@ def extract_schedule_a_broker_rows(text: str, page: int | None = None) -> list[S
         )
         if next_block:
             block = block[: next_block.start()]
+        block = re.split(
+            r"\bPart\s+III\b|\bWelfare\s+Benefit\s+Contract\s+Information\b",
+            block,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
         name = _schedule_a_labeled_value(block, "Name", ["Address Line 1", "Address Line 2", "City", "State", "Zip Code", "Organization code", "Commissions Paid", "Fees Paid"])
         if not name or not is_probable_person_or_entity_name(name):
             continue

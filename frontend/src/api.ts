@@ -162,6 +162,17 @@ export async function selectFTWilliamsScheduleAMatch(
   });
 }
 
+export async function setFTWilliamsScheduleABrokerMatches(
+  filingId: string,
+  decisions: Array<{ extracted_index: number; ftw_index?: number; create_new?: boolean }>,
+): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request("/filings/" + filingId + "/ftw/schedule-a-broker-matches", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisions })
+  });
+}
+
 export async function sendApprovedFTWilliamsUpdate(
   filingId: string,
   payload: {

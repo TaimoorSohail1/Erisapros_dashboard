@@ -51,6 +51,16 @@ export interface ScheduleABrokerRow {
   confidence?: number;
 }
 
+export interface ScheduleABrokerMatch {
+  extracted_index: number;
+  ftw_index?: number | null;
+  status: "AUTO_MATCHED" | "CONFIRMED" | "CONFIRMED_NEW" | "NEEDS_CONFIRMATION" | string;
+  resolved: boolean;
+  reason: string;
+  candidate_ftw_indexes?: number[];
+  current_row?: ScheduleABrokerRow | null;
+}
+
 export interface ScheduleAWorksheetValue {
   label: string;
   value: string;
@@ -261,6 +271,8 @@ export interface FTWilliamsReview {
   schedule_a_candidates?: Array<Record<string, unknown>>;
   schedule_a_records?: Array<Record<string, unknown>>;
   schedule_a_broker_rows?: ScheduleABrokerRow[];
+  schedule_a_broker_matches?: ScheduleABrokerMatch[];
+  schedule_a_broker_match_complete?: boolean;
   schedule_a_worksheet_summaries?: ScheduleAWorksheetSummary[];
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
