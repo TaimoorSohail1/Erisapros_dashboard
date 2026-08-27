@@ -96,6 +96,13 @@ const NONEXPERIENCE_DERIVED_ZERO_RULES = new Set([
   "schedule_a_part_iii_9b_3_incurred_claims_add_1_and_2",
   "schedule_a_part_iii_9c_1_h_total_retention",
 ]);
+const STRUCTURED_BROKER_SUMMARY_RULES = new Set([
+  "schedule_a_part_i_3a_name_of_agent_broker_person",
+  "schedule_a_part_i_3b_amount_of_commissions",
+  "schedule_a_part_i_3c_amount_of_fees",
+  "schedule_a_part_i_3d_purpose",
+  "schedule_a_part_i_3e_organizational_code",
+]);
 
 interface ReviewDecisionRow {
   key: string;
@@ -204,14 +211,14 @@ export function FilingReviewPage() {
     [missingHigh, lowConfidence, unmapped, missingOther],
   );
   const reviewRows = useMemo(
-    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false),
-    [fields, filing?.ftw_review, scheduleAContractType],
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false, Boolean(scheduleABrokerRows.length)),
+    [fields, filing?.ftw_review, scheduleABrokerRows.length, scheduleAContractType],
   );
   const visibleReviewRows = useMemo(
     () => showExcludedFields
-      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true)
+      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true, Boolean(scheduleABrokerRows.length))
       : reviewRows,
-    [fields, filing?.ftw_review, reviewRows, scheduleAContractType, showExcludedFields],
+    [fields, filing?.ftw_review, reviewRows, scheduleABrokerRows.length, scheduleAContractType, showExcludedFields],
   );
   const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
   const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" && isActionRequiredRow(row));
@@ -2791,6 +2798,7 @@ function ScheduleABrokerRowsPanel({
               <th>Org</th>
               <th>Commissions</th>
               <th>Fees</th>
+              <th>Purpose</th>
               <th>FT Williams row</th>
             </tr>
           </thead>
@@ -2804,6 +2812,7 @@ function ScheduleABrokerRowsPanel({
                 <td>{row.organization_code || "-"}</td>
                 <td>{row.commission_total || "0"}</td>
                 <td>{row.fee_total || "0"}</td>
+                <td>{formatBrokerPurpose(row) || "-"}</td>
                 <td>
                   {match?.resolved ? (
                     <span className="broker-match-status broker-match-ready">
@@ -2864,6 +2873,13 @@ function formatBrokerAddress(row: ScheduleABrokerRow) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function formatBrokerPurpose(row: ScheduleABrokerRow) {
+  return [...new Set([...(row.commission_rows || []), ...(row.fee_rows || [])]
+    .map((item) => String(item.purpose || "").trim())
+    .filter(Boolean))]
+    .join(", ");
 }
 
 function FTWilliamsComparisonPanel({
@@ -3220,12 +3236,14 @@ function buildReviewDecisionRows(
   review: FTWilliamsReview | null,
   contractType: ScheduleAContractType,
   includeExcluded: boolean,
+  hideStructuredBrokerFields = false,
 ): ReviewDecisionRow[] {
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const usedFieldIds = new Set<string>();
   const rows: ReviewDecisionRow[] = [];
 
   (review?.fields ?? []).forEach((comparison, index) => {
+    if (hideStructuredBrokerFields && isStructuredBrokerSummaryRule(comparison.rule_key)) return;
     const extractedField = comparison.field_id ? fieldById.get(comparison.field_id) : undefined;
     if (!includeExcluded && !comparisonAllowedForContractType(comparison, extractedField, contractType)) return;
     if (comparison.field_id) usedFieldIds.add(comparison.field_id);
@@ -3233,6 +3251,7 @@ function buildReviewDecisionRows(
   });
 
   fields.forEach((field) => {
+    if (hideStructuredBrokerFields && isStructuredBrokerSummaryRule(fieldRuleKey(field))) return;
     if (!includeExcluded && !fieldAllowedForContractType(field, contractType)) return;
     if (field.id && usedFieldIds.has(field.id)) return;
     if (field.status === "MATCHED" || field.status === "EDITED") return;
@@ -3240,6 +3259,10 @@ function buildReviewDecisionRows(
   });
 
   return rows.sort(compareReviewRows);
+}
+
+function isStructuredBrokerSummaryRule(ruleKey?: string | null) {
+  return STRUCTURED_BROKER_SUMMARY_RULES.has(String(ruleKey || ""));
 }
 
 function mergeFieldDecisionReview(

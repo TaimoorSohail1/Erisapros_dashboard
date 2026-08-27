@@ -184,6 +184,21 @@ assert.match(
 );
 assert.match(source, /Review only · not supported/, "Unsupported FTW fields must be labelled as review-only rather than resolved.");
 assert.match(source, /Managed in broker rows/, "Structured multi-broker fields must not be labelled as unsupported.");
+assert.match(
+  source,
+  /hideStructuredBrokerFields && isStructuredBrokerSummaryRule\(comparison\.rule_key\)/,
+  "Structured broker rows must hide duplicate flat broker comparison fields.",
+);
+assert.match(
+  source,
+  /hideStructuredBrokerFields && isStructuredBrokerSummaryRule\(fieldRuleKey\(field\)\)/,
+  "Structured broker rows must also hide duplicate extracted-only broker fields.",
+);
+assert.match(
+  source,
+  /buildReviewDecisionRows\(fields, filing\?\.ftw_review \|\| null, scheduleAContractType, false, Boolean\(scheduleABrokerRows\.length\)\)/,
+  "The comparison workspace must enable broker-summary hiding whenever the structured broker table is present.",
+);
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
