@@ -62,6 +62,7 @@ from app.services.ftwilliams_tags import (
 from app.services.schedule_a_classification import (
     ScheduleAClassification,
     apply_schedule_a_classification,
+    classify_schedule_a_fields,
     classify_schedule_a_current,
     filter_schedule_a_fields_for_contract_type,
     schedule_a_contract_type_allows_rule,
@@ -144,6 +145,7 @@ class FTWilliamsReviewService:
         send_queries: bool = False,
         *,
         reuse_current_snapshot: bool = False,
+        apply_automatic_derivations: bool = True,
         preloaded: tuple | None = None,
     ) -> FTWilliamsReview:
         repo = get_repository()
@@ -288,7 +290,8 @@ class FTWilliamsReviewService:
                 or existing_review.schedule_a_match.get("ScheduleDesc")
                 or ""
             ).strip()
-        fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
+        if apply_automatic_derivations:
+            fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
 
         ftw_editability = self._ftw_editability_status(form_5500_current)
         if ftw_editability["editable"] is None and existing_review and not send_queries:
@@ -322,13 +325,23 @@ class FTWilliamsReviewService:
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
         safe_form_5500_fields = [] if form_5500_block_reason else self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
-        automatic_field_state = self._automatic_field_state(fields)
-        computed_contract_classification = apply_schedule_a_classification(
-            fields,
-            filing.schedule_a_classification_signals,
+        if apply_automatic_derivations:
+            automatic_field_state = self._automatic_field_state(fields)
+            computed_contract_classification = apply_schedule_a_classification(
+                fields,
+                filing.schedule_a_classification_signals,
+            )
+            await self._persist_automatic_field_changes(repo, filing_id, automatic_field_state, fields)
+        else:
+            computed_contract_classification = classify_schedule_a_fields(
+                fields,
+                filing.schedule_a_classification_signals,
+            )
+        extracted_contract_classification = self._effective_schedule_a_classification(
+            filing,
+            computed_contract_classification,
+            preserve_confirmed=not apply_automatic_derivations,
         )
-        await self._persist_automatic_field_changes(repo, filing_id, automatic_field_state, fields)
-        extracted_contract_classification = self._effective_schedule_a_classification(filing, computed_contract_classification)
         ftw_contract_classification = classify_schedule_a_current(schedule_a_current) if schedule_a_current else None
         contract_type_mismatch = bool(
             ftw_contract_classification
@@ -2805,8 +2818,23 @@ class FTWilliamsReviewService:
         self,
         filing,
         computed: ScheduleAClassification,
+        *,
+        preserve_confirmed: bool = False,
     ) -> ScheduleAClassification:
-        del filing
+        if (
+            preserve_confirmed
+            and filing.schedule_a_contract_type_confirmed
+            and filing.schedule_a_contract_type not in {
+                ScheduleAContractType.UNKNOWN,
+                ScheduleAContractType.NEEDS_REVIEW,
+            }
+        ):
+            return ScheduleAClassification(
+                filing.schedule_a_contract_type,
+                filing.schedule_a_contract_type_reason or "Preserved during an isolated field decision.",
+                filing.schedule_a_contract_type_confidence,
+                tuple(filing.schedule_a_contract_type_evidence or []),
+            )
         return computed
 
     def _schedule_a_contract_type_block_reason(

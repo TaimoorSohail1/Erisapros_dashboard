@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from datetime import datetime
 from urllib.parse import urlsplit
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
@@ -34,7 +35,11 @@ from app.services.filing_pipeline import (
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
-from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
+from app.services.schedule_a_classification import (
+    apply_schedule_a_classification,
+    classify_schedule_a_fields,
+    filter_schedule_a_fields_for_contract_type,
+)
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml
@@ -291,27 +296,35 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     fields = [field if item.id == field_id else item for item in existing_fields]
-    before_automatic = {
-        item.id: (item.proposed_value, item.status, item.status_reason)
-        for item in fields
-        if item.id
-    }
-    classification = apply_schedule_a_classification(fields, filing.schedule_a_classification_signals)
+    computed_classification = classify_schedule_a_fields(fields, filing.schedule_a_classification_signals)
+    contract_type = (
+        filing.schedule_a_contract_type
+        if filing.schedule_a_contract_type.value not in {"UNKNOWN", "NEEDS_REVIEW"}
+        else computed_classification.contract_type
+    )
     relevant_fields = filter_schedule_a_fields_for_contract_type(
         fields,
-        classification.contract_type,
+        contract_type,
         rules=published_rules,
     )
-    proposed_xml, _preview_validation_issues = build_safe_proposed_ftw_xml(relevant_fields)
-    for item in fields:
-        if not item.id or before_automatic.get(item.id) == (item.proposed_value, item.status, item.status_reason):
-            continue
-        await repo.update_field(
+    # Field decisions are isolated commands. Preview validation may inspect the
+    # whole proposed payload, but it must never mutate or persist another row.
+    preview_fields = [deepcopy(item) for item in relevant_fields]
+    proposed_xml, _preview_validation_issues = build_safe_proposed_ftw_xml(preview_fields)
+    preview_field = next((item for item in preview_fields if item.id == field_id), None)
+    if preview_field and preview_field.status != field.status:
+        field = await repo.update_field(
             filing_id,
-            item.id,
-            item.proposed_value,
-            status=item.status,
-            status_reason=item.status_reason,
+            field_id,
+            preview_field.proposed_value,
+            status=preview_field.status,
+            status_reason=preview_field.status_reason,
+        )
+        fields = [field if item.id == field_id else item for item in fields]
+        relevant_fields = filter_schedule_a_fields_for_contract_type(
+            fields,
+            contract_type,
+            rules=published_rules,
         )
     summary = summarize_mapped_fields(relevant_fields)
     await repo.update_filing(
@@ -321,11 +334,6 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
             "approved_at": None,
             "error_message": None,
             "proposed_xml": proposed_xml,
-            "schedule_a_contract_type": classification.contract_type,
-            "schedule_a_contract_type_reason": classification.reason,
-            "schedule_a_contract_type_confirmed": True,
-            "schedule_a_contract_type_confidence": classification.confidence,
-            "schedule_a_contract_type_evidence": list(classification.evidence),
             "overall_confidence": summary["overall_confidence"],
             "missing_high_priority_count": summary["missing_high_priority_count"],
             "missing_medium_priority_count": summary["missing_medium_priority_count"],
@@ -343,6 +351,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         ftw_review = await FTWilliamsReviewService().prepare_review(
             filing_id,
             send_queries=False,
+            apply_automatic_derivations=False,
             preloaded=(filing, fields, published_rules, existing_review),
         )
     except ValueError:

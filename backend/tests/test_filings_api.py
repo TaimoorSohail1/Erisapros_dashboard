@@ -316,23 +316,159 @@ class FilingsApiTests(unittest.TestCase):
                 ]
             )
 
+            unrelated_before = next(
+                field.model_dump()
+                for field in fields
+                if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address"
+            )
             response = await update_field(
                 filing.id,
                 fields[0].id,
                 FieldEditRequest(proposed_value="10"),
             )
             saved = await repo.list_fields(filing.id)
-            return response, saved
+            return response, saved, unrelated_before
 
-        response, saved = run_async(scenario())
+        response, saved, unrelated_before = run_async(scenario())
 
         edited = next(field for field in saved if field.mapped_rule_key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year")
         invalid_address = next(field for field in saved if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address")
         self.assertEqual(response["field"].proposed_value, "10")
         self.assertEqual(edited.status, ExtractedFieldStatus.EDITED)
         self.assertEqual(edited.proposed_value, "10")
-        self.assertEqual(invalid_address.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertEqual(invalid_address.model_dump(), unrelated_before)
         self.assertIsNone(response["proposed_xml"])
+
+    def test_manual_supported_value_is_a_single_ftw_update(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Manual persons covered.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/manual-persons-covered",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered (End of Policy Year)",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered (End of Policy Year)",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        value="",
+                        proposed_value="",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="9a(4). Total Earned Premium",
+                        normalized_field_name="total_earned_premium",
+                        mapped_rule_key="schedule_a_part_iii_9a_4_earned_1_2_3",
+                        mapped_label="9a(4). Total Earned Premium",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        value="",
+                        proposed_value="",
+                    ),
+                ]
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_query_complete=True,
+                    current_year_exists=True,
+                    schedule_a_current_values={"InsPrsnCoveredEoyCnt": ""},
+                )
+            )
+
+            response = await update_field(
+                filing.id,
+                fields[0].id,
+                FieldEditRequest(proposed_value="1100"),
+            )
+            saved = await repo.list_fields(filing.id)
+            return response, saved
+
+        response, saved = run_async(scenario())
+
+        comparison = next(
+            field
+            for field in response["ftw_review"].fields
+            if field.rule_key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year"
+        )
+        untouched = next(
+            field
+            for field in saved
+            if field.mapped_rule_key == "schedule_a_part_iii_9a_4_earned_1_2_3"
+        )
+        self.assertEqual(response["field"].status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(comparison.ftw_tag, "InsPrsnCoveredEoyCnt")
+        self.assertTrue(comparison.changed)
+        self.assertTrue(comparison.update_included)
+        self.assertEqual(untouched.status, ExtractedFieldStatus.MISSING)
+        self.assertEqual(untouched.proposed_value, "")
+
+    def test_field_edit_applies_preview_validation_only_to_the_selected_field(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Invalid selected address.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/invalid-selected-address",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1f. Plan Sponsor Address",
+                        normalized_field_name="sponsor_address",
+                        mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                        mapped_label="1f. Plan Sponsor Address",
+                        form_type=FormType.FORM_5500,
+                        ftw_resolved_tag="SDAddressLine1",
+                        proposed_value="OLD ADDRESS",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        proposed_value="",
+                    ),
+                ]
+            )
+            untouched_before = fields[1].model_dump()
+
+            response = await update_field(
+                filing.id,
+                fields[0].id,
+                FieldEditRequest(proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS"),
+            )
+            saved = await repo.list_fields(filing.id)
+            return response, saved, untouched_before
+
+        response, saved, untouched_before = run_async(scenario())
+
+        selected = next(field for field in saved if field.id == response["field"].id)
+        untouched = next(field for field in saved if field.id != response["field"].id)
+        self.assertEqual(selected.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertIn("FT Williams pre-send validation", selected.status_reason)
+        self.assertEqual(untouched.model_dump(), untouched_before)
 
     def test_filing_detail_reads_independent_collections_concurrently(self):
         class ConcurrentReadRepository(repositories.MemoryRepository):

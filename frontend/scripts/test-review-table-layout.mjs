@@ -177,6 +177,11 @@ assert.match(
   /if \(field\?\.status === "EDITED"\) return comparison\.changed && comparison\.update_included \? "WILL_UPDATE" : "SAME";/,
   "A reviewer-confirmed field must enter Will Update only when the FTW update contract includes it.",
 );
+assert.match(
+  source,
+  /mergeFieldDecisionReview\(current\.ftw_review, result\.ftw_review, fieldId\)/,
+  "Saving one field must merge only that field's FT Williams comparison instead of replacing unrelated rows.",
+);
 assert.match(source, /Review only · not supported/, "Unsupported FTW fields must be labelled as review-only rather than resolved.");
 assert.match(source, /Managed in broker rows/, "Structured multi-broker fields must not be labelled as unsupported.");
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");

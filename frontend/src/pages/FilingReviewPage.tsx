@@ -324,7 +324,7 @@ export function FilingReviewPage() {
       const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
       setFiling((current) => current ? {
         ...current,
-        ftw_review: result.ftw_review ?? current.ftw_review,
+        ftw_review: mergeFieldDecisionReview(current.ftw_review, result.ftw_review, fieldId),
         proposed_xml: result.proposed_xml,
         fields: current.fields.map((field) => field.id === fieldId ? result.field : field),
       } : current);
@@ -3240,6 +3240,27 @@ function buildReviewDecisionRows(
   });
 
   return rows.sort(compareReviewRows);
+}
+
+function mergeFieldDecisionReview(
+  current: FTWilliamsReview | null | undefined,
+  updated: FTWilliamsReview | null | undefined,
+  fieldId: string,
+): FTWilliamsReview | null {
+  if (!updated) return current ?? null;
+  if (!current) return updated;
+
+  const replacement = updated.fields.find((field) => field.field_id === fieldId);
+  if (!replacement) return { ...updated, fields: current.fields };
+
+  let replaced = false;
+  const fields = current.fields.map((field) => {
+    if (field.field_id !== fieldId) return field;
+    replaced = true;
+    return replacement;
+  });
+  if (!replaced) fields.push(replacement);
+  return { ...updated, fields };
 }
 
 function rowFromComparison(
