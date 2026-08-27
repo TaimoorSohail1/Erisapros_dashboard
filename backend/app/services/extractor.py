@@ -723,7 +723,10 @@ def merge_schedule_a_fields(
     for field in pdf_text_fields:
         usable_primary = usable_primary_by_name.get(field.field_name, [])
         distinct_primary_values = {clean_extracted_value(item.value).lower() for item in usable_primary}
-        prefer_document_value = field.field_name in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS
+        prefer_document_value = field.field_name in SCHEDULE_A_PREFER_PDF_TEXT_FIELDS or (
+            field.field_name == "3a. Name of Agent/Broker/Person"
+            and field.source_text == "Broker compensation table"
+        )
         if not prefer_document_value and len(distinct_primary_values) == 1:
             continue
         if field.field_name in existing_names:
@@ -1746,6 +1749,7 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
     return dedupe_schedule_a_broker_rows(
         [
             *extract_schedule_a_broker_rows(full_text),
+            *extract_columnar_broker_compensation_rows(page_texts),
             *extract_compensation_table_broker_rows(page_texts),
             *extract_tabular_broker_rows(page_texts),
         ]
@@ -1824,6 +1828,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     # separate passes, so feed the table's values back in as fields - without
     # this the amounts were parsed and then thrown away.
     fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
+    fields.extend(schedule_a_broker_compensation_fields(extract_columnar_broker_compensation_rows(page_texts)))
     fields.extend(extract_commission_fee_total_fields(page_texts))
     cigna_fields = extract_cigna_schedule_a_fields(page_texts)
     if cigna_fields:
@@ -2036,6 +2041,7 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_standard_broker_rows(page_texts),
             *extract_united_omaha_broker_rows(page_texts),
             *extract_summary_table_broker_rows(page_texts),
+            *extract_columnar_broker_compensation_rows(page_texts),
             *extract_compensation_table_broker_rows(page_texts),
         ]
     )
@@ -2202,6 +2208,183 @@ def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> l
             confidence=0.995,
         )
     ]
+
+
+_COLUMNAR_BROKER_SECTION = re.compile(
+    r"INSURANCE\s+FEES?\s+AND\s+COMMISSIONS?\s+INFORMATION",
+    re.IGNORECASE,
+)
+_COLUMNAR_BROKER_END = re.compile(
+    r"\n\s*\d+\s*\.\s*(?:COVERAGE\s*/?\s*BENEFITS|NON[- ]?PARTICIPATING|EXPERIENCE[- ]?RATED)",
+    re.IGNORECASE,
+)
+_COLUMNAR_BROKER_AMOUNTS = re.compile(
+    r"\$\s*(?P<sales>[\d,]+(?:\.\d{1,2})?)\s+"
+    r"\$\s*(?P<fees>[\d,]+(?:\.\d{1,2})?)\s+"
+    r"\$\s*(?P<additional>[\d,]+(?:\.\d{1,2})?)",
+)
+_COLUMNAR_CITY_STATE_ZIP = re.compile(
+    r"^(?P<city>[A-Za-z .'-]+),\s*(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)$",
+    re.IGNORECASE,
+)
+_SECONDARY_ADDRESS_LINE = re.compile(
+    r"^(?:ATTN\b|BLDG\b|BUILDING\b|FLOOR\b|FL\b|ROOM\b|RM\b|STE\b|SUITE\b|UNIT\b|\d+(?:ST|ND|RD|TH)\s+FLOOR\b)",
+    re.IGNORECASE,
+)
+
+
+def extract_columnar_broker_compensation_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Extract multi-page broker disclosures with sales, fee, and additional columns.
+
+    Carrier exports such as Unum's disclosure are not Form 5500 renderings.
+    They print one recipient block followed by three money columns, and may
+    continue the last address onto the next page. Parse the table structurally,
+    merge repeated name/address rows, and return nothing if any paid block
+    cannot be resolved so an incomplete broker set is never sent to FTW.
+    """
+    combined = ""
+    page_offsets: list[tuple[int, int]] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text or "")
+        if not normalized:
+            continue
+        if combined:
+            combined += "\n"
+        page_offsets.append((len(combined), page))
+        combined += normalized
+
+    start = _COLUMNAR_BROKER_SECTION.search(combined)
+    if not start:
+        return []
+    heading = combined[start.start() : start.start() + 900].lower()
+    if not all(label in heading for label in ("sales", "fees", "additional")):
+        return []
+
+    section_start = start.end()
+    section = combined[section_start:]
+    end = _COLUMNAR_BROKER_END.search(section)
+    if end:
+        section = section[: end.start()]
+
+    parsed_rows: list[ScheduleABrokerRow] = []
+    paid_blocks = 0
+    unresolved_paid_blocks = 0
+    block_pattern = re.compile(r"(?:\A|\n[ \t]*\n)(?P<block>.*?)(?=\n[ \t]*\n|\Z)", re.DOTALL)
+    for block_match in block_pattern.finditer(section):
+        block = block_match.group("block").strip()
+        amount_match = _COLUMNAR_BROKER_AMOUNTS.search(block)
+        if not amount_match:
+            continue
+        sales = money_value(amount_match.group("sales"))
+        fees = money_value(amount_match.group("fees"))
+        additional = money_value(amount_match.group("additional"))
+        if not any((parse_numeric_amount(value) or 0) > 0 for value in (sales, fees, additional)):
+            continue
+        paid_blocks += 1
+
+        name_lines = [
+            clean_extracted_value(line)
+            for line in block[: amount_match.start()].splitlines()
+            if clean_extracted_value(line)
+        ]
+        name = clean_extracted_value(" ".join(name_lines)).strip(" :-")
+        address_lines = [
+            clean_extracted_value(line)
+            for line in block[amount_match.end() :].splitlines()
+            if clean_extracted_value(line)
+        ]
+        address_line_1, address_line_2, city, state, zip_code = _columnar_broker_address(address_lines)
+        if not name or not is_probable_person_or_entity_name(name) or not address_line_1 or not city or not state or not zip_code:
+            unresolved_paid_blocks += 1
+            continue
+
+        absolute_offset = section_start + block_match.start("block")
+        source_page = next((page for offset, page in reversed(page_offsets) if offset <= absolute_offset), None)
+        fee_total = sum_money_values(fees, additional) or "0"
+        parsed_rows.append(
+            ScheduleABrokerRow(
+                name=name,
+                address_line_1=address_line_1,
+                address_line_2=address_line_2,
+                city=city,
+                state=state,
+                zip_code=zip_code,
+                organization_code="3",
+                commission_rows=(
+                    [ScheduleABrokerMoneyRow(amount=sales, purpose="Sales Commission")]
+                    if (parse_numeric_amount(sales) or 0) > 0
+                    else []
+                ),
+                fee_rows=[
+                    *(
+                        [ScheduleABrokerMoneyRow(amount=fees, purpose="Fees")]
+                        if (parse_numeric_amount(fees) or 0) > 0
+                        else []
+                    ),
+                    *(
+                        [ScheduleABrokerMoneyRow(amount=additional, purpose="Additional Compensation")]
+                        if (parse_numeric_amount(additional) or 0) > 0
+                        else []
+                    ),
+                ],
+                commission_total=sales,
+                fee_total=fee_total,
+                source_page=source_page,
+                confidence=0.96,
+            )
+        )
+
+    if unresolved_paid_blocks or len(parsed_rows) != paid_blocks:
+        return []
+    return _merge_columnar_broker_rows(parsed_rows)
+
+
+def _columnar_broker_address(lines: list[str]) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    city = state = zip_code = None
+    city_index = None
+    for index, line in enumerate(lines):
+        match = _COLUMNAR_CITY_STATE_ZIP.match(line)
+        if match:
+            city = clean_extracted_value(match.group("city"))
+            state = match.group("state").upper()
+            zip_code = match.group("zip")
+            city_index = index
+            break
+    street_lines = lines[:city_index] if city_index is not None else []
+    if not street_lines:
+        return None, None, city, state, zip_code
+    primary_lines = [line for line in street_lines if not _SECONDARY_ADDRESS_LINE.match(line)]
+    secondary_lines = [line for line in street_lines if _SECONDARY_ADDRESS_LINE.match(line)]
+    address_line_1 = primary_lines[0] if primary_lines else street_lines[0]
+    remaining_primary = primary_lines[1:]
+    address_line_2 = " ".join([*secondary_lines, *remaining_primary]) or None
+    return address_line_1, address_line_2, city, state, zip_code
+
+
+def _merge_columnar_broker_rows(rows: list[ScheduleABrokerRow]) -> list[ScheduleABrokerRow]:
+    merged: dict[tuple[str, str, str], ScheduleABrokerRow] = {}
+    order: list[tuple[str, str, str]] = []
+    for row in rows:
+        key = (
+            normalize_compare_key(row.name),
+            normalize_compare_key(row.address_line_1 or ""),
+            str(row.zip_code or ""),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = row.model_copy(deep=True)
+            order.append(key)
+            continue
+        existing.commission_rows.extend(row.commission_rows)
+        existing.fee_rows.extend(row.fee_rows)
+        existing.confidence = min(existing.confidence, row.confidence)
+    result: list[ScheduleABrokerRow] = []
+    for key in order:
+        row = merged[key]
+        row.commission_total = _sum_money_rows(row.commission_rows) if row.commission_rows else "0"
+        row.fee_total = _sum_money_rows(row.fee_rows) if row.fee_rows else "0"
+        result.append(row)
+    return result
 
 
 def extract_compensation_table_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:

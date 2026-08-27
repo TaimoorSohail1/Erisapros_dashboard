@@ -5,10 +5,19 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField
+from app.models import (
+    DocumentType,
+    FieldRule,
+    FieldRuleMappingMode,
+    FormType,
+    NormalizedExtractionField,
+    ScheduleABrokerMoneyRow,
+    ScheduleABrokerRow,
+)
 from app.services.extractor import (
     extract_cigna_schedule_a_broker_rows,
     extract_cigna_schedule_a_fields,
+    extract_columnar_broker_compensation_rows,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
     extract_bcbs_michigan_schedule_a_summaries,
@@ -38,6 +47,7 @@ from app.services.extractor import (
     is_obvious_template_placeholder,
     merge_schedule_a_fields,
     parse_schedule_a_text,
+    schedule_a_broker_compensation_fields,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -46,6 +56,130 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_schedule_a_parser_extracts_and_merges_columnar_broker_disclosure_rows(self):
+        pages = [
+            (
+                2,
+                """
+                5. INSURANCE FEES AND COMMISSION INFORMATION:
+                NAME AND ADDRESS OF EACH SOLICITING AGENT OR BROKER RECEIVING COMPENSATION:
+                SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                ALLIANT INSURANCE
+                SERVICES, INC.
+                $ 0.00 $ 0.00 $ 0.00
+                32 OLD SLIP
+                NEW YORK, NY 10005
+
+                NFP CORPORATE SERVICES
+                (NY) LLC
+                $ 1,689.77 $ 0.00 $ 0.00
+                PO BOX 9101
+                PLAINVIEW, NY 11803
+
+                USI INSURANCE SERVICES LLC $ 45.45 $ 0.00 $ 0.00
+                3RD FLOOR
+                600 THIRD AVENUE
+                NEW YORK, NY 10016
+
+                USI INSURANCE SERVICES LLC $ 0.00 $ 0.00 $ 52.98
+                3RD FLOOR
+                600 THIRD AVENUE
+                NEW YORK, NY 10016
+
+                MANAGEMENT COMPENSATION
+                GROUP/NFP
+                $ 0.00 $ 0.00 $ 145.16
+                STE 200
+                3445 PEACHTREE RD NE
+                """,
+            ),
+            (
+                3,
+                """
+                ATLANTA, GA 30326
+
+                NFP CORPORATE SERVICES
+                (NY) LLC
+                $ 1,035.96 $ 0.00 $ 0.00
+                PO BOX 9101
+                PLAINVIEW, NY 11803
+
+                NFP INSURANCE SERVICES,
+                INC
+                $ 0.00 $ 0.00 $ 510.90
+                1250 CAPITAL OF TEXAS HWY
+                BLDG 2 STE 125
+                AUSTIN, TX 78746
+
+                6. COVERAGE/BENEFITS PROVIDED: DISABILITY
+                """,
+            ),
+        ]
+
+        rows = extract_columnar_broker_compensation_rows(pages)
+        by_name = {row.name: row for row in rows}
+
+        self.assertEqual(len(rows), 4)
+        self.assertNotIn("ALLIANT INSURANCE SERVICES, INC.", by_name)
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].commission_total, "2,725.73")
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].fee_total, "0")
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].zip_code, "11803")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].commission_total, "45.45")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].fee_total, "52.98")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].address_line_1, "600 THIRD AVENUE")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].address_line_2, "3RD FLOOR")
+        self.assertEqual(by_name["MANAGEMENT COMPENSATION GROUP/NFP"].city, "ATLANTA")
+        self.assertEqual(by_name["MANAGEMENT COMPENSATION GROUP/NFP"].fee_total, "145.16")
+        self.assertEqual(by_name["NFP INSURANCE SERVICES INC"].fee_total, "510.90")
+
+        fields = {field.field_name: field.value for field in schedule_a_broker_compensation_fields(rows)}
+        self.assertEqual(fields["3b. Amount of Commissions"], "2,771.18")
+        self.assertEqual(fields["3c. Amount of Fees"], "709.04")
+
+    def test_columnar_broker_disclosure_fails_closed_when_a_paid_row_has_no_name(self):
+        rows = extract_columnar_broker_compensation_rows(
+            [
+                (
+                    1,
+                    """
+                    INSURANCE FEES AND COMMISSION INFORMATION:
+                    SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                    $ 100.00 $ 0.00 $ 0.00
+                    1 MAIN STREET
+                    BOSTON, MA 02110
+
+                    6. COVERAGE/BENEFITS PROVIDED: LIFE
+                    """,
+                )
+            ]
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_verified_broker_table_replaces_incorrect_ai_broker_values(self):
+        ai_fields = [
+            NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value="March", confidence=0.99),
+            NormalizedExtractionField(field_name="3b. Amount of Commissions", value="31", confidence=0.99),
+        ]
+        broker_fields = schedule_a_broker_compensation_fields(
+            [
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES (NY) LLC",
+                    commission_total="2,725.73",
+                    fee_total="0",
+                    commission_rows=[ScheduleABrokerMoneyRow(amount="2,725.73", purpose="Sales Commission")],
+                    source_page=2,
+                )
+            ]
+        )
+
+        merged = {field.field_name: field.value for field in merge_schedule_a_fields(ai_fields, broker_fields)}
+
+        self.assertEqual(merged["3a. Name of Agent/Broker/Person"], "NFP CORPORATE SERVICES (NY) LLC")
+        self.assertEqual(merged["3b. Amount of Commissions"], "2,725.73")
+
     def test_cigna_summary_page_wins_over_state_appendices(self):
         pages = [
             (
