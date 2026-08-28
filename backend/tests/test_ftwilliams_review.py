@@ -2342,6 +2342,73 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("Carrier EIN", candidates[0]["match_reasons"])
         self.assertIn("NAIC", candidates[0]["match_reasons"])
 
+    def test_schedule_match_tolerates_ftw_dropping_internal_contract_leading_zero(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1b. EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="23-1503749",
+                proposed_value="23-1503749",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1c. NAIC Code",
+                normalized_field_name="naic",
+                mapped_rule_key="schedule_a_part_i_1c_naic_code",
+                mapped_label="1c. NAIC Code",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="65498",
+                proposed_value="65498",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract/Policy Number",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract/Policy Number",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="LK 0751856",
+                proposed_value="LK 0751856",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no=seq,
+                query_results={
+                    "InsCarrierEIN": "23-1503749",
+                    "InsCarrierNAICCode": "65498",
+                    "InsContractNum": contract,
+                },
+            )
+            for seq, contract in [
+                ("2", "FLX966853"),
+                ("3", "OK 968358"),
+                ("4", "OK 968359"),
+                ("5", "LK 751856"),
+            ]
+        ]
+
+        match = service._match_schedule_a_status(fields, statuses)
+        candidates = service._schedule_candidate_payloads(statuses, fields)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "5")
+        self.assertEqual(candidates[0]["ftw_seq_no"], "5")
+        self.assertIn("Contract", candidates[0]["match_reasons"])
+
     def test_fresh_query_replaces_stale_preferred_schedule_a_with_stronger_identity_match(self):
         service = FTWilliamsReviewService()
         fields = [

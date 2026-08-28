@@ -4103,7 +4103,13 @@ class FTWilliamsReviewService:
 
     def _normalize_contract(self, value: object) -> str:
         text = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
-        return text.lstrip("0") or text
+        if not text:
+            return ""
+        # FT Williams normalizes policy identifiers by dropping leading zeroes
+        # from numeric runs even when they follow an alphabetic prefix (for
+        # example, ``LK 0751856`` is returned as ``LK 751856``). Treat those
+        # representations as the same contract while preserving all letters.
+        return re.sub(r"\d+", lambda match: match.group(0).lstrip("0") or "0", text)
 
     def _normalize_identifier_digits(self, value: object) -> str:
         text = re.sub(r"\D", "", str(value or ""))
