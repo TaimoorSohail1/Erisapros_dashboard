@@ -2531,6 +2531,90 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.ftw_seq_no, "7")
 
+    def test_exact_contract_beats_a_leading_zero_normalization_collision(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1a. Name of Insurance Company",
+                normalized_field_name="carrier_name",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Name of Insurance Company",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                proposed_value="CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1b. EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="59-1031071",
+                proposed_value="59-1031071",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1c. NAIC",
+                normalized_field_name="naic",
+                mapped_rule_key="schedule_a_part_i_1c_naic_code",
+                mapped_label="1c. NAIC",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="67369",
+                proposed_value="67369",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract/Policy Number",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract/Policy Number",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="0656053",
+                proposed_value="0656053",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="7",
+                query_results={
+                    "ScheduleDesc": "CIGNA",
+                    "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+                    "InsCarrierEIN": "59-1031071",
+                    "InsCarrierNAICCode": "67369",
+                    "InsContractNum": "00656053",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="8",
+                query_results={
+                    "ScheduleDesc": "DENTAL",
+                    "InsCarrierName": "CIGNA",
+                    "InsCarrierEIN": "59-1031071",
+                    "InsCarrierNAICCode": "67369",
+                    "InsContractNum": "0656053",
+                },
+            ),
+        ]
+
+        match = service._match_schedule_a_status(fields, statuses)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "8")
+
     def test_locked_ftw_filing_is_reported_and_blocked_before_update_send(self):
         class LockedFTWilliamsService(FakeFTWilliamsService):
             def __init__(self):

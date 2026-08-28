@@ -4068,9 +4068,21 @@ class FTWilliamsReviewService:
         strong_matches = 0
         reasons: list[str] = []
         query_results = status.query_results or {}
-        extracted_contract = self._normalize_contract(extracted_by_tag.get("InsContractNum"))
-        current_contract = self._normalize_contract(query_results.get("InsContractNum") or query_results.get("INS_CONTRACT_NUM"))
-        if extracted_contract and current_contract and extracted_contract == current_contract:
+        extracted_contract_value = extracted_by_tag.get("InsContractNum")
+        current_contract_value = query_results.get("InsContractNum") or query_results.get("INS_CONTRACT_NUM")
+        extracted_contract_exact = self._contract_text(extracted_contract_value)
+        current_contract_exact = self._contract_text(current_contract_value)
+        extracted_contract = self._normalize_contract(extracted_contract_value)
+        current_contract = self._normalize_contract(current_contract_value)
+        if (
+            extracted_contract_exact
+            and current_contract_exact
+            and extracted_contract_exact == current_contract_exact
+        ):
+            score += 12
+            strong_matches += 1
+            reasons.append("Exact contract")
+        elif extracted_contract and current_contract and extracted_contract == current_contract:
             score += 8
             strong_matches += 1
             reasons.append("Contract")
@@ -4126,7 +4138,7 @@ class FTWilliamsReviewService:
         }
 
     def _normalize_contract(self, value: object) -> str:
-        text = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+        text = self._contract_text(value)
         if not text:
             return ""
         # FT Williams normalizes policy identifiers by dropping leading zeroes
@@ -4134,6 +4146,10 @@ class FTWilliamsReviewService:
         # example, ``LK 0751856`` is returned as ``LK 751856``). Treat those
         # representations as the same contract while preserving all letters.
         return re.sub(r"\d+", lambda match: match.group(0).lstrip("0") or "0", text)
+
+    @staticmethod
+    def _contract_text(value: object) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
 
     def _normalize_identifier_digits(self, value: object) -> str:
         text = re.sub(r"\D", "", str(value or ""))
