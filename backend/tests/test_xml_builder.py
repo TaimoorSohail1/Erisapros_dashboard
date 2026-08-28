@@ -56,15 +56,33 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("StateXX"), "TX")
         self.assertEqual(broker.findtext("ZipCodeXX"), "78746-6446")
 
-    def test_schedule_a_new_broker_rejects_name_over_ftw_35_character_limit(self):
+    def test_schedule_a_new_broker_uses_legal_name_when_dba_suffix_exceeds_ftw_limit(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Existing Carrier"},
+                }
+            ],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Nth Insurance Agency dba: Alliance 360 I",
+                    "commission_total": "2340.80",
+                }
+            ],
+        )
+
+        self.assertIn("<NameXX>Nth Insurance Agency</NameXX>", xml)
+
+    def test_schedule_a_new_broker_rejects_unshortenable_name_over_ftw_limit(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
             build_schedule_a_records_update_xml(
-                [
-                    {
-                        "ftw_seq_no": "1",
-                        "query_results": {"InsCarrierName": "Existing Carrier"},
-                    }
-                ],
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
                 "1",
                 [],
                 year="2025",
@@ -72,7 +90,7 @@ class XmlBuilderTests(unittest.TestCase):
                 ftw_plan_id="plan",
                 schedule_a_broker_rows=[
                     {
-                        "name": "Nth Insurance Agency dba: Alliance 360 I",
+                        "name": "A Very Long Broker Legal Name That Cannot Be Safely Shortened",
                         "commission_total": "2340.80",
                     }
                 ],

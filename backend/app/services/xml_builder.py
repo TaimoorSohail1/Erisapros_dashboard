@@ -852,7 +852,7 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
 
 
 def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
-    name = _broker_row_attr(row, "name")
+    name = _ftw_broker_name(_broker_row_attr(row, "name"))
     address_line_1 = _broker_row_attr(row, "address_line_1")
     address_line_2 = _broker_row_attr(row, "address_line_2")
     city = _broker_row_attr(row, "city")
@@ -881,6 +881,20 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
         if str(text or "").strip():
             normalized[tag] = str(text)
     return normalized
+
+
+def _ftw_broker_name(value: str) -> str:
+    """Use the legal-name portion when a DBA suffix exceeds FTW's limit."""
+    name = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(name) <= 35:
+        return name
+    legal_name = re.split(
+        r"\s+(?:D\s*/?\s*B\s*/?\s*A|DOING\s+BUSINESS\s+AS)\s*:?\s*",
+        name,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,-:")
+    return legal_name if legal_name and len(legal_name) <= 35 else name
 
 
 def _broker_row_attr(row: object, key: str) -> str:
