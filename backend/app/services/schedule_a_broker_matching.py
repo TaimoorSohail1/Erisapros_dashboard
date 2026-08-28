@@ -53,7 +53,11 @@ def match_schedule_a_brokers(
             )
             continue
 
-        available = [index for index in range(len(current_rows)) if index not in assigned]
+        available = [
+            index
+            for index in range(len(current_rows))
+            if index not in assigned and _has_broker_content(normalized_current[index])
+        ]
         name_matches = [
             index
             for index in available
@@ -153,13 +157,37 @@ def resolved_schedule_a_broker_rows(
 def current_schedule_a_broker_rows(record: dict | None) -> list[dict[str, str]]:
     rows = list((((record or {}).get("query_subparts") or {}).get("Broker") or []))
     if rows:
-        return rows
+        return _trim_trailing_empty_broker_rows(rows)
     grouped: dict[int, dict[str, str]] = {}
     for tag, value in ((record or {}).get("query_results") or {}).items():
         parsed = _tag_index(str(tag))
         if parsed is not None and str(value or "").strip():
             grouped.setdefault(parsed, {})[str(tag)] = str(value)
-    return [grouped[index] for index in sorted(grouped)]
+    return _trim_trailing_empty_broker_rows([grouped[index] for index in sorted(grouped)])
+
+
+def _trim_trailing_empty_broker_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    trimmed = list(rows)
+    while trimmed and not _has_broker_content(_current_broker_row(trimmed[-1])):
+        trimmed.pop()
+    return trimmed
+
+
+def _has_broker_content(row: ScheduleABrokerRow) -> bool:
+    identity_values = (
+        row.name,
+        row.address_line_1,
+        row.address_line_2,
+        row.city,
+        row.state,
+        row.zip_code,
+    )
+    if any(str(value or "").strip() for value in identity_values):
+        return True
+    return any(
+        str(value or "").strip() not in {"", "0", "0.0", "0.00"}
+        for value in (row.commission_total, row.fee_total)
+    )
 
 
 def _current_broker_row(row: Mapping[str, object]) -> ScheduleABrokerRow:

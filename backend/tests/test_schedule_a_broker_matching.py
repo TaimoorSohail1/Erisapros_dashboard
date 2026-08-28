@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 
 from app.models import ScheduleABrokerRow
 from app.services.schedule_a_broker_matching import (
+    current_schedule_a_broker_rows,
     match_schedule_a_brokers,
     resolved_schedule_a_broker_rows,
 )
@@ -30,6 +31,27 @@ def current(index: int, name: str, address: str = "", zip_code: str = "", commis
 
 
 class ScheduleABrokerMatchingTests(unittest.TestCase):
+    def test_trailing_control_only_ft_rows_are_not_broker_candidates(self):
+        record = {
+            "query_results": {
+                "Name1": "NTH INSURANCE AGENCY INC.",
+                "AddressLine11": "10833 VALLEY VIEW STREET, SUITE 550",
+                "CommPdAmt1": "5811",
+                "ForeignAddy1": "0",
+                "ForeignAddy2": "0",
+                "ForeignAddy3": "0",
+                "ForeignAddy4": "0",
+                "ForeignAddy5": "0",
+                "ForeignAddy6": "0",
+                "ForeignAddy7": "0",
+            }
+        }
+
+        rows = current_schedule_a_broker_rows(record)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Name1"], "NTH INSURANCE AGENCY INC.")
+
     def test_reordered_rows_match_by_identity_not_position(self):
         extracted_rows = [
             extracted("Alpha Broker", "1 Main St", "10001", "100"),
