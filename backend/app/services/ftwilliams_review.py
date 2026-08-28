@@ -1872,16 +1872,24 @@ class FTWilliamsReviewService:
         error_message: str | None = snapshot["form_5500_error"]
         schedule_statuses = deepcopy(snapshot["schedule_statuses"])
         schedule_a_error = snapshot["schedule_a_error"]
+        existing_match = existing_review.schedule_a_match if existing_review else None
+        existing_create_new = bool((existing_match or {}).get("create_new"))
         if schedule_statuses:
             schedule_a_candidates = self._schedule_candidate_payloads(schedule_statuses, fields)
             schedule_a_records = self._schedule_record_payloads(schedule_statuses)
-            existing_match = existing_review.schedule_a_match if existing_review else None
             manual_sequence = (
                 str((existing_match or {}).get("ftw_seq_no") or "").strip()
                 if str((existing_match or {}).get("source") or "").upper() == "MANUAL"
                 else ""
             )
-            if manual_sequence:
+            if existing_create_new:
+                # A reviewer explicitly chose to create a new Schedule A.  The
+                # existing set is still queried so it can be preserved in the
+                # complete update payload, but no existing sequence should be
+                # selected (or required) for the new record itself.
+                matched_schedule_a = None
+                schedule_a_error = None
+            elif manual_sequence:
                 # A reviewer-selected sequence is authoritative.  Refresh its
                 # current values even when extracted identity fields differ;
                 # those differences are exactly what the review must show.
@@ -1894,14 +1902,14 @@ class FTWilliamsReviewService:
                     ),
                     None,
                 )
-            else:
+            elif not existing_create_new:
                 matched_schedule_a = self._match_schedule_a_status(
                     fields,
                     schedule_statuses,
                     preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
                 )
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
-            if not matched_schedule_a:
+            if not matched_schedule_a and not existing_create_new:
                 schedule_a_error = (
                     "FT Williams Schedule A records were found, but none safely matched the extracted "
                     "carrier, EIN, NAIC, or contract. Select the correct existing record or create a new Schedule A."
@@ -1913,9 +1921,10 @@ class FTWilliamsReviewService:
 
         expects_form_5500 = any(field.form_type == FormType.FORM_5500 for field in fields)
         expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
-        has_any_current = bool(form_5500_current or schedule_a_current)
+        has_preserved_schedule_set = bool(existing_create_new and schedule_statuses)
+        has_any_current = bool(form_5500_current or schedule_a_current or has_preserved_schedule_set)
         has_required_current = (not expects_form_5500 or bool(form_5500_current)) and (
-            not expects_schedule_a or bool(schedule_a_current)
+            not expects_schedule_a or bool(schedule_a_current) or has_preserved_schedule_set
         )
         current_query_failed = bool(
             (expects_form_5500 and snapshot["form_5500_query_failed"])

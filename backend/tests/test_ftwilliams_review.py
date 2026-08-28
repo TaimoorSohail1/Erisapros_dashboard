@@ -4528,6 +4528,65 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("<DOLScheduleAData>", review.update_xml_schedule_a)
         self.assertIn("<InsCarrierName>BlueCross BlueShield of Oklahoma</InsCarrierName>", review.update_xml_schedule_a)
 
+    def test_current_query_accepts_explicit_new_schedule_a_without_matching_existing_sequence(self):
+        field = ExtractedField(
+            filing_id="filing-new-schedule",
+            source_field_name="1d. Contract / Policy Number",
+            normalized_field_name="contract",
+            mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+            mapped_label="1d. Contract / Policy Number",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="NEW-CONTRACT",
+            proposed_value="NEW-CONTRACT",
+        )
+        existing_review = FTWilliamsReview(
+            filing_id=field.filing_id,
+            schedule_a_match={
+                "create_new": True,
+                "source": "MANUAL",
+                "schedule_desc": "NEWLIFE",
+            },
+        )
+        existing_status = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="1",
+            query_results={
+                "ScheduleDesc": "EXISTING",
+                "InsCarrierName": "Existing Carrier",
+                "InsContractNum": "OLD-CONTRACT",
+            },
+        )
+        snapshot = {
+            "query_request_xmls": ["<query />"],
+            "query_response_xmls": ["<response />"],
+            "form_5500_current": {},
+            "form_5500_error": None,
+            "form_5500_query_failed": False,
+            "schedule_statuses": [existing_status],
+            "schedule_a_error": None,
+            "schedule_a_query_failed": False,
+        }
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+
+        with patch.object(service, "_current_data_snapshot", AsyncMock(return_value=snapshot)):
+            result = run_async(
+                service._run_current_queries_for_year(
+                    [field],
+                    {},
+                    existing_review,
+                )
+            )
+
+        self.assertTrue(result["current_query_success"])
+        self.assertTrue(result["current_query_complete"])
+        self.assertIsNone(result["matched_schedule_a"])
+        self.assertEqual(result["schedule_a_current"], {})
+        self.assertEqual({record["ftw_seq_no"] for record in result["schedule_a_records"]}, {"1"})
+        self.assertNotIn("none safely matched", result["error_message"] or "")
+
     def test_prepare_review_never_loads_prior_year_when_target_year_has_no_ftw_data(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
