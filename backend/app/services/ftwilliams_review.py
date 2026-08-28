@@ -365,7 +365,7 @@ class FTWilliamsReviewService:
                 fields,
                 FormType.SCHEDULE_A,
                 schedule_a_current,
-                has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
+                has_structured_schedule_a_brokers=bool(schedule_a_broker_rows),
             ),
             extracted_contract_classification.contract_type,
             rules=published_rules,
@@ -890,7 +890,7 @@ class FTWilliamsReviewService:
                 fields,
                 FormType.SCHEDULE_A,
                 schedule_a_current,
-                has_multiple_schedule_a_brokers=len(schedule_a_broker_rows) > 1,
+                has_structured_schedule_a_brokers=bool(schedule_a_broker_rows),
             ),
             extracted_contract_classification.contract_type,
             rules=published_rules,
@@ -3328,7 +3328,7 @@ class FTWilliamsReviewService:
         current_values: dict[str, str],
         *,
         schedule_update_blocked: bool = False,
-        has_multiple_schedule_a_brokers: bool = False,
+        has_structured_schedule_a_brokers: bool = False,
     ) -> list[ExtractedField]:
         safe_fields: list[ExtractedField] = []
         for field in fields:
@@ -3343,7 +3343,11 @@ class FTWilliamsReviewService:
                 continue
             if schedule_update_blocked:
                 continue
-            if has_multiple_schedule_a_brokers and self._is_schedule_a_broker_flat_field(field):
+            if (
+                has_structured_schedule_a_brokers
+                and self._is_schedule_a_broker_flat_field(field)
+                and field.status != ExtractedFieldStatus.EDITED
+            ):
                 continue
             if self._unsafe_schedule_a_field_reason(field, fields, current_values):
                 continue
@@ -3380,7 +3384,7 @@ class FTWilliamsReviewService:
         }
 
     def _mark_structured_broker_comparisons(self, comparisons: list[FTWilliamsComparisonField], rows: list) -> None:
-        if len(rows or []) <= 1:
+        if not rows:
             return
         broker_rules = {
             "schedule_a_part_i_3a_name_of_agent_broker_person",

@@ -1715,6 +1715,76 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("<InsCarrierName>Other Carrier</InsCarrierName>", review.update_xml_schedule_a)
         self.assertIn("<InsContractNum>OTHER-3</InsContractNum>", review.update_xml_schedule_a)
 
+    def test_structured_single_broker_row_wins_over_unreviewed_flat_broker_extraction(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.update_filing(
+                filing.id,
+                {
+                    "schedule_a_broker_rows": [
+                        ScheduleABrokerRow(name="NFP LLC", commission_total="111893")
+                    ]
+                },
+            )
+        )
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        fields = [
+            field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "73-1185740", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+            field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number (PN)", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+            field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "09/30/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+            field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "UnitedHealthcare", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+            field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "1246876", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+            field("schedule_a_part_i_3a_name_of_agent_broker_person", "3a. Name of Agent/Broker/Person", "March", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+        ]
+        run_async(repo.add_fields(fields))
+
+        review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
+        broker_name = next(item for item in review.fields if item.rule_key == "schedule_a_part_i_3a_name_of_agent_broker_person")
+
+        self.assertTrue(review.schedule_a_broker_match_complete)
+        self.assertFalse(broker_name.update_included)
+        self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
+        self.assertNotIn("<NameXX>March</NameXX>", review.update_xml_schedule_a)
+
+    def test_explicit_broker_field_edit_remains_authoritative_with_structured_rows(self):
+        edited = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3a. Name of Agent/Broker/Person",
+            normalized_field_name="broker_name",
+            mapped_rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
+            mapped_label="3a. Name of Agent/Broker/Person",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="Reviewer Broker Name",
+            proposed_value="Reviewer Broker Name",
+            status=ExtractedFieldStatus.EDITED,
+        )
+
+        safe = FTWilliamsReviewService()._safe_update_fields(
+            [edited],
+            FormType.SCHEDULE_A,
+            {"Name1": "Current Broker Name"},
+            has_structured_schedule_a_brokers=True,
+        )
+
+        self.assertEqual(safe, [edited])
+
     def test_prepare_review_uses_indexed_broker_rows_when_multiple_broker_rows_exist(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
