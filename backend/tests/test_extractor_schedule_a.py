@@ -252,6 +252,111 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].commission_total, "18,603")
         self.assertEqual(rows[0].fee_total, "1,397")
 
+    def test_cigna_schedule_a_support_packet_uses_plan_detail_not_schedule_c_disclosures(self):
+        pages = [
+            (
+                2,
+                """
+                INFORMATION FOR COMPLETING SCHEDULE A ON THE IRS FORM 5500
+                For Plan Year Beginning:
+                January 01, 2025
+                and Ending:
+                December 31, 2025
+                Name of Plan:
+                JTB Americas, Ltd.
+                SCHEDULE A - INSURANCE INFORMATION:
+                Name of Insurance Carrier:
+                Cigna Health and Life Insurance Company
+                EIN
+                NAIC
+                Contract or identification
+                Policy or contract year:
+                To
+                59-1031071
+                67369
+                00656053
+                12/31/2025
+                1/1/2025
+                From
+                Approximate number of persons covered at end of policy or contract year:
+                Total premiums* or subscription charges paid to carrier:
+                $891,167.11
+                """,
+            ),
+            (
+                4,
+                """
+                Eligible Indirect Compensation
+                Service Provider Information for Reporting on Form 5500 Schedule C Part 1, Line 3
+                (a) Service provider name: Cigna
+                Eligible Indirect Compensation Formula/Estimate: For calendar year 2025, $0.07 PMPY
+                Sources of indirect compensation, excluding eligible indirect compensation, to be reported on Schedule C Part 1, Line 3
+                """,
+            ),
+            (
+                6,
+                """
+                PREMIUMS PLAN DETAIL
+                COMMISSIONS PAID DETAIL
+                BENEFIT ADVISOR FEE PAID DETAIL
+                SERVICE AND / OR GENERAL AGENT FEE PAID DETAIL
+                BENEFIT
+                TOTAL COMM PAID
+                BROKER ACCT#
+                BROKER NAME
+                MEDICAL
+                $192,508.68
+                113447
+                ALLIANCE 360 INSURANCE SOLUTIONS
+                TOTAL
+                $192,508.68
+                BENEFIT
+                TOTAL FEES
+                BROKER ACCT#
+                BROKER NAME
+                TOTAL
+                BENEFIT
+                TOTAL FEES
+                BROKER ACCT#
+                BROKER NAME
+                MEDICAL
+                $77,014.08
+                302347
+                CENTERSTONE INS & FIN SVC LLC
+                TOTAL
+                $77,014.08
+                For Plan Year Beginning:
+                January 01, 2025
+                and Ending:
+                December 31, 2025
+                Name of Plan:
+                JTB Americas, Ltd.
+                Cigna
+                Plan Detail Report
+                Plan #:
+                00656053
+                """,
+            ),
+        ]
+
+        fields = {field.field_name: field.value for field in extract_cigna_schedule_a_fields(pages)}
+        rows = extract_cigna_schedule_a_broker_rows(pages)
+
+        self.assertEqual(fields["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company")
+        self.assertEqual(fields["1b. Insurance Carrier EIN"], "59-1031071")
+        self.assertEqual(fields["1c. NAIC Code"], "67369")
+        self.assertEqual(fields["1d. Contract/Policy Number"], "00656053")
+        self.assertEqual(fields["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(fields["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(fields["3b. Amount of Commissions"], "192,508.68")
+        self.assertEqual(fields["3c. Amount of Fees"], "77,014.08")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "891,167.11")
+        self.assertEqual([row.name for row in rows], ["ALLIANCE 360 INSURANCE SOLUTIONS", "CENTERSTONE INS & FIN SVC LLC"])
+        self.assertEqual(rows[0].commission_total, "192,508.68")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[1].commission_total, "0")
+        self.assertEqual(rows[1].fee_total, "77,014.08")
+
     def test_equitable_schedule_a_worksheet_extracts_coverage_period_and_checkbox_no_values(self):
         health_rule = FieldRule(
             key="ftw_discovered_schedule_a_health_ind",

@@ -1745,6 +1745,9 @@ def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
 
 def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None) -> list[ScheduleABrokerRow]:
     page_texts = extract_document_text_pages(file_bytes, file_name)
+    cigna_rows = extract_cigna_schedule_a_broker_rows(page_texts)
+    if cigna_rows or _is_cigna_schedule_a_packet(page_texts):
+        return cigna_rows
     full_text = "\n\n".join(text for _, text in page_texts)
     return dedupe_schedule_a_broker_rows(
         [
@@ -2028,7 +2031,7 @@ def extract_commission_fee_total_fields(page_texts: list[tuple[int, str]]) -> li
 def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[ScheduleABrokerRow]:
     page_texts = extract_pdf_text_pages(file_bytes)
     cigna_rows = extract_cigna_schedule_a_broker_rows(page_texts)
-    if cigna_rows:
+    if cigna_rows or _is_cigna_schedule_a_packet(page_texts):
         return cigna_rows
     full_text = "\n\n".join(text for _, text in page_texts)
     return dedupe_schedule_a_broker_rows(
@@ -2070,6 +2073,171 @@ def _cigna_primary_schedule_a_page(page_texts: list[tuple[int, str]]) -> tuple[i
     return None
 
 
+def _cigna_schedule_a_support_page(page_texts: list[tuple[int, str]]) -> tuple[int, str] | None:
+    """Return the Schedule A summary from Cigna's mixed A/C support packet."""
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        lowered = normalized.lower()
+        if (
+            "information for completing schedule a on the irs form" in lowered
+            and "schedule a - insurance information" in lowered
+            and "cigna health and life insurance company" in lowered
+        ):
+            return page, normalized
+    return None
+
+
+def _cigna_plan_detail_page(page_texts: list[tuple[int, str]]) -> tuple[int, str] | None:
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        lowered = normalized.lower()
+        if (
+            "cigna" in lowered
+            and "plan detail report" in lowered
+            and "commissions paid detail" in lowered
+            and "broker acct#" in lowered
+        ):
+            return page, normalized
+    return None
+
+
+def _is_cigna_schedule_a_packet(page_texts: list[tuple[int, str]]) -> bool:
+    return bool(_cigna_primary_schedule_a_page(page_texts) or _cigna_schedule_a_support_page(page_texts))
+
+
+def _normalize_cigna_written_date(value: str | None) -> str | None:
+    match = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", clean_extracted_value(value or ""))
+    if not match:
+        return None
+    month_names = {
+        **{name.lower(): index for index, name in enumerate(calendar.month_name) if name},
+        **{name.lower(): index for index, name in enumerate(calendar.month_abbr) if name},
+    }
+    month = month_names.get(match.group(1).lower())
+    if not month:
+        return None
+    return f"{month:02d}/{int(match.group(2)):02d}/{match.group(3)}"
+
+
+def _cigna_support_plan_year(text: str) -> tuple[str | None, str | None]:
+    match = re.search(
+        r"For\s+Plan\s+Year\s+Beginning\s*:\s*([A-Za-z]+\s+\d{1,2},\s*\d{4})\s+"
+        r"and\s+Ending\s*:\s*([A-Za-z]+\s+\d{1,2},\s*\d{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None, None
+    return _normalize_cigna_written_date(match.group(1)), _normalize_cigna_written_date(match.group(2))
+
+
+def _cigna_plan_detail_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    detail = _cigna_plan_detail_page(page_texts)
+    if not detail:
+        return []
+    page, text = detail
+    lines = [clean_extracted_value(line) for line in text.splitlines() if clean_extracted_value(line)]
+    rows: list[ScheduleABrokerRow] = []
+    fee_section_index = 0
+    index = 0
+    while index + 3 < len(lines):
+        if (
+            lines[index].upper() != "BENEFIT"
+            or lines[index + 2].upper() != "BROKER ACCT#"
+            or lines[index + 3].upper() != "BROKER NAME"
+        ):
+            index += 1
+            continue
+        amount_heading = lines[index + 1].upper()
+        if "TOTAL COMM PAID" in amount_heading:
+            payment_kind, purpose = "commission", "Commissions"
+        elif "TOTAL FEES" in amount_heading:
+            fee_section_index += 1
+            payment_kind = "fee"
+            purpose = "Benefit Advisor Fees" if fee_section_index == 1 else "Service / General Agent Fees"
+        elif "TOTAL PAID" in amount_heading:
+            payment_kind, purpose = "fee", "Incentive Compensation"
+        else:
+            index += 1
+            continue
+
+        row_index = index + 4
+        while row_index + 3 < len(lines) and lines[row_index].upper() != "TOTAL":
+            benefit, amount_line, account, name = lines[row_index : row_index + 4]
+            amount_match = re.fullmatch(r"\$\s*([\d,]+(?:\.\d{2})?)", amount_line)
+            if not amount_match or not re.fullmatch(r"\d{4,}", account) or not is_probable_person_or_entity_name(name):
+                row_index += 1
+                continue
+            amount = money_value(amount_match.group(1))
+            money_row = ScheduleABrokerMoneyRow(
+                coverage=benefit,
+                amount=amount,
+                purpose=purpose,
+            )
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    organization_code="3",
+                    commission_rows=[money_row] if payment_kind == "commission" else [],
+                    fee_rows=[money_row] if payment_kind == "fee" else [],
+                    commission_total=amount if payment_kind == "commission" else "0",
+                    fee_total=amount if payment_kind == "fee" else "0",
+                    source_page=page,
+                    confidence=0.995,
+                )
+            )
+            row_index += 4
+        index = max(index + 1, row_index)
+    return _merge_columnar_broker_rows(rows)
+
+
+def _extract_cigna_support_packet_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    support = _cigna_schedule_a_support_page(page_texts)
+    if not support:
+        return []
+    page, text = support
+    source_text = text[:1600]
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if clean and not is_blank_extraction_value(clean):
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    confidence=0.995,
+                    page=page,
+                    source_text=source_text,
+                )
+            )
+
+    add("1a. Name of Insurance Company", "Cigna Health and Life Insurance Company")
+    identity = re.search(
+        r"(?P<ein>\d{2}-\d{7})\s+(?P<naic>\d{4,6})\s+(?P<contract>[A-Za-z0-9-]+)",
+        text,
+    )
+    if identity:
+        add("1b. Insurance Carrier EIN", identity.group("ein"))
+        add("1c. NAIC Code", identity.group("naic"))
+        add("1d. Contract/Policy Number", identity.group("contract"))
+    policy_from, policy_to = _cigna_support_plan_year(text)
+    add("1f. Policy Year Beginning Date", policy_from)
+    add("1g. Policy Year Ending Date", policy_to)
+    premium = regex_first(
+        text,
+        [r"Total\s+premiums?\*?\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier\s*:.{0,700}?\$\s*([\d,]+(?:\.\d{2})?)"],
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    add("10a. Total premiums or subscription charges paid to carrier", money_value(premium) if premium else None)
+
+    rows = _cigna_plan_detail_broker_rows(page_texts)
+    for field in schedule_a_broker_compensation_fields(rows):
+        field.confidence = 0.995
+        fields.append(field)
+    return fields
+
+
 def _cigna_primary_broker_name(text: str) -> str | None:
     start = re.search(r"Non\s+Experience\s*-\s*Rated", text, flags=re.IGNORECASE)
     search_text = text[start.end() :] if start else text
@@ -2087,7 +2255,7 @@ def _cigna_primary_broker_name(text: str) -> str | None:
 def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
     primary = _cigna_primary_schedule_a_page(page_texts)
     if not primary:
-        return []
+        return _extract_cigna_support_packet_fields(page_texts)
     page, text = primary
     source_text = text[:1600]
     fields: list[NormalizedExtractionField] = []
@@ -2173,7 +2341,7 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
 def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
     primary = _cigna_primary_schedule_a_page(page_texts)
     if not primary:
-        return []
+        return _cigna_plan_detail_broker_rows(page_texts) if _cigna_schedule_a_support_page(page_texts) else []
     page, text = primary
     name = _cigna_primary_broker_name(text)
     if not name:
@@ -4381,7 +4549,11 @@ def extract_schedule_a_broker_rows(text: str, page: int | None = None) -> list[S
         if next_block:
             block = block[: next_block.start()]
         block = re.split(
-            r"\bPart\s+III\b|\bWelfare\s+Benefit\s+Contract\s+Information\b",
+            r"\bPart\s+III\b|\bWelfare\s+Benefit\s+Contract\s+Information\b|"
+            r"\bINFORMATION\s+FOR\s+COMPLETING\s+SCHEDULE\s+C\b|"
+            r"\bSCHEDULE\s+C\s*-\s*SERVICE\s+PROVIDER\s+INFORMATION\b|"
+            r"\bEligible\s+Indirect\s+Compensation\b|"
+            r"\bPlan\s+Detail\s+Report\b",
             block,
             maxsplit=1,
             flags=re.IGNORECASE,
