@@ -100,6 +100,10 @@ class CompensationTableTests(unittest.TestCase):
         self.assertEqual(row.commission_total, "5,810.59")
         self.assertEqual(row.fee_total, "0.00")
         self.assertEqual(row.address_line_1, "10833 VALLEY VIEW STREET")
+        self.assertEqual(row.address_line_2, "SUITE 550")
+        self.assertEqual(row.city, "CYPRESS")
+        self.assertEqual(row.state, "CA")
+        self.assertEqual(row.zip_code, "90630")
         self.assertEqual(row.source_page, 1)
 
     def test_produces_schedule_a_items_3a_to_3d(self):

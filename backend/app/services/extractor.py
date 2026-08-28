@@ -2712,11 +2712,15 @@ def extract_compensation_table_broker_rows(page_texts: list[tuple[int, str]]) ->
             name, address = _compensation_recipient(lines, index)
             if not name:
                 continue
+            address_line_1, address_line_2, city, state, zip_code = _compensation_address(address)
             rows.append(
                 ScheduleABrokerRow(
                     name=name,
-                    address_line_1=address[0] if address else None,
-                    address_line_2=address[1] if len(address) > 1 else None,
+                    address_line_1=address_line_1,
+                    address_line_2=address_line_2,
+                    city=city,
+                    state=state,
+                    zip_code=zip_code,
                     commission_total=commissions or None,
                     fee_total=fees or None,
                     commission_rows=(
@@ -2763,6 +2767,35 @@ def _compensation_recipient(lines: list[str], amount_index: int) -> tuple[str, l
     if not name or not is_probable_person_or_entity_name(name):
         return "", []
     return name, block[1:]
+
+
+_COMPENSATION_CITY_STATE_ZIP = re.compile(
+    r"^(?P<city>[A-Za-z .'-]+?)(?:,\s*|\s+)(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)$",
+    re.IGNORECASE,
+)
+
+
+def _compensation_address(
+    lines: list[str],
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Split a carrier compensation recipient block into FTW address parts."""
+    clean_lines = [clean_extracted_value(line) for line in lines if clean_extracted_value(line)]
+    city = state = zip_code = None
+    city_index: int | None = None
+    for index in range(len(clean_lines) - 1, -1, -1):
+        match = _COMPENSATION_CITY_STATE_ZIP.match(clean_lines[index])
+        if not match:
+            continue
+        city = clean_extracted_value(match.group("city"))
+        state = match.group("state").upper()
+        zip_code = match.group("zip")
+        city_index = index
+        break
+
+    street_lines = clean_lines[:city_index] if city_index is not None else clean_lines
+    address_line_1 = street_lines[0] if street_lines else None
+    address_line_2 = " ".join(street_lines[1:]) or None
+    return address_line_1, address_line_2, city, state, zip_code
 
 
 def extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes: bytes) -> list[ScheduleAWorksheetSummary]:
