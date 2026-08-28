@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import csv
+from datetime import datetime
 from io import BytesIO, StringIO
 import json
 import os
@@ -1340,6 +1341,40 @@ def extract_pdf_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     return pages
 
 
+def extract_pdf_layout_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+    """Extract PDF text while retaining the whitespace that describes tables.
+
+    The ordinary text layer is useful for prose and carrier-specific parsers,
+    but it collapses table columns.  That turns headings such as ``(b) Amount
+    of`` into apparent broker names.  Pypdf's layout mode gives the universal
+    parser a carrier-neutral representation of rows and columns while keeping
+    the original parser available as a fallback.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return []
+
+    try:
+        reader = PdfReader(BytesIO(file_bytes))
+    except Exception:
+        return []
+
+    pages: list[tuple[int, str]] = []
+    for index, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text(extraction_mode="layout") or ""
+        except (TypeError, ValueError, KeyError):
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                continue
+        text = str(text).replace("\u00a0", " ").replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+        pages.append((index, text.strip("\n")))
+    return pages
+
+
 def extract_docx_text(file_bytes: bytes) -> str:
     try:
         with zipfile.ZipFile(BytesIO(file_bytes)) as archive:
@@ -1574,6 +1609,8 @@ def extract_fields_from_document_text(
     *,
     rules=None,
 ) -> list[NormalizedExtractionField]:
+    if str(file_name or "").lower().endswith(".pdf"):
+        return extract_fields_from_pdf_text(file_bytes, rules=rules)
     pages = extract_document_text_pages(file_bytes, file_name)
     fields = [
         *_extract_fields_from_pages(pages, rules=rules),
@@ -1808,7 +1845,14 @@ def extract_tabular_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sched
 
 
 def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[NormalizedExtractionField]:
-    return _extract_fields_from_pages(extract_pdf_text_pages(file_bytes), rules=rules)
+    plain_pages = extract_pdf_text_pages(file_bytes)
+    layout_pages = extract_pdf_layout_text_pages(file_bytes)
+    fields = [
+        *_extract_fields_from_pages(plain_pages, rules=rules),
+        *extract_rules_driven_schedule_a_fields(layout_pages, rules=rules),
+        *schedule_a_broker_compensation_fields(extract_layout_broker_rows(layout_pages)),
+    ]
+    return select_best_schedule_a_fields(fields)
 
 
 def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None) -> list[NormalizedExtractionField]:
@@ -1837,6 +1881,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
     fields.extend(schedule_a_broker_compensation_fields(extract_columnar_broker_compensation_rows(page_texts)))
     fields.extend(extract_commission_fee_total_fields(page_texts))
+    fields.extend(extract_rules_driven_schedule_a_fields(page_texts, rules=rules))
     for packet_fields in authoritative_packet_fields:
         if not packet_fields:
             continue
@@ -2038,8 +2083,190 @@ def extract_commission_fee_total_fields(page_texts: list[tuple[int, str]]) -> li
     return fields
 
 
+def extract_layout_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Read repeating broker rows from tables with discoverable columns."""
+    rows: list[ScheduleABrokerRow] = []
+    for page, text in page_texts:
+        lines = str(text or "").splitlines()
+        section_start = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "persons" in _dense_compare(line)
+                and "receiving" in _dense_compare(line)
+                and "commission" in _dense_compare(line)
+            ),
+            None,
+        )
+        if section_start is None:
+            continue
+        header_index = next(
+            (
+                index
+                for index in range(section_start, min(len(lines), section_start + 14))
+                if "name" in _dense_compare(lines[index])
+                and ("agent" in _dense_compare(lines[index]) or "broker" in _dense_compare(lines[index]))
+                and "amount" in _dense_compare(lines[index])
+            ),
+            None,
+        )
+        if header_index is None:
+            continue
+        header = lines[header_index]
+        commission_col = _first_column_index(header, ("(b)", "amount of", "commissions paid"), after=0)
+        fee_col = _first_column_index(header, ("fees paid", "(c)"), after=(commission_col or 0) + 1)
+        org_col = _first_column_index(header, ("(e)", "org code", "organization"), after=(fee_col or 0) + 1)
+        if commission_col is None or fee_col is None or org_col is None or not (8 <= commission_col < fee_col < org_col):
+            continue
+
+        current: dict[str, Any] | None = None
+        body_start = header_index + 1
+        while body_start < len(lines) and body_start <= header_index + 4:
+            dense = _dense_compare(lines[body_start])
+            if any(token in dense for token in ("commission", "purpose", "orgcode", "amount")):
+                body_start += 1
+                continue
+            break
+
+        for raw_line in lines[body_start:]:
+            dense = _dense_compare(raw_line)
+            if any(token in dense for token in ("reportablecommissions", "section4", "section8", "section9", "section10", "preparedon")):
+                break
+            if not raw_line.strip():
+                continue
+            name_cell = raw_line[:commission_col].strip()
+            commission_cell = raw_line[commission_col:fee_col].strip()
+            fee_cell = raw_line[fee_col:org_col].strip()
+            org_cell = raw_line[org_col:].strip()
+            commission_values, fee_values = _layout_money_columns(raw_line, commission_col, fee_col, org_col)
+            has_money = bool(commission_values or fee_values)
+            starts_row = has_money and _looks_like_layout_broker_name(name_cell) and not _looks_like_broker_heading(name_cell)
+            if starts_row:
+                if current:
+                    row = _finalize_layout_broker_row(current, page)
+                    if row:
+                        rows.append(row)
+                current = {
+                    "name": clean_extracted_value(name_cell),
+                    "address": [],
+                    "commissions": [],
+                    "fees": [],
+                    "purposes": [],
+                    "organization_code": None,
+                }
+            elif current and name_cell:
+                current["address"].append(clean_extracted_value(name_cell))
+            if not current:
+                continue
+            current["commissions"].extend(commission_values)
+            current["fees"].extend(fee_values)
+            if fee_values:
+                purpose = _purpose_without_money(raw_line[(commission_col + fee_col) // 2 : org_col])
+                if purpose and purpose.lower() not in {item.lower() for item in current["purposes"]}:
+                    current["purposes"].append(purpose)
+            if not current["organization_code"]:
+                code = re.search(r"\b([1-9])\s*-\s*Ins", raw_line, flags=re.IGNORECASE) or re.search(r"\b([1-9])\b", org_cell)
+                if code:
+                    current["organization_code"] = code.group(1)
+        if current:
+            row = _finalize_layout_broker_row(current, page)
+            if row:
+                rows.append(row)
+    return dedupe_schedule_a_broker_rows(rows)
+
+
+def _dense_compare(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _first_column_index(line: str, labels: tuple[str, ...], *, after: int) -> int | None:
+    matches: list[int] = []
+    for label in labels:
+        match = re.search(_dense_rule_label_pattern(label), line[after:], flags=re.IGNORECASE)
+        if match:
+            matches.append(after + match.start())
+    return min(matches) if matches else None
+
+
+def _money_tokens(value: str) -> list[str]:
+    return [money_value(match.group(1)) for match in _RULE_MONEY_TOKEN.finditer(str(value or ""))]
+
+
+def _layout_money_columns(line: str, commission_col: int, fee_col: int, org_col: int) -> tuple[list[str], list[str]]:
+    commissions: list[str] = []
+    fees: list[str] = []
+    boundary = (commission_col + fee_col) // 2
+    for match in _RULE_MONEY_TOKEN.finditer(str(line or "")):
+        value_start = match.start(1)
+        if value_start < commission_col or value_start >= org_col:
+            continue
+        if len(match.group(1).replace(",", "")) == 1 and re.search(r"^\s*-\s*Ins", line[match.end(1) :], flags=re.IGNORECASE):
+            continue
+        target = fees if value_start >= boundary else commissions
+        target.append(money_value(match.group(1)))
+    return commissions, fees
+
+
+def _looks_like_layout_broker_name(value: str) -> bool:
+    clean = clean_extracted_value(value)
+    if not clean or re.search(r"\d", clean) or len(clean.split()) < 2:
+        return False
+    return is_probable_person_or_entity_name(clean)
+
+
+def _looks_like_broker_heading(value: str) -> bool:
+    dense = _dense_compare(value)
+    return any(token in dense for token in ("amountof", "nameaddress", "commissionpaid", "feespaid", "orgcode", "purpose"))
+
+
+def _purpose_without_money(value: str) -> str | None:
+    clean = clean_extracted_value(_RULE_MONEY_TOKEN.sub(" ", str(value or "")).replace("*", " "))
+    clean = re.sub(r"\b[1-9]\s*-\s*I(?:ns(?:urance)?)?.*$", "", clean, flags=re.IGNORECASE).strip()
+    if not clean or _looks_like_broker_heading(clean):
+        return None
+    return clean
+
+
+def _finalize_layout_broker_row(record: dict[str, Any], page: int) -> ScheduleABrokerRow | None:
+    name = clean_extracted_value(record.get("name") or "")
+    if not _looks_like_layout_broker_name(name) or _looks_like_broker_heading(name):
+        return None
+    addresses = [clean_extracted_value(value) for value in record.get("address") or []]
+    addresses = [value for value in addresses if value and value.lower() not in {"or", "broker"}]
+    city = state = zip_code = None
+    street_lines = list(addresses)
+    for index in range(len(addresses) - 1, -1, -1):
+        match = re.fullmatch(r"(.+?),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)", addresses[index], flags=re.IGNORECASE)
+        if match:
+            city = clean_extracted_value(match.group(1)).upper()
+            state = match.group(2).upper()
+            zip_code = match.group(3)
+            street_lines = addresses[:index]
+            break
+    commission_total = sum_money_values(*(record.get("commissions") or [])) or "0"
+    fee_total = sum_money_values(*(record.get("fees") or [])) or "0"
+    purposes = [clean_extracted_value(value) for value in record.get("purposes") or [] if clean_extracted_value(value)]
+    purpose = "; ".join(purposes) or derive_schedule_a_purpose(commission_total, fee_total)
+    return ScheduleABrokerRow(
+        name=name,
+        address_line_1=street_lines[0] if street_lines else None,
+        address_line_2=" ".join(street_lines[1:]) if len(street_lines) > 1 else None,
+        city=city,
+        state=state,
+        zip_code=zip_code,
+        organization_code=record.get("organization_code"),
+        commission_rows=[ScheduleABrokerMoneyRow(amount=commission_total, purpose=purpose)] if (parse_numeric_amount(commission_total) or 0) > 0 else [],
+        fee_rows=[ScheduleABrokerMoneyRow(amount=fee_total, purpose=purpose)] if (parse_numeric_amount(fee_total) or 0) > 0 else [],
+        commission_total=commission_total,
+        fee_total=fee_total,
+        source_page=page,
+        confidence=0.92,
+    )
+
+
 def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[ScheduleABrokerRow]:
     page_texts = extract_pdf_text_pages(file_bytes)
+    layout_page_texts = extract_pdf_layout_text_pages(file_bytes)
     cigna_rows = extract_cigna_schedule_a_broker_rows(page_texts)
     if cigna_rows or _is_cigna_schedule_a_packet(page_texts):
         return cigna_rows
@@ -2056,8 +2283,233 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_summary_table_broker_rows(page_texts),
             *extract_columnar_broker_compensation_rows(page_texts),
             *extract_compensation_table_broker_rows(page_texts),
+            *extract_layout_broker_rows(layout_page_texts),
         ]
     )
+
+
+_RULE_DATE_TOKEN = re.compile(
+    r"(?:"
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2},?\s+\d{4}"
+    r"|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r")",
+    re.IGNORECASE,
+)
+_RULE_MONEY_TOKEN = re.compile(r"(?<![A-Za-z0-9])\$?\s*?(-?\d[\d,]*(?:\.\d{1,2})?)(?![A-Za-z0-9])")
+
+
+def extract_rules_driven_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+    *,
+    rules=None,
+) -> list[NormalizedExtractionField]:
+    """Extract every configured Schedule A rule from labels and aliases.
+
+    This is intentionally configuration-driven: publishing a new label or
+    alias changes the next extraction snapshot without a deployment.  Narrow
+    validators keep a heading, another field's value, or a table total from
+    being accepted simply because it appeared near an alias.
+    """
+    configured = rules_for_form(rules or DEFAULT_FIELD_RULES, FormType.SCHEDULE_A)
+    configured = [rule for rule in configured if rule.mapping_mode != FieldRuleMappingMode.EXTRACTION_ONLY or rule.aliases]
+    if not configured or not page_texts:
+        return []
+
+    fields: list[NormalizedExtractionField] = []
+    full_text = "\n".join(text for _, text in page_texts if text)
+    special_values = _rules_driven_schedule_a_special_values(full_text)
+
+    for rule in configured:
+        if str(rule.field_type or "").lower() == "reference/lookup":
+            continue
+        # Repeating recipients are represented as structured broker rows.  A
+        # scalar alias match here would turn the table header into item 3a.
+        if rule.key in {
+            "schedule_a_part_i_3a_name_of_agent_broker_person",
+            "schedule_a_part_i_3d_purpose",
+            "schedule_a_part_i_3e_organizational_code",
+        }:
+            continue
+        if rule.key.startswith("schedule_a_part_iii_9") and not re.search(
+            r"(?:\bSection\s*9\b|(?<!Non[- ])\bExperience[- ]Rated\s+Contracts?\b)",
+            full_text,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        special = special_values.get(rule.key)
+        if special:
+            value, page, source = special
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=rule.label,
+                    value=value,
+                    confidence=0.9,
+                    page=page,
+                    source_text=source,
+                )
+            )
+            continue
+
+        best: NormalizedExtractionField | None = None
+        aliases = _rule_extraction_aliases(rule)
+        for page, text in page_texts:
+            for raw_line in str(text or "").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                for alias in aliases:
+                    match = re.search(_dense_rule_label_pattern(alias), line, flags=re.IGNORECASE)
+                    if not match:
+                        continue
+                    alias_words = normalize_rule_label(alias).split()
+                    if len(alias_words) == 1:
+                        prefix = line[: match.start()].strip()
+                        suffix = line[match.end() :]
+                        if (
+                            prefix
+                            and not re.fullmatch(r"\(?[0-9a-z]+\)?[.)]?", prefix, flags=re.IGNORECASE)
+                        ) or not re.match(r"^(?:\s*[:\t-]\s*|\s{2,})", suffix):
+                            continue
+                    value = _value_after_rule_alias(rule, line[match.end() :])
+                    if not value:
+                        continue
+                    candidate = NormalizedExtractionField(
+                        field_name=rule.label,
+                        value=value,
+                        confidence=_rule_extraction_confidence(rule, alias),
+                        page=page,
+                        source_text=line[:1200],
+                    )
+                    if best is None or candidate.confidence > best.confidence:
+                        best = candidate
+                    break
+        if best:
+            fields.append(best)
+
+    return select_best_schedule_a_fields(fields)
+
+
+def _rule_extraction_aliases(rule) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in [rule.label, *rule.aliases]:
+        clean = str(value or "").strip()
+        variants = [clean, re.sub(r"^\s*\d+[a-z]?(?:\([^)]*\))*[.)]?\s*", "", clean, flags=re.IGNORECASE)]
+        for variant in variants:
+            normalized = normalize_rule_label(variant)
+            if len(normalized) < 3 or normalized in seen:
+                continue
+            seen.add(normalized)
+            aliases.append(variant)
+    return sorted(aliases, key=lambda item: len(normalize_rule_label(item)), reverse=True)
+
+
+def _dense_rule_label_pattern(label: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9]+", str(label or ""))
+    if not tokens:
+        return r"(?!)"
+    return r"(?<![A-Za-z0-9])" + r"[\s/&().,:#-]*".join(re.escape(token) for token in tokens) + r"(?![A-Za-z0-9])"
+
+
+def _value_after_rule_alias(rule, remainder: str) -> str | None:
+    text = str(remainder or "").strip(" \t:-")
+    if not text:
+        return None
+    key = str(rule.key or "").lower()
+    label = str(rule.label or "").lower()
+    field_type = str(rule.field_type or "").lower()
+
+    if "ein" in key or " ein" in label:
+        match = re.search(r"\b\d{2}-\d{7}\b", text)
+        return match.group(0) if match else None
+    if "naic" in key or "naic" in label:
+        match = re.search(r"\b\d{4,6}\b", text)
+        return match.group(0) if match else None
+    if "date" in key or "date" in label:
+        dates = _normalized_date_tokens(text)
+        return dates[0] if dates else None
+    if any(token in key or token in label or token in field_type for token in ("amount", "premium", "commission", "fee", "currency", "covered", "number")):
+        match = _RULE_MONEY_TOKEN.search(text)
+        return money_value(match.group(1)) if match else None
+    if field_type == "static":
+        match = re.search(r"\b(Yes|No|True|False|Provided|Not Applicable)\b", text, flags=re.IGNORECASE)
+        return clean_extracted_value(match.group(1)) if match else None
+
+    value = clean_extracted_value(text)
+    if re.search(r"[a-z][A-Z]", value):
+        value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
+    if not value or is_obvious_template_placeholder(value):
+        return None
+    value = re.split(r"\s+\([a-z0-9]+\)\s*", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    if rule.key == "schedule_a_part_i_1a_name_of_insurance_company" and not is_probable_carrier_name(value):
+        return None
+    if rule.key == "schedule_a_part_i_1d_contract_policy_number":
+        match = re.match(r"[A-Za-z0-9][A-Za-z0-9 ._-]{1,40}?\b", value)
+        value = clean_extracted_value(match.group(0)) if match else ""
+        if not is_valid_contract_identifier(value, allow_numeric=True):
+            return None
+    return value[:500] or None
+
+
+def _rule_extraction_confidence(rule, alias: str) -> float:
+    canonical = normalize_rule_label(rule.label)
+    matched = normalize_rule_label(alias)
+    if matched == canonical:
+        return 0.91
+    return 0.88 if len(matched) >= 8 else 0.82
+
+
+def _normalized_date_tokens(text: str) -> list[str]:
+    values: list[str] = []
+    for match in _RULE_DATE_TOKEN.finditer(str(text or "")):
+        value = normalize_schedule_a_date(match.group(0), end_of_month=False)
+        if value:
+            values.append(value)
+    return values
+
+
+def _rules_driven_schedule_a_special_values(full_text: str) -> dict[str, tuple[str, int | None, str]]:
+    compact = re.sub(r"\s+", " ", str(full_text or "")).strip()
+    values: dict[str, tuple[str, int | None, str]] = {}
+
+    date_context = regex_first(
+        compact,
+        [
+            r"Data\s*Period\s+(.{0,100}?\d{4}\s+(?:to|through|-)\s+.{0,100}?\d{4})",
+            r"Policy\s*or\s*Contract\s*Year\s+(.{0,180})",
+        ],
+        flags=re.IGNORECASE,
+    )
+    dates = _normalized_date_tokens(date_context or compact)
+    if len(dates) >= 2:
+        values["schedule_a_part_i_1f_policy_year_beginning_date"] = (dates[0], None, date_context or "Policy period")
+        values["schedule_a_part_i_1g_policy_year_ending_date"] = (dates[1], None, date_context or "Policy period")
+
+    covered = regex_first(
+        compact,
+        [
+            r"Approximate\s*Number\s*of.{0,120}?Total\s*\(e\)\s*([0-9,]+).{0,160}?Persons\s*Covered",
+            r"Persons\s*Covered.{0,160}?Total\s*\(e\)\s*([0-9,]+)",
+            r"Total\s*\(e\)\s*([0-9,]+).{0,180}?of\s*Policy\s*Year",
+        ],
+        flags=re.IGNORECASE,
+    )
+    if covered:
+        values["schedule_a_part_i_1e_persons_covered_end_of_policy_year"] = (money_value(covered), None, "Persons covered total")
+
+    totals = re.search(
+        r"Total\s*\(from\s*below\)\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)\s+\$?\s*([0-9,]+(?:\.\d{1,2})?)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if totals:
+        source = totals.group(0)
+        values["schedule_a_part_i_3b_amount_of_commissions"] = (money_value(totals.group(1)), None, source)
+        values["schedule_a_part_i_3c_amount_of_fees"] = (money_value(totals.group(2)), None, source)
+    return values
 
 
 def extract_nyl_annual_policy_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
@@ -5344,6 +5796,12 @@ def extract_contract_year_range(text: str) -> tuple[str, str] | None:
 
 def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
     text = str(value or "").strip()
+    for pattern in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+        try:
+            parsed = datetime.strptime(text, pattern)
+            return parsed.strftime("%m/%d/%Y")
+        except ValueError:
+            pass
     iso_match = re.fullmatch(r"(20\d{2})-(\d{2})-(\d{2})", text)
     if iso_match:
         year, month, day = (int(part) for part in iso_match.groups())
