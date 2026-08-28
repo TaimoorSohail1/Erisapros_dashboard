@@ -144,6 +144,37 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual(aligned[0].zip_code, "90630-5056")
         self.assertEqual(aligned[0].commission_total, "2340.80")
 
+    def test_matched_broker_preserves_current_address_lines_as_one_unit(self):
+        extracted_rows = [
+            ScheduleABrokerRow(
+                name="NORIKAZU NISHIDA",
+                address_line_1="10833 VALLEY VIEW STREET",
+                address_line_2="SUITE 550",
+                city="CYPRESS",
+                state="CA",
+                zip_code="90630",
+                commission_total="345.19",
+            )
+        ]
+        current_rows = [
+            {
+                "NameXX": "NORIKAZU NISHIDA",
+                "AddressLine1XX": "10833 VALLEY VIEW STREET, SUITE 550",
+                "AddressLine2XX": "",
+                "CityXX": "CYPRESS",
+                "StateXX": "CA",
+                "ZipCodeXX": "90630",
+                "CommPdAmtXX": "345",
+            }
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertEqual(aligned[0].address_line_1, "10833 VALLEY VIEW STREET, SUITE 550")
+        self.assertIsNone(aligned[0].address_line_2)
+        self.assertEqual(aligned[0].commission_total, "345.19")
+
     def test_ambiguous_duplicate_requires_confirmation(self):
         extracted_rows = [extracted("Same Broker", commission="100")]
         current_rows = [current(1, "Same Broker"), current(2, "Same Broker")]

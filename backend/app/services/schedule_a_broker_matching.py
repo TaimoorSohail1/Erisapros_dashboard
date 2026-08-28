@@ -141,11 +141,20 @@ def resolved_schedule_a_broker_rows(
             if aligned[match.ftw_index] is not None:
                 raise ValueError(f"FT Williams broker row {match.ftw_index + 1} was assigned more than once.")
             current = _current_broker_row(current_rows[match.ftw_index])
+            # FT Williams often stores a suite/unit in AddressLine1 while the
+            # source document splits it into AddressLine2.  Preserve the two
+            # current address lines as one identity unit so we do not combine
+            # those representations and duplicate the suite in the payload.
+            current_has_address_lines = bool(current.address_line_1 or current.address_line_2)
             aligned[match.ftw_index] = row.model_copy(
                 update={
                     "name": current.name or row.name,
-                    "address_line_1": current.address_line_1 or row.address_line_1,
-                    "address_line_2": current.address_line_2 or row.address_line_2,
+                    "address_line_1": (
+                        current.address_line_1 if current_has_address_lines else row.address_line_1
+                    ),
+                    "address_line_2": (
+                        current.address_line_2 if current_has_address_lines else row.address_line_2
+                    ),
                     "city": current.city or row.city,
                     "state": current.state or row.state,
                     "zip_code": current.zip_code or row.zip_code,
