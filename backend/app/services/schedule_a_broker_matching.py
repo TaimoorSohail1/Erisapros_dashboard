@@ -66,6 +66,12 @@ def match_schedule_a_brokers(
         identity_matches = [
             index for index, score in identity_scores.items() if score == best_identity_score and score > 0
         ]
+        address_matches = [
+            index
+            for index in available
+            if _key(row.address_line_1)
+            and _key(row.address_line_1) == _key(normalized_current[index].address_line_1)
+        ]
 
         selected: int | None = None
         reason = ""
@@ -75,6 +81,9 @@ def match_schedule_a_brokers(
         elif len(name_matches) == 1:
             selected = name_matches[0]
             reason = "Matched by a unique broker name."
+        elif len(address_matches) == 1:
+            selected = address_matches[0]
+            reason = "Matched by a unique exact broker address."
         elif len(extracted_rows) == 1 and len(current_rows) == 1 and available:
             selected = available[0]
             reason = "Matched because both documents contain one broker row."
@@ -127,7 +136,17 @@ def resolved_schedule_a_broker_rows(
         elif match.ftw_index is not None:
             if aligned[match.ftw_index] is not None:
                 raise ValueError(f"FT Williams broker row {match.ftw_index + 1} was assigned more than once.")
-            aligned[match.ftw_index] = row
+            current = _current_broker_row(current_rows[match.ftw_index])
+            aligned[match.ftw_index] = row.model_copy(
+                update={
+                    "name": current.name or row.name,
+                    "address_line_1": current.address_line_1 or row.address_line_1,
+                    "address_line_2": current.address_line_2 or row.address_line_2,
+                    "city": current.city or row.city,
+                    "state": current.state or row.state,
+                    "zip_code": current.zip_code or row.zip_code,
+                }
+            )
     return aligned
 
 

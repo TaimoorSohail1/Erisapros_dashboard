@@ -260,7 +260,7 @@ def _is_money_tag(tag: str) -> bool:
 
 def _text_limit(tag: str) -> int:
     if re.fullmatch(r"Name(?:\d+|XX)", tag):
-        return 70
+        return 35
     if re.fullmatch(r"FeesPdText(?:\d+|XX)", tag):
         return 70
     if re.fullmatch(r"Code(?:\d+|XX)", tag):

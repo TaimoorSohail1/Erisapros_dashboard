@@ -1783,7 +1783,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertTrue(confirmed.schedule_a_broker_match_complete)
-        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", confirmed.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP LLC</NameXX>", confirmed.update_xml_schedule_a)
         self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", confirmed.update_xml_schedule_a)
         self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", confirmed.update_xml_schedule_a)
         self.assertEqual(confirmed.update_xml_schedule_a.count("<Broker>"), 2)

@@ -56,6 +56,28 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("StateXX"), "TX")
         self.assertEqual(broker.findtext("ZipCodeXX"), "78746-6446")
 
+    def test_schedule_a_new_broker_rejects_name_over_ftw_35_character_limit(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
+            build_schedule_a_records_update_xml(
+                [
+                    {
+                        "ftw_seq_no": "1",
+                        "query_results": {"InsCarrierName": "Existing Carrier"},
+                    }
+                ],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "Nth Insurance Agency dba: Alliance 360 I",
+                        "commission_total": "2340.80",
+                    }
+                ],
+            )
+
     def test_discovered_comparison_field_never_enters_ftw_xml(self):
         field = ExtractedField(
             filing_id="filing",
@@ -923,6 +945,50 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<InsCarrierName>Principal</InsCarrierName>", xml)
         self.assertIn("<NameXX>Principal Broker</NameXX>", xml)
         self.assertNotIn("<Name1>Old Broker</Name1>", xml)
+
+    def test_schedule_a_records_keep_distinct_persons_covered_values(self):
+        persons_field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1e. Persons Covered (End of Policy Year)",
+            normalized_field_name="persons_covered",
+            mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+            mapped_label="1e. Persons Covered (End of Policy Year)",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="10",
+            proposed_value="10",
+        )
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "InsCarrierName": "Selected Carrier",
+                    "InsPrsnCoveredEoyCnt": "5",
+                },
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {
+                    "InsCarrierName": "Preserved Carrier",
+                    "InsPrsnCoveredEoyCnt": "23",
+                },
+            },
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [persons_field],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+        )
+
+        documents = ET.fromstring(xml).findall(".//DOLScheduleAData")
+        self.assertEqual(
+            [document.findtext("InsPrsnCoveredEoyCnt") for document in documents],
+            ["10", "23"],
+        )
 
     def test_schedule_a_replace_preserves_all_current_fields_and_uses_broker_multipart_rows(self):
         fields = [

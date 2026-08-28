@@ -63,6 +63,33 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual([match.ftw_index for match in matches], [1, 0])
         self.assertTrue(all(match.status == "AUTO_MATCHED" for match in matches))
 
+    def test_dba_alias_with_unique_exact_address_keeps_current_broker_identity(self):
+        extracted_rows = [
+            extracted(
+                "Nth Insurance Agency dba: Alliance 360 I",
+                "10833 VALLEY VIEW STREET",
+                commission="2340.80",
+            )
+        ]
+        current_rows = [
+            current(
+                1,
+                "NTH INSURANCE AGENCY INC.",
+                "10833 VALLEY VIEW STREET",
+                commission="3284",
+            )
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertTrue(matches[0].resolved)
+        self.assertEqual(matches[0].ftw_index, 0)
+        self.assertEqual(matches[0].reason, "Matched by a unique exact broker address.")
+        self.assertEqual(aligned[0].name, "NTH INSURANCE AGENCY INC.")
+        self.assertEqual(aligned[0].address_line_1, "10833 VALLEY VIEW STREET")
+        self.assertEqual(aligned[0].commission_total, "2340.80")
+
     def test_ambiguous_duplicate_requires_confirmation(self):
         extracted_rows = [extracted("Same Broker", commission="100")]
         current_rows = [current(1, "Same Broker"), current(2, "Same Broker")]
