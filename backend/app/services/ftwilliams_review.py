@@ -1875,11 +1875,31 @@ class FTWilliamsReviewService:
         if schedule_statuses:
             schedule_a_candidates = self._schedule_candidate_payloads(schedule_statuses, fields)
             schedule_a_records = self._schedule_record_payloads(schedule_statuses)
-            matched_schedule_a = self._match_schedule_a_status(
-                fields,
-                schedule_statuses,
-                preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
+            existing_match = existing_review.schedule_a_match if existing_review else None
+            manual_sequence = (
+                str((existing_match or {}).get("ftw_seq_no") or "").strip()
+                if str((existing_match or {}).get("source") or "").upper() == "MANUAL"
+                else ""
             )
+            if manual_sequence:
+                # A reviewer-selected sequence is authoritative.  Refresh its
+                # current values even when extracted identity fields differ;
+                # those differences are exactly what the review must show.
+                matched_schedule_a = next(
+                    (
+                        status
+                        for status in schedule_statuses
+                        if str(status.ftw_seq_no or "").strip() == manual_sequence
+                        and status.query_results
+                    ),
+                    None,
+                )
+            else:
+                matched_schedule_a = self._match_schedule_a_status(
+                    fields,
+                    schedule_statuses,
+                    preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
+                )
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
             if not matched_schedule_a:
                 schedule_a_error = (

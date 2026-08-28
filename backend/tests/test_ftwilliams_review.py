@@ -2219,8 +2219,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                                     "ScheduleDesc": f"CIGNA-{payload.ftw_seq_no}",
                                     "InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY",
                                     "InsCarrierEIN": "59-1031071",
-                                    "InsCarrierNAICCode": "67369",
-                                    "InsContractNum": "00626686",
+                                    "InsCarrierNAICCode": "99999",
+                                    "InsContractNum": "00999999",
                                 },
                             )
                         ],
@@ -2281,8 +2281,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(selected.schedule_a_match["source"], "MANUAL")
         self.assertEqual(first_refresh.schedule_a_match["ftw_seq_no"], "2")
         self.assertEqual(first_refresh.schedule_a_match["source"], "MANUAL")
+        self.assertEqual(first_refresh.schedule_a_current_values["InsCarrierNAICCode"], "99999")
+        self.assertEqual(first_refresh.schedule_a_current_values["InsContractNum"], "00999999")
         self.assertEqual(second_refresh.schedule_a_match["ftw_seq_no"], "2")
         self.assertEqual(second_refresh.schedule_a_match["source"], "MANUAL")
+        self.assertEqual(second_refresh.schedule_a_current_values["InsCarrierNAICCode"], "99999")
+        self.assertEqual(second_refresh.schedule_a_current_values["InsContractNum"], "00999999")
 
     def test_single_schedule_candidate_with_conflicting_identity_requires_manual_selection(self):
         service = FTWilliamsReviewService()
