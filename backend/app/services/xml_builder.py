@@ -565,7 +565,7 @@ def _split_form_5500_sponsor_address(
             r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
         )
         street_city_match = re.fullmatch(
-            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?)\s+(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
             suffix_match.group("body"),
             flags=re.IGNORECASE,
         )

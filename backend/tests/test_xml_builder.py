@@ -540,6 +540,36 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<SDState>NY</SDState>", xml)
         self.assertIn("<SDZipCode>10017-4503</SDZipCode>", xml)
 
+    def test_5500_combined_address_splits_comma_before_suite_without_current_snapshot(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="3625 DEL AMO AVENUE, SUITE 260 TORRANCE CA 90503",
+            proposed_value="3625 DEL AMO AVENUE, SUITE 260 TORRANCE CA 90503",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="13-1994506",
+            plan_id="13-1994506503",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SDAddressLine1>3625 DEL AMO AVENUE</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>SUITE 260</SDAddressLine2>", xml)
+        self.assertIn("<SDCity>TORRANCE</SDCity>", xml)
+        self.assertIn("<SDState>CA</SDState>", xml)
+        self.assertIn("<SDZipCode>90503</SDZipCode>", xml)
+
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
             filing_id="filing",
