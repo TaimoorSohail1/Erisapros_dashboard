@@ -1,7 +1,10 @@
+import asyncio
 import unittest
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -11,10 +14,12 @@ from app.models import (
     FieldRuleMappingMode,
     FormType,
     NormalizedExtractionField,
+    NormalizedExtractionResult,
     ScheduleABrokerMoneyRow,
     ScheduleABrokerRow,
 )
 from app.services.extractor import (
+    ExtractionService,
     extract_cigna_schedule_a_broker_rows,
     extract_cigna_schedule_a_fields,
     extract_columnar_broker_compensation_rows,
@@ -1260,9 +1265,9 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "367")
         self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
         self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
-        self.assertEqual(by_name["3b. Amount of Commissions"], "4,877")
+        self.assertEqual(by_name["3b. Amount of Commissions"], "4,876.54")
         self.assertEqual(by_name["3c. Amount of Fees"], "0")
-        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,191")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,190.52")
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].source, "EyeMed vision worksheet")
         self.assertEqual(len(summaries[0].benefit_rows), 2)
@@ -1270,8 +1275,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "RSC Insurance Brokerage, Inc. - Boston")
         self.assertEqual(rows[0].address_line_1, "160 Federal Street")
         self.assertEqual(rows[0].city, "Boston")
-        self.assertEqual(rows[0].commission_total, "2,980")
-        self.assertEqual(rows[-1].commission_total, "20")
+        self.assertEqual(rows[0].commission_total, "2,979.55")
+        self.assertEqual(rows[-1].commission_total, "19.50")
 
     def test_schedule_a_parser_extracts_eyemed_rows_with_blank_identifier_cells(self):
         pages = [
@@ -1311,11 +1316,57 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1c. NAIC Code"], "71870")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "1042075/6-1001/1002")
         self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "339")
-        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "11,965")
-        self.assertEqual(by_name["3b. Amount of Commissions"], "4,920")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "11,965.18")
+        self.assertEqual(by_name["3b. Amount of Commissions"], "4,920.17")
         self.assertEqual(len(summaries), 1)
         self.assertEqual(len(summaries[0].benefit_rows), 4)
         self.assertEqual(len(rows), 3)
+
+    def test_eyemed_broker_rows_accept_city_joined_to_state_without_losing_cents(self):
+        pages = [
+            (
+                1,
+                """
+                Vision Insurance Information For Form 5500
+                Information Compiled By: EyeMed Vision Care on behalf of the Fidelity Security Life Insurance Company
+                Payee Name Contract or ID # Address Line 1 City StateZip Code Amount
+                NFP Corporate Services NY - Norwell, MA10545381001Po Box 786677 PhiladelphiaPA 19178-6677 $1,932.21
+                Total: $1,932.21
+                Commissions or fees paid by carrier to agents, brokers or other persons:
+                """,
+            )
+        ]
+
+        rows = extract_eyemed_broker_rows(pages)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "NFP Corporate Services NY - Norwell, MA")
+        self.assertEqual(rows[0].city, "Philadelphia")
+        self.assertEqual(rows[0].state, "PA")
+        self.assertEqual(rows[0].zip_code, "19178-6677")
+        self.assertEqual(rows[0].commission_total, "1,932.21")
+
+    def test_groundx_failure_marks_local_fallback_for_manual_review(self):
+        fallback = NormalizedExtractionResult(
+            provider="Local PDF parser fallback",
+            fields=[NormalizedExtractionField(field_name="1e. Persons Covered (End of Policy Year)", value="143740", confidence=0.99)],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=fallback),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(side_effect=RuntimeError("temporary AI failure"))),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        self.assertIn("manual review required", result.provider.lower())
+        self.assertTrue(result.raw["manual_review_required"])
+        self.assertLessEqual(result.fields[0].confidence, 0.5)
+        self.assertLessEqual(result.schedule_a_broker_rows[0].confidence, 0.5)
 
     def test_schedule_a_parser_extracts_standard_long_form_separate_benefits(self):
         pages = self._standard_long_form_pages()

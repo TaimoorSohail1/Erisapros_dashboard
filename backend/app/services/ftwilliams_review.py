@@ -1667,6 +1667,26 @@ class FTWilliamsReviewService:
             lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
             return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
 
+        probe_limit = max(1, min(50, get_settings().ftw_plan_lookup_probe_limit))
+        ranked_candidates = sorted(
+            (
+                (self._plan_ids_probe_score(record, lookup), index, record)
+                for index, record in enumerate(records)
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        if len(records) == 1:
+            probe_records = records
+        else:
+            probe_records = [record for score, _, record in ranked_candidates if score > 0][:probe_limit]
+        if not probe_records:
+            self._append_plan_ids_batch_summary(lookup, len(records))
+            lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
+            return (
+                f"PlanIDs_Batch returned {len(records)} plans but none matched the extracted plan metadata. "
+                "Select the FT Williams plan manually."
+            )
+
         probed_entries: list[tuple[dict[str, str], str | None, str | None]] = []
         errors: list[str] = []
         concurrency = max(1, min(20, get_settings().ftw_slot_query_concurrency))
@@ -1683,8 +1703,8 @@ class FTWilliamsReviewService:
             result = await self.ftwilliams.run_query(query)
             return record, result, built_request, None
 
-        for batch_start in range(0, len(records), concurrency):
-            batch_records = records[batch_start : batch_start + concurrency]
+        for batch_start in range(0, len(probe_records), concurrency):
+            batch_records = probe_records[batch_start : batch_start + concurrency]
             results = await asyncio.gather(*(probe(record) for record in batch_records))
             for record, result, built_request, probe_error in results:
                 if probe_error:
@@ -1750,7 +1770,19 @@ class FTWilliamsReviewService:
             self._append_plan_ids_batch_summary(lookup, len(records), records[0])
             return await self._accept_plan_ids_batch_match(lookup, repo, records[0])
         self._append_plan_ids_batch_summary(lookup, len(records))
-        return "; ".join(errors[:3]) or "PlanIDs_Batch could not match an accessible FT Williams plan to the extracted EIN and plan number."
+        lookup.matches = probe_records
+        lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+        detail = "; ".join(errors[:3])
+        return " ".join(
+            filter(
+                None,
+                [
+                    detail,
+                    f"Checked {len(probe_records)} of {len(records)} filtered PlanIDs_Batch candidates without a verified match.",
+                    "Select the FT Williams plan manually.",
+                ],
+            )
+        )
 
     @staticmethod
     def _append_plan_ids_batch_summary(
@@ -4855,6 +4887,36 @@ class FTWilliamsReviewService:
             ):
                 score += 2
                 break
+        return score
+
+    def _plan_ids_probe_score(self, match: dict[str, str], lookup: FTWilliamsPlanLookup) -> int:
+        """Rank batch identifiers using only metadata available before a plan query."""
+        score = self._plan_lookup_score(match, lookup)
+        candidate_text = normalize_compare_value(
+            " ".join(
+                str(match.get(key) or "")
+                for key in ["CustomerID", "PlanID", "CompanyName", "CompanyLine1", "PlanName", "PlanLine1"]
+            )
+        )
+        if not candidate_text:
+            return score
+
+        generic_words = {
+            "AND", "BENEFIT", "BENEFITS", "COMPANY", "CORP", "CORPORATION", "HEALTH",
+            "INC", "INSURANCE", "LLC", "LTD", "PLAN", "SERVICES", "THE", "WELFARE",
+        }
+        lookup_text = " ".join(
+            filter(
+                None,
+                [lookup.plan_name, lookup.sponsor_name, *self._company_name_candidates(lookup)],
+            )
+        ).upper()
+        lookup_words = {
+            word.casefold()
+            for word in re.findall(r"[A-Z0-9]+", lookup_text)
+            if len(word) >= 4 and word not in generic_words
+        }
+        score += 2 * sum(1 for word in lookup_words if word in candidate_text)
         return score
 
     def _identity_from_lookup_match(self, match: dict[str, str]) -> dict:

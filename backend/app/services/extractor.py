@@ -134,7 +134,7 @@ class ExtractionService:
                 )
                 local_result.classification_signals = document_signals
                 if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
-                    return local_result
+                    return mark_schedule_a_fallback_for_manual_review(local_result, exc)
                 # Unrecognized layout: degrade gracefully instead of crashing the
                 # pipeline. The filing completes with all fields MISSING and is
                 # routed to manual review.
@@ -638,6 +638,28 @@ def safe_error_summary(exc: Exception) -> str:
             detail = exc.response.text[:300]
         return redact_sensitive_text(f"HTTP {status_code}: {detail}")
     return redact_sensitive_text(str(exc)[:500])
+
+
+def mark_schedule_a_fallback_for_manual_review(
+    result: NormalizedExtractionResult,
+    error: Exception,
+) -> NormalizedExtractionResult:
+    """Keep useful fallback values visible without treating them as trusted updates."""
+    for field in result.fields:
+        field.confidence = min(field.confidence, 0.5)
+    for row in result.schedule_a_broker_rows:
+        row.confidence = min(row.confidence, 0.5)
+    raw = dict(result.raw) if isinstance(result.raw, dict) else {"fallback_raw": result.raw}
+    raw.update(
+        {
+            "manual_review_required": True,
+            "fallback_reason": safe_error_summary(error),
+            "source": "local_parser_after_ai_failure",
+        }
+    )
+    result.raw = raw
+    result.provider = f"{result.provider} - manual review required"
+    return result
 
 
 def redact_sensitive_text(value: str) -> str:
@@ -3986,8 +4008,8 @@ def extract_eyemed_schedule_a_summaries(page_texts: list[tuple[int, str]]) -> li
     contracts = [record["contract_number"] for record in records]
     combined_contract = combine_eyemed_contract_numbers(contracts)
     persons_covered = sum_money_values(*(record["persons_covered"] for record in records))
-    premium_total = whole_dollar_money_value(sum_money_values(*(record["premium"] for record in records)))
-    broker_total = whole_dollar_money_value(sum_money_values(*(row.commission_total for row in extract_eyemed_broker_rows(page_texts))))
+    premium_total = sum_money_values(*(record["premium"] for record in records))
+    broker_total = sum_money_values(*(row.commission_total for row in extract_eyemed_broker_rows(page_texts)))
     benefit_rows = [
         ScheduleABenefitBreakdownRow(
             benefit_type=f"Vision / {record['contract_number']}",
@@ -4099,15 +4121,15 @@ def extract_eyemed_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
         if total_marker:
             broker_section = broker_section[: total_marker.start()]
         pattern = re.compile(
-            r"([A-Za-z0-9 &.,'()-]+?)([0-9]{11})(.+?)\s+([A-Z]{2})\s+([0-9]{5}(?:-[0-9]{4})?)\s+\$?([0-9,]+\.\d{2})",
-            flags=re.IGNORECASE | re.DOTALL,
+            r"([A-Za-z0-9 &.,'()-]+?)([0-9]{11})(.+?)([A-Z]{2})\s+([0-9]{5}(?:-[0-9]{4})?)\s+\$?([0-9,]+\.\d{2})",
+            flags=re.DOTALL,
         )
         for match in pattern.finditer(broker_section):
             name = clean_extracted_value(match.group(1))
             contract_number = clean_extracted_value(match.group(2))
             address_city = clean_extracted_value(match.group(3))
             address_line_1, city = split_eyemed_address_city(address_city)
-            amount = whole_dollar_money_value(match.group(6)) or money_value(match.group(6))
+            amount = money_value(match.group(6))
             if not name or not is_probable_person_or_entity_name(name):
                 continue
             rows.append(
@@ -4187,6 +4209,9 @@ def normalize_eyemed_date(value: str) -> str:
 
 def split_eyemed_address_city(value: str) -> tuple[str | None, str | None]:
     text = clean_extracted_value(value)
+    po_box_match = re.match(r"((?:P\.?\s*O\.?\s+Box)\s+\d+)\s+(.+)$", text, flags=re.IGNORECASE)
+    if po_box_match:
+        return clean_extracted_value(po_box_match.group(1)), clean_extracted_value(po_box_match.group(2))
     match = re.match(r"(.+\b(?:Street|St|Avenue|Ave|Parkway|Pkwy|Road|Rd|Drive|Dr|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Circle|Cir))\s+(.+)$", text, flags=re.IGNORECASE)
     if match:
         return clean_extracted_value(match.group(1)), clean_extracted_value(match.group(2))

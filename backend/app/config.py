@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # FT Williams Schedule A slots are independent. Query a small batch in
     # parallel to reduce latency without flooding the upstream service.
     ftw_slot_query_concurrency: int = 5
+    # PlanIDs_Batch can contain thousands of plans. Only probe a ranked,
+    # metadata-relevant subset; otherwise require an explicit manual match.
+    ftw_plan_lookup_probe_limit: int = 10
     # Current-data snapshots are identical for every filing that belongs to
     # the same FT Williams plan and year.
     ftw_snapshot_ttl_seconds: int = 300

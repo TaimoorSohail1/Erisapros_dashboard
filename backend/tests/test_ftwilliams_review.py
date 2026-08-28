@@ -21,6 +21,7 @@ from app.models import (
     FTWilliamsBrokerMatchesRequest,
     FTWilliamsManualMatchRequest,
     FTWilliamsComparisonField,
+    FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
     FTWilliamsQueryResponse,
     FTWilliamsReview,
@@ -1007,6 +1008,70 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_plan_ids_batch_probes_only_a_bounded_filtered_candidate_set(self):
+        class LargePlanBatchFTWilliamsService(FTWilliamsService):
+            def __init__(self):
+                self.calls = []
+
+            def status(self) -> dict:
+                return {"configured": True}
+
+            def build_request_xml(self, payload) -> str:
+                return f"<Request operation=\"{payload.operation}\" />"
+
+            def mask_key_id(self, value: str) -> str:
+                return value
+
+            async def run_query(self, payload):
+                self.calls.append(payload)
+                if payload.operation == "plan_ids_batch":
+                    statuses = []
+                    for index in range(3352):
+                        prefix = "TARGET" if index < 20 else "UNRELATED"
+                        statuses.append(
+                            f"<Status><Type>PlanIDs_Batch</Type><ErrorCode>0</ErrorCode>"
+                            f"<CustomerID>{prefix}-COMPANY-{index}</CustomerID>"
+                            f"<PlanID>{prefix}-PLAN-{index}</PlanID>"
+                            f"<FTWCustomerID>{100000 + index}</FTWCustomerID>"
+                            f"<FTWPlanID>{200000 + index}</FTWPlanID></Status>"
+                        )
+                    raw_response = f"<ftwLinkResponse>{''.join(statuses)}</ftwLinkResponse>"
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml="<Request operation=\"plan_ids_batch\" />",
+                        success=True,
+                        raw_response=raw_response,
+                        statuses=self.parse_response(raw_response),
+                    )
+                if payload.operation == "query_plan":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation,
+                        configured=True,
+                        sent=True,
+                        request_xml="<Request operation=\"query_plan\" />",
+                        success=False,
+                        raw_response="<ftwLinkResponse />",
+                        statuses=[FTWilliamsStatusItem(type="PlanData", error_code="18", error_desc="No match")],
+                    )
+                raise AssertionError(f"Unexpected operation {payload.operation}")
+
+        fake_ftw = LargePlanBatchFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+        lookup = FTWilliamsPlanLookup(
+            company_employer_id="13-1994506",
+            plan_number="503",
+            plan_name="TARGET HEALTH AND WELFARE PLAN",
+            sponsor_name="TARGET AMERICAS LTD",
+        )
+
+        error = run_async(service._try_plan_ids_batch_lookup(lookup, repo=None))
+        probes = [call for call in fake_ftw.calls if call.operation == "query_plan"]
+
+        self.assertLessEqual(len(probes), 10)
+        self.assertIn("manual", error.lower())
+
     def test_zero_one_schedule_a_indicators_compare_to_yes_no_values(self) -> None:
         self.assertFalse(values_meaningfully_different("1", "Yes", tag="HealthInd"))
         self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
