@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 import hashlib
 import re
 import time
@@ -2867,7 +2866,7 @@ class FTWilliamsReviewService:
                     }
                 )
                 continue
-            if not self._readback_values_equal(expected_value, actual_value):
+            if not self._readback_values_equal(expected_value, actual_value, tag=tag):
                 mismatches.append(
                     {
                         "form": form_type.value,
@@ -2897,7 +2896,7 @@ class FTWilliamsReviewService:
                 actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
                 for tag, expected_value in expected_broker.items():
                     actual_value = actual_broker.get(tag)
-                    if actual_value is None or not self._readback_values_equal(expected_value, actual_value):
+                    if actual_value is None or not self._readback_values_equal(expected_value, actual_value, tag=tag):
                         mismatches.append(
                             {
                                 "form": form_type.value,
@@ -2952,25 +2951,17 @@ class FTWilliamsReviewService:
                 candidates.append(indexed)
         return candidates
 
-    def _readback_values_equal(self, expected: object, actual: object) -> bool:
-        expected_text = str(expected or "").strip()
-        actual_text = str(actual or "").strip()
-        expected_number = self._readback_decimal(expected_text)
-        actual_number = self._readback_decimal(actual_text)
-        if expected_number is not None and actual_number is not None:
-            return expected_number == actual_number
-        return normalize_compare_value(expected_text) == normalize_compare_value(actual_text)
-
-    def _readback_decimal(self, value: str) -> Decimal | None:
-        cleaned = value.replace("$", "").replace(",", "").strip()
-        if cleaned.startswith("(") and cleaned.endswith(")"):
-            cleaned = f"-{cleaned[1:-1]}"
-        if not re.fullmatch(r"-?\d+(?:\.\d+)?", cleaned):
-            return None
-        try:
-            return Decimal(cleaned)
-        except InvalidOperation:
-            return None
+    def _readback_values_equal(
+        self,
+        expected: object,
+        actual: object,
+        *,
+        tag: str | None = None,
+    ) -> bool:
+        # FT Williams commonly stores monetary inputs as whole dollars.  Use
+        # the same tag-aware normalization as the review table so harmless
+        # cents rounding and indicator encodings do not become false failures.
+        return not values_meaningfully_different(actual, expected, tag=tag)
 
     def _approval_blocking_error(self, fields: list[ExtractedField]) -> str | None:
         high_missing = len(

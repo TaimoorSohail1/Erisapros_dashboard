@@ -1012,6 +1012,23 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
         self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
 
+    def test_schedule_a_readback_accepts_ftw_whole_dollar_normalization(self) -> None:
+        service = FTWilliamsReviewService()
+
+        normalized = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            {"WlfrTotChargesPaidAmt": "53977.12"},
+            {"WlfrTotChargesPaidAmt": "53977"},
+        )
+        materially_different = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            {"WlfrTotChargesPaidAmt": "53978"},
+            {"WlfrTotChargesPaidAmt": "53977"},
+        )
+
+        self.assertEqual(normalized, [])
+        self.assertEqual(materially_different[0]["tag"], "WlfrTotChargesPaidAmt")
+
     def test_schedule_a_readback_verifies_broker_multipart_rows(self) -> None:
         service = FTWilliamsReviewService()
         expected = {
