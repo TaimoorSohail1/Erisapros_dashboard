@@ -2222,6 +2222,8 @@ def _looks_like_broker_heading(value: str) -> bool:
 def _purpose_without_money(value: str) -> str | None:
     clean = clean_extracted_value(_RULE_MONEY_TOKEN.sub(" ", str(value or "")).replace("*", " "))
     clean = re.sub(r"\b[1-9]\s*-\s*I(?:ns(?:urance)?)?.*$", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"\s*-\s*Ins(?:urance)?(?:\s+Agent)?(?:\s+Or|\s+Broker)?\s*$", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"\s+(?:O|Or|Agent|Broker)\s*$", "", clean, flags=re.IGNORECASE).strip()
     if not clean or _looks_like_broker_heading(clean):
         return None
     return clean

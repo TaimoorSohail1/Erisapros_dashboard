@@ -114,6 +114,7 @@ class UniversalScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[1].name, "PROFESSIONAL GROUP PLANS INC")
         self.assertEqual(rows[1].commission_total, "0")
         self.assertEqual(rows[1].fee_total, "19,501")
+        self.assertEqual(rows[1].fee_rows[0].purpose, "Bonus; Override")
         self.assertEqual(rows[2].name, "MERCER HEALTH & BENEFITS LLC")
         self.assertEqual(rows[2].commission_total, "9,407")
         self.assertEqual(rows[2].fee_total, "2,014")
