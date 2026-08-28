@@ -178,7 +178,8 @@ def _current_broker_row(row: Mapping[str, object]) -> ScheduleABrokerRow:
 
 def _value(row: Mapping[str, object], base: str) -> str:
     for tag, value in row.items():
-        if re.fullmatch(rf"{re.escape(base)}(?:0?[1-9]|[1-9][0-9])", str(tag)):
+        tag_text = str(tag)
+        if tag_text == f"{base}XX" or re.fullmatch(rf"{re.escape(base)}(?:0?[1-9]|[1-9][0-9])", tag_text):
             return str(value or "").strip()
     return ""
 

@@ -90,6 +90,38 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual(aligned[0].address_line_1, "10833 VALLEY VIEW STREET")
         self.assertEqual(aligned[0].commission_total, "2340.80")
 
+    def test_multipart_placeholder_tags_keep_current_broker_identity(self):
+        extracted_rows = [
+            extracted(
+                "Nth Insurance Agency dba: Alliance 360 I",
+                "10833 VALLEY VIEW STREET",
+                commission="2340.80",
+            )
+        ]
+        current_rows = [
+            {
+                "NameXX": "NTH INSURANCE AGENCY INC.",
+                "AddressLine1XX": "10833 VALLEY VIEW STREET",
+                "AddressLine2XX": "SUITE 550",
+                "CityXX": "CYPRESS",
+                "StateXX": "CA",
+                "ZipCodeXX": "90630-5056",
+                "CommPdAmtXX": "3284",
+            }
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertTrue(matches[0].resolved)
+        self.assertEqual(matches[0].reason, "Matched by a unique exact broker address.")
+        self.assertEqual(aligned[0].name, "NTH INSURANCE AGENCY INC.")
+        self.assertEqual(aligned[0].address_line_2, "SUITE 550")
+        self.assertEqual(aligned[0].city, "CYPRESS")
+        self.assertEqual(aligned[0].state, "CA")
+        self.assertEqual(aligned[0].zip_code, "90630-5056")
+        self.assertEqual(aligned[0].commission_total, "2340.80")
+
     def test_ambiguous_duplicate_requires_confirmation(self):
         extracted_rows = [extracted("Same Broker", commission="100")]
         current_rows = [current(1, "Same Broker"), current(2, "Same Broker")]
