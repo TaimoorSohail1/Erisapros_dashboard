@@ -205,6 +205,67 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertIsNone(aligned[1])
         self.assertEqual(aligned[2].name, "New Broker")
 
+    def test_partial_extracted_broker_set_preserves_current_breakdown(self):
+        extracted_rows = [
+            ScheduleABrokerRow(
+                name="CENTERSTONE INS & FIN SVC LLC",
+                commission_total="18544",
+                fee_total="9273",
+                purpose="General Agent Payments",
+                organization_code="03",
+            )
+        ]
+        current_rows = [
+            {
+                **current(1, "ALLIANCE 360 INSURANCE SOLUTIONS", commission="18544"),
+                "FeesPdAmt01": "9273",
+                "FeesPdText01": "COMMISSIONS",
+            },
+            {
+                **current(2, "CENTERSTONE INS & FIN SVC LLC", commission="0"),
+                "FeesPdAmt02": "9273",
+                "FeesPdText02": "FEES",
+            },
+        ]
+
+        matches = match_schedule_a_brokers(
+            extracted_rows,
+            current_rows,
+            decisions={0: {"ftw_index": 1}},
+        )
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+        records = [
+            {
+                "ftw_seq_no": "8",
+                "query_results": {
+                    "InsCarrierName": "CIGNA",
+                    "InsContractNum": "0656053",
+                    **current_rows[0],
+                    **current_rows[1],
+                },
+                "query_subparts": {"Broker": current_rows},
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "8",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=aligned,
+        )
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+
+        self.assertEqual(aligned, [None, None])
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], [
+            "ALLIANCE 360 INSURANCE SOLUTIONS",
+            "CENTERSTONE INS & FIN SVC LLC",
+        ])
+        self.assertEqual([broker.findtext("CommPdAmtXX") for broker in brokers], ["18544", "0"])
+        self.assertEqual([broker.findtext("FeesPdAmtXX") for broker in brokers], ["9273", "9273"])
+
     def test_same_ftw_row_cannot_be_confirmed_for_two_extracted_rows(self):
         extracted_rows = [extracted("First"), extracted("Second")]
         current_rows = [current(1, "Current")]

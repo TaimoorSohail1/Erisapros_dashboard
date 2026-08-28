@@ -140,6 +140,16 @@ def resolved_schedule_a_broker_rows(
         elif match.ftw_index is not None:
             if aligned[match.ftw_index] is not None:
                 raise ValueError(f"FT Williams broker row {match.ftw_index + 1} was assigned more than once.")
+            # A source that exposes fewer broker rows than FT Williams is not a
+            # complete per-recipient breakdown. Its commission/fee figures may
+            # be summary totals, so applying them to one matched row can double
+            # the Schedule A totals. The reviewer still confirms identity, but
+            # every existing FT broker row is preserved byte-for-byte.
+            lacks_row_identity_detail = not any(
+                (row.address_line_1, row.address_line_2, row.city, row.state, row.zip_code)
+            )
+            if len(extracted_rows) < len(current_rows) and lacks_row_identity_detail:
+                continue
             current = _current_broker_row(current_rows[match.ftw_index])
             # FT Williams often stores a suite/unit in AddressLine1 while the
             # source document splits it into AddressLine2.  Preserve the two
