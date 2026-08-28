@@ -34,6 +34,7 @@ import {
   regenerateXml,
   reEvaluateFilingRules,
   rejectFiling,
+  resolveFTWilliamsPlanYearConflict,
   retryExtraction,
   saveManualFTWilliamsMatch,
   selectFTWilliamsScheduleAMatch,
@@ -197,6 +198,10 @@ export function FilingReviewPage() {
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
   const scheduleABrokerMatches = ftwReview?.schedule_a_broker_matches || [];
+  const planYearConflictRequired = Boolean(
+    ftwReview?.plan_year_conflict
+    && !ftwReview?.plan_year_resolution,
+  );
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
   const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
   const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
@@ -227,6 +232,7 @@ export function FilingReviewPage() {
   const missingRows = reviewRows.filter((row) => row.group === "MISSING");
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
   const actionRequiredRows = reviewRows.filter(isActionRequiredRow);
+  const actionRequiredCount = actionRequiredRows.length + (planYearConflictRequired ? 1 : 0);
   const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -301,7 +307,8 @@ export function FilingReviewPage() {
     ftwReview.ftw_editable !== false &&
     form5500SafetyReady &&
     scheduleASafetyReady &&
-    scheduleABrokersReady,
+    scheduleABrokersReady &&
+    !planYearConflictRequired,
   );
   const foundCount = extracted.length;
   const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
@@ -315,7 +322,7 @@ export function FilingReviewPage() {
   const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
   const scheduleSelectionRequired = scheduleCandidates.length > 0 && !ftwReview?.schedule_a_match;
-  const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;
+  const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate && !planYearConflictRequired;
 
   useEffect(() => {
     if (!toast) return;
@@ -591,6 +598,33 @@ export function FilingReviewPage() {
     }
   }
 
+  async function resolvePlanYearConflict(resolution: "USE_WORKSHEET" | "KEEP_FTW") {
+    if (!id) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await resolveFTWilliamsPlanYearConflict(id, resolution);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Plan year confirmed",
+        message: resolution === "USE_WORKSHEET"
+          ? "The worksheet dates will update Form 5500 and every attached Schedule A."
+          : "The current FT Williams dates will be kept across Form 5500 and every attached Schedule A.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Plan year was not confirmed",
+        message: error instanceof Error ? error.message : "Choose the correct plan-year dates and try again.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function saveScheduleABrokerMatch(extractedIndex: number, ftwIndex?: number, createNew = false) {
     if (!id || !ftwReview) return;
     setFtwBusy(true);
@@ -763,7 +797,7 @@ export function FilingReviewPage() {
         <WorkflowStepper
           filing={filing}
           ftwReadyToSend={ftwReadyToSend}
-          needsDecisionCount={actionRequiredRows.length}
+          needsDecisionCount={actionRequiredCount}
           onStepSelect={setActiveWorkflowStep}
         />
 
@@ -779,7 +813,7 @@ export function FilingReviewPage() {
               </div>
               <div className="compact-review-meta" aria-label="Filing review summary">
                 <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
-                <span><small>Needs review</small><strong>{actionRequiredRows.length}</strong></span>
+                <span><small>Needs review</small><strong>{actionRequiredCount}</strong></span>
                 <span><small>FTW match</small><strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong></span>
               </div>
               <div className="compact-review-toolbar">
@@ -811,10 +845,18 @@ export function FilingReviewPage() {
             </div>
 
             <div className="approval-count-tabs">
-              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Action Required" count={actionRequiredRows.length} onClick={() => setActiveTab("NEEDS_DECISION")} />
+              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Action Required" count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
+
+            {planYearConflictRequired && ftwReview?.plan_year_conflict ? (
+              <PlanYearConflictPanel
+                busy={reviewInteractionBusy}
+                conflict={ftwReview.plan_year_conflict}
+                onResolve={resolvePlanYearConflict}
+              />
+            ) : null}
 
             <div className="field-filter-row approval-filter-row">
               <SelectFilter label="Form" value={formFilter} onChange={setFormFilter} options={["SCHEDULE_A", "FORM_5500"]} />
@@ -917,7 +959,7 @@ export function FilingReviewPage() {
             willKeepFtw: sameRows.length,
             willUpdate: willUpdateRows.length,
           }}
-          hasBlockers={actionRequiredRows.length > 0}
+          hasBlockers={actionRequiredCount > 0}
           unresolvedRows={approvalBlockerRows}
           onApprove={approveAnyway}
           onClose={() => setShowApproveConfirm(false)}
@@ -935,7 +977,7 @@ export function FilingReviewPage() {
 
       {activeWorkflowStep ? (
         <WorkflowDetailDialog
-          actionRequiredCount={actionRequiredRows.length}
+          actionRequiredCount={actionRequiredCount}
           approvalBlocked={approvalBlocked}
           approvalReady={approvalReady}
           busy={reviewInteractionBusy}
@@ -2766,6 +2808,44 @@ function ScheduleAWorksheetSummaryPanel({ summaries }: { summaries: ScheduleAWor
             ) : null}
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function PlanYearConflictPanel({
+  busy,
+  conflict,
+  onResolve,
+}: {
+  busy: boolean;
+  conflict: NonNullable<FTWilliamsReview["plan_year_conflict"]>;
+  onResolve: (resolution: "USE_WORKSHEET" | "KEEP_FTW") => void;
+}) {
+  const worksheetDates = `${conflict.worksheet_begin || "Missing"} – ${conflict.worksheet_end || "Missing"}`;
+  const ftwFormDates = `${conflict.ftw_form_begin || "Missing"} – ${conflict.ftw_form_end || "Missing"}`;
+  const ftwScheduleDates = `${conflict.ftw_schedule_a_begin || "Missing"} – ${conflict.ftw_schedule_a_end || "Missing"}`;
+  return (
+    <section className="plan-year-conflict-panel" aria-label="Plan year conflict">
+      <div className="plan-year-conflict-copy">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>Confirm the plan year before approval</strong>
+          <p>The selected dates will be applied together to Form 5500 and every attached Schedule A.</p>
+        </div>
+      </div>
+      <dl className="plan-year-conflict-values">
+        <div><dt>Plan worksheet</dt><dd>{worksheetDates}</dd></div>
+        <div><dt>FT Williams Form 5500</dt><dd>{ftwFormDates}</dd></div>
+        <div><dt>FT Williams Schedule A</dt><dd>{ftwScheduleDates}</dd></div>
+      </dl>
+      <div className="plan-year-conflict-actions">
+        <button className="button primary" type="button" disabled={busy} onClick={() => onResolve("USE_WORKSHEET")}>
+          Use worksheet dates
+        </button>
+        <button className="button secondary" type="button" disabled={busy} onClick={() => onResolve("KEEP_FTW")}>
+          Keep FT Williams dates
+        </button>
       </div>
     </section>
   );

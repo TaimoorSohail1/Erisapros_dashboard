@@ -267,6 +267,17 @@ export interface FTWilliamsReview {
   ftw_plan_url?: string | null;
   comparison_year?: string | null;
   comparison_year_source?: string | null;
+  plan_year_conflict?: {
+    worksheet_begin?: string | null;
+    worksheet_end?: string | null;
+    ftw_form_begin?: string | null;
+    ftw_form_end?: string | null;
+    ftw_schedule_a_begin?: string | null;
+    ftw_schedule_a_end?: string | null;
+  } | null;
+  plan_year_resolution?: "USE_WORKSHEET" | "KEEP_FTW" | null;
+  plan_year_resolution_begin?: string | null;
+  plan_year_resolution_end?: string | null;
   schedule_a_match?: Record<string, unknown> | null;
   schedule_a_candidates?: Array<Record<string, unknown>>;
   schedule_a_records?: Array<Record<string, unknown>>;

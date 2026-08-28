@@ -205,6 +205,7 @@ def build_schedule_a_records_update_xml(
     matched_ftw_seq_no: str | None,
     fields: list[ExtractedField],
     *,
+    all_record_fields: list[ExtractedField] | None = None,
     add_new_fields: list[ExtractedField] | None = None,
     new_schedule_desc: str | None = None,
     transaction_type: str = "2",
@@ -223,7 +224,7 @@ def build_schedule_a_records_update_xml(
     for record in sorted(records, key=lambda item: _record_sort_key(item.get("ftw_seq_no"))):
         record_seq = str(record.get("ftw_seq_no") or "").strip()
         selected_record = bool(matched_seq and record_seq == matched_seq)
-        update_fields = fields if selected_record else []
+        update_fields = _merge_record_update_fields(all_record_fields or [], fields if selected_record else [])
         current_values = record.get("query_results") or {}
         if not isinstance(current_values, dict) or not current_values:
             continue
@@ -264,6 +265,17 @@ def build_schedule_a_records_update_xml(
 {joined}
   </DataBatch>
 </ftwLink>'''
+
+
+def _merge_record_update_fields(
+    all_record_fields: list[ExtractedField],
+    selected_record_fields: list[ExtractedField],
+) -> list[ExtractedField]:
+    merged: dict[str, ExtractedField] = {}
+    for field in [*all_record_fields, *selected_record_fields]:
+        key = str(field.mapped_rule_key or field.id or field.ftw_field or field.xml_tag or id(field))
+        merged[key] = field
+    return list(merged.values())
 
 
 def combine_ftw_update_xml(*documents: str | None) -> str:

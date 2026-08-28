@@ -94,6 +94,11 @@ class ScheduleAContractType(str, Enum):
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
+class FTWilliamsPlanYearResolution(str, Enum):
+    USE_WORKSHEET = "USE_WORKSHEET"
+    KEEP_FTW = "KEEP_FTW"
+
+
 class FTWilliamsPlanLookupStatus(str, Enum):
     NOT_RUN = "NOT_RUN"
     MISSING_IDENTIFIERS = "MISSING_IDENTIFIERS"
@@ -659,6 +664,10 @@ class FTWilliamsReview(BaseModel):
     ftw_plan_url: str | None = None
     comparison_year: str | None = None
     comparison_year_source: str | None = None
+    plan_year_conflict: dict | None = None
+    plan_year_resolution: FTWilliamsPlanYearResolution | None = None
+    plan_year_resolution_begin: str | None = None
+    plan_year_resolution_end: str | None = None
     schedule_a_match: dict | None = None
     schedule_a_candidates: list[dict] = Field(default_factory=list)
     schedule_a_records: list[dict] = Field(default_factory=list)
@@ -768,6 +777,10 @@ class FTWilliamsBrokerMatchesRequest(BaseModel):
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):
     contract_type: ScheduleAContractType
     reason: str | None = None
+
+
+class FTWilliamsPlanYearResolutionRequest(BaseModel):
+    resolution: FTWilliamsPlanYearResolution
 
 
 class FTWilliamsSendUpdateRequest(BaseModel):

@@ -17,6 +17,7 @@ from app.models import (
     NormalizedExtractionField,
     FTWilliamsManualMatchRequest,
     FTWilliamsBrokerMatchesRequest,
+    FTWilliamsPlanYearResolutionRequest,
     FTWilliamsPrepareReviewRequest,
     FTWilliamsScheduleAContractTypeRequest,
     FTWilliamsScheduleAMatchRequest,
@@ -529,6 +530,19 @@ async def apply_manual_ftwilliams_match(filing_id: str, payload: FTWilliamsManua
 async def select_ftwilliams_schedule_a_match(filing_id: str, payload: FTWilliamsScheduleAMatchRequest):
     try:
         review = await FTWilliamsReviewService().select_schedule_a_match(filing_id, payload)
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Filing not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {"ftw_review": review}
+
+
+@router.post("/{filing_id}/ftw/plan-year-resolution")
+async def resolve_ftwilliams_plan_year_conflict(
+    filing_id: str,
+    payload: FTWilliamsPlanYearResolutionRequest,
+):
+    try:
+        review = await FTWilliamsReviewService().resolve_plan_year_conflict(filing_id, payload.resolution)
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.models import (
     AuditLog,
     ClientFacingError,
+    DocumentType,
     ExtractedField,
     ExtractedFieldStatus,
     FieldPriority,
@@ -27,6 +28,7 @@ from app.models import (
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
     FTWilliamsPlanMapping,
+    FTWilliamsPlanYearResolution,
     FTWilliamsQueryRequest,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
@@ -318,8 +320,16 @@ class FTWilliamsReviewService:
             )
             error_message = "; ".join(filter(None, [error_message, lock_message]))
 
-        form_5500_block_reason = self._form_5500_update_block_reason(fields, form_5500_current)
-        schedule_a_block_reason = self._schedule_a_update_block_reason(fields, schedule_a_current)
+        plan_year_conflict = self._plan_year_conflict(fields, form_5500_current, schedule_a_current)
+        plan_year_resolution = self._effective_plan_year_resolution(
+            existing_review,
+            fields,
+            form_5500_current,
+            schedule_a_current,
+        )
+        plan_year_update_confirmed = plan_year_resolution is not None
+        form_5500_block_reason = None if plan_year_update_confirmed else self._form_5500_update_block_reason(fields, form_5500_current)
+        schedule_a_block_reason = None if plan_year_update_confirmed else self._schedule_a_update_block_reason(fields, schedule_a_current)
         if form_5500_block_reason:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
@@ -415,6 +425,11 @@ class FTWilliamsReviewService:
                 schedule_a_records,
                 identity.get("ftw_seq_no"),
                 identity,
+                all_record_fields=(
+                    self._schedule_a_plan_year_fields(safe_schedule_a_fields)
+                    if plan_year_update_confirmed
+                    else []
+                ),
                 schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 add_new_schedule_a=create_new_schedule_a,
                 new_schedule_desc=new_schedule_desc,
@@ -451,6 +466,10 @@ class FTWilliamsReviewService:
             ftw_plan_url=ftw_plan_url,
             comparison_year=comparison_year,
             comparison_year_source=comparison_year_source,
+            plan_year_conflict=plan_year_conflict,
+            plan_year_resolution=plan_year_resolution,
+            plan_year_resolution_begin=(existing_review.plan_year_resolution_begin if plan_year_resolution and existing_review else None),
+            plan_year_resolution_end=(existing_review.plan_year_resolution_end if plan_year_resolution and existing_review else None),
             schedule_a_match=(
                 self._schedule_match_payload_preserving_decision(matched_schedule_a, fields, existing_review)
                 if matched_schedule_a
@@ -638,6 +657,112 @@ class FTWilliamsReviewService:
         )
         return review
 
+    async def resolve_plan_year_conflict(
+        self,
+        filing_id: str,
+        resolution: FTWilliamsPlanYearResolution | str,
+    ) -> FTWilliamsReview:
+        repo = get_repository()
+        filing = await repo.get_filing(filing_id)
+        if not filing:
+            raise ValueError("Filing not found")
+        review = await repo.get_ftwilliams_review(filing_id)
+        if not review or not review.current_query_success:
+            raise ValueError("Query current FT Williams values before resolving the plan year conflict.")
+        try:
+            selected_resolution = FTWilliamsPlanYearResolution(str(getattr(resolution, "value", resolution)))
+        except ValueError as exc:
+            raise ValueError("Choose either the Plan Worksheet dates or the current FT Williams dates.") from exc
+
+        fields = await repo.list_fields(filing_id)
+        worksheet_begin = self._field_value_by_rule(fields, "form_5500_part_i_6_plan_year_beginning_date")
+        worksheet_end = self._field_value_by_rule(fields, "form_5500_part_i_7_plan_year_ending_date")
+        if selected_resolution == FTWilliamsPlanYearResolution.USE_WORKSHEET:
+            selected_begin, selected_end = worksheet_begin, worksheet_end
+            reason = "Plan year confirmed from the Plan Worksheet."
+        else:
+            selected_begin = review.form_5500_current_values.get("PlanYearBeginDate")
+            selected_end = review.form_5500_current_values.get("PlanYearEndDate")
+            reason = "Plan year confirmed from current FT Williams values."
+        if not selected_begin or not selected_end:
+            raise ValueError("Both plan year beginning and ending dates are required before resolving this conflict.")
+
+        field_by_rule = {str(field.mapped_rule_key or ""): field for field in fields}
+        missing_fields: list[ExtractedField] = []
+        for rule_key, label, form_type, selected_value in (
+            ("form_5500_part_i_6_plan_year_beginning_date", "6. Plan Year Beginning Date", FormType.FORM_5500, selected_begin),
+            ("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", FormType.FORM_5500, selected_end),
+            ("schedule_a_part_iv_4d_plan_year_beginning_date", "4d. Plan Year Beginning Date", FormType.SCHEDULE_A, selected_begin),
+            ("schedule_a_part_iv_4e_plan_year_ending_date", "4e. Plan Year Ending Date", FormType.SCHEDULE_A, selected_end),
+        ):
+            if rule_key in field_by_rule:
+                continue
+            missing_fields.append(
+                ExtractedField(
+                    filing_id=filing_id,
+                    source_field_name=label,
+                    normalized_field_name=rule_key,
+                    mapped_rule_key=rule_key,
+                    mapped_label=label,
+                    form_type=form_type,
+                    source_document_type=DocumentType.PLAN_WORKSHEET,
+                    priority=FieldPriority.HIGH,
+                    value=selected_value,
+                    proposed_value=selected_value,
+                    confidence=1,
+                    status=ExtractedFieldStatus.EDITED,
+                    status_reason=reason,
+                )
+            )
+        if missing_fields:
+            created_fields = await repo.add_fields(missing_fields)
+            fields.extend(created_fields)
+            field_by_rule.update({str(field.mapped_rule_key or ""): field for field in created_fields})
+
+        for rule_key, selected_value in (
+            ("form_5500_part_i_6_plan_year_beginning_date", selected_begin),
+            ("form_5500_part_i_7_plan_year_ending_date", selected_end),
+            ("schedule_a_part_iv_4d_plan_year_beginning_date", selected_begin),
+            ("schedule_a_part_iv_4e_plan_year_ending_date", selected_end),
+        ):
+            field = field_by_rule.get(rule_key)
+            if not field or not field.id:
+                continue
+            updated = await repo.update_field(
+                filing_id,
+                field.id,
+                selected_value,
+                status=ExtractedFieldStatus.EDITED,
+                status_reason=reason,
+            )
+            if updated:
+                fields = [updated if item.id == updated.id else item for item in fields]
+
+        review.plan_year_resolution = selected_resolution
+        review.plan_year_resolution_begin = selected_begin
+        review.plan_year_resolution_end = selected_end
+        review = await repo.upsert_ftwilliams_review(review)
+        published_rules = await FieldRuleService(repo).published_rules()
+        resolved_review = await self.prepare_review(
+            filing_id,
+            send_queries=False,
+            apply_automatic_derivations=False,
+            preloaded=(filing, fields, published_rules, review),
+        )
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_PLAN_YEAR_RESOLVED",
+                message="Reviewer resolved the Form 5500 and Schedule A plan year conflict.",
+                details={
+                    "resolution": selected_resolution.value,
+                    "plan_year_begin": selected_begin,
+                    "plan_year_end": selected_end,
+                },
+            )
+        )
+        return resolved_review
+
     async def select_schedule_a_match(self, filing_id: str, payload: FTWilliamsScheduleAMatchRequest) -> FTWilliamsReview:
         repo = get_repository()
         published_rules = await FieldRuleService(repo).published_rules()
@@ -735,8 +860,11 @@ class FTWilliamsReviewService:
             schedule_a_worksheet_summaries,
             new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
         )
-        form_5500_block_reason = self._form_5500_update_block_reason(fields, form_5500_current)
-        schedule_a_block_reason = self._schedule_a_update_block_reason(fields, schedule_a_current)
+        plan_year_conflict = self._plan_year_conflict(fields, form_5500_current, schedule_a_current)
+        plan_year_resolution = self._effective_plan_year_resolution(review, fields, form_5500_current, schedule_a_current)
+        plan_year_update_confirmed = plan_year_resolution is not None
+        form_5500_block_reason = None if plan_year_update_confirmed else self._form_5500_update_block_reason(fields, form_5500_current)
+        schedule_a_block_reason = None if plan_year_update_confirmed else self._schedule_a_update_block_reason(fields, schedule_a_current)
         if form_5500_block_reason:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
@@ -798,6 +926,11 @@ class FTWilliamsReviewService:
                 schedule_a_records,
                 payload.ftw_seq_no,
                 update_identity,
+                all_record_fields=(
+                    self._schedule_a_plan_year_fields(safe_schedule_a_fields)
+                    if plan_year_update_confirmed
+                    else []
+                ),
                 schedule_update_blocked=bool(schedule_a_block_reason) or broker_match_blocked,
                 add_new_schedule_a=payload.create_new,
                 new_schedule_desc=new_schedule_desc,
@@ -817,6 +950,10 @@ class FTWilliamsReviewService:
                 **review.model_dump(exclude={"id", "created_at", "updated_at"}),
                 "status": FTWilliamsReviewStatus.CURRENT_QUERIED if current_query_success else FTWilliamsReviewStatus.PREVIEW_READY,
                 "current_query_success": current_query_success,
+                "plan_year_conflict": plan_year_conflict,
+                "plan_year_resolution": plan_year_resolution,
+                "plan_year_resolution_begin": review.plan_year_resolution_begin if plan_year_resolution else None,
+                "plan_year_resolution_end": review.plan_year_resolution_end if plan_year_resolution else None,
                 "schedule_a_match": schedule_a_match,
                 "schedule_a_candidates": schedule_a_candidates,
                 "schedule_a_records": schedule_a_records,
@@ -1958,6 +2095,9 @@ class FTWilliamsReviewService:
             contract_type_error = self._review_contract_type_block_reason(review) if review else None
             if contract_type_error:
                 raise ValueError(contract_type_error)
+            plan_year_error = self._review_plan_year_block_reason(review) if review else None
+            if plan_year_error:
+                raise ValueError(plan_year_error)
             if approval_error and not override_blockers:
                 raise ValueError(approval_error)
             await repo.update_filing(
@@ -2037,6 +2177,10 @@ class FTWilliamsReviewService:
         if contract_type_error:
             await self._record_update_failure(repo, filing_id, review, contract_type_error)
             raise ValueError(contract_type_error)
+        plan_year_error = self._review_plan_year_block_reason(review)
+        if plan_year_error:
+            await self._record_update_failure(repo, filing_id, review, plan_year_error)
+            raise ValueError(plan_year_error)
         schedule_a_required_error = self._missing_required_schedule_a_payload(review)
         if schedule_a_required_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_required_error)
@@ -3098,6 +3242,15 @@ class FTWilliamsReviewService:
             return None
         return "Schedule A payload is required before sending this Form 5500 update because Schedule A is attached."
 
+    @staticmethod
+    def _review_plan_year_block_reason(review: FTWilliamsReview) -> str | None:
+        if not review.plan_year_conflict or review.plan_year_resolution:
+            return None
+        return (
+            "Resolve the plan year conflict before approval: choose the Plan Worksheet dates "
+            "or keep the current FT Williams dates for Form 5500 and every attached Schedule A."
+        )
+
     def _schedule_a_payload_required(self, review: FTWilliamsReview) -> bool:
         if review.schedule_a_match or review.schedule_a_candidates:
             return True
@@ -3469,6 +3622,67 @@ class FTWilliamsReviewService:
             return "Schedule A updates blocked: FTW Schedule A plan year does not match the Plan Worksheet year."
         return None
 
+    def _plan_year_conflict(
+        self,
+        fields: list[ExtractedField],
+        form_5500_current: dict[str, str],
+        schedule_a_current: dict[str, str],
+    ) -> dict | None:
+        worksheet_begin = self._field_value_by_rule(fields, "form_5500_part_i_6_plan_year_beginning_date")
+        worksheet_end = self._field_value_by_rule(fields, "form_5500_part_i_7_plan_year_ending_date")
+        form_begin = form_5500_current.get("PlanYearBeginDate")
+        form_end = form_5500_current.get("PlanYearEndDate")
+        schedule_begin = schedule_a_current.get("PlanYearBeginDate")
+        schedule_end = schedule_a_current.get("PlanYearEndDate")
+        mismatched = any(
+            left and right and not self._same_date(left, right)
+            for left, right in (
+                (worksheet_begin, form_begin),
+                (worksheet_end, form_end),
+                (worksheet_begin, schedule_begin),
+                (worksheet_end, schedule_end),
+            )
+        )
+        if not mismatched:
+            return None
+        return {
+            "worksheet_begin": worksheet_begin,
+            "worksheet_end": worksheet_end,
+            "ftw_form_begin": form_begin,
+            "ftw_form_end": form_end,
+            "ftw_schedule_a_begin": schedule_begin,
+            "ftw_schedule_a_end": schedule_end,
+        }
+
+    def _effective_plan_year_resolution(
+        self,
+        review: FTWilliamsReview | None,
+        fields: list[ExtractedField],
+        form_5500_current: dict[str, str],
+        schedule_a_current: dict[str, str],
+    ) -> FTWilliamsPlanYearResolution | None:
+        if not review or not review.plan_year_resolution:
+            return None
+        begin = self._field_value_by_rule(fields, "form_5500_part_i_6_plan_year_beginning_date")
+        end = self._field_value_by_rule(fields, "form_5500_part_i_7_plan_year_ending_date")
+        if review.plan_year_resolution == FTWilliamsPlanYearResolution.USE_WORKSHEET:
+            if (
+                self._same_date(begin, review.plan_year_resolution_begin)
+                and self._same_date(end, review.plan_year_resolution_end)
+            ):
+                return review.plan_year_resolution
+            return None
+        current_begin = form_5500_current.get("PlanYearBeginDate") or schedule_a_current.get("PlanYearBeginDate")
+        current_end = form_5500_current.get("PlanYearEndDate") or schedule_a_current.get("PlanYearEndDate")
+        if (
+            self._same_date(begin, current_begin)
+            and self._same_date(end, current_end)
+            and self._same_date(review.plan_year_resolution_begin, current_begin)
+            and self._same_date(review.plan_year_resolution_end, current_end)
+        ):
+            return review.plan_year_resolution
+        return None
+
     def _form_5500_update_block_reason(self, fields: list[ExtractedField], form_5500_current: dict[str, str]) -> str | None:
         if not form_5500_current:
             return None
@@ -3530,6 +3744,14 @@ class FTWilliamsReviewService:
     def _field_value_by_rule(self, fields: list[ExtractedField], rule_key: str) -> str | None:
         field = next((item for item in fields if item.mapped_rule_key == rule_key), None)
         return self._value_for_field(field)
+
+    @staticmethod
+    def _schedule_a_plan_year_fields(fields: list[ExtractedField]) -> list[ExtractedField]:
+        plan_year_rules = {
+            "schedule_a_part_iv_4d_plan_year_beginning_date",
+            "schedule_a_part_iv_4e_plan_year_ending_date",
+        }
+        return [field for field in fields if field.mapped_rule_key in plan_year_rules]
 
     def _same_date(self, left: str | None, right: str | None) -> bool:
         normalized_left = self._normalize_date_for_compare(left)
@@ -4018,6 +4240,7 @@ class FTWilliamsReviewService:
         matched_ftw_seq_no: str | None,
         identity: dict,
         *,
+        all_record_fields: list[ExtractedField] | None = None,
         schedule_update_blocked: bool = False,
         add_new_schedule_a: bool = False,
         new_schedule_desc: str | None = None,
@@ -4032,6 +4255,7 @@ class FTWilliamsReviewService:
                 schedule_a_records,
                 None,
                 [],
+                all_record_fields=all_record_fields,
                 add_new_fields=safe_schedule_a_fields,
                 new_schedule_desc=new_schedule_desc,
                 transaction_type="2",
@@ -4050,6 +4274,7 @@ class FTWilliamsReviewService:
             schedule_a_records,
             matched_ftw_seq_no,
             safe_schedule_a_fields,
+            all_record_fields=all_record_fields,
             transaction_type="2",
             schedule_a_broker_rows=schedule_a_broker_rows,
             **{key: value for key, value in identity.items() if key != "ftw_seq_no"},

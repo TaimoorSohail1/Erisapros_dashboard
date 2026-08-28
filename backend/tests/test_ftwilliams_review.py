@@ -600,7 +600,7 @@ class FakeFTWilliamsEquitableMismatchService(FTWilliamsService):
                             "PlanName": "HAROLD BROTHERS MECHANICAL CONTRACTORS INC. LIFE AND DISABILITY PLAN",
                             "SponsDfePlanNum": "501",
                             "SDEIN": "26-3189470",
-                            "PlanYearBeginDate": "10/01/2024",
+                            "PlanYearBeginDate": "01/01/2024",
                             "PlanYearEndDate": "09/30/2025",
                         },
                     )
@@ -5010,6 +5010,42 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         policy_begin = by_rule["schedule_a_part_i_1f_policy_year_beginning_date"]
         self.assertTrue(policy_begin.changed)
         self.assertTrue(policy_begin.update_included)
+
+        with self.assertRaisesRegex(ValueError, "Resolve the plan year conflict"):
+            run_async(
+                FTWilliamsReviewService(FakeFTWilliamsEquitableMismatchService()).approve_and_update(
+                    filing.id,
+                    send_to_ftw=False,
+                )
+            )
+
+        resolved = run_async(
+            FTWilliamsReviewService(FakeFTWilliamsEquitableMismatchService()).resolve_plan_year_conflict(
+                filing.id,
+                "USE_WORKSHEET",
+            )
+        )
+
+        self.assertEqual(resolved.plan_year_resolution, "USE_WORKSHEET")
+        self.assertIn("<DOL5500Data>", resolved.update_xml_5500 or "")
+        self.assertIn("<DOLScheduleAData>", resolved.update_xml_schedule_a or "")
+        self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", resolved.update_xml_5500 or "")
+        self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", resolved.update_xml_schedule_a or "")
+        self.assertNotIn("plan year does not match", (resolved.error_message or "").lower())
+
+        kept_current = run_async(
+            FTWilliamsReviewService(FakeFTWilliamsEquitableMismatchService()).resolve_plan_year_conflict(
+                filing.id,
+                "KEEP_FTW",
+            )
+        )
+
+        self.assertEqual(kept_current.plan_year_resolution, "KEEP_FTW")
+        self.assertEqual(kept_current.plan_year_resolution_begin, "01/01/2024")
+        self.assertEqual(kept_current.plan_year_resolution_end, "09/30/2025")
+        self.assertIn("<PlanYearBeginDate>01/01/2024</PlanYearBeginDate>", kept_current.update_xml_schedule_a or "")
+        self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", kept_current.update_xml_schedule_a or "")
+        self.assertNotIn("plan year does not match", (kept_current.error_message or "").lower())
 
 
 if __name__ == "__main__":

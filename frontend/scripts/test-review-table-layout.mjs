@@ -3,6 +3,33 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+
+assert.match(
+  api,
+  /export async function resolveFTWilliamsPlanYearConflict[\s\S]*?\/ftw\/plan-year-resolution/,
+  "The client must expose the explicit FT Williams plan-year resolution endpoint.",
+);
+assert.match(
+  source,
+  /function PlanYearConflictPanel[\s\S]*?Use worksheet dates[\s\S]*?Keep FT Williams dates/,
+  "A plan-year conflict must show both coordinated reviewer choices.",
+);
+assert.match(
+  source,
+  /const planYearConflictRequired = Boolean\([\s\S]*?plan_year_conflict[\s\S]*?!ftwReview\?\.plan_year_resolution/,
+  "An unresolved plan-year conflict must be tracked as an approval blocker.",
+);
+assert.match(
+  source,
+  /const approvalReady = [^;]*!planYearConflictRequired/,
+  "Approval must remain locked until the plan-year conflict is resolved.",
+);
+assert.match(
+  source,
+  /ftwReadyToSend = Boolean\([\s\S]*?!planYearConflictRequired/,
+  "FT Williams send readiness must remain locked until the plan-year conflict is resolved.",
+);
 
 assert.match(
   source,
@@ -74,7 +101,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\) && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
+  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\) && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate && !planYearConflictRequired;/,
   "Approval readiness must distinguish an active FTW retry from a failed filing that needs re-approval.",
 );
 assert.match(
@@ -119,7 +146,7 @@ assert.match(
 );
 assert.match(
   source,
-  /hasBlockers=\{actionRequiredRows\.length > 0\}/,
+  /hasBlockers=\{actionRequiredCount > 0\}/,
   "The approval confirmation must warn whenever unresolved fields remain.",
 );
 assert.match(

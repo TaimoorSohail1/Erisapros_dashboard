@@ -6361,6 +6361,73 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   padding: 16px;
 }
 
+.plan-year-conflict-panel {
+  align-items: center;
+  background: #fff8e8;
+  border-bottom: 1px solid #ead7a8;
+  border-top: 1px solid #ead7a8;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(250px, 1.1fr) minmax(360px, 1.5fr) auto;
+  padding: 14px 18px;
+}
+
+.plan-year-conflict-copy {
+  align-items: flex-start;
+  color: #7c4a03;
+  display: flex;
+  gap: 9px;
+}
+
+.plan-year-conflict-copy p {
+  color: #765f3b;
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+
+.plan-year-conflict-values {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.plan-year-conflict-values div {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid #ead7a8;
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+
+.plan-year-conflict-values dt {
+  color: #765f3b;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.plan-year-conflict-values dd {
+  color: #3e3425;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 3px 0 0;
+}
+
+.plan-year-conflict-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .plan-year-conflict-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-year-conflict-values {
+    grid-template-columns: 1fr;
+  }
+}
+
 .schedule-a-broker-panel-head {
   align-items: center;
   display: flex;

@@ -1246,6 +1246,68 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_schedule_a)
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_schedule_a)
 
+    def test_confirmed_plan_year_updates_every_preserved_schedule_a_record(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "ScheduleDesc": "LIFE",
+                    "PlanYearBeginDate": "01/01/2025",
+                    "PlanYearEndDate": "12/31/2025",
+                    "InsCarrierName": "Life Carrier",
+                },
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {
+                    "ScheduleDesc": "DENTAL",
+                    "PlanYearBeginDate": "01/01/2025",
+                    "PlanYearEndDate": "12/31/2025",
+                    "InsCarrierName": "Dental Carrier",
+                },
+            },
+        ]
+        plan_year_fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="4d. Plan Year Beginning Date",
+                normalized_field_name="schedule_plan_year_begin",
+                mapped_rule_key="schedule_a_part_iv_4d_plan_year_beginning_date",
+                mapped_label="4d. Plan Year Beginning Date",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="08-01-2025",
+                proposed_value="08-01-2025",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="4e. Plan Year Ending Date",
+                normalized_field_name="schedule_plan_year_end",
+                mapped_rule_key="schedule_a_part_iv_4e_plan_year_ending_date",
+                mapped_label="4e. Plan Year Ending Date",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="12-31-2025",
+                proposed_value="12-31-2025",
+            ),
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            all_record_fields=plan_year_fields,
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+        )
+
+        documents = ET.fromstring(xml).findall(".//DOLScheduleAData")
+        self.assertEqual(len(documents), 2)
+        self.assertEqual([item.findtext("PlanYearBeginDate") for item in documents], ["08/01/2025", "08/01/2025"])
+        self.assertEqual([item.findtext("PlanYearEndDate") for item in documents], ["12/31/2025", "12/31/2025"])
+        self.assertEqual([item.findtext("InsCarrierName") for item in documents], ["Life Carrier", "Dental Carrier"])
+
 
 if __name__ == "__main__":
     unittest.main()

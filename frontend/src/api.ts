@@ -162,6 +162,17 @@ export async function selectFTWilliamsScheduleAMatch(
   });
 }
 
+export async function resolveFTWilliamsPlanYearConflict(
+  filingId: string,
+  resolution: "USE_WORKSHEET" | "KEEP_FTW",
+): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request("/filings/" + filingId + "/ftw/plan-year-resolution", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution }),
+  });
+}
+
 export async function setFTWilliamsScheduleABrokerMatches(
   filingId: string,
   decisions: Array<{ extracted_index: number; ftw_index?: number; create_new?: boolean }>,
