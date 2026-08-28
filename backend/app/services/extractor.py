@@ -1822,6 +1822,10 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(extract_eyemed_schedule_a_fields(page_texts))
     fields.extend(extract_standard_schedule_a_fields(page_texts))
     fields.extend(extract_united_omaha_schedule_a_fields(page_texts))
+    authoritative_packet_fields = [
+        extract_nyl_annual_policy_fields(page_texts),
+        extract_hmsa_schedule_a_fields(page_texts),
+    ]
     full_text = "\n\n".join(text for _, text in page_texts)
     if full_text:
         fields.extend(parse_schedule_a_text(full_text, None, rules=rules))
@@ -1833,6 +1837,12 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(schedule_a_broker_compensation_fields(extract_compensation_table_broker_rows(page_texts)))
     fields.extend(schedule_a_broker_compensation_fields(extract_columnar_broker_compensation_rows(page_texts)))
     fields.extend(extract_commission_fee_total_fields(page_texts))
+    for packet_fields in authoritative_packet_fields:
+        if not packet_fields:
+            continue
+        authoritative_names = {field.field_name for field in packet_fields}
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(packet_fields)
     cigna_fields = extract_cigna_schedule_a_fields(page_texts)
     if cigna_fields:
         # Cigna reporting packages contain a consolidated Schedule A followed
@@ -2048,6 +2058,109 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_compensation_table_broker_rows(page_texts),
         ]
     )
+
+
+def extract_nyl_annual_policy_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract New York Life's Annual Policy Information Report exactly.
+
+    Its PDF text layer splits words such as ``Year`` and ``Total`` while the
+    contract number can contain a meaningful space. Broad label parsing used
+    to lose the second contract token and miss the ending date and premium.
+    """
+
+    fields: list[NormalizedExtractionField] = []
+    for page, text in page_texts:
+        if (
+            "Annual Policy Information Report" not in text
+            or "Name of Insurance Carrier" not in text
+            or "Contract/Policy Number" not in text
+        ):
+            continue
+
+        def value(pattern: str) -> str | None:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+            return clean_extracted_value(match.group(1)) if match else None
+
+        extracted = {
+            "1a. Name of Insurance Company": value(r"Name\s+of\s+Insurance\s+Carrier\s*\n\s*([^\n]+)"),
+            "1b. Insurance Carrier EIN": value(r"\bEIN\s+([0-9]{2}-[0-9]{7})"),
+            "1c. NAIC Code": value(r"\bNAIC\s+Code\s+([0-9]{4,6})"),
+            "1d. Contract/Policy Number": value(r"Contract/Policy\s+Number[ \t]+([A-Z0-9]+(?:[ \t]+[A-Z0-9]+)*)"),
+            "1f. Policy Year Beginning Date": value(r"Contract/Policy\s+Y\s*ear\s+From\s*:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})"),
+            "1g. Policy Year Ending Date": value(r"Contract/Policy\s+Y\s*ear\s+T\s*o\s*:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})"),
+            "10a. Total premiums or subscription charges paid to carrier": value(
+                r"T\s*otal\s+premiums\s+paid\s+to\s+Insurance\s+Company\s+during\s+the\s+policy\s+year\s*:\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
+            ),
+        }
+        if extracted["1a. Name of Insurance Company"]:
+            extracted["1a. Name of Insurance Company"] = extracted["1a. Name of Insurance Company"].replace("Y ork", "York")
+        for field_name, field_value in extracted.items():
+            if not field_value:
+                continue
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=field_value,
+                    confidence=0.99,
+                    page=page,
+                    source_text="New York Life Annual Policy Information Report",
+                )
+            )
+        break
+    return fields
+
+
+def extract_hmsa_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract the two-page HMSA ERISA Schedule A support packet."""
+
+    full_text = "\n".join(text for _, text in page_texts)
+    if "HAWAII MEDICAL SERVICE ASSOCIATION" not in full_text.upper() or "ERISA FORM 5500 AND SCHEDULE A INFORMATION" not in full_text.upper():
+        return []
+
+    ein = regex_first(full_text, [r"EIN\s+number\s+([0-9]{2}-[0-9]{7})"], flags=re.IGNORECASE)
+    naic = regex_first(full_text, [r"NAIC\s+code\s+([0-9]{4,6})"], flags=re.IGNORECASE)
+    period = re.search(
+        r"FOR\s+THE\s+PLAN\s+YEAR\s*:\s*January\s+([0-9]{4})\s*-\s*December\s+([0-9]{4})",
+        full_text,
+        flags=re.IGNORECASE,
+    )
+    rows = re.findall(
+        r"(?:C\d+\s+)?(?P<group>\d{5,6})\s+(?P<subgroup>\d{3})\s+.+?\s+(?P<subs>\d+)\s+(?P<covered>\d+)\s+\$(?P<premium>[0-9,]+(?:\.\d{2})?)\s*$",
+        full_text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if not rows:
+        return []
+
+    primary = next((row for row in rows if int(row[3]) > 0), rows[0])
+    group = primary[0].lstrip("0") or "0"
+    subgroup = primary[1].lstrip("0") or "0"
+    contract = f"{group} {subgroup}"
+    covered = primary[3]
+    premium = sum_money_values(*(row[4] for row in rows))
+    begin = f"01/01/{period.group(1)}" if period else None
+    end = f"12/31/{period.group(2)}" if period else None
+    extracted = {
+        "1a. Name of Insurance Company": "Hawaii Medical Service Association (HMSA)",
+        "1b. Insurance Carrier EIN": ein,
+        "1c. NAIC Code": naic,
+        "1d. Contract/Policy Number": contract,
+        "1e. Persons Covered (End of Policy Year)": covered,
+        "1f. Policy Year Beginning Date": begin,
+        "1g. Policy Year Ending Date": end,
+        "10a. Total premiums or subscription charges paid to carrier": premium,
+    }
+    return [
+        NormalizedExtractionField(
+            field_name=field_name,
+            value=value,
+            confidence=0.99,
+            page=None,
+            source_text="HMSA ERISA Form 5500 and Schedule A information",
+        )
+        for field_name, value in extracted.items()
+        if value
+    ]
 
 
 def _cigna_primary_schedule_a_page(page_texts: list[tuple[int, str]]) -> tuple[int, str] | None:

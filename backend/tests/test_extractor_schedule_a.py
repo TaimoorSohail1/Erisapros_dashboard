@@ -26,6 +26,8 @@ from app.services.extractor import (
     extract_eyemed_schedule_a_summaries,
     extract_explicit_benefit_indicator_fields,
     extract_fields_from_groundx_xray,
+    extract_hmsa_schedule_a_fields,
+    extract_nyl_annual_policy_fields,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
     extract_bcbsma_schedule_a_worksheet_summaries,
@@ -56,6 +58,68 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_new_york_life_annual_policy_report_keeps_full_contract_and_totals(self):
+        pages = [
+            (
+                2,
+                """
+                Anniversary
+                Annual Policy Information Report
+                Name of Insurance Carrier
+                New Y ork Life Group Insurance Company of New Y ork
+                EIN 23-1503749
+                NAIC Code 65498
+                Contract/Policy Number OK 0968358
+                Contract/Policy Y ear From: 01/01/2025
+                Contract/Policy Y ear T o: 12/31/2025
+                T otal premiums paid to Insurance Company during the policy year: $ 7,462.96
+                """,
+            )
+        ]
+
+        by_name = {field.field_name: field.value for field in extract_nyl_annual_policy_fields(pages)}
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "New York Life Group Insurance Company of New York")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "23-1503749")
+        self.assertEqual(by_name["1c. NAIC Code"], "65498")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "OK 0968358")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "7,462.96")
+
+    def test_hmsa_support_packet_extracts_header_covered_count_and_total_premium(self):
+        pages = [
+            (
+                1,
+                """
+                Attached is the HMSA Health Plan information that may be used to complete Schedule A.
+                For filing purposes, please use EIN number 99-0040115 and NAIC code 49948.
+                """,
+            ),
+            (
+                2,
+                """
+                HAWAII MEDICAL SERVICE ASSOCIATION
+                ERISA FORM 5500 AND SCHEDULE A INFORMATION
+                FOR THE PLAN YEAR: January 2025 - December 2025
+                Acct Code Group # Sub Group Group Name Subs Subs & Deps Paid Premium
+                C000 012763 001 JTB USA INC 19 23 $210,730.54
+                012763 002 JTB USA INC COBRA 0 0 $756.56
+                """,
+            ),
+        ]
+
+        by_name = {field.field_name: field.value for field in extract_hmsa_schedule_a_fields(pages)}
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Hawaii Medical Service Association (HMSA)")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "99-0040115")
+        self.assertEqual(by_name["1c. NAIC Code"], "49948")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "12763 1")
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "23")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "211,487.10")
+
     def test_schedule_a_parser_extracts_and_merges_columnar_broker_disclosure_rows(self):
         pages = [
             (
