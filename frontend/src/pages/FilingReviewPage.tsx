@@ -814,7 +814,7 @@ export function FilingReviewPage() {
               <div className="compact-review-meta" aria-label="Filing review summary">
                 <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
                 <span><small>Needs review</small><strong>{actionRequiredCount}</strong></span>
-                <span><small>FTW match</small><strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong></span>
+                <span><small>FTW match</small><strong>{filing.ftw_review?.schedule_a_match ? "Matched" : "Pending"}</strong></span>
               </div>
               <div className="compact-review-toolbar">
               <ReviewPrimaryActions

@@ -166,6 +166,16 @@ assert.match(
 );
 assert.match(
   source,
+  /<small>FTW match<\/small><strong>\{filing\.ftw_review\?\.schedule_a_match \? "Matched" : "Pending"\}<\/strong>/,
+  "The filing summary must report a Schedule A match only when a specific Schedule A selection exists.",
+);
+assert.doesNotMatch(
+  source,
+  /<small>FTW match<\/small>[\s\S]{0,160}customer_id/,
+  "A customer or plan lookup must not be presented as a selected Schedule A match.",
+);
+assert.match(
+  source,
   /\(filing\.ftw_review\?\.schedule_a_candidates \|\| \[\]\)\.length \|\| filing\.ftw_review\?\.bring_forward_required/,
   "A missing current Schedule A that requires Bring Forward must keep FTW Loaded in the decision state.",
 );

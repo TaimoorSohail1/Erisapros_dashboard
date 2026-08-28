@@ -123,6 +123,8 @@ class ExtractionService:
         if settings.groundx_api_key and settings.groundx_bucket_id:
             try:
                 result = await self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A")
+                local_result = local_schedule_a_pdf_result(file_bytes, file_name, rules=self.field_rules)
+                result = supplement_schedule_a_result_with_local(result, local_result)
                 result.classification_signals = sorted(set(result.classification_signals) | set(document_signals))
                 return result
             except Exception as exc:
@@ -134,6 +136,8 @@ class ExtractionService:
                 )
                 local_result.classification_signals = document_signals
                 if local_result.fields or local_result.schedule_a_broker_rows or local_result.schedule_a_worksheet_summaries:
+                    if is_validated_local_schedule_a_fallback(local_result):
+                        return mark_validated_schedule_a_fallback(local_result, exc)
                     return mark_schedule_a_fallback_for_manual_review(local_result, exc)
                 # Unrecognized layout: degrade gracefully instead of crashing the
                 # pipeline. The filing completes with all fields MISSING and is
@@ -659,6 +663,78 @@ def mark_schedule_a_fallback_for_manual_review(
     )
     result.raw = raw
     result.provider = f"{result.provider} - manual review required"
+    return result
+
+
+def mark_validated_schedule_a_fallback(
+    result: NormalizedExtractionResult,
+    error: Exception,
+) -> NormalizedExtractionResult:
+    """Record the AI outage without downgrading a complete deterministic result."""
+    raw = dict(result.raw) if isinstance(result.raw, dict) else {"fallback_raw": result.raw}
+    raw.update(
+        {
+            "fallback_validated": True,
+            "fallback_reason": safe_error_summary(error),
+            "source": "verified_local_parser_after_ai_failure",
+        }
+    )
+    result.raw = raw
+    result.provider = f"{result.provider} - verified local fallback"
+    return result
+
+
+def is_validated_local_schedule_a_fallback(result: NormalizedExtractionResult) -> bool:
+    """Trust fallback values only when the complete Schedule A identity agrees structurally."""
+    values = {
+        field.field_name: clean_extracted_value(field.value)
+        for field in result.fields
+        if field.value and not is_blank_extraction_value(field.value)
+    }
+    carrier = values.get("1a. Name of Insurance Company", "")
+    ein = values.get("1b. Insurance Carrier EIN", "")
+    naic = values.get("1c. NAIC Code", "")
+    contract = values.get("1d. Contract/Policy Number", "")
+    persons = values.get("1e. Persons Covered (End of Policy Year)", "").replace(",", "")
+    policy_from = values.get("1f. Policy Year Beginning Date", "")
+    policy_to = values.get("1g. Policy Year Ending Date", "")
+
+    try:
+        from_date = datetime.strptime(policy_from, "%m/%d/%Y")
+        to_date = datetime.strptime(policy_to, "%m/%d/%Y")
+        dates_valid = from_date <= to_date
+    except ValueError:
+        dates_valid = False
+
+    persons_valid = bool(re.fullmatch(r"\d+", persons)) and 0 < int(persons) <= 5_000_000
+    contract_valid = is_valid_contract_identifier(contract, allow_numeric=True) or bool(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/.-]{2,}", contract)
+        and re.search(r"\d{3,}", contract)
+        and not re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", contract)
+    )
+    return bool(
+        is_probable_carrier_name(carrier)
+        and looks_like_ein(ein)
+        and re.fullmatch(r"\d{4,6}", naic)
+        and contract_valid
+        and persons_valid
+        and dates_valid
+    )
+
+
+def supplement_schedule_a_result_with_local(
+    result: NormalizedExtractionResult,
+    local_result: NormalizedExtractionResult,
+) -> NormalizedExtractionResult:
+    """Guarantee deterministic Schedule A values survive a partial AI response."""
+    result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
+    if local_result.schedule_a_broker_rows:
+        result.schedule_a_broker_rows = local_result.schedule_a_broker_rows
+    if local_result.schedule_a_worksheet_summaries:
+        result.schedule_a_worksheet_summaries = local_result.schedule_a_worksheet_summaries
+    result.classification_signals = sorted(
+        set(result.classification_signals) | set(local_result.classification_signals)
+    )
     return result
 
 

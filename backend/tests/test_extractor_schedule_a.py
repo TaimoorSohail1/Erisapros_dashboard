@@ -1368,6 +1368,65 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertLessEqual(result.fields[0].confidence, 0.5)
         self.assertLessEqual(result.schedule_a_broker_rows[0].confidence, 0.5)
 
+    def test_groundx_failure_keeps_complete_local_fallback_trusted(self):
+        fallback = NormalizedExtractionResult(
+            provider="Local PDF parser fallback",
+            fields=[
+                NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity Security Life Insurance Company", confidence=0.96),
+                NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="43-0949844", confidence=0.98),
+                NormalizedExtractionField(field_name="1c. NAIC Code", value="71870", confidence=0.98),
+                NormalizedExtractionField(field_name="1d. Contract/Policy Number", value="1054538/9-1001", confidence=0.97),
+                NormalizedExtractionField(field_name="1e. Persons Covered (End of Policy Year)", value="171", confidence=0.97),
+                NormalizedExtractionField(field_name="1f. Policy Year Beginning Date", value="04/01/2025", confidence=0.97),
+                NormalizedExtractionField(field_name="1g. Policy Year Ending Date", value="03/31/2026", confidence=0.97),
+            ],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=fallback),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(side_effect=RuntimeError("temporary AI failure"))),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        self.assertIn("verified local fallback", result.provider.lower())
+        self.assertTrue(result.raw["fallback_validated"])
+        self.assertEqual(result.fields[0].confidence, 0.96)
+        self.assertEqual(result.schedule_a_broker_rows[0].confidence, 0.95)
+
+    def test_groundx_result_is_defensively_supplemented_by_local_parser(self):
+        groundx = NormalizedExtractionResult(
+            provider="GroundX X-Ray",
+            fields=[NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity", confidence=0.5)],
+        )
+        local = NormalizedExtractionResult(
+            provider="Local PDF parser",
+            fields=[
+                NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity Security Life Insurance Company", confidence=0.96),
+                NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="43-0949844", confidence=0.98),
+            ],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=local),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(return_value=groundx)),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        by_name = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Fidelity Security Life Insurance Company")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "43-0949844")
+        self.assertEqual(result.schedule_a_broker_rows[0].name, "NFP Corporate Services")
+
     def test_schedule_a_parser_extracts_standard_long_form_separate_benefits(self):
         pages = self._standard_long_form_pages()
 
