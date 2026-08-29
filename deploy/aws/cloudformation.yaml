@@ -351,6 +351,10 @@ Resources:
               Value: "90"
             - Name: LOW_CONFIDENCE_THRESHOLD
               Value: "0.8"
+            - Name: SCHEDULE_A_CANONICAL_VALIDATION_ENABLED
+              Value: "true" # authoritative Schedule A semantic validation
+            - Name: SCHEDULE_A_CANONICAL_VALIDATION_SHADOW_ENABLED
+              Value: "false" # shadow mode disabled after authoritative release
             - Name: SHAREFILE_SUBDOMAIN
               Value: erisapros
             - Name: SHAREFILE_DISCOVER_SHARED_FOLDERS
@@ -473,6 +477,10 @@ Resources:
               Value: "90"
             - Name: LOW_CONFIDENCE_THRESHOLD
               Value: "0.8"
+            - Name: SCHEDULE_A_CANONICAL_VALIDATION_ENABLED
+              Value: "true" # authoritative Schedule A semantic validation
+            - Name: SCHEDULE_A_CANONICAL_VALIDATION_SHADOW_ENABLED
+              Value: "false" # shadow mode disabled after authoritative release
             - Name: SHAREFILE_SUBDOMAIN
               Value: erisapros
             - Name: SHAREFILE_DISCOVER_SHARED_FOLDERS

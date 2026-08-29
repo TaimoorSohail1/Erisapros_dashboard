@@ -10,6 +10,15 @@ from app.services.storage import StorageService
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def test_production_enables_authoritative_schedule_a_semantic_validation(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertEqual(contents.count("- Name: SCHEDULE_A_CANONICAL_VALIDATION_ENABLED"), 2)
+        self.assertEqual(contents.count('- Name: SCHEDULE_A_CANONICAL_VALIDATION_SHADOW_ENABLED'), 2)
+        self.assertEqual(contents.count('Value: "true" # authoritative Schedule A semantic validation'), 2)
+        self.assertEqual(contents.count('Value: "false" # shadow mode disabled after authoritative release'), 2)
+
     def test_production_proxy_timeouts_allow_slow_ftw_current_queries(self):
         template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
         contents = template.read_text(encoding="utf-8")

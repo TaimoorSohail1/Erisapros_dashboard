@@ -97,6 +97,7 @@ def clear_ftw_current_snapshot_cache() -> None:
 
 
 class FTWilliamsReviewService:
+    _SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN = 4
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
         self.ftwilliams = ftwilliams or FTWilliamsService()
 
@@ -2819,6 +2820,7 @@ class FTWilliamsReviewService:
         }
         documents: list[dict] = []
         for element in root.findall(f".//{data_tag}"):
+            ftw_seq_no = str(element.findtext("FTWSeqNo") or "").strip()
             values = {
                 child.tag: str(child.text or "").strip()
                 for child in list(element)
@@ -2836,6 +2838,8 @@ class FTWilliamsReviewService:
                         subparts.setdefault(record.tag, []).append(row)
             if subparts:
                 values["__subparts__"] = subparts
+            if ftw_seq_no:
+                values["__ftw_seq_no"] = ftw_seq_no
             if values:
                 documents.append(values)
         return documents
@@ -2847,6 +2851,14 @@ class FTWilliamsReviewService:
     ) -> FTWilliamsStatusItem | None:
         if not statuses:
             return None
+        expected_seq_no = str(expected.get("__ftw_seq_no") or "").strip()
+        if expected_seq_no:
+            exact_sequence_matches = [
+                status
+                for status in statuses
+                if str(status.ftw_seq_no or "").strip() == expected_seq_no
+            ]
+            return exact_sequence_matches[0] if len(exact_sequence_matches) == 1 else None
         scored: list[tuple[int, int, FTWilliamsStatusItem]] = []
         identity_tags = [
             ("InsContractNum", 8),
@@ -2884,7 +2896,7 @@ class FTWilliamsReviewService:
     ) -> list[dict]:
         mismatches: list[dict] = []
         for tag, expected_value in expected.items():
-            if tag == "__subparts__":
+            if tag in {"__subparts__", "__ftw_seq_no"}:
                 continue
             actual_value = self._readback_value(actual, form_type, tag)
             if actual_value is None:
@@ -3955,10 +3967,7 @@ class FTWilliamsReviewService:
                 )
                 if preferred_is_current_best:
                     return preferred_status
-        safe_identity_match = bool(
-            top_match["strong_matches"] > 0
-            or "Carrier name" in top_match["reasons"]
-        )
+        safe_identity_match = top_match["strong_matches"] > 0
         if (
             top_match["score"] <= 0
             or not safe_identity_match
@@ -3971,6 +3980,19 @@ class FTWilliamsReviewService:
             and scored[1][0]["strong_matches"] == top_match["strong_matches"]
         ):
             return None
+        if len(scored) > 1:
+            runner_up = scored[1][0]
+            exact_contract_breaks_normalization_tie = bool(
+                "Exact contract" in top_match["reasons"]
+                and "Contract" in runner_up["reasons"]
+                and top_match["strong_matches"] >= runner_up["strong_matches"]
+            )
+            if (
+                top_match["score"] - runner_up["score"]
+                < self._SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN
+                and not exact_contract_breaks_normalization_tie
+            ):
+                return None
         return top_status
 
     def _schedule_identity_conflicts(

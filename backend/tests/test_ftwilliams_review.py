@@ -1077,6 +1077,22 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(values_meaningfully_different("0", "No", tag="VisionInd"))
         self.assertTrue(values_meaningfully_different("0", "Yes", tag="HealthInd"))
 
+    def test_equivalent_structured_addresses_do_not_create_a_false_update(self) -> None:
+        self.assertFalse(
+            values_meaningfully_different(
+                "815 2ND AVENUE, 9TH FLOOR, NEW YORK NY 10017-4503",
+                "815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+                tag="SPONS_DFE_MAIL_STR_ADDRESS",
+            )
+        )
+        self.assertTrue(
+            values_meaningfully_different(
+                "815 2ND AVENUE, NEW YORK NY 10017-4503",
+                "915 2ND AVENUE, NEW YORK NY 10017-4503",
+                tag="SPONS_DFE_MAIL_STR_ADDRESS",
+            )
+        )
+
     def test_schedule_a_readback_accepts_ftw_whole_dollar_normalization(self) -> None:
         service = FTWilliamsReviewService()
 
@@ -1139,6 +1155,44 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(matches, [])
         self.assertTrue(any(item["tag"] == "Broker[1]/CommPdAmtXX" for item in mismatches))
+
+    def test_schedule_a_readback_matches_preserved_records_by_ftw_sequence(self) -> None:
+        service = FTWilliamsReviewService()
+        documents = service._update_documents(
+            """<?xml version="1.0" encoding="utf-8"?>
+            <ftwLink><DataBatch>
+              <DOLScheduleAData><FTWSeqNo>1</FTWSeqNo><InsCarrierEIN>36-2739571</InsCarrierEIN><WlfrTotChargesPaidAmt>100</WlfrTotChargesPaidAmt></DOLScheduleAData>
+              <DOLScheduleAData><FTWSeqNo>2</FTWSeqNo><InsCarrierEIN>36-2739571</InsCarrierEIN><WlfrTotChargesPaidAmt>200</WlfrTotChargesPaidAmt></DOLScheduleAData>
+            </DataBatch></ftwLink>""",
+            "DOLScheduleAData",
+        )
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="1",
+                query_results={"InsCarrierEIN": "36-2739571", "WlfrTotChargesPaidAmt": "100"},
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="2",
+                query_results={"InsCarrierEIN": "36-2739571", "WlfrTotChargesPaidAmt": "200"},
+            ),
+        ]
+
+        self.assertEqual(documents[1]["__ftw_seq_no"], "2")
+        matched = service._match_readback_schedule_status(documents[1], statuses)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.ftw_seq_no, "2")
+        self.assertEqual(
+            service._compare_readback_document(
+                FormType.SCHEDULE_A,
+                documents[1],
+                matched.query_results,
+            ),
+            [],
+        )
 
     def setUp(self):
         clear_ftw_current_snapshot_cache()
@@ -3465,6 +3519,169 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertIsNone(service._match_schedule_a_status(fields, statuses))
 
+    def test_schedule_match_stays_pending_when_best_score_margin_is_too_small(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1a. Carrier",
+                normalized_field_name="carrier",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Carrier",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Example Insurance Company",
+                proposed_value="Example Insurance Company",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1b. EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="36-2739571",
+                proposed_value="36-2739571",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1c. NAIC",
+                normalized_field_name="naic",
+                mapped_rule_key="schedule_a_part_i_1c_naic_code",
+                mapped_label="1c. NAIC",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="79413",
+                proposed_value="79413",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="ABC-123",
+                proposed_value="ABC-123",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="1",
+                query_results={"InsContractNum": "ABC-123", "InsCarrierEIN": "36-2739571"},
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="2",
+                query_results={
+                    "InsCarrierName": "Example Insurance Company",
+                    "InsCarrierEIN": "36-2739571",
+                    "InsCarrierNAICCode": "79413",
+                },
+            ),
+        ]
+
+        self.assertIsNone(service._match_schedule_a_status(fields, statuses))
+
+    def test_schedule_match_stays_pending_for_carrier_name_only(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1a. Carrier",
+                normalized_field_name="carrier",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Carrier",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Example Insurance Company",
+                proposed_value="Example Insurance Company",
+            )
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="4",
+                query_results={"InsCarrierName": "Example Insurance Company"},
+            )
+        ]
+
+        self.assertIsNone(service._match_schedule_a_status(fields, statuses))
+
+    def test_schedule_match_selects_a_clearly_higher_safe_score(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1a. Carrier",
+                normalized_field_name="carrier",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Carrier",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="Example Insurance Company",
+                proposed_value="Example Insurance Company",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1b. EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="36-2739571",
+                proposed_value="36-2739571",
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="ABC-123",
+                proposed_value="ABC-123",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="1",
+                query_results={
+                    "InsCarrierName": "Example Insurance Company",
+                    "InsCarrierEIN": "36-2739571",
+                    "InsContractNum": "ABC-123",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="2",
+                query_results={"InsCarrierEIN": "36-2739571"},
+            ),
+        ]
+
+        matched = service._match_schedule_a_status(fields, statuses)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.ftw_seq_no, "1")
+
     def test_approve_blocks_high_priority_missing_fields(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
@@ -5014,6 +5231,18 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                         priority=FieldPriority.HIGH,
                         value="Medical Mutual",
                         proposed_value="Medical Mutual",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. EIN",
+                        normalized_field_name="carrier_ein",
+                        mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                        mapped_label="1b. EIN",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="73-0000001",
+                        proposed_value="73-0000001",
                     ),
                     ExtractedField(
                         filing_id=filing.id,

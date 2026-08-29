@@ -358,6 +358,11 @@ def values_meaningfully_different(
 ) -> bool:
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
+    if tag and "address" in tag.casefold():
+        current_address = _normalize_address_compare(current)
+        proposed_address = _normalize_address_compare(proposed)
+        if current_address and proposed_address:
+            return current_address != proposed_address
     if tag == "InsFailProvideInfoInd":
         current_indicator = _one_two_indicator_value(current)
         proposed_indicator = _one_two_indicator_value(proposed)
@@ -374,6 +379,18 @@ def values_meaningfully_different(
         if current_number is not None and proposed_number is not None:
             return abs(current_number - proposed_number) >= Decimal("0.5")
     return normalize_compare_value(current) != normalize_compare_value(proposed)
+
+
+def _normalize_address_compare(value: str) -> str:
+    """Compare one combined/structured address without punctuation-only noise.
+
+    FT Williams may return ZIP+4 with a hyphen and insert commas between the
+    same address components that the source worksheet supplies as plain text.
+    Removing non-alphanumeric separators preserves the business value while
+    still detecting changed street numbers, unit values, localities, or ZIPs.
+    """
+
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
 
 
 def _one_two_indicator_value(value: str) -> str | None:

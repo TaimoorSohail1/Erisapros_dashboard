@@ -81,7 +81,7 @@ export function ShareFilePage() {
               <dt className="subtle">Configured shared root folder ID</dt>
               <dd>{status.shared_root_folder_id || "-"}</dd>
             </dl>
-            <button className="button" disabled onClick={handleSync}>
+            <button className="button" disabled={syncing || !status.connected} onClick={handleSync}>
               {syncing ? <InlineLoader label="Syncing ShareFile" /> : <><FolderSync size={18} /> Sync ShareFile</>}
             </button>
             {!status.connected && authorizationUrl ? (
