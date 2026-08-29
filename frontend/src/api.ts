@@ -245,10 +245,23 @@ export async function runFieldRuleExtractionQA(
   const formData = new FormData();
   formData.set("file", file);
   formData.set("document_type", documentType);
-  return request<FieldRuleQAResult>("/field-rules/qa-extraction", {
+  const submitted = await request<{ job_id: string; status: string }>("/field-rules/qa-extraction/jobs", {
     method: "POST",
     body: formData,
   });
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    const job = await request<{
+      job_id: string;
+      status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+      result?: FieldRuleQAResult | null;
+      error?: string | null;
+    }>(`/field-rules/qa-extraction/jobs/${encodeURIComponent(submitted.job_id)}`);
+    if (job.status === "COMPLETED" && job.result) return job.result;
+    if (job.status === "FAILED") throw new Error(job.error || "Document extraction QA failed.");
+  }
+  throw new Error("Document extraction QA is still processing after 10 minutes. Try again shortly.");
 }
 
 export async function publishFieldRule(key: string, reason: string): Promise<FieldRule> {

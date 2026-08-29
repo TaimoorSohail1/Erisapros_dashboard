@@ -8,6 +8,7 @@ from app.models import DocumentType, FieldRuleActionRequest, FieldRuleDraftReque
 from app.repositories import get_repository, retry_repository_read
 from app.services.field_rule_admin import FieldRuleService, FieldRuleValidationError
 from app.services.field_rule_qa import run_field_rule_qa
+from app.services.field_rule_qa_jobs import get_qa_job, submit_qa_job
 from app.services.ftw_field_catalog import field_catalog, field_catalog_version
 from app.services.field_rules import find_rule_for_field
 
@@ -89,6 +90,56 @@ async def qa_field_rule_extraction(
     claims: dict = Depends(require_field_rule_admin),
 ):
     del claims
+    file_name, file_bytes = await read_qa_upload(file, document_type)
+    snapshot = await FieldRuleService(get_repository()).published_snapshot()
+    try:
+        return await run_field_rule_qa(
+            file_bytes,
+            file_name,
+            document_type,
+            snapshot.rules,
+            rule_set_version=snapshot.version,
+            qa_timeout_seconds=get_settings().field_rule_qa_timeout_seconds,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Extraction QA could not read this document: {exc}") from exc
+
+
+@router.post("/qa-extraction/jobs", status_code=202)
+async def start_field_rule_extraction_job(
+    document_type: DocumentType = Form(...),
+    file: UploadFile = File(...),
+    claims: dict = Depends(require_field_rule_admin),
+):
+    del claims
+    file_name, file_bytes = await read_qa_upload(file, document_type)
+    snapshot = await FieldRuleService(get_repository()).published_snapshot()
+
+    async def work():
+        return await run_field_rule_qa(
+            file_bytes,
+            file_name,
+            document_type,
+            snapshot.rules,
+            rule_set_version=snapshot.version,
+        )
+
+    return submit_qa_job(work)
+
+
+@router.get("/qa-extraction/jobs/{job_id}")
+async def read_field_rule_extraction_job(
+    job_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    del claims
+    job = get_qa_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Extraction QA job was not found or has expired.")
+    return job
+
+
+async def read_qa_upload(file: UploadFile, document_type: DocumentType) -> tuple[str, bytes]:
     file_name = Path(file.filename or "qa-document").name
     extension = Path(file_name).suffix.lower()
     if extension not in FIELD_RULE_QA_EXTENSIONS:
@@ -103,19 +154,7 @@ async def qa_field_rule_extraction(
         raise HTTPException(status_code=400, detail="The QA document is empty.")
     if len(file_bytes) > FIELD_RULE_QA_MAX_BYTES:
         raise HTTPException(status_code=400, detail="The QA document must be 20 MB or smaller.")
-
-    snapshot = await FieldRuleService(get_repository()).published_snapshot()
-    try:
-        return await run_field_rule_qa(
-            file_bytes,
-            file_name,
-            document_type,
-            snapshot.rules,
-            rule_set_version=snapshot.version,
-            qa_timeout_seconds=get_settings().field_rule_qa_timeout_seconds,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Extraction QA could not read this document: {exc}") from exc
+    return file_name, file_bytes
 
 
 @router.get("/{key}/history")
