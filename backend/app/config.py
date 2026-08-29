@@ -35,9 +35,10 @@ class Settings(BaseSettings):
     # extract artifacts safely fall back to X-Ray/local extraction.
     groundx_structured_extract_enabled: bool = True
     # Browser requests pass through CloudFront, whose origin response timeout is
-    # 60 seconds. Keep interactive field-rule QA below that boundary and fall
-    # back to the deterministic document parser when GroundX is still working.
-    field_rule_qa_timeout_seconds: float = 45
+    # 60 seconds. GroundX commonly needs 35-45 seconds to ingest a PDF before
+    # its structured/X-Ray artifacts are available, so leave it almost the full
+    # origin window while retaining a small response/serialization margin.
+    field_rule_qa_timeout_seconds: float = 55
     allow_pdf_text_fallback: bool = False
     low_confidence_threshold: float = 0.8
     # The canonical Schedule A validator first runs in shadow mode so its

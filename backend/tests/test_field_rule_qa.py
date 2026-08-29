@@ -215,6 +215,12 @@ class FieldRuleQATests(unittest.TestCase):
         self.assertEqual(result["fields"][0]["mapped_rule_key"], rule.key)
         self.assertEqual(result["fields"][0]["value"], "98765")
 
+    def test_default_qa_timeout_allows_normal_groundx_ingestion_but_stays_below_cloudfront(self):
+        settings = Settings()
+
+        self.assertGreaterEqual(settings.field_rule_qa_timeout_seconds, 55)
+        self.assertLess(settings.field_rule_qa_timeout_seconds, 60)
+
 
 if __name__ == "__main__":
     unittest.main()
