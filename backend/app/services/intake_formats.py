@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from email import policy
 from html.parser import HTMLParser
 from io import BytesIO
+from zipfile import BadZipFile, ZipFile
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +100,53 @@ def normalize_intake_documents(file_name: str, file_bytes: bytes) -> list[Intake
     logo from replacing filing values written directly in the message.
     """
     extension = file_extension(file_name)
+    detected_extension = detect_actual_extension(file_bytes)
+    if detected_extension and detected_extension != extension:
+        corrected_name = f"{os.path.splitext(file_name)[0]}{detected_extension}"
+        return [
+            IntakeDocument(
+                file_name=corrected_name,
+                file_bytes=file_bytes,
+                original_file_name=file_name,
+                conversion=f"File content detected as {detected_extension.lstrip('.').upper()} instead of {extension.lstrip('.').upper() or 'unknown'}",
+            )
+        ]
 
     if extension in EMAIL_EXTENSIONS:
         return _unwrap_email_documents(file_name, file_bytes, extension)
     if extension == ".xls":
         return [_convert_xls(file_name, file_bytes)]
     return [IntakeDocument(file_name=file_name, file_bytes=file_bytes)]
+
+
+def detect_actual_extension(file_bytes: bytes) -> str | None:
+    """Identify supported document containers from their bytes, not their name.
+
+    ShareFile occasionally contains a Word or Excel package named ``.pdf``.
+    Passing that ZIP container to a PDF parser produces an empty extraction,
+    so route recognizable formats before provider or parser selection.
+    """
+    data = bytes(file_bytes or b"")
+    if data.startswith(b"%PDF-"):
+        return ".pdf"
+    if data.startswith((b"\x89PNG\r\n\x1a\n",)):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith((b"II*\x00", b"MM\x00*")):
+        return ".tiff"
+    if not data.startswith(b"PK\x03\x04"):
+        return None
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            names = {name.lower() for name in archive.namelist()}
+    except (BadZipFile, OSError):
+        return None
+    if "word/document.xml" in names:
+        return ".docx"
+    if "xl/workbook.xml" in names:
+        return ".xlsx"
+    return None
 
 
 # --- email ------------------------------------------------------------------

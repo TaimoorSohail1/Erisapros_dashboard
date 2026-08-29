@@ -57,6 +57,11 @@ class FieldRuleMappingMode(str, Enum):
     EXTRACTION_ONLY = "EXTRACTION_ONLY"
 
 
+class FieldRuleCardinality(str, Enum):
+    SCALAR = "SCALAR"
+    REPEATING_ROW = "REPEATING_ROW"
+
+
 class DocumentType(str, Enum):
     SCHEDULE_A = "SCHEDULE_A"
     PLAN_WORKSHEET = "PLAN_WORKSHEET"
@@ -127,6 +132,10 @@ class FieldRule(BaseModel):
     notes: str | None = None
     client_notes: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    cardinality: FieldRuleCardinality = FieldRuleCardinality.SCALAR
+    normalization_policy: str | None = None
+    validators: list[str] = Field(default_factory=list)
+    automatic_update_allowed: bool = True
     required: bool = False
     order: int = 0
     applicability: FieldRuleApplicability = FieldRuleApplicability.BOTH
@@ -169,12 +178,31 @@ class FieldRuleTestRequest(BaseModel):
     sample_field_name: str
 
 
+class SourceEvidence(BaseModel):
+    provider: str | None = None
+    page: int | None = None
+    source_text: str | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
+    table_cell: tuple[int, int] | None = None
+
+
+class ExtractionValidationResult(BaseModel):
+    validator: str
+    status: str
+    reason: str = ""
+    normalized_value: str | None = None
+
+
 class NormalizedExtractionField(BaseModel):
     field_name: str
     value: str = ""
+    candidate_values: list[str] = Field(default_factory=list)
     confidence: float = 0
     page: int | None = None
     source_text: str | None = None
+    evidence: list[SourceEvidence] = Field(default_factory=list)
+    validation_results: list[ExtractionValidationResult] = Field(default_factory=list)
+    decision: str = "UNASSESSED"
 
 
 class ScheduleABrokerMoneyRow(BaseModel):
@@ -195,8 +223,13 @@ class ScheduleABrokerRow(BaseModel):
     fee_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     commission_total: str | None = None
     fee_total: str | None = None
+    commission_source_text: str | None = None
+    fee_source_text: str | None = None
     source_page: int | None = None
     confidence: float = 0.9
+    evidence: list[SourceEvidence] = Field(default_factory=list)
+    validation_results: list[ExtractionValidationResult] = Field(default_factory=list)
+    decision: str = "UNASSESSED"
 
 
 class ScheduleABrokerMatch(BaseModel):

@@ -24,10 +24,14 @@ from app.models import (
     ScheduleABenefitBreakdownRow,
     ScheduleABrokerMoneyRow,
     ScheduleABrokerRow,
+    SourceEvidence,
     ScheduleAWorksheetSummary,
     ScheduleAWorksheetValue,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
+from app.services.groundx_schedule_a_workflow import normalize_groundx_schedule_a_extract
+from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline
+from app.services.schedule_a_semantic_layer import SemanticDocument, enrich_schedule_a_result
 from app.services.schedule_a_classification import classification_signals_from_text
 
 
@@ -118,6 +122,23 @@ class ExtractionService:
         )
 
     async def extract_schedule_a(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
+        result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
+        semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
+        if semantic_pages:
+            result = enrich_schedule_a_result(
+                result,
+                SemanticDocument.from_page_texts(semantic_pages),
+                rules=self.field_rules,
+            )
+        settings = get_settings()
+        return apply_schedule_a_pipeline(
+            result,
+            authoritative=bool(getattr(settings, "schedule_a_canonical_validation_enabled", False)),
+            shadow=bool(getattr(settings, "schedule_a_canonical_validation_shadow_enabled", True)),
+            rules=self.field_rules,
+        )
+
+    async def _extract_schedule_a_unresolved(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
         settings = get_settings()
         document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
@@ -190,6 +211,17 @@ class ExtractionService:
                 poll_raw = await self._poll_groundx_process(client, base_url, headers, str(process_id))
 
             raw_payloads: list[Any] = [ingest_raw, poll_raw]
+            structured_payloads: list[Any] = []
+            if form_type == FormType.SCHEDULE_A and bool(
+                getattr(settings, "groundx_structured_extract_enabled", True)
+            ):
+                structured_payloads = await self._fetch_groundx_structured_extracts(
+                    client,
+                    base_url,
+                    headers,
+                    raw_payloads,
+                    file_name,
+                )
             xray_payloads = await self._fetch_groundx_xray_payloads(client, base_url, headers, raw_payloads, file_name)
             raw_payloads.extend(xray_payloads)
             if not xray_payloads:
@@ -214,11 +246,19 @@ class ExtractionService:
                     raw_payloads.append(broad_bucket_search)
 
         xray_fields: list[NormalizedExtractionField] = []
+        structured_fields: list[NormalizedExtractionField] = []
         search_fields: list[NormalizedExtractionField] = []
         fallback_fields: list[NormalizedExtractionField] = []
         pdf_text_fields: list[NormalizedExtractionField] = []
         schedule_a_broker_rows: list[ScheduleABrokerRow] = []
         schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
+        for payload in structured_payloads:
+            structured_result = normalize_groundx_schedule_a_extract(payload, self.field_rules)
+            structured_fields.extend(structured_result.fields)
+            schedule_a_broker_rows = merge_schedule_a_broker_rows(
+                schedule_a_broker_rows,
+                structured_result.schedule_a_broker_rows,
+            )
         for payload in raw_payloads:
             if is_groundx_xray_payload(payload):
                 xray_fields.extend(extract_fields_from_groundx_xray(payload, rules=self.field_rules))
@@ -246,15 +286,31 @@ class ExtractionService:
             # on whatever format the document arrived in, not only PDFs.
             if str(file_name or "").lower().endswith(".pdf"):
                 pdf_text_fields = extract_fields_from_pdf_text(file_bytes, rules=self.field_rules)
-                schedule_a_broker_rows = extract_schedule_a_broker_rows_from_pdf_text(file_bytes)
+                schedule_a_broker_rows = merge_schedule_a_broker_rows(
+                    schedule_a_broker_rows,
+                    extract_schedule_a_broker_rows_from_pdf_text(file_bytes),
+                )
                 schedule_a_worksheet_summaries = extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes)
             else:
                 pdf_text_fields = extract_fields_from_document_text(file_bytes, file_name, rules=self.field_rules)
-                schedule_a_broker_rows = extract_schedule_a_broker_rows_from_document(file_bytes, file_name)
+                schedule_a_broker_rows = merge_schedule_a_broker_rows(
+                    schedule_a_broker_rows,
+                    extract_schedule_a_broker_rows_from_document(file_bytes, file_name),
+                )
 
-        fields = merge_schedule_a_fields([*xray_fields, *search_fields], pdf_text_fields)
-        provider = "GroundX X-Ray + retrieval" if xray_fields and search_fields else "GroundX X-Ray"
-        if xray_fields:
+        fields = merge_schedule_a_fields([*structured_fields, *xray_fields, *search_fields], pdf_text_fields)
+        provider = "GroundX structured extract"
+        if structured_fields or schedule_a_broker_rows:
+            fallbacks = []
+            if xray_fields:
+                fallbacks.append("X-Ray")
+            if search_fields:
+                fallbacks.append("retrieval")
+            if pdf_text_fields:
+                fallbacks.append("local parser")
+            if fallbacks:
+                provider += " + " + " + ".join(fallbacks)
+        elif xray_fields:
             provider = "GroundX X-Ray + retrieval" if search_fields else "GroundX X-Ray"
         elif search_fields:
             provider = "GroundX retrieval"
@@ -270,11 +326,64 @@ class ExtractionService:
         return NormalizedExtractionResult(
             provider=provider,
             fields=deduped,
-            raw={"ingest": ingest_raw, "process": poll_raw, "outputs": raw_payloads[2:]},
+            raw={
+                "ingest": ingest_raw,
+                "process": poll_raw,
+                "structured_outputs": structured_payloads,
+                "outputs": raw_payloads[2:],
+            },
             classification_signals=classification_signals,
             schedule_a_broker_rows=schedule_a_broker_rows,
             schedule_a_worksheet_summaries=schedule_a_worksheet_summaries,
         )
+
+    async def _fetch_groundx_structured_extracts(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        headers: dict[str, str],
+        raw_payloads: list[Any],
+        file_name: str,
+    ) -> list[Any]:
+        """Read workflow JSON when available; a missing artifact is a safe fallback."""
+        refs = [
+            {"documentId": document_id}
+            for document_id in find_values(raw_payloads, {"documentId", "document_id"})
+        ]
+        if not refs:
+            refs = await self._find_groundx_document_refs(
+                client,
+                base_url,
+                headers,
+                raw_payloads,
+                file_name,
+            )
+
+        outputs: list[Any] = []
+        seen: set[str] = set()
+        for ref in refs:
+            document_id = string_or_none(ref.get("documentId") or ref.get("document_id"))
+            if not document_id or document_id in seen:
+                continue
+            seen.add(document_id)
+            try:
+                response = await client.get(
+                    f"{base_url}/ingest/document/extract/{document_id}",
+                    headers=headers,
+                    timeout=60,
+                )
+            except (httpx.TimeoutException, httpx.NetworkError):
+                continue
+            if response.status_code in {400, 401, 403, 404, 408, 409, 429, 500, 502, 503, 504}:
+                continue
+            try:
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPStatusError, ValueError):
+                continue
+            if isinstance(payload, (dict, list)):
+                outputs.append(payload)
+        return outputs
 
     async def _ingest_groundx_file(
         self,
@@ -728,14 +837,93 @@ def supplement_schedule_a_result_with_local(
 ) -> NormalizedExtractionResult:
     """Guarantee deterministic Schedule A values survive a partial AI response."""
     result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
-    if local_result.schedule_a_broker_rows:
-        result.schedule_a_broker_rows = local_result.schedule_a_broker_rows
+    result.schedule_a_broker_rows = merge_schedule_a_broker_rows(
+        result.schedule_a_broker_rows,
+        local_result.schedule_a_broker_rows,
+    )
     if local_result.schedule_a_worksheet_summaries:
         result.schedule_a_worksheet_summaries = local_result.schedule_a_worksheet_summaries
     result.classification_signals = sorted(
         set(result.classification_signals) | set(local_result.classification_signals)
     )
     return result
+
+
+def merge_schedule_a_broker_rows(
+    primary_rows: list[ScheduleABrokerRow],
+    fallback_rows: list[ScheduleABrokerRow],
+) -> list[ScheduleABrokerRow]:
+    """Preserve every recipient while preferring the stronger copy of a row."""
+    merged: dict[tuple[str, str, str], ScheduleABrokerRow] = {}
+    order: list[tuple[str, str, str]] = []
+    for row in [*primary_rows, *fallback_rows]:
+        identity = (
+            normalize_rule_label(row.name),
+            normalize_rule_label(row.address_line_1 or ""),
+            normalize_rule_label(row.zip_code or ""),
+        )
+        if not identity[0]:
+            continue
+        current = merged.get(identity)
+        if current is None:
+            order.append(identity)
+        if current is None:
+            merged[identity] = row.model_copy(deep=True)
+            continue
+        current_evidence = _broker_evidence_score(current)
+        row_evidence = _broker_evidence_score(row)
+        if row_evidence > current_evidence or (
+            row_evidence == current_evidence and row.confidence > current.confidence
+        ):
+            winner = row.model_copy(deep=True)
+            other = current
+        else:
+            winner = current.model_copy(deep=True)
+            other = row
+        winner.evidence = _merge_source_evidence(winner.evidence, other.evidence)
+        winner.source_page = winner.source_page or other.source_page
+        winner.commission_source_text = winner.commission_source_text or other.commission_source_text
+        winner.fee_source_text = winner.fee_source_text or other.fee_source_text
+        if not winner.commission_rows and other.commission_rows:
+            winner.commission_rows = [item.model_copy(deep=True) for item in other.commission_rows]
+        if not winner.fee_rows and other.fee_rows:
+            winner.fee_rows = [item.model_copy(deep=True) for item in other.fee_rows]
+        merged[identity] = winner
+    return [merged[identity] for identity in order]
+
+
+def _broker_evidence_score(row: ScheduleABrokerRow) -> tuple[int, int, int]:
+    pages = [row.source_page, *(item.page for item in row.evidence)]
+    texts = [
+        row.commission_source_text,
+        row.fee_source_text,
+        *(item.source_text for item in row.evidence),
+    ]
+    return (
+        int(any(isinstance(page, int) and page > 0 for page in pages)),
+        int(any(bool(str(text or "").strip()) for text in texts)),
+        len(row.evidence),
+    )
+
+
+def _merge_source_evidence(
+    primary: list[SourceEvidence], fallback: list[SourceEvidence]
+) -> list[SourceEvidence]:
+    output: list[SourceEvidence] = []
+    seen: set[tuple] = set()
+    for item in [*primary, *fallback]:
+        identity = (
+            item.provider,
+            item.page,
+            item.source_text,
+            item.bounding_box,
+            item.table_cell,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(item.model_copy(deep=True))
+    return output
 
 
 def redact_sensitive_text(value: str) -> str:
@@ -786,13 +974,58 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
         ):
             continue
         key = field.field_name.strip().lower()
+        field = _merge_field_provenance(field, [field])
         current = best.get(key)
         if current is None:
             order.append(key)
         # Later specialized parsers win a confidence tie over broad OCR regexes.
-        if current is None or field.confidence >= current.confidence:
+        if current is None:
             best[key] = field
+        elif field.confidence >= current.confidence:
+            best[key] = _merge_field_provenance(field, [current, field])
+        else:
+            best[key] = _merge_field_provenance(current, [current, field])
     return [best[key] for key in order]
+
+
+def _merge_field_provenance(
+    winner: NormalizedExtractionField,
+    sources: list[NormalizedExtractionField],
+) -> NormalizedExtractionField:
+    """Keep one UI value while retaining every candidate and source citation."""
+    merged = winner.model_copy(deep=True)
+    candidate_values: list[str] = []
+    seen_values: set[str] = set()
+    evidence = []
+    seen_evidence: set[tuple] = set()
+    for source in sources:
+        for value in [*source.candidate_values, source.value]:
+            clean = re.sub(r"\s+", " ", str(value or "")).strip()
+            normalized = clean.casefold()
+            if clean and normalized not in seen_values:
+                seen_values.add(normalized)
+                candidate_values.append(clean)
+        for item in source.evidence:
+            key = (
+                item.provider,
+                item.page,
+                item.source_text,
+                item.bounding_box,
+                item.table_cell,
+            )
+            if key not in seen_evidence:
+                seen_evidence.add(key)
+                evidence.append(item.model_copy(deep=True))
+        if source.page or source.source_text:
+            key = (source.provider if hasattr(source, "provider") else None, source.page, source.source_text, None, None)
+            if key not in seen_evidence:
+                seen_evidence.add(key)
+                evidence.append(
+                    SourceEvidence(page=source.page, source_text=source.source_text)
+                )
+    merged.candidate_values = candidate_values
+    merged.evidence = evidence
+    return merged
 
 
 def merge_schedule_a_fields(
@@ -826,11 +1059,22 @@ def merge_schedule_a_fields(
             field.field_name == "3a. Name of Agent/Broker/Person"
             and field.source_text == "Broker compensation table"
         )
+        document_value = clean_extracted_value(field.value).lower()
+        if not prefer_document_value and len(distinct_primary_values) == 1 and document_value in distinct_primary_values:
+            merged = [
+                _merge_field_provenance(item, [item, field])
+                if item.field_name == field.field_name
+                else item
+                for item in merged
+            ]
+            continue
         if not prefer_document_value and len(distinct_primary_values) == 1:
+            merged.append(field)
             continue
         if field.field_name in existing_names:
             # Replace invalid/conflicting AI values, or an AI value for a field
             # that has a reliable format-specific document parser.
+            field = _merge_field_provenance(field, [*usable_primary, field])
             merged = [f for f in merged if f.field_name != field.field_name]
         merged.append(field)
         existing_names.add(field.field_name)
@@ -1657,6 +1901,65 @@ def extract_document_text_pages(file_bytes: bytes, file_name: str | None = None)
         text = extract_docx_text(file_bytes)
         return [(1, text)] if text else []
     return extract_pdf_text_pages(file_bytes)
+
+
+def _semantic_page_texts(
+    file_bytes: bytes,
+    file_name: str,
+    result: NormalizedExtractionResult,
+) -> list[tuple[int, str]]:
+    """Return the strongest page-preserving source available for semantics."""
+    name = str(file_name or "").lower()
+    if name.endswith(".pdf"):
+        pages = extract_pdf_layout_text_pages(file_bytes)
+        if any(text.strip() for _, text in pages):
+            return pages
+    else:
+        pages = extract_document_text_pages(file_bytes, file_name)
+        if any(text.strip() for _, text in pages):
+            return pages
+
+    # Image-only PDFs have no native text layer. GroundX X-Ray/search output
+    # still carries page numbers, so use it rather than inventing evidence.
+    page_chunks: dict[int, list[str]] = {}
+
+    def add(page: int | None, text: str | None) -> None:
+        clean = normalize_ocr_text(text or "")
+        if not clean:
+            return
+        page_chunks.setdefault(page or 1, []).append(clean)
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, dict):
+            return
+        chunks = value.get("chunks")
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                add(parse_xray_page(chunk), build_xray_source_text(chunk))
+        if is_groundx_search_payload(value):
+            for item in value.get("search", {}).get("results", []):
+                if not isinstance(item, dict):
+                    continue
+                add(
+                    parse_groundx_page(item),
+                    item.get("text") or item.get("suggestedText") or item.get("narrative"),
+                )
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                walk(item)
+
+    walk(result.raw)
+    return [
+        (page, "\n".join(dict.fromkeys(chunks)))
+        for page, chunks in sorted(page_chunks.items())
+        if chunks
+    ]
 
 
 def extract_schedule_a_classification_signals(file_bytes: bytes, file_name: str | None = None) -> list[str]:
@@ -2685,9 +2988,10 @@ def extract_hmsa_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[No
         return []
 
     primary = next((row for row in rows if int(row[3]) > 0), rows[0])
-    group = primary[0].lstrip("0") or "0"
-    subgroup = primary[1].lstrip("0") or "0"
-    contract = f"{group} {subgroup}"
+    # HMSA reports Group # and Sub Group in separate columns. The Schedule A
+    # contract identifier is the Group #; joining the columns creates a value
+    # that does not exist in the source document and drops its leading zero.
+    contract = primary[0]
     covered = primary[3]
     premium = sum_money_values(*(row[4] for row in rows))
     begin = f"01/01/{period.group(1)}" if period else None

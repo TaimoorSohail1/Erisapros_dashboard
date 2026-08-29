@@ -119,7 +119,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1a. Name of Insurance Company"], "Hawaii Medical Service Association (HMSA)")
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "99-0040115")
         self.assertEqual(by_name["1c. NAIC Code"], "49948")
-        self.assertEqual(by_name["1d. Contract/Policy Number"], "12763 1")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "012763")
         self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "23")
         self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
         self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
@@ -556,6 +556,10 @@ class ScheduleAExtractionTests(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].value, "1042075/6-1001/1002")
+        self.assertEqual(
+            merged[0].candidate_values,
+            ["10420761002", "1042075/6-1001/1002"],
+        )
 
     def test_groundx_query_contains_published_aliases_for_the_relevant_form(self):
         custom_alias = "Carrier Registry Number"

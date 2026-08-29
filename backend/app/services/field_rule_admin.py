@@ -13,6 +13,21 @@ class FieldRuleValidationError(ValueError):
     pass
 
 
+ALLOWED_EXTRACTION_VALIDATORS = {
+    "address",
+    "boolean",
+    "contract_id",
+    "currency",
+    "date",
+    "ein",
+    "enum",
+    "integer",
+    "naic",
+    "organization_code",
+    "text",
+}
+
+
 @dataclass(frozen=True)
 class PublishedRuleSnapshot:
     version: str
@@ -229,6 +244,18 @@ class FieldRuleService:
         if not rule.label.strip():
             errors.append("Official field label is required.")
         extraction_only = rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY
+        unknown_validators = sorted(
+            {str(name).strip().lower() for name in rule.validators if str(name).strip()}
+            - ALLOWED_EXTRACTION_VALIDATORS
+        )
+        if unknown_validators:
+            errors.append(f"Unknown extraction validator: {unknown_validators[0]}.")
+        requests_any_update = (
+            str(rule.existing_behavior or "").strip().lower() in {"update", "add"}
+            or str(rule.new_behavior or "").strip().lower() in {"add", "update"}
+        )
+        if not rule.automatic_update_allowed and requests_any_update:
+            errors.append("This rule requests an update, but automatic updates are disabled for the field.")
         if not extraction_only and not rule.ftw_field.strip():
             errors.append("FT Williams field is required.")
         approved_rule = next((item for item in DEFAULT_FIELD_RULES if item.key == rule.key), None)

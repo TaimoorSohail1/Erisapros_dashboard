@@ -31,12 +31,19 @@ class Settings(BaseSettings):
     groundx_api_base_url: str = "https://api.groundx.ai/api/v1"
     groundx_poll_seconds: float = 3
     groundx_max_wait_seconds: int = 90
+    # Read workflow JSON when the assigned GroundX bucket supports it. Missing
+    # extract artifacts safely fall back to X-Ray/local extraction.
+    groundx_structured_extract_enabled: bool = True
     # Browser requests pass through CloudFront, whose origin response timeout is
     # 60 seconds. Keep interactive field-rule QA below that boundary and fall
     # back to the deterministic document parser when GroundX is still working.
     field_rule_qa_timeout_seconds: float = 45
     allow_pdf_text_fallback: bool = False
     low_confidence_threshold: float = 0.8
+    # The canonical Schedule A validator first runs in shadow mode so its
+    # decisions can be compared with production without changing proposals.
+    schedule_a_canonical_validation_enabled: bool = False
+    schedule_a_canonical_validation_shadow_enabled: bool = True
 
     sharefile_subdomain: str | None = "erisapros"
     sharefile_client_id: str | None = None

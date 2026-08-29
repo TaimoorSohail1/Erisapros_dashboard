@@ -9,6 +9,7 @@ import email.message
 import unittest
 from io import BytesIO
 from unittest.mock import patch
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.services.intake_formats import (
     SUPPORTED_INTAKE_EXTENSIONS,
@@ -41,6 +42,24 @@ def _xls(rows: list[list], sheet_name: str = "Schedule A") -> bytes:
             sheet.write(row_index, column_index, value)
     buffer = BytesIO()
     book.save(buffer)
+    return buffer.getvalue()
+
+
+def _docx_bytes(text: str = "Schedule A") -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            "</Types>",
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>",
+        )
     return buffer.getvalue()
 
 
@@ -81,6 +100,16 @@ class PassThroughTests(unittest.TestCase):
     def test_extension_matching_ignores_case(self):
         self.assertTrue(is_supported_intake_file("CHLIC_09995A.PDF"))
         self.assertIn(".pdf", SUPPORTED_INTAKE_EXTENSIONS)
+
+    def test_a_docx_with_a_pdf_file_name_is_routed_by_its_real_format(self):
+        raw = _docx_bytes("Carrier EIN: 12-3456789")
+
+        result = normalize_intake_document("carrier-schedule-a.pdf", raw)
+
+        self.assertEqual(result.file_name, "carrier-schedule-a.docx")
+        self.assertEqual(result.original_file_name, "carrier-schedule-a.pdf")
+        self.assertEqual(result.file_bytes, raw)
+        self.assertIn("detected as DOCX", result.conversion or "")
 
 
 class EmailUnwrappingTests(unittest.TestCase):
