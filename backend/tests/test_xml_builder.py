@@ -56,6 +56,63 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("StateXX"), "TX")
         self.assertEqual(broker.findtext("ZipCodeXX"), "78746-6446")
 
+    def test_schedule_a_new_broker_splits_oversize_attention_and_po_box_address(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Unum Life Insurance Company of America"},
+                    "query_subparts": {"Broker": []},
+                }
+            ],
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "RSC Insurance Brokerage Inc",
+                    "address_line_1": "Attn: AMS Legacy Direct Biol Lockbox, PO Box 736061",
+                    "city": "Chicago",
+                    "state": "IL",
+                    "zip_code": "60673",
+                    "commission_total": "10281.67",
+                    "fee_total": "0",
+                }
+            ],
+        )
+
+        broker = ET.fromstring(xml).find(".//DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("AddressLine1XX"), "AMS Legacy Direct Biol Lockbox")
+        self.assertEqual(broker.findtext("AddressLine2XX"), "PO Box 736061")
+        self.assertLessEqual(len(broker.findtext("AddressLine1XX") or ""), 35)
+        self.assertLessEqual(len(broker.findtext("AddressLine2XX") or ""), 35)
+
+    def test_schedule_a_new_broker_rejects_address_that_cannot_fit_without_truncation(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "Example Broker",
+                        "address_line_1": (
+                            "ATTENTION ACCOUNTS RECEIVABLE DEPARTMENT, "
+                            "BUILDING FOUR, 12345 EXTRAORDINARILY LONG BOULEVARD"
+                        ),
+                        "city": "CHICAGO",
+                        "state": "IL",
+                        "zip_code": "60673",
+                    }
+                ],
+            )
+
     def test_schedule_a_new_broker_uses_legal_name_when_dba_suffix_exceeds_ftw_limit(self):
         xml = build_schedule_a_records_update_xml(
             [

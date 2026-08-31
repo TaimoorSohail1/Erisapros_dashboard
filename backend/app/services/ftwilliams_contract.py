@@ -261,6 +261,14 @@ def _is_money_tag(tag: str) -> bool:
 def _text_limit(tag: str) -> int:
     if re.fullmatch(r"Name(?:\d+|XX)", tag):
         return 35
+    if re.fullmatch(r"AddressLine[12](?:\d+|XX)", tag):
+        return 35
+    if re.fullmatch(r"City(?:\d+|XX)", tag):
+        return 30
+    if re.fullmatch(r"State(?:\d+|XX)", tag):
+        return 2
+    if re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        return 10
     if re.fullmatch(r"FeesPdText(?:\d+|XX)", tag):
         return 70
     if re.fullmatch(r"Code(?:\d+|XX)", tag):

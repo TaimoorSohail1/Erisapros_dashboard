@@ -853,8 +853,10 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
 
 def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
     name = _ftw_broker_name(_broker_row_attr(row, "name"))
-    address_line_1 = _broker_row_attr(row, "address_line_1")
-    address_line_2 = _broker_row_attr(row, "address_line_2")
+    address_line_1, address_line_2 = _ftw_broker_address_lines(
+        _broker_row_attr(row, "address_line_1"),
+        _broker_row_attr(row, "address_line_2"),
+    )
     city = _broker_row_attr(row, "city")
     state = _broker_row_attr(row, "state")
     zip_code = _broker_row_attr(row, "zip_code")
@@ -895,6 +897,40 @@ def _ftw_broker_name(value: str) -> str:
         flags=re.IGNORECASE,
     )[0].strip(" ,-:")
     return legal_name if legal_name and len(legal_name) <= 35 else name
+
+
+def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
+    """Fit a structured broker address into FT Williams' two 35-character lines."""
+    first = re.sub(r"\s+", " ", str(address_line_1 or "")).strip(" ,")
+    second = re.sub(r"\s+", " ", str(address_line_2 or "")).strip(" ,")
+    if len(first) <= 35 and len(second) <= 35:
+        return first, second
+
+    first = re.sub(r"^(?:ATTN|ATTENTION)\s*:\s*", "", first, flags=re.IGNORECASE)
+    components: list[str] = []
+    for line in (first, second):
+        for component in re.split(r"\s*,\s*", line):
+            words = component.split()
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if current and len(candidate) > 35:
+                    components.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                components.append(current)
+
+    if len(components) <= 2:
+        return (
+            components[0] if components else "",
+            components[1] if len(components) == 2 else "",
+        )
+
+    # Do not truncate an address. Returning the cleaned original values lets the
+    # FTW contract validator fail locally before any external request is sent.
+    return first, second
 
 
 def _broker_row_attr(row: object, key: str) -> str:
