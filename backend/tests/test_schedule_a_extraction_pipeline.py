@@ -248,6 +248,87 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
         )
         self.assertEqual(evidence_result.status, "PASS")
 
+    def test_source_text_must_actually_support_the_extracted_value(self):
+        result = NormalizedExtractionResult(
+            provider="layout OCR",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1b. Insurance Carrier EIN",
+                    value="42-0127290",
+                    confidence=0.98,
+                    page=1,
+                    source_text="Insurance Carrier EIN 99-9999999",
+                )
+            ],
+        )
+
+        field = resolve_schedule_a_result(result).fields[0]
+
+        self.assertEqual(field.decision, "REVIEW_REQUIRED")
+        evidence_result = next(
+            item for item in field.validation_results if item.validator == "source_evidence"
+        )
+        self.assertEqual(evidence_result.status, "ERROR")
+
+    def test_naic_rejects_a_policy_year_mapped_from_the_same_table_row(self):
+        result = NormalizedExtractionResult(
+            provider="layout OCR",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1c. NAIC Code",
+                    value="2025",
+                    confidence=0.98,
+                    page=3,
+                    source_text="NAIC Code: See Attached Listing 610 01/01/2025 12/31/2025",
+                )
+            ],
+        )
+
+        field = resolve_schedule_a_result(result).fields[0]
+
+        self.assertEqual(field.decision, "REVIEW_REQUIRED")
+        self.assertTrue(any(item.validator == "naic" and item.status == "ERROR" for item in field.validation_results))
+
+    def test_company_name_rejects_narrative_sentence_fragment(self):
+        result = NormalizedExtractionResult(
+            provider="layout OCR",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1a. Name of Insurance Company",
+                    value="during this period is $7,816.51.",
+                    confidence=0.98,
+                    page=1,
+                    source_text="The total premium paid to Companion Life Insurance Company during this period is $7,816.51.",
+                )
+            ],
+        )
+
+        field = resolve_schedule_a_result(result).fields[0]
+
+        self.assertEqual(field.decision, "REVIEW_REQUIRED")
+        self.assertTrue(any(item.validator == "carrier_name" and item.status == "ERROR" for item in field.validation_results))
+
+    def test_contract_identifier_rejects_a_table_column_heading(self):
+        result = NormalizedExtractionResult(
+            provider="layout OCR",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1d. Contract/Policy Number",
+                    value="Type",
+                    confidence=0.98,
+                    page=1,
+                    source_text="Group Number Type of Coverage Gross Premium Number of Lives",
+                )
+            ],
+        )
+
+        field = resolve_schedule_a_result(result).fields[0]
+
+        self.assertEqual(field.decision, "REVIEW_REQUIRED")
+        self.assertTrue(
+            any(item.validator == "contract_identifier" and item.status == "ERROR" for item in field.validation_results)
+        )
+
     def test_broker_totals_that_do_not_reconcile_require_review(self):
         result = NormalizedExtractionResult(
             provider="table OCR",

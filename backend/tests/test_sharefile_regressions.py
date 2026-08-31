@@ -196,6 +196,36 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(self.service._client_name_for(schedule_a), "Housing Counseling Services")
         self.assertEqual(self.service._filing_year_for(schedule_a), "2025")
 
+    def test_bare_year_folder_is_a_filing_boundary_for_discovery_and_pairing(self):
+        worksheet = sharefile_file(
+            "worksheet-2024",
+            "5500 Plan Worksheet.docx",
+            ["Client", "5500 Filing", "2024", "5500 Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+        )
+        schedule_a = sharefile_file(
+            "schedule-2024",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2024", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        other_year = sharefile_file(
+            "schedule-2025",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2025", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+
+        self.assertTrue(self.service._quick_scan_descend("2024", schedule_a["path_parts"][:-2], 3))
+        self.assertEqual(self.service._package_root_key(worksheet), "Client > 5500 Filing > 2024")
+        self.assertEqual(self.service._package_root_key(schedule_a), "Client > 5500 Filing > 2024")
+        self.assertNotEqual(
+            self.service._package_root_key(schedule_a),
+            self.service._package_root_key(other_year),
+        )
+        self.assertEqual(self.service._client_name_for(schedule_a), "Client")
+        self.assertEqual(self.service._filing_year_for(schedule_a), "2024")
+
     def test_nested_package_uses_deepest_filing_year_and_client_folder(self):
         schedule_a = sharefile_file(
             "nested-schedule-a",

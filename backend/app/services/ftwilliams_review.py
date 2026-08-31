@@ -2234,6 +2234,11 @@ class FTWilliamsReviewService:
             )
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
+        # The review preview intentionally carries complete replacement XML,
+        # but approval must send only forms with a real proposed change. This
+        # prevents a Form 5500-only edit from rewriting every Schedule A and
+        # changing sibling records as a side effect.
+        self._prune_noop_update_payloads(review)
         contract_type_error = self._review_contract_type_block_reason(review)
         if contract_type_error:
             await self._record_update_failure(repo, filing_id, review, contract_type_error)
@@ -2422,7 +2427,13 @@ class FTWilliamsReviewService:
         remaining_field_keys = self._remaining_attempted_keys(attempted_field_keys, reconciled)
         remaining_count = len(remaining_field_keys)
         confirmed_count = max(0, attempted_count - remaining_count)
-        if attempted_count and remaining_count == 0 and reconciled.current_query_success:
+        if self._reconciled_update_is_safe(
+            attempted_count=attempted_count,
+            remaining_count=remaining_count,
+            current_query_success=reconciled.current_query_success,
+            verification_attempted=verification_attempted,
+            verification_mismatches=verification_mismatches,
+        ):
             success = True
             error_message = None
             verification_attempted = True
@@ -2639,6 +2650,31 @@ class FTWilliamsReviewService:
             for key in attempted_keys
             if key not in refreshed_by_key or refreshed_by_key[key].changed
         }
+
+    @staticmethod
+    def _reconciled_update_is_safe(
+        *,
+        attempted_count: int,
+        remaining_count: int,
+        current_query_success: bool,
+        verification_attempted: bool,
+        verification_mismatches: list[dict],
+    ) -> bool:
+        """Allow reconciliation recovery only when no read-back safety check failed.
+
+        A fresh comparison can confirm that the target fields changed, but it
+        cannot prove that preserved Schedule A records or broker rows remained
+        unchanged.  Once the full read-back verifier finds a mismatch, that
+        failure must remain visible instead of being overwritten by the target-
+        field comparison.
+        """
+        return bool(
+            attempted_count
+            and remaining_count == 0
+            and current_query_success
+            and not verification_attempted
+            and not verification_mismatches
+        )
 
     async def _verify_update_readback(self, review: FTWilliamsReview) -> dict:
         all_request_xmls: list[str] = []
@@ -2936,8 +2972,9 @@ class FTWilliamsReviewService:
                         "reason": "FT Williams returned a different broker row count after the update.",
                     }
                 )
+            matched_actual_brokers = self._match_readback_broker_rows(expected_brokers, actual_brokers)
             for index, expected_broker in enumerate(expected_brokers):
-                actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
+                actual_broker = matched_actual_brokers[index] if index < len(matched_actual_brokers) else {}
                 for tag, expected_value in expected_broker.items():
                     actual_value = actual_broker.get(tag)
                     if actual_value is None or not self._readback_values_equal(expected_value, actual_value, tag=tag):
@@ -2951,6 +2988,55 @@ class FTWilliamsReviewService:
                             }
                         )
         return mismatches
+
+    def _match_readback_broker_rows(
+        self,
+        expected_rows: list[dict[str, str]],
+        actual_rows: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Match FT Williams broker rows by stable identity, not response order."""
+        unused = set(range(len(actual_rows)))
+        matched: list[dict[str, str]] = []
+        for expected in expected_rows:
+            expected_name, expected_address = self._broker_readback_identity(expected)
+            candidates: list[int] = []
+            if expected_name:
+                candidates = [
+                    index
+                    for index in unused
+                    if self._broker_readback_identity(actual_rows[index])[0] == expected_name
+                ]
+            if len(candidates) != 1 and expected_address:
+                address_candidates = [
+                    index
+                    for index in unused
+                    if self._broker_readback_identity(actual_rows[index])[1] == expected_address
+                ]
+                if len(address_candidates) == 1:
+                    candidates = address_candidates
+            if len(candidates) != 1 and len(unused) == 1 and len(expected_rows) == 1:
+                candidates = list(unused)
+            if len(candidates) == 1:
+                selected = candidates[0]
+                unused.remove(selected)
+                matched.append(actual_rows[selected])
+            else:
+                matched.append({})
+        return matched
+
+    @staticmethod
+    def _broker_readback_identity(row: dict[str, str]) -> tuple[str, str]:
+        def normalized(value: object) -> str:
+            return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+        name = normalized(row.get("NameXX"))
+        address = normalized(
+            " ".join(
+                str(row.get(tag) or "")
+                for tag in ("AddressLine1XX", "AddressLine2XX", "CityXX", "StateXX", "ZipCodeXX")
+            )
+        )
+        return name, address
 
     def _readback_value(
         self,
@@ -3316,15 +3402,12 @@ class FTWilliamsReviewService:
         )
 
     def _schedule_a_payload_required(self, review: FTWilliamsReview) -> bool:
-        if review.schedule_a_match or review.schedule_a_candidates:
-            return True
-        for field in review.fields or []:
-            if field.ftw_tag != "SchAAttachedInd":
-                continue
-            combined = f"{field.current_value} {field.proposed_value}".upper()
-            if "A" in combined or "1" in combined or "TRUE" in combined or "YES" in combined:
-                return True
-        return False
+        return any(
+            field.form_type == FormType.SCHEDULE_A
+            and field.changed
+            and field.update_included
+            for field in review.fields or []
+        )
 
     def _comparison_fields(
         self,
@@ -3888,6 +3971,53 @@ class FTWilliamsReviewService:
         if not current_query_sent:
             return True
         return bool(current_values)
+
+    @staticmethod
+    def _comparison_has_updates(
+        fields: list[FTWilliamsComparisonField],
+        form_type: FormType,
+    ) -> bool:
+        return any(
+            field.form_type == form_type
+            and field.changed
+            and field.update_included
+            for field in fields
+        )
+
+    def _prune_noop_update_payloads(self, review: FTWilliamsReview) -> None:
+        if not self._comparison_has_updates(review.fields, FormType.FORM_5500):
+            review.update_xml_5500 = ""
+        if not (
+            self._comparison_has_updates(review.fields, FormType.SCHEDULE_A)
+            or self._review_has_broker_updates(review)
+        ):
+            review.update_xml_schedule_a = ""
+
+    def _review_has_broker_updates(self, review: FTWilliamsReview) -> bool:
+        extracted_rows = [
+            row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
+            for row in review.schedule_a_broker_rows or []
+        ]
+        for match in review.schedule_a_broker_matches or []:
+            if not match.resolved:
+                continue
+            if match.status == "CONFIRMED_NEW":
+                return True
+            if match.extracted_index < 0 or match.extracted_index >= len(extracted_rows):
+                continue
+            if not match.current_row:
+                return True
+            extracted = extracted_rows[match.extracted_index]
+            for attribute, tag in (
+                ("commission_total", "CommPdAmtXX"),
+                ("fee_total", "FeesPdAmtXX"),
+                ("organization_code", "CodeXX"),
+            ):
+                proposed = getattr(extracted, attribute)
+                current = getattr(match.current_row, attribute)
+                if str(proposed or "").strip() and values_meaningfully_different(current, proposed, tag=tag):
+                    return True
+        return False
 
     def _trusted_schedule_a_preserved_values(
         self, review: FTWilliamsReview

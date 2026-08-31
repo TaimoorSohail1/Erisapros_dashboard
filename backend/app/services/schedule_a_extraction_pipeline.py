@@ -194,7 +194,9 @@ def _validate_field(
             )
         return validations
     validator = None
-    if name.startswith("1b."):
+    if name.startswith("1a."):
+        validator = _validate_carrier_name
+    elif name.startswith("1b."):
         validator = _validate_ein
     elif name.startswith("1c."):
         validator = _validate_naic
@@ -216,16 +218,56 @@ def _validate_source_evidence(
     source_texts = [field.source_text, *(item.source_text for item in field.evidence)]
     has_page = any(isinstance(page, int) and page > 0 for page in pages)
     has_source_text = any(bool(str(text or "").strip()) for text in source_texts)
-    valid = has_page and has_source_text
+    supports_value = any(
+        _source_text_supports_value(field.value, str(text or ""))
+        for text in source_texts
+        if str(text or "").strip()
+    )
+    valid = has_page and has_source_text and supports_value
     return ExtractionValidationResult(
         validator="source_evidence",
         status="PASS" if valid else "ERROR",
         reason=(
-            "Field has page-level source evidence."
+            "Field has page-level source evidence containing the extracted value."
             if valid
-            else "Automatic extraction requires a source page and supporting source text."
+            else "Automatic extraction requires a source page and source text that supports the extracted value."
         ),
     )
+
+
+def _source_text_supports_value(value: str, source_text: str) -> bool:
+    value_text = re.sub(r"\s+", " ", str(value or "")).strip()
+    source = re.sub(r"\s+", " ", str(source_text or "")).strip()
+    if not value_text or not source:
+        return False
+
+    value_digits = re.sub(r"\D", "", value_text)
+    source_digits = re.sub(r"\D", "", source)
+    if len(value_digits) >= 4 and value_digits in source_digits:
+        return True
+
+    normalized_value_date = _normalized_date(value_text)
+    if normalized_value_date:
+        for candidate in re.findall(r"\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b", source):
+            if _normalized_date(candidate) == normalized_value_date:
+                return True
+        for candidate in re.findall(
+            r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+            r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"\s+\d{1,2},?\s+\d{4}\b",
+            source,
+            flags=re.IGNORECASE,
+        ):
+            for pattern in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+                try:
+                    if datetime.strptime(candidate, pattern).strftime("%m/%d/%Y") == normalized_value_date:
+                        return True
+                except ValueError:
+                    continue
+
+    value_key = re.sub(r"[^a-z0-9]+", " ", value_text.casefold()).strip()
+    source_key = re.sub(r"[^a-z0-9]+", " ", source.casefold()).strip()
+    return bool(value_key and value_key in source_key)
 
 
 def _validate_candidate_consistency(
@@ -429,10 +471,35 @@ def _validate_ein(value: str) -> ExtractionValidationResult:
     return _result("carrier_ein", valid, "Valid carrier EIN." if valid else "Expected carrier EIN in NN-NNNNNNN format.", value)
 
 
+def _validate_carrier_name(value: str) -> ExtractionValidationResult:
+    clean = re.sub(r"\s+", " ", value).strip()
+    lower = clean.casefold()
+    looks_like_sentence_fragment = bool(
+        re.match(r"^(during|is|was|were|has|have|providing|paid|total)\b", lower)
+        or "hereby certifies" in lower
+    )
+    contains_numeric_noise = bool(
+        re.search(r"\$\s*\d", clean)
+        or re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", clean)
+    )
+    valid = (
+        2 <= len(clean) <= 160
+        and not looks_like_sentence_fragment
+        and not contains_numeric_noise
+        and bool(re.search(r"[A-Za-z]", clean))
+    )
+    return _result(
+        "carrier_name",
+        valid,
+        "Valid insurance carrier name." if valid else "Value looks like narrative, a table row, or another non-carrier value.",
+        clean,
+    )
+
+
 def _validate_naic(value: str) -> ExtractionValidationResult:
     clean = value.replace(" ", "")
-    valid = bool(re.fullmatch(r"\d{4,6}", clean))
-    return _result("naic", valid, "Valid NAIC code." if valid else "Expected a 4-6 digit NAIC code.", clean)
+    valid = bool(re.fullmatch(r"\d{5}", clean))
+    return _result("naic", valid, "Valid NAIC company code." if valid else "Expected a five-digit NAIC company code.", clean)
 
 
 def _validate_contract(value: str) -> ExtractionValidationResult:
@@ -445,6 +512,10 @@ def _validate_contract(value: str) -> ExtractionValidationResult:
         "contract number",
         "contract/policy number",
         "policy number",
+        "type",
+        "type of coverage",
+        "group number",
+        "coverage",
         "see above",
         "same as above",
         "on file",

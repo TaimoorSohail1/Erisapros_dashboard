@@ -3087,8 +3087,14 @@ class ShareFileService:
         return any(self._is_year_filing_segment(part) for part in path_parts)
 
     def _is_year_filing_segment(self, value: str) -> bool:
-        text = str(value or "").lower()
-        return bool(re.search(r"\b20\d{2}\b", text) and "filing" in text)
+        text = str(value or "").strip().lower()
+        if not re.search(r"\b20\d{2}\b", text):
+            return False
+        # Client trees use both "2025 Filing" and a bare "2025" folder for
+        # the same filing-year boundary. Treating the latter as an ordinary
+        # folder collapses several years into one package root and prevents
+        # the quick scan/webhook registration from reaching Schedule A files.
+        return "filing" in text or bool(re.fullmatch(r"20\d{2}", text))
 
     def _is_5500_filing_folder_segment(self, value: str) -> bool:
         text = str(value or "").lower()

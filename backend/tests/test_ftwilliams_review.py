@@ -1156,6 +1156,150 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(matches, [])
         self.assertTrue(any(item["tag"] == "Broker[1]/CommPdAmtXX" for item in mismatches))
 
+    def test_schedule_a_readback_matches_brokers_by_identity_when_ftw_reorders_rows(self) -> None:
+        service = FTWilliamsReviewService()
+        expected = {
+            "InsCarrierName": "Cigna",
+            "__subparts__": {
+                "Broker": [
+                    {"NameXX": "First Broker", "AddressLine1XX": "100 Main St", "CommPdAmtXX": "250"},
+                    {"NameXX": "Second Broker", "AddressLine1XX": "200 Oak St", "FeesPdAmtXX": "200"},
+                ]
+            },
+        }
+
+        mismatches = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            expected,
+            {"InsCarrierName": "Cigna"},
+            actual_subparts={
+                "Broker": [
+                    {"Name1": "Second Broker", "AddressLine101": "200 Oak St", "FeesPdAmt01": "200"},
+                    {"Name02": "First Broker", "AddressLine102": "100 Main St", "CommPdAmt02": "250"},
+                ]
+            },
+        )
+
+        self.assertEqual(mismatches, [])
+
+    def test_form_5500_only_update_does_not_require_schedule_a_payload(self) -> None:
+        service = FTWilliamsReviewService()
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            schedule_a_candidates=[{"ftw_seq_no": "1"}],
+            fields=[
+                FTWilliamsComparisonField(
+                    label="Active participants",
+                    form_type=FormType.FORM_5500,
+                    ftw_tag="TotActivePartcpCnt",
+                    proposed_value="100",
+                    changed=True,
+                    update_included=True,
+                ),
+                FTWilliamsComparisonField(
+                    label="Schedule A attached",
+                    form_type=FormType.FORM_5500,
+                    ftw_tag="SchAAttachedInd",
+                    current_value="1",
+                    proposed_value="1",
+                    changed=False,
+                    update_included=False,
+                ),
+            ],
+        )
+
+        self.assertIsNone(service._missing_required_schedule_a_payload(review))
+
+    def test_schedule_a_update_still_requires_schedule_a_payload(self) -> None:
+        service = FTWilliamsReviewService()
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            schedule_a_match={"ftw_seq_no": "1"},
+            fields=[
+                FTWilliamsComparisonField(
+                    label="Total premiums",
+                    form_type=FormType.SCHEDULE_A,
+                    ftw_tag="WlfrTotChargesPaidAmt",
+                    proposed_value="100",
+                    changed=True,
+                    update_included=True,
+                )
+            ],
+        )
+
+        self.assertIsNotNone(service._missing_required_schedule_a_payload(review))
+
+    def test_reconciliation_cannot_override_failed_readback_verification(self) -> None:
+        service = FTWilliamsReviewService()
+
+        self.assertFalse(
+            service._reconciled_update_is_safe(
+                attempted_count=2,
+                remaining_count=0,
+                current_query_success=True,
+                verification_attempted=True,
+                verification_mismatches=[{"tag": "DOLScheduleAData[2]/InsCarrierName"}],
+            )
+        )
+        self.assertTrue(
+            service._reconciled_update_is_safe(
+                attempted_count=2,
+                remaining_count=0,
+                current_query_success=True,
+                verification_attempted=False,
+                verification_mismatches=[],
+            )
+        )
+
+    def test_only_forms_with_changed_included_fields_need_an_update_payload(self) -> None:
+        service = FTWilliamsReviewService()
+        fields = [
+            FTWilliamsComparisonField(
+                label="Active participants",
+                form_type=FormType.FORM_5500,
+                ftw_tag="TotActivePartcpCnt",
+                changed=True,
+                update_included=True,
+            ),
+            FTWilliamsComparisonField(
+                label="Carrier name",
+                form_type=FormType.SCHEDULE_A,
+                ftw_tag="InsCarrierName",
+                changed=False,
+                update_included=True,
+            ),
+        ]
+
+        self.assertTrue(service._comparison_has_updates(fields, FormType.FORM_5500))
+        self.assertFalse(service._comparison_has_updates(fields, FormType.SCHEDULE_A))
+
+    def test_noop_schedule_payload_is_pruned_before_a_form_only_send(self) -> None:
+        service = FTWilliamsReviewService()
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            update_xml_5500="<DOL5500Data />",
+            update_xml_schedule_a="<DOLScheduleAData />",
+            fields=[
+                FTWilliamsComparisonField(
+                    label="Active participants",
+                    form_type=FormType.FORM_5500,
+                    changed=True,
+                    update_included=True,
+                ),
+                FTWilliamsComparisonField(
+                    label="Carrier name",
+                    form_type=FormType.SCHEDULE_A,
+                    changed=False,
+                    update_included=True,
+                ),
+            ],
+        )
+
+        service._prune_noop_update_payloads(review)
+
+        self.assertEqual(review.update_xml_5500, "<DOL5500Data />")
+        self.assertEqual(review.update_xml_schedule_a, "")
+
     def test_schedule_a_readback_matches_preserved_records_by_ftw_sequence(self) -> None:
         service = FTWilliamsReviewService()
         documents = service._update_documents(
