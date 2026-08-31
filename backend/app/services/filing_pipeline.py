@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta
 
 from app.config import get_settings
-from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FilingStatus, FormType, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
+from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FieldRule, FilingStatus, FormType, NormalizedExtractionField, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
 from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
@@ -502,6 +502,52 @@ def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[
         schedule_field.updated_at = datetime.utcnow()
 
     return fields
+
+
+def remap_existing_fields_with_source_context(
+    filing_id: str,
+    existing_fields: list[ExtractedField],
+    rules: list[FieldRule],
+) -> list[ExtractedField]:
+    """Re-map stored values without losing their form or source document.
+
+    A filing can contain both a Plan Worksheet and one or more Schedule A
+    documents. Re-evaluating the flattened values in a single mapping call
+    erases that boundary and can make Schedule A values disappear from review.
+    """
+    grouped: dict[tuple[FormType | None, DocumentType | None], list[NormalizedExtractionField]] = {}
+    for field in existing_fields:
+        value = field.proposed_value or field.value
+        if not value or field.status == ExtractedFieldStatus.IGNORED:
+            continue
+        form_type = field.form_type
+        source_document_type = field.source_document_type
+        if source_document_type is None:
+            if form_type == FormType.SCHEDULE_A:
+                source_document_type = DocumentType.SCHEDULE_A
+            elif form_type == FormType.FORM_5500:
+                source_document_type = DocumentType.PLAN_WORKSHEET
+        grouped.setdefault((form_type, source_document_type), []).append(
+            NormalizedExtractionField(
+                field_name=field.source_field_name,
+                value=value,
+                confidence=field.confidence,
+                page=field.page,
+                source_text=field.source_text,
+            )
+        )
+
+    remapped: list[ExtractedField] = []
+    for (form_type, source_document_type), values in grouped.items():
+        mapped = map_extraction_to_rules(
+            filing_id,
+            values,
+            form_type=form_type,
+            source_document_type=source_document_type,
+            rules=rules,
+        )
+        remapped.extend(mapped["fields"])
+    return remapped
 
 
 def _schedule_reference_values_match(rule_key: str, left: str, right: str) -> bool:

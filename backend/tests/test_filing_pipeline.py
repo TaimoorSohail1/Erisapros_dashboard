@@ -14,6 +14,7 @@ from app.services.filing_pipeline import (
     build_safe_proposed_ftw_xml,
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
+    remap_existing_fields_with_source_context,
     process_extraction_batch,
 )
 
@@ -41,6 +42,62 @@ class FilingPipelineTests(unittest.TestCase):
 
     def tearDown(self):
         repositories._repository = None
+
+    def test_re_evaluation_preserves_schedule_a_and_worksheet_source_context(self):
+        from app.services.field_rules import DEFAULT_FIELD_RULES
+
+        existing = [
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Contract/Policy Number",
+                normalized_field_name="1d contract policy number",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                value="POL-123",
+                proposed_value="POL-123",
+                confidence=0.95,
+                page=1,
+                source_text="Contract/Policy Number POL-123",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                status=ExtractedFieldStatus.MATCHED,
+            ),
+            ExtractedField(
+                filing_id="filing-1",
+                source_field_name="1d. Plan Sponsor Name",
+                normalized_field_name="1d plan sponsor name",
+                mapped_rule_key="form_5500_part_i_1d_plan_sponsor_name",
+                value="Example Sponsor",
+                proposed_value="Example Sponsor",
+                confidence=0.95,
+                page=1,
+                source_text="Plan Sponsor Name Example Sponsor",
+                form_type=FormType.FORM_5500,
+                source_document_type=DocumentType.PLAN_WORKSHEET,
+                status=ExtractedFieldStatus.MATCHED,
+            ),
+        ]
+
+        remapped = remap_existing_fields_with_source_context(
+            "filing-1", existing, DEFAULT_FIELD_RULES
+        )
+        by_key = {field.mapped_rule_key: field for field in remapped}
+
+        self.assertEqual(
+            by_key["schedule_a_part_i_1d_contract_policy_number"].source_document_type,
+            DocumentType.SCHEDULE_A,
+        )
+        self.assertEqual(
+            by_key["form_5500_part_i_1d_plan_sponsor_name"].source_document_type,
+            DocumentType.PLAN_WORKSHEET,
+        )
+        self.assertEqual(
+            by_key["schedule_a_part_i_1d_contract_policy_number"].form_type,
+            FormType.SCHEDULE_A,
+        )
+        self.assertEqual(
+            by_key["form_5500_part_i_1d_plan_sponsor_name"].form_type,
+            FormType.FORM_5500,
+        )
 
     def test_missing_schedule_a_reference_fields_are_copied_from_worksheet_fields(self):
         schedule_field = ExtractedField(

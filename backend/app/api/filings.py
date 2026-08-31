@@ -14,7 +14,6 @@ from app.models import (
     Filing,
     FilingDetail,
     FilingStatus,
-    NormalizedExtractionField,
     FTWilliamsManualMatchRequest,
     FTWilliamsBrokerMatchesRequest,
     FTWilliamsPlanYearResolutionRequest,
@@ -31,11 +30,11 @@ from app.services.filing_pipeline import (
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
     process_package_extraction_job,
+    remap_existing_fields_with_source_context,
     summarize_mapped_fields,
 )
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_contract import FTWPayloadValidationError
-from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import (
     apply_schedule_a_classification,
     classify_schedule_a_fields,
@@ -202,20 +201,9 @@ async def re_evaluate_filing_rules(
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
     existing_fields = await repo.list_fields(filing_id)
-    stored_values = [
-        NormalizedExtractionField(
-            field_name=field.source_field_name,
-            value=field.proposed_value or field.value,
-            confidence=field.confidence,
-            page=field.page,
-            source_text=field.source_text,
-        )
-        for field in existing_fields
-        if (field.proposed_value or field.value) and field.status != ExtractedFieldStatus.IGNORED
-    ]
     snapshot = await FieldRuleService(repo).published_snapshot()
-    mapped = map_extraction_to_rules(filing_id, stored_values, rules=snapshot.rules)
-    fields = harmonize_schedule_a_reference_fields(mapped["fields"])
+    fields = remap_existing_fields_with_source_context(filing_id, existing_fields, snapshot.rules)
+    fields = harmonize_schedule_a_reference_fields(fields)
     fields = harmonize_schedule_a_business_rule_fields(fields)
     classification = apply_schedule_a_classification(fields, filing.schedule_a_classification_signals)
     relevant_fields = filter_schedule_a_fields_for_contract_type(fields, classification.contract_type, rules=snapshot.rules)
