@@ -537,11 +537,32 @@ def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> l
     if not derived_purpose:
         return fields
 
+    contributors = [field for field in (commissions_field, fees_field) if field is not None]
+    trusted_contributors = bool(contributors) and all(
+        field.status == ExtractedFieldStatus.MATCHED
+        and field.page is not None
+        and bool(str(field.source_text or "").strip())
+        and parse_numeric_amount(field.proposed_value or field.value) is not None
+        for field in contributors
+    )
     purpose_field.value = derived_purpose
     purpose_field.proposed_value = derived_purpose
-    purpose_field.confidence = max(purpose_field.confidence, 0.95)
-    purpose_field.status = ExtractedFieldStatus.MATCHED
-    purpose_field.status_reason = "Derived from Schedule A commission and fee values per field rules."
+    if trusted_contributors:
+        purpose_field.confidence = min(field.confidence for field in contributors)
+        purpose_field.status = ExtractedFieldStatus.MATCHED
+        purpose_field.page = next((field.page for field in contributors if field.page is not None), None)
+        purpose_field.source_text = " | ".join(
+            str(field.source_text).strip() for field in contributors if field.source_text
+        )[:1600]
+        purpose_field.status_reason = (
+            "Derived from Schedule A commission and fee values with page-level source evidence."
+        )
+    else:
+        purpose_field.confidence = min(purpose_field.confidence, 0.5)
+        purpose_field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+        purpose_field.status_reason = (
+            "Derived purpose needs Review because its commission or fee inputs lack trusted page-level source evidence."
+        )
     purpose_field.updated_at = datetime.utcnow()
     return fields
 

@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from app.models import FieldRule, FormType
-from app.services.extractor import ExtractionService
+from app.services.extractor import ExtractionService, safe_error_summary
 from app.services.field_rules import DEFAULT_FIELD_RULES, form_type_for_rule
 from app.services.groundx_schedule_a_workflow import (
     build_schedule_a_extraction_mapping,
@@ -448,3 +448,17 @@ def test_groundx_extraction_prefers_structured_output_and_keeps_fallbacks_availa
     assert [(field.field_name, field.value) for field in result.fields] == [
         (carrier_rule.label, "Structured Carrier")
     ]
+
+
+def test_groundx_sdk_error_summary_exposes_status_and_body_instead_of_headers():
+    class FakeApiError(Exception):
+        status_code = 402
+        body = {"message": "monthly token limit reached"}
+
+        def __str__(self):
+            return "headers: {'x-cache': 'Error from cloudfront'}"
+
+    summary = safe_error_summary(FakeApiError())
+
+    assert summary == "HTTP 402: {'message': 'monthly token limit reached'}"
+    assert "headers" not in summary

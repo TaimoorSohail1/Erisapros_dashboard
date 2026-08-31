@@ -743,6 +743,11 @@ def string_or_none(value: Any) -> str | None:
 
 
 def safe_error_summary(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    if status_code is not None or body is not None:
+        detail = body if body is not None else str(exc)
+        return redact_sensitive_text(f"HTTP {status_code or 'error'}: {detail}"[:500])
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
         try:

@@ -183,6 +183,8 @@ class FilingPipelineTests(unittest.TestCase):
             source_document_type=DocumentType.SCHEDULE_A,
             form_type=FormType.SCHEDULE_A,
             status=ExtractedFieldStatus.MATCHED,
+            page=2,
+            source_text="Commissions paid $111,892.96",
         )
         fees_field = ExtractedField(
             filing_id="filing-1",
@@ -198,6 +200,8 @@ class FilingPipelineTests(unittest.TestCase):
             source_document_type=DocumentType.SCHEDULE_A,
             form_type=FormType.SCHEDULE_A,
             status=ExtractedFieldStatus.MATCHED,
+            page=2,
+            source_text="Fees paid $0.00",
         )
 
         fields = harmonize_schedule_a_business_rule_fields([purpose_field, commissions_field, fees_field])
@@ -205,6 +209,46 @@ class FilingPipelineTests(unittest.TestCase):
 
         self.assertEqual(updated.proposed_value, "COMMISSIONS")
         self.assertEqual(updated.status, ExtractedFieldStatus.MATCHED)
+        self.assertEqual(updated.page, 2)
+        self.assertIn("Commissions paid", updated.source_text)
+
+    def test_schedule_a_purpose_from_uncertain_inputs_stays_in_review(self):
+        purpose_field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3d. Purpose",
+            normalized_field_name="3d purpose",
+            mapped_rule_key="schedule_a_part_i_3d_purpose",
+            proposed_value="N/A",
+            confidence=0.7,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        )
+        commissions_field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3b. Amount of Commissions",
+            normalized_field_name="3b amount of commissions",
+            mapped_rule_key="schedule_a_part_i_3b_amount_of_commissions",
+            proposed_value="100",
+            confidence=0.5,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        )
+        fees_field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3c. Amount of Fees",
+            normalized_field_name="3c amount of fees",
+            mapped_rule_key="schedule_a_part_i_3c_amount_of_fees",
+            proposed_value="0",
+            confidence=0.5,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        )
+
+        harmonize_schedule_a_business_rule_fields([purpose_field, commissions_field, fees_field])
+
+        self.assertEqual(purpose_field.proposed_value, "COMMISSIONS")
+        self.assertEqual(purpose_field.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertIn("needs Review", purpose_field.status_reason)
 
     def test_auto_query_ftw_current_uses_live_queries_and_audits_success(self):
         review = FTWilliamsReview(
