@@ -4992,10 +4992,24 @@ class FTWilliamsReviewService:
         partial_matches = [match for score, match in scored if score > 0]
         if partial_matches:
             return partial_matches if len(partial_matches) > 1 else [partial_matches[0]]
-        return matches if len(matches) == 1 else []
+        non_conflicting = [match for score, match in scored if score >= 0]
+        return non_conflicting if len(non_conflicting) == 1 else []
 
     def _plan_lookup_score(self, match: dict[str, str], lookup: FTWilliamsPlanLookup) -> int:
         score = 0
+        match_year = self._normalize_year(
+            match.get("PlanYear")
+            or match.get("Year")
+            or match.get("PlanYearEndDate")
+            or match.get("FORM_TAX_PRD")
+            or match.get("SCH_A_TAX_PRD")
+        )
+        lookup_year = self._normalize_year(lookup.year)
+        if match_year and lookup_year:
+            if match_year != lookup_year:
+                return -100
+            score += 2
+
         match_ein = self._normalize_ein_digits(
             match.get("CompanyEmployerID")
             or match.get("SPONS_DFE_EIN")

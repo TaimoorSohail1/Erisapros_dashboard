@@ -1008,6 +1008,28 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_plan_matching_rejects_a_different_plan_year_even_when_ein_and_plan_number_match(self):
+        service = FTWilliamsReviewService()
+        lookup = FTWilliamsPlanLookup(
+            company_employer_id="12-3456789",
+            plan_number="501",
+            year="2025",
+            plan_name="Acme Health and Welfare Plan",
+            company_name_candidates=["Acme Corporation"],
+        )
+        matching = {
+            "CompanyEmployerID": "12-3456789",
+            "PlanNumber": "501",
+            "PlanYear": "2025",
+            "PlanLine1": "Acme Health and Welfare Plan",
+            "CompanyName": "Acme Corporation",
+        }
+        wrong_year = {**matching, "PlanYear": "2024"}
+
+        self.assertGreaterEqual(service._plan_lookup_score(matching, lookup), 10)
+        self.assertLess(service._plan_lookup_score(wrong_year, lookup), 0)
+        self.assertEqual(service._plan_lookup_matches([wrong_year], lookup), [])
+
     def test_plan_ids_batch_probes_only_a_bounded_filtered_candidate_set(self):
         class LargePlanBatchFTWilliamsService(FTWilliamsService):
             def __init__(self):

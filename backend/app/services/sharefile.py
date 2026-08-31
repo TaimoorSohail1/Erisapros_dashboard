@@ -705,6 +705,73 @@ class ShareFileService:
             "last_quick_scan_at": state.get("last_quick_scan_at"),
             "known_folder_count": len(state.get("known_folder_ids") or []),
             "deep_scan_interval_hours": get_settings().sharefile_deep_scan_interval_hours,
+            "upload_finality": await self._upload_finality_status(),
+        }
+
+    async def _upload_finality_status(self) -> dict:
+        repo = get_repository()
+        indexed = [
+            item
+            for item in await repo.list_active_sharefile_file_summaries()
+            if item.get("document_type") == DocumentType.SCHEDULE_A.value
+        ]
+        item_ids = {str(item.get("item_id")) for item in indexed if item.get("item_id")}
+        filings = await repo.list_filings_by_sharefile_item_ids(item_ids)
+        by_item_id: dict[str, Filing] = {}
+        for filing in filings:
+            if filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+                continue
+            filing_item_ids = {str(filing.sharefile_item_id or "")}
+            filing_item_ids.update(
+                str(document.get("sharefile_item_id") or "")
+                for document in filing.package_documents
+            )
+            for item_id in filing_item_ids & item_ids:
+                existing = by_item_id.get(item_id)
+                if existing is None or filing.updated_at > existing.updated_at:
+                    by_item_id[item_id] = filing
+
+        final_statuses = {
+            FilingStatus.NEEDS_REVIEW,
+            FilingStatus.READY_FOR_APPROVAL,
+            FilingStatus.APPROVED,
+            FilingStatus.REJECTED,
+            FilingStatus.FAILED,
+        }
+        waiting_statuses = {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}
+        timeout_seconds = max(60, get_settings().sharefile_upload_finality_timeout_seconds)
+        now = datetime.utcnow()
+        counters = {"final": 0, "in_progress": 0, "stalled": 0, "action_required": 0, "orphaned": 0}
+        attention_items: list[dict] = []
+
+        for item_id in sorted(item_ids):
+            filing = by_item_id.get(item_id)
+            if not filing:
+                counters["orphaned"] += 1
+                attention_items.append({"item_id": item_id, "state": "ORPHANED", "filing_id": None})
+                continue
+            age_seconds = max(0, int((now - filing.updated_at).total_seconds()))
+            if filing.status in final_statuses:
+                counters["final"] += 1
+            elif filing.status in waiting_statuses:
+                counters["action_required"] += 1
+                attention_items.append(
+                    {"item_id": item_id, "state": filing.status.value, "filing_id": filing.id, "age_seconds": age_seconds}
+                )
+            elif age_seconds > timeout_seconds:
+                counters["stalled"] += 1
+                attention_items.append(
+                    {"item_id": item_id, "state": "STALLED", "filing_id": filing.id, "status": filing.status.value, "age_seconds": age_seconds}
+                )
+            else:
+                counters["in_progress"] += 1
+
+        return {
+            "schedule_a_uploads": len(item_ids),
+            **counters,
+            "all_final": bool(item_ids) and counters["final"] == len(item_ids),
+            "timeout_seconds": timeout_seconds,
+            "attention_items": attention_items[:100],
         }
 
     async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
@@ -1551,9 +1618,12 @@ class ShareFileService:
             return {"complete": True, "status": FilingStatus.QUEUED, "message": "Package has Schedule A and Plan Worksheet."}
         if has_schedule_a:
             return {
-                "complete": False,
-                "status": FilingStatus.WAITING_FOR_WORKSHEET,
-                "message": "Schedule A was received. Waiting for matching 5500 Plan Worksheet.",
+                "complete": True,
+                "status": FilingStatus.QUEUED,
+                "message": (
+                    "Schedule A was received without a Plan Worksheet. Extraction will continue; "
+                    "missing or uncertain plan identity will be sent to Review."
+                ),
             }
         return {
             "complete": False,

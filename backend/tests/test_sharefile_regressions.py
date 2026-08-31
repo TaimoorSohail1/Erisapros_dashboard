@@ -376,7 +376,7 @@ class ShareFileRegressionTests(unittest.TestCase):
             {"schedule-a-new", "worksheet-latest"},
         )
 
-    def test_changed_schedule_a_without_worksheet_creates_waiting_row(self):
+    def test_changed_schedule_a_without_worksheet_queues_extraction_and_review_flow(self):
         changed_schedule = sharefile_file(
             "schedule-a-new",
             "Housing Life Schedule A.pdf",
@@ -388,14 +388,16 @@ class ShareFileRegressionTests(unittest.TestCase):
         async def no_root_siblings(client, token, package_root):
             return []
 
+        self.stub_package_creation()
         self.service._scan_package_root = no_root_siblings
+        background_tasks = DummyBackgroundTasks()
 
         result = run_async(
             self.service._process_changed_sharefile_files(
                 client=None,
                 token=None,
                 scanned_files=[changed_schedule],
-                background_tasks=None,
+                background_tasks=background_tasks,
                 first_scan=False,
                 process_new_files=True,
                 source="TEST_SCHEDULE_ONLY",
@@ -404,14 +406,73 @@ class ShareFileRegressionTests(unittest.TestCase):
         repo = repositories.get_repository()
         filings = run_async(repo.list_filings())
 
-        self.assertEqual(result["synced"], 0)
-        self.assertTrue(
-            any(item.get("reason") == FilingStatus.WAITING_FOR_WORKSHEET.value for item in result["skipped_files"])
-        )
+        self.assertEqual(result["synced"], 1)
+        self.assertFalse(result["failed_files"])
         self.assertEqual(len(filings), 1)
-        self.assertEqual(filings[0].status, FilingStatus.WAITING_FOR_WORKSHEET)
+        self.assertEqual(filings[0].status, FilingStatus.QUEUED)
         self.assertEqual(filings[0].package_document_count, 1)
         self.assertIn("Housing Life Schedule A.pdf", filings[0].file_name)
+        self.assertEqual(len(background_tasks.tasks), 1)
+
+    def test_scan_status_reports_each_schedule_a_upload_finality_by_unique_item_id(self):
+        repo = repositories.get_repository()
+        now = datetime.utcnow()
+        final = run_async(
+            repo.create_filing(
+                Filing(
+                    file_name="Final.pdf",
+                    content_type="application/pdf",
+                    file_size=1,
+                    document_type=DocumentType.SCHEDULE_A,
+                    status=FilingStatus.NEEDS_REVIEW,
+                    s3_key="final",
+                    intake_source="SHAREFILE",
+                    sharefile_item_id="item-final",
+                )
+            )
+        )
+        stalled = run_async(
+            repo.create_filing(
+                Filing(
+                    file_name="Stalled.pdf",
+                    content_type="application/pdf",
+                    file_size=1,
+                    document_type=DocumentType.SCHEDULE_A,
+                    status=FilingStatus.QUEUED,
+                    s3_key="stalled",
+                    intake_source="SHAREFILE",
+                    sharefile_item_id="item-stalled",
+                    updated_at=now - timedelta(hours=2),
+                )
+            )
+        )
+        for item_id, filing in [("item-final", final), ("item-stalled", stalled), ("item-orphan", None)]:
+            run_async(
+                repo.upsert_sharefile_file(
+                    item_id,
+                    {
+                        "status": "EXTRACTED" if filing is final else "NEW",
+                        "document_type": DocumentType.SCHEDULE_A.value,
+                        "filing_id": filing.id if filing else None,
+                    },
+                )
+            )
+
+        with patch("app.services.sharefile.get_settings") as settings:
+            settings.return_value.sharefile_deep_scan_interval_hours = 12
+            settings.return_value.sharefile_upload_finality_timeout_seconds = 1800
+            result = run_async(self.service.scan_status())
+
+        finality = result["upload_finality"]
+        self.assertEqual(finality["schedule_a_uploads"], 3)
+        self.assertEqual(finality["final"], 1)
+        self.assertEqual(finality["stalled"], 1)
+        self.assertEqual(finality["orphaned"], 1)
+        self.assertFalse(finality["all_final"])
+        self.assertEqual(
+            {item["item_id"] for item in finality["attention_items"]},
+            {"item-stalled", "item-orphan"},
+        )
 
     def test_schedule_a_then_worksheet_leaves_one_active_complete_package(self):
         schedule_a = sharefile_file(
@@ -432,6 +493,7 @@ class ShareFileRegressionTests(unittest.TestCase):
         async def no_root_siblings(client, token, package_root):
             return []
 
+        self.stub_package_creation()
         self.service._scan_package_root = no_root_siblings
         run_async(
             self.service._process_changed_sharefile_files(

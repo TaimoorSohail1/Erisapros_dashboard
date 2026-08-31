@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Production sends all ShareFile scans, webhooks, and extraction work to
     # a dedicated ECS worker through SQS. The API never executes that work.
     sharefile_work_queue_url: str | None = None
+    # Surface any Schedule A upload that has not reached Review/Ready/Failed
+    # within this window. The scheduled poll remains the recovery backstop.
+    sharefile_upload_finality_timeout_seconds: int = 1800
 
     ftwlink_key_id: str | None = None
     ftwlink_endpoint_url: str | None = None

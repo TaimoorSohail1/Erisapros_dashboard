@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 from app.config import get_settings
@@ -469,6 +470,24 @@ def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[
         if not worksheet_value:
             continue
 
+        schedule_value = str(schedule_field.proposed_value or schedule_field.value or "").strip()
+        if schedule_value and not _schedule_reference_values_match(schedule_key, schedule_value, worksheet_value):
+            reason = (
+                f"Schedule A identity value {schedule_value!r} conflicts with Plan Worksheet value "
+                f"{worksheet_value!r}. Confirm the correct client, plan year, EIN, and plan number in Review."
+            )
+            for field in (schedule_field, worksheet_field):
+                field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+                field.confidence = min(field.confidence, 0.5)
+                field.status_reason = reason
+                field.updated_at = datetime.utcnow()
+            continue
+
+        if schedule_value:
+            # Both documents agree. Preserve the Schedule A source evidence
+            # instead of replacing it with evidence from another document.
+            continue
+
         schedule_field.value = worksheet_value
         schedule_field.proposed_value = worksheet_value
         schedule_field.confidence = max(schedule_field.confidence, worksheet_field.confidence)
@@ -483,6 +502,27 @@ def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[
         schedule_field.updated_at = datetime.utcnow()
 
     return fields
+
+
+def _schedule_reference_values_match(rule_key: str, left: str, right: str) -> bool:
+    if rule_key.endswith("sponsor_ein"):
+        return re.sub(r"\D", "", left) == re.sub(r"\D", "", right)
+    if rule_key.endswith("plan_number_pn"):
+        return re.sub(r"[^A-Z0-9]", "", left.upper()) == re.sub(r"[^A-Z0-9]", "", right.upper())
+    if rule_key.endswith(("beginning_date", "ending_date")):
+        def date_parts(value: str) -> tuple[int, int, int] | None:
+            parts = [int(part) for part in re.findall(r"\d+", value)]
+            if len(parts) != 3:
+                return None
+            if parts[0] > 1900:
+                return parts[0], parts[1], parts[2]
+            if parts[2] < 100:
+                parts[2] += 2000
+            return parts[2], parts[0], parts[1]
+
+        return date_parts(left) == date_parts(right)
+    normalize = lambda value: re.sub(r"[^A-Z0-9]", "", value.upper())
+    return normalize(left) == normalize(right)
 
 
 def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> list[ExtractedField]:
