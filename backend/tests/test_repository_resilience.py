@@ -76,14 +76,19 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             captured["projection"] = projection
             return Cursor(documents)
 
+        def with_options(**kwargs):
+            captured["read_preference"] = kwargs["read_preference"]
+            return SimpleNamespace(find=find)
+
         repository = MongoRepository.__new__(MongoRepository)
         repository.db = SimpleNamespace(
-            filings=SimpleNamespace(find=find)
+            filings=SimpleNamespace(with_options=with_options)
         )
 
         filings = asyncio.run(repository.list_dashboard_filings())
 
         self.assertEqual(len(filings), 125)
+        self.assertEqual(captured["read_preference"], ReadPreference.PRIMARY)
         self.assertEqual(captured["batch_size"], 1_000)
         self.assertIsNone(captured["to_list_length"])
         self.assertNotIn("proposed_xml", captured["projection"])

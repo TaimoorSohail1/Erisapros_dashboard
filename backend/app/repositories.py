@@ -343,7 +343,13 @@ class MongoRepository(Repository):
             "created_at": 1,
             "updated_at": 1,
         }
-        cursor = self.db.filings.find(
+        # Atlas replicas can lag badly under bulk extraction load. This is a
+        # user-facing operational view, so read it from the primary instead of
+        # waiting on the process-wide secondary-preferred connection policy.
+        dashboard_filings = self.db.filings.with_options(
+            read_preference=ReadPreference.PRIMARY
+        )
+        cursor = dashboard_filings.find(
             {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
             projection,
         ).sort("created_at", -1).batch_size(1_000)
