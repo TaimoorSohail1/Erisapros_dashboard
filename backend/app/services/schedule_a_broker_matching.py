@@ -24,6 +24,25 @@ def match_schedule_a_brokers(
             create_new = bool(decision.get("create_new"))
             selected = decision.get("ftw_index")
             if create_new:
+                duplicate_rows = [
+                    index
+                    for index, current in enumerate(normalized_current)
+                    if index not in assigned and _same_broker_business_row(row, current)
+                ]
+                if len(duplicate_rows) == 1:
+                    ftw_index = duplicate_rows[0]
+                    assigned.add(ftw_index)
+                    matches.append(
+                        ScheduleABrokerMatch(
+                            extracted_index=extracted_index,
+                            ftw_index=ftw_index,
+                            status="AUTO_MATCHED",
+                            resolved=True,
+                            reason="Matched an exact existing broker row instead of adding a duplicate.",
+                            current_row=normalized_current[ftw_index],
+                        )
+                    )
+                    continue
                 matches.append(
                     ScheduleABrokerMatch(
                         extracted_index=extracted_index,
@@ -237,6 +256,18 @@ def _secondary_identity_score(extracted: ScheduleABrokerRow, current: ScheduleAB
     )
     zip_matches = bool(_key(extracted.zip_code) and _key(extracted.zip_code) == _key(current.zip_code))
     return int(address_matches) + int(zip_matches)
+
+
+def _same_broker_business_row(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:
+    if not _key(extracted.name) or _key(extracted.name) != _key(current.name):
+        return False
+    if _secondary_identity_score(extracted, current) == 0:
+        return False
+    for attribute in ("commission_total", "fee_total", "organization_code"):
+        proposed = getattr(extracted, attribute)
+        if str(proposed or "").strip() and _key(proposed) != _key(getattr(current, attribute)):
+            return False
+    return True
 
 
 def _key(value: object) -> str:

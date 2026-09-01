@@ -205,6 +205,41 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertIsNone(aligned[1])
         self.assertEqual(aligned[2].name, "New Broker")
 
+    def test_stale_confirmed_new_decision_does_not_duplicate_exact_existing_broker(self):
+        extracted_rows = [
+            ScheduleABrokerRow(
+                name="NFP CORPORATE SERVICES (NY), LLC",
+                address_line_1="PO BOX 786677",
+                city="PHILADELPHIA",
+                state="PA",
+                zip_code="19178",
+                organization_code="3",
+                commission_total="9,193",
+                fee_total="422",
+            )
+        ]
+        current_rows = [
+            {
+                **current(1, "NFP CORPORATE SERVICES NY LLC", "PO BOX 786677", "19178", "9193"),
+                "City01": "PHILADELPHIA",
+                "State01": "PA",
+                "FeesPdAmt01": "422",
+                "Code01": "3",
+            }
+        ]
+
+        matches = match_schedule_a_brokers(
+            extracted_rows,
+            current_rows,
+            decisions={0: {"create_new": True}},
+        )
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertEqual(matches[0].status, "AUTO_MATCHED")
+        self.assertEqual(matches[0].ftw_index, 0)
+        self.assertEqual(len(aligned), 1)
+        self.assertEqual(aligned[0].name, "NFP CORPORATE SERVICES NY LLC")
+
     def test_partial_extracted_broker_set_preserves_current_breakdown(self):
         extracted_rows = [
             ScheduleABrokerRow(

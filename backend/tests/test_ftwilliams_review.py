@@ -5885,6 +5885,26 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(sleep.await_args_list[1].args, (2,))
         self.assertEqual(sleep.await_args_list[2].args, (4,))
 
+    def test_readback_documents_keep_original_ftw_sequences_for_identity_poor_rows(self):
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            update_xml_schedule_a=(
+                "<ftwLink><DataBatch>"
+                "<DOLScheduleAData><InsPrsnCoveredEoyCnt>61</InsPrsnCoveredEoyCnt></DOLScheduleAData>"
+                "<DOLScheduleAData><InsContractNum>1246876</InsContractNum></DOLScheduleAData>"
+                "</DataBatch></ftwLink>"
+            ),
+            schedule_a_records=[
+                {"ftw_seq_no": "1", "query_results": {"InsPrsnCoveredEoyCnt": "61"}},
+                {"ftw_seq_no": "2", "query_results": {"InsContractNum": "1246876"}},
+            ],
+        )
+
+        documents = FTWilliamsReviewService(FakeFTWilliamsService())._schedule_update_documents_with_sequences(review)
+
+        self.assertEqual(documents[0]["__ftw_seq_no"], "1")
+        self.assertEqual(documents[1]["__ftw_seq_no"], "2")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2712,7 +2712,7 @@ class FTWilliamsReviewService:
         response_xmls: list[str] = []
         mismatches: list[dict] = []
         form_documents = self._update_documents(review.update_xml_5500, "DOL5500Data")
-        schedule_documents = self._update_documents(review.update_xml_schedule_a, "DOLScheduleAData")
+        schedule_documents = self._schedule_update_documents_with_sequences(review)
 
         if form_documents:
             response = await self.ftwilliams.run_query(
@@ -2790,6 +2790,20 @@ class FTWilliamsReviewService:
             "request_xmls": request_xmls,
             "response_xmls": response_xmls,
         }
+
+    def _schedule_update_documents_with_sequences(self, review: FTWilliamsReview) -> list[dict]:
+        documents = self._update_documents(review.update_xml_schedule_a, "DOLScheduleAData")
+        # Replace-style XML is built in schedule_a_records order. Keep the
+        # original FTW sequence beside each parsed document so identity-poor
+        # legacy rows can be matched unambiguously during read-back without
+        # adding an unsupported element to the outbound XML.
+        for index, document in enumerate(documents):
+            if index >= len(review.schedule_a_records or []):
+                break
+            sequence = str((review.schedule_a_records[index] or {}).get("ftw_seq_no") or "").strip()
+            if sequence:
+                document["__ftw_seq_no"] = sequence
+        return documents
 
     async def _query_schedule_a_readback(
         self,
