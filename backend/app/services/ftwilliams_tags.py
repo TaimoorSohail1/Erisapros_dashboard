@@ -377,7 +377,10 @@ def values_meaningfully_different(
         current_number = _parse_decimal(current)
         proposed_number = _parse_decimal(proposed)
         if current_number is not None and proposed_number is not None:
-            return abs(current_number - proposed_number) >= Decimal("0.5")
+            # FT Williams stores amount fields as whole dollars and rounds
+            # half-dollar values (for example 497.50 -> 498). Treat that
+            # read-back as the same business value.
+            return abs(current_number - proposed_number) > Decimal("0.5")
     return normalize_compare_value(current) != normalize_compare_value(proposed)
 
 

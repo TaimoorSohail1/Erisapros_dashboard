@@ -1123,6 +1123,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             {"WlfrTotChargesPaidAmt": "53977.12"},
             {"WlfrTotChargesPaidAmt": "53977"},
         )
+        rounded_half_dollar = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            {"WlfrTotChargesPaidAmt": "497.50"},
+            {"WlfrTotChargesPaidAmt": "498"},
+        )
         materially_different = service._compare_readback_document(
             FormType.SCHEDULE_A,
             {"WlfrTotChargesPaidAmt": "53978"},
@@ -1130,6 +1135,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(normalized, [])
+        self.assertEqual(rounded_half_dollar, [])
         self.assertEqual(materially_different[0]["tag"], "WlfrTotChargesPaidAmt")
 
     def test_schedule_a_readback_verifies_broker_multipart_rows(self) -> None:
@@ -1198,6 +1204,49 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 "Broker": [
                     {"Name1": "Second Broker", "AddressLine101": "200 Oak St", "FeesPdAmt01": "200"},
                     {"Name02": "First Broker", "AddressLine102": "100 Main St", "CommPdAmt02": "250"},
+                ]
+            },
+        )
+
+        self.assertEqual(mismatches, [])
+
+    def test_schedule_a_readback_uses_combined_identity_for_duplicate_broker_names_and_addresses(self) -> None:
+        service = FTWilliamsReviewService()
+        expected = {
+            "__subparts__": {
+                "Broker": [
+                    {
+                        "NameXX": "RSC Insurance Brokerage",
+                        "AddressLine1XX": "160 Federal St Fl 2",
+                    },
+                    {
+                        "NameXX": "RSC Insurance Brokerage Inc",
+                        "AddressLine1XX": "485 Lexington Ave",
+                    },
+                    {
+                        "NameXX": "RSC Insurance Brokerage Inc",
+                        "AddressLine1XX": "160 Federal St Fl 2",
+                        "CityXX": "Boston",
+                        "CommPdAmtXX": "196",
+                    }
+                ]
+            }
+        }
+
+        mismatches = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            expected,
+            {},
+            actual_subparts={
+                "Broker": [
+                    {"Name1": "RSC Insurance Brokerage", "AddressLine101": "160 Federal St Fl 2"},
+                    {"Name02": "RSC Insurance Brokerage Inc", "AddressLine102": "485 Lexington Ave"},
+                    {
+                        "Name03": "RSC Insurance Brokerage Inc",
+                        "AddressLine103": "160 Federal St Fl 2",
+                        "City03": "Boston",
+                        "CommPdAmt03": "196",
+                    },
                 ]
             },
         )

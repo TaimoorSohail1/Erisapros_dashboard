@@ -3000,12 +3000,20 @@ class FTWilliamsReviewService:
         for expected in expected_rows:
             expected_name, expected_address = self._broker_readback_identity(expected)
             candidates: list[int] = []
-            if expected_name:
+            if expected_name and expected_address:
                 candidates = [
                     index
                     for index in unused
-                    if self._broker_readback_identity(actual_rows[index])[0] == expected_name
+                    if self._broker_readback_identity(actual_rows[index])
+                    == (expected_name, expected_address)
                 ]
+            if expected_name:
+                if len(candidates) != 1:
+                    candidates = [
+                        index
+                        for index in unused
+                        if self._broker_readback_identity(actual_rows[index])[0] == expected_name
+                    ]
             if len(candidates) != 1 and expected_address:
                 address_candidates = [
                     index
