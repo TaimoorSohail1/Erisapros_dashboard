@@ -2680,7 +2680,12 @@ class FTWilliamsReviewService:
         all_request_xmls: list[str] = []
         all_response_xmls: list[str] = []
         latest_mismatches: list[dict] = []
-        for attempt in range(3):
+        # FT Williams can acknowledge an update before every Schedule A and
+        # nested broker row is visible to subsequent query calls. Give the
+        # vendor read model enough time to converge before declaring a real
+        # verification failure.
+        max_attempts = 5
+        for attempt in range(max_attempts):
             result = await self._verify_update_readback_once(review)
             all_request_xmls.extend(result["request_xmls"])
             all_response_xmls.extend(result["response_xmls"])
@@ -2692,8 +2697,8 @@ class FTWilliamsReviewService:
                     "request_xml": "\n\n".join(all_request_xmls) or None,
                     "response_xml": "\n\n".join(all_response_xmls) or None,
                 }
-            if attempt < 2:
-                await asyncio.sleep(0.5 * (attempt + 1))
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(min(2**attempt, 5))
         return {
             "success": False,
             "mismatches": latest_mismatches,

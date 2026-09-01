@@ -5857,6 +5857,34 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", kept_current.update_xml_schedule_a or "")
         self.assertNotIn("plan year does not match", (kept_current.error_message or "").lower())
 
+    def test_update_readback_waits_for_delayed_ftw_schedule_a_convergence(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        mismatch = {
+            "success": False,
+            "mismatches": [{"form": "DOLScheduleAData", "tag": "Broker[2]/NameXX"}],
+            "request_xmls": ["request"],
+            "response_xmls": ["response"],
+        }
+        success = {
+            "success": True,
+            "mismatches": [],
+            "request_xmls": ["request-final"],
+            "response_xmls": ["response-final"],
+        }
+        service._verify_update_readback_once = AsyncMock(
+            side_effect=[mismatch, mismatch, mismatch, success]
+        )
+
+        with patch("app.services.ftwilliams_review.asyncio.sleep", new=AsyncMock()) as sleep:
+            result = run_async(service._verify_update_readback(FTWilliamsReview(filing_id="filing-1")))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mismatches"], [])
+        self.assertEqual(service._verify_update_readback_once.await_count, 4)
+        self.assertEqual(sleep.await_args_list[0].args, (1,))
+        self.assertEqual(sleep.await_args_list[1].args, (2,))
+        self.assertEqual(sleep.await_args_list[2].args, (4,))
+
 
 if __name__ == "__main__":
     unittest.main()
