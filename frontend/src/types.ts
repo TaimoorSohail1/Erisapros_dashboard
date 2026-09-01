@@ -98,6 +98,10 @@ export interface Filing {
   document_type: DocumentType;
   package_document_count: number;
   package_documents: Array<Record<string, unknown>>;
+  dashboard_client_name?: string | null;
+  dashboard_ein?: string | null;
+  dashboard_plan_number?: string | null;
+  dashboard_plan_name?: string | null;
   intake_source?: "SHAREFILE" | "MANUAL" | string | null;
   status: FilingStatus;
   s3_key: string;

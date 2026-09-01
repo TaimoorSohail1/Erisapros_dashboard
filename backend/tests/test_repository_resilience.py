@@ -9,11 +9,31 @@ from pymongo.errors import NetworkTimeout
 from pymongo.read_preferences import ReadPreference
 
 from app import repositories
-from app.repositories import MongoRepository, retry_repository_read
+from app.repositories import MongoRepository, dashboard_identity_values, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_dashboard_identity_is_denormalized_from_xml_and_package_metadata(self):
+        values = dashboard_identity_values(
+            {
+                "proposed_xml": (
+                    "<Root><SponsorName>Example &amp; Co.</SponsorName>"
+                    "<SponsDfeEIN>12-3456789</SponsDfeEIN>"
+                    "<SponsDfePlanNum>501</SponsDfePlanNum>"
+                    "<PlanName>Example Benefit Plan</PlanName></Root>"
+                ),
+                "package_documents": [{"client_name": "Folder fallback"}],
+            }
+        )
+
+        self.assertEqual(values["dashboard_client_name"], "Example & Co.")
+        self.assertEqual(values["dashboard_ein"], "12-3456789")
+        self.assertEqual(values["dashboard_plan_number"], "501")
+        self.assertEqual(values["dashboard_plan_name"], "Example Benefit Plan")
+
     def test_dashboard_query_returns_every_active_filing_instead_of_latest_hundred(self):
+        captured = {}
+
         class Cursor:
             def __init__(self, documents):
                 self.documents = documents
@@ -42,14 +62,26 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             }
             for index in range(125)
         ]
+
+        def find(query, projection):
+            captured["query"] = query
+            captured["projection"] = projection
+            return Cursor(documents)
+
         repository = MongoRepository.__new__(MongoRepository)
         repository.db = SimpleNamespace(
-            filings=SimpleNamespace(find=lambda *_args, **_kwargs: Cursor(documents))
+            filings=SimpleNamespace(find=find)
         )
 
         filings = asyncio.run(repository.list_dashboard_filings())
 
         self.assertEqual(len(filings), 125)
+        self.assertNotIn("proposed_xml", captured["projection"])
+        self.assertNotIn("package_documents", captured["projection"])
+        self.assertIn("dashboard_client_name", captured["projection"])
+        self.assertIn("dashboard_ein", captured["projection"])
+        self.assertIn("dashboard_plan_number", captured["projection"])
+        self.assertIn("dashboard_plan_name", captured["projection"])
 
     def test_performance_indexes_cover_review_and_history_queries(self):
         async def scenario():
@@ -81,6 +113,7 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         indexes = asyncio.run(scenario())
 
         self.assertIn("filing_status_created_idx", indexes["filings"])
+        self.assertIn("filing_created_idx", indexes["filings"])
         self.assertIn("field_filing_label_idx", indexes["extracted_fields"])
         self.assertIn("review_event_filing_created_idx", indexes["review_events"])
         self.assertIn("audit_ftw_event_created_idx", indexes["audit_logs"])

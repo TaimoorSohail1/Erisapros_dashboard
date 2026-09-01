@@ -317,6 +317,10 @@ class Filing(BaseModel):
     s3_bucket: str | None = None
     storage_path: str | None = None
     package_documents: list[dict] = Field(default_factory=list)
+    dashboard_client_name: str | None = None
+    dashboard_ein: str | None = None
+    dashboard_plan_number: str | None = None
+    dashboard_plan_name: str | None = None
     intake_source: str = "MANUAL"
     sharefile_item_id: str | None = None
     sharefile_parent_id: str | None = None

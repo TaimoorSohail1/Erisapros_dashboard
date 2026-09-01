@@ -1,4 +1,6 @@
 import asyncio
+import html
+import re
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -53,6 +55,63 @@ FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
     "created_at": 1,
     "updated_at": 1,
 }
+
+
+_DASHBOARD_XML_TAGS = {
+    "dashboard_client_name": ("SponsorName", "PlanSponsorName", "SponsDfeName"),
+    "dashboard_ein": ("EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"),
+    "dashboard_plan_number": ("PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"),
+    "dashboard_plan_name": ("PlanName", "PlanNm"),
+}
+
+_DASHBOARD_PACKAGE_KEYS = {
+    "dashboard_client_name": ("client_name", "client"),
+    "dashboard_ein": ("ein", "company_employer_id", "customer_id"),
+    "dashboard_plan_number": ("plan_number", "plan_num", "pn"),
+    "dashboard_plan_name": ("plan_name",),
+}
+
+
+def dashboard_identity_values(source: dict) -> dict[str, str]:
+    """Build the compact identity used by the dashboard list response."""
+    proposed_xml = str(source.get("proposed_xml") or "")
+    package_documents = source.get("package_documents") or []
+    values: dict[str, str] = {}
+    for field_name, tags in _DASHBOARD_XML_TAGS.items():
+        value = ""
+        for tag in tags:
+            value = _xml_text(proposed_xml, tag)
+            if value:
+                break
+        if not value:
+            value = _package_text(package_documents, _DASHBOARD_PACKAGE_KEYS[field_name])
+        if value:
+            values[field_name] = value
+    return values
+
+
+def _xml_text(xml: str, tag: str) -> str:
+    if not xml:
+        return ""
+    match = re.search(
+        rf"<(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}(?:\s[^>]*)?>(.*?)</(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}>",
+        xml,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+
+
+def _package_text(package_documents: list[dict], keys: tuple[str, ...]) -> str:
+    for document in package_documents:
+        if not isinstance(document, dict):
+            continue
+        for key in keys:
+            value = document.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
 
 
 def to_mongo(model):
@@ -172,6 +231,10 @@ class MongoRepository(Repository):
             [("status", 1), ("created_at", -1)],
             name="filing_status_created_idx",
         )
+        await self.db.filings.create_index(
+            [("created_at", -1)],
+            name="filing_created_idx",
+        )
         await self.db.extracted_fields.create_index(
             [("filing_id", 1), ("mapped_label", 1)],
             name="field_filing_label_idx",
@@ -218,8 +281,13 @@ class MongoRepository(Repository):
         )
 
     async def create_filing(self, filing: Filing) -> Filing:
-        result = await self.db.filings.insert_one(to_mongo(filing))
+        document = to_mongo(filing)
+        identity = dashboard_identity_values(document)
+        document.update(identity)
+        result = await self.db.filings.insert_one(document)
         filing.id = str(result.inserted_id)
+        for key, value in identity.items():
+            setattr(filing, key, value)
         return filing
 
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
@@ -248,7 +316,10 @@ class MongoRepository(Repository):
             "package_document_count": 1,
             "status": 1,
             "s3_key": 1,
-            "package_documents": 1,
+            "dashboard_client_name": 1,
+            "dashboard_ein": 1,
+            "dashboard_plan_number": 1,
+            "dashboard_plan_name": 1,
             "intake_source": 1,
             "extraction_provider": 1,
             "overall_confidence": 1,
@@ -267,7 +338,6 @@ class MongoRepository(Repository):
             "schedule_a_contract_type_evidence": 1,
             "ftw_schedule_a_contract_type": 1,
             "ftw_schedule_a_contract_type_reason": 1,
-            "proposed_xml": 1,
             "error_message": 1,
             "rejection_reason": 1,
             "created_at": 1,
@@ -307,6 +377,9 @@ class MongoRepository(Repository):
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         if not ObjectId.is_valid(filing_id):
             return None
+        values = dict(values)
+        if "proposed_xml" in values or "package_documents" in values:
+            values.update(dashboard_identity_values(values))
         values["updated_at"] = datetime.utcnow()
         doc = await self.db.filings.find_one_and_update({"_id": ObjectId(filing_id)}, {"$set": values}, return_document=ReturnDocument.AFTER)
         return from_mongo(doc, Filing) if doc else None

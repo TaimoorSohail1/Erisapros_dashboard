@@ -116,7 +116,7 @@ export function DashboardPage() {
           displayName,
           filingClientName(filing),
           filingPlanIdentity(filing),
-          xmlValue(filing.proposed_xml, "PlanName"),
+          filing.dashboard_plan_name || xmlValue(filing.proposed_xml, "PlanName"),
         ].join(" ").toLowerCase();
         const matchesSearch = !needle || haystack.includes(needle);
         const matchesStatus = statusFilter === "ALL" || filing.status === statusFilter;
@@ -757,13 +757,14 @@ function contractTypeLabel(type: ScheduleAContractType) {
 }
 
 function filingClientName(filing: Filing) {
+  if (filing.dashboard_client_name?.trim()) return filing.dashboard_client_name.trim();
   const clientName = firstStringFromPackageDocuments(filing, ["client_name", "client"]);
   return clientName || xmlValue(filing.proposed_xml, "SponsorName") || "Client pending";
 }
 
 function filingPlanIdentity(filing: Filing) {
-  const ein = firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"]);
-  const planNumber = firstXmlValue(filing.proposed_xml, ["PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"]);
+  const ein = filing.dashboard_ein || firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"]);
+  const planNumber = filing.dashboard_plan_number || firstXmlValue(filing.proposed_xml, ["PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"]);
   if (ein && planNumber) return `${ein} / ${planNumber}`;
   if (ein) return ein;
   const docEin = firstStringFromPackageDocuments(filing, ["ein", "company_employer_id", "customer_id"]);
@@ -775,7 +776,7 @@ function filingPlanIdentity(filing: Filing) {
 }
 
 function filingPlanName(filing: Filing, stage: DashboardPipelineStage) {
-  const name = firstXmlValue(filing.proposed_xml, ["PlanName", "PlanNm"]) || firstStringFromPackageDocuments(filing, ["plan_name"]);
+  const name = filing.dashboard_plan_name || firstXmlValue(filing.proposed_xml, ["PlanName", "PlanNm"]) || firstStringFromPackageDocuments(filing, ["plan_name"]);
   if (name) return name;
   if (isWaitingForFiles(filing.status)) return stage.detail;
   if (isProcessingStatus(filing.status)) return "Plan details will appear after extraction";
@@ -1084,7 +1085,7 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
 }
 
 function filingCompanyGroupKey(filing: Filing) {
-  const ein = firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
+  const ein = filing.dashboard_ein || firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
     || firstStringFromPackageDocuments(filing, ["ein", "company_employer_id"]);
   const normalizedEin = ein.replace(/\D/g, "");
   const clientName = filingClientName(filing);
