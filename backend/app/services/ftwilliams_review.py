@@ -86,6 +86,7 @@ _CURRENT_DATA_SNAPSHOT_CACHE: dict[tuple[str, ...], tuple[float, dict]] = {}
 _CURRENT_DATA_SNAPSHOT_INFLIGHT: dict[tuple[str, ...], asyncio.Task] = {}
 _PLAN_LOOKUP_CACHE: dict[tuple[str, ...], tuple[float, FTWilliamsPlanLookup]] = {}
 _PLAN_LOOKUP_INFLIGHT: dict[tuple[str, ...], asyncio.Task] = {}
+_FTW_UPDATE_LOCKS: dict[tuple[str, ...], asyncio.Lock] = {}
 
 
 def clear_ftw_current_snapshot_cache() -> None:
@@ -2135,6 +2136,53 @@ class FTWilliamsReviewService:
         run_edit_checks: bool = False,
         override_blockers: bool = False,
     ) -> FTWilliamsReview | None:
+        if not send_to_ftw:
+            return await self._approve_and_update_unlocked(
+                filing_id,
+                reason=reason,
+                send_to_ftw=False,
+                refresh_current_before_update=refresh_current_before_update,
+                run_edit_checks=run_edit_checks,
+                override_blockers=override_blockers,
+            )
+
+        repo = get_repository()
+        existing_review = await repo.get_ftwilliams_review(filing_id)
+        lock_key = self._ftw_update_lock_key(existing_review, filing_id)
+        lock = _FTW_UPDATE_LOCKS.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            # The fresh vendor snapshot and the replace-style write execute in
+            # one critical section so parallel Schedule A uploads cannot
+            # overwrite each other's sibling records.
+            return await self._approve_and_update_unlocked(
+                filing_id,
+                reason=reason,
+                send_to_ftw=True,
+                refresh_current_before_update=refresh_current_before_update,
+                run_edit_checks=run_edit_checks,
+                override_blockers=override_blockers,
+            )
+
+    @staticmethod
+    def _ftw_update_lock_key(review: FTWilliamsReview | None, filing_id: str) -> tuple[str, ...]:
+        if review:
+            customer = str(review.ftw_customer_id or review.customer_id or "").strip()
+            plan = str(review.ftw_plan_id or review.plan_id or "").strip()
+            year = str(review.year or review.comparison_year or "").strip()
+            if customer and plan and year:
+                return "ftw-plan", customer, plan, year
+        return "filing", str(filing_id)
+
+    async def _approve_and_update_unlocked(
+        self,
+        filing_id: str,
+        *,
+        reason: str = "",
+        send_to_ftw: bool = False,
+        refresh_current_before_update: bool = True,
+        run_edit_checks: bool = False,
+        override_blockers: bool = False,
+    ) -> FTWilliamsReview | None:
         repo = get_repository()
         published_rules = await FieldRuleService(repo).published_rules()
         if not send_to_ftw:
@@ -2201,12 +2249,10 @@ class FTWilliamsReviewService:
                 )
             )
         )
-        can_reuse_current_snapshot = bool(
-            refresh_current_before_update
-            and existing_review
-            and existing_review.current_query_success
-            and existing_review.current_query_complete is not False
-        )
+        # Live replace-style writes must always use a fresh vendor snapshot.
+        # A cached snapshot can omit a Schedule A that was manually added in
+        # FT Williams after the cache was populated.
+        can_reuse_current_snapshot = False
         review = await self.prepare_review(
             filing_id,
             send_queries=refresh_current_before_update,
@@ -2358,6 +2404,16 @@ class FTWilliamsReviewService:
         verification_mismatches: list[dict] = []
         verification_request_xml: str | None = None
         verification_response_xml: str | None = None
+        schedule_a_snapshot_xml = self._build_schedule_a_restore_xml(review)
+        recovery_responses: list = []
+        schedule_a_restore = {
+            "attempted": False,
+            "success": None,
+            "response_xml": None,
+            "verification_request_xml": None,
+            "verification_response_xml": None,
+            "verification_mismatches": [],
+        }
         responses = await self._send_update_payload(review)
         sent_form_types = {
             FormType.FORM_5500
@@ -2393,6 +2449,13 @@ class FTWilliamsReviewService:
         )
 
         if any(self._update_response_is_ambiguous(response) for response in responses):
+            ambiguous_schedule_response = any(
+                response.operation == "update_schedule_a" and self._update_response_is_ambiguous(response)
+                for response in responses
+            )
+            if ambiguous_schedule_response and schedule_a_snapshot_xml:
+                schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
+                recovery_responses.extend(schedule_a_restore.get("responses") or [])
             return await self._record_ambiguous_update(
                 repo,
                 filing_id,
@@ -2400,6 +2463,8 @@ class FTWilliamsReviewService:
                 attempted_fields,
                 attempted_field_keys,
                 responses,
+                schedule_a_restore=schedule_a_restore,
+                recovery_responses=recovery_responses,
             )
 
         if ftw_accepted:
@@ -2421,6 +2486,19 @@ class FTWilliamsReviewService:
                     "FT Williams accepted the update, but read-back verification did not match the sent values"
                     f" ({mismatch_fields or 'updated fields'})."
                 )
+                schedule_a_verification_failed = any(
+                    str(item.get("form") or "") == "DOLScheduleAData"
+                    for item in verification_mismatches
+                )
+                if schedule_a_verification_failed and schedule_a_snapshot_xml:
+                    schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
+                    recovery_responses.extend(schedule_a_restore.get("responses") or [])
+                    if schedule_a_restore["success"]:
+                        error_message += " The original Schedule A records were automatically restored and verified."
+                    else:
+                        error_message += (
+                            " Automatic restoration could not be verified; manual FT Williams recovery is required."
+                        )
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
@@ -2462,6 +2540,14 @@ class FTWilliamsReviewService:
         review.update_verification_mismatches = verification_mismatches
         review.update_verification_request_xml = verification_request_xml
         review.update_verification_response_xml = verification_response_xml
+        review.schedule_a_restore_attempted = bool(schedule_a_restore["attempted"])
+        review.schedule_a_restore_success = schedule_a_restore["success"]
+        review.schedule_a_restore_response_xml = schedule_a_restore["response_xml"]
+        review.schedule_a_restore_verification_request_xml = schedule_a_restore["verification_request_xml"]
+        review.schedule_a_restore_verification_response_xml = schedule_a_restore["verification_response_xml"]
+        review.schedule_a_restore_verification_mismatches = list(
+            schedule_a_restore["verification_mismatches"] or []
+        )
         review.update_attempted_count = attempted_count
         review.update_confirmed_count = confirmed_count
         review.update_remaining_count = remaining_count
@@ -2483,7 +2569,7 @@ class FTWilliamsReviewService:
             if key in attempted_fields
         ]
         review.update_retry_count = retry_count
-        review.update_diagnostics = self._operation_diagnostics(responses)
+        review.update_diagnostics = self._operation_diagnostics([*responses, *recovery_responses])
         verified_update = bool(success)
 
         if verified_update and effective_edit_checks:
@@ -2577,6 +2663,9 @@ class FTWilliamsReviewService:
                     "verification_attempted": review.update_verification_attempted,
                     "verification_success": review.update_verification_success,
                     "verification_mismatch_count": len(review.update_verification_mismatches),
+                    "schedule_a_restore_attempted": review.schedule_a_restore_attempted,
+                    "schedule_a_restore_success": review.schedule_a_restore_success,
+                    "schedule_a_restore_mismatch_count": len(review.schedule_a_restore_verification_mismatches),
                     "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
                     "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
                     "schema_validation": [item.model_dump(mode="json") for item in review.schema_validation_results],
@@ -2613,6 +2702,62 @@ class FTWilliamsReviewService:
         if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
             responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
         return responses
+
+    def _build_schedule_a_restore_xml(self, review: FTWilliamsReview) -> str:
+        """Build the exact pre-write Schedule A set for emergency restoration."""
+        if not review.update_xml_schedule_a or "DOLScheduleAData" not in review.update_xml_schedule_a:
+            return ""
+        records = list(review.schedule_a_records or [])
+        if not records:
+            return ""
+        identity = self._current_query_identity_from_review(review)
+        restore_xml = build_schedule_a_records_update_xml(
+            records,
+            None,
+            [],
+            transaction_type="2",
+            **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
+        )
+        if schedule_a_replacement_data_gaps(records, restore_xml):
+            return ""
+        return restore_xml
+
+    async def _restore_schedule_a_snapshot(self, review: FTWilliamsReview, restore_xml: str) -> dict:
+        """Restore and verify the pre-write Schedule A set after an unsafe result."""
+        result = {
+            "attempted": True,
+            "success": False,
+            "response_xml": None,
+            "verification_request_xml": None,
+            "verification_response_xml": None,
+            "verification_mismatches": [],
+            "responses": [],
+        }
+        response = await self.ftwilliams.send_xml("update_schedule_a", restore_xml)
+        result["responses"] = [response]
+        result["response_xml"] = response.raw_response or response.error
+        if not response.success or self._update_response_is_ambiguous(response):
+            result["verification_mismatches"] = [
+                {
+                    "form": "DOLScheduleAData",
+                    "tag": "DOLScheduleAData",
+                    "reason": response.error
+                    or self._status_error(response.statuses)
+                    or "FT Williams did not confirm the restoration request.",
+                }
+            ]
+            return result
+
+        clear_ftw_current_snapshot_cache()
+        restore_review = review.model_copy(deep=True)
+        restore_review.update_xml_5500 = None
+        restore_review.update_xml_schedule_a = restore_xml
+        verification = await self._verify_update_readback(restore_review)
+        result["success"] = bool(verification["success"])
+        result["verification_request_xml"] = verification["request_xml"]
+        result["verification_response_xml"] = verification["response_xml"]
+        result["verification_mismatches"] = list(verification["mismatches"] or [])
+        return result
 
     @staticmethod
     def _update_response_is_ambiguous(response) -> bool:
@@ -3223,7 +3368,19 @@ class FTWilliamsReviewService:
         attempted_fields: dict,
         attempted_field_keys: set[str],
         responses: list,
+        *,
+        schedule_a_restore: dict | None = None,
+        recovery_responses: list | None = None,
     ) -> FTWilliamsReview:
+        schedule_a_restore = schedule_a_restore or {
+            "attempted": False,
+            "success": None,
+            "response_xml": None,
+            "verification_request_xml": None,
+            "verification_response_xml": None,
+            "verification_mismatches": [],
+        }
+        recovery_responses = list(recovery_responses or [])
         error_details = "; ".join(
             filter(
                 None,
@@ -3236,6 +3393,11 @@ class FTWilliamsReviewService:
         )
         if error_details:
             error_message = f"{error_message} {error_details}"
+        if schedule_a_restore["attempted"]:
+            if schedule_a_restore["success"]:
+                error_message += " The original Schedule A records were automatically restored and verified."
+            else:
+                error_message += " Automatic restoration could not be verified; manual FT Williams recovery is required."
 
         review = review.model_copy(deep=True)
         review.status = FTWilliamsReviewStatus.UPDATE_UNKNOWN
@@ -3250,11 +3412,19 @@ class FTWilliamsReviewService:
         review.update_verification_attempted = False
         review.update_verification_success = None
         review.update_verification_mismatches = []
+        review.schedule_a_restore_attempted = bool(schedule_a_restore["attempted"])
+        review.schedule_a_restore_success = schedule_a_restore["success"]
+        review.schedule_a_restore_response_xml = schedule_a_restore["response_xml"]
+        review.schedule_a_restore_verification_request_xml = schedule_a_restore["verification_request_xml"]
+        review.schedule_a_restore_verification_response_xml = schedule_a_restore["verification_response_xml"]
+        review.schedule_a_restore_verification_mismatches = list(
+            schedule_a_restore["verification_mismatches"] or []
+        )
         review.update_attempted_count = len(attempted_field_keys)
         review.update_confirmed_count = 0
         review.update_remaining_count = len(attempted_field_keys)
         review.update_retry_count = 0
-        review.update_diagnostics = self._operation_diagnostics(responses)
+        review.update_diagnostics = self._operation_diagnostics([*responses, *recovery_responses])
         review.update_results = [
             {
                 **attempted_fields[key],
@@ -3290,6 +3460,8 @@ class FTWilliamsReviewService:
                     "update_retry_count": 0,
                     "verification_attempted": False,
                     "verification_success": None,
+                    "schedule_a_restore_attempted": review.schedule_a_restore_attempted,
+                    "schedule_a_restore_success": review.schedule_a_restore_success,
                     "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
                     "operation_diagnostics": [item.model_dump(mode="json") for item in review.update_diagnostics],
                 },
@@ -4569,14 +4741,16 @@ class FTWilliamsReviewService:
             action = "add" if is_new_schedule else "send"
             return f"Cannot safely {action} Schedule A because existing FT Williams Schedule A records were not fully fetched: {', '.join(missing)}."
         xml_schedule_count = str(review.update_xml_schedule_a or "").count("<DOLScheduleAData>")
-        if len(record_seqs) > 1 and xml_schedule_count < len(record_seqs):
+        expected_schedule_count = len(record_seqs) + (1 if is_new_schedule else 0)
+        if xml_schedule_count != expected_schedule_count:
             return (
                 f"Cannot safely send Schedule A because XML contains {xml_schedule_count} Schedule A record(s) "
-                f"but {len(record_seqs)} fetched record(s) must be preserved."
+                f"but exactly {expected_schedule_count} record(s) are expected from the fresh snapshot."
             )
         replacement_gaps = schedule_a_replacement_data_gaps(
             list(review.schedule_a_records or []),
             review.update_xml_schedule_a,
+            matched_ftw_seq_no=None if is_new_schedule else review.schedule_a_match.get("ftw_seq_no"),
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])

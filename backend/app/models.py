@@ -739,6 +739,12 @@ class FTWilliamsReview(BaseModel):
     update_verification_mismatches: list[dict] = Field(default_factory=list)
     update_verification_request_xml: str | None = None
     update_verification_response_xml: str | None = None
+    schedule_a_restore_attempted: bool = False
+    schedule_a_restore_success: bool | None = None
+    schedule_a_restore_response_xml: str | None = None
+    schedule_a_restore_verification_request_xml: str | None = None
+    schedule_a_restore_verification_response_xml: str | None = None
+    schedule_a_restore_verification_mismatches: list[dict] = Field(default_factory=list)
     update_attempted_count: int = 0
     update_confirmed_count: int = 0
     update_remaining_count: int = 0

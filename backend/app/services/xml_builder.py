@@ -747,7 +747,12 @@ def schedule_a_broker_multipart_rows(
     return [row for row in rows if row]
 
 
-def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> list[str]:
+def schedule_a_replacement_data_gaps(
+    records: list[dict],
+    xml: str | None,
+    *,
+    matched_ftw_seq_no: str | None = None,
+) -> list[str]:
     if not xml:
         return ["Schedule A replacement XML is missing"]
     try:
@@ -756,6 +761,7 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
         return ["Schedule A replacement XML is malformed"]
     documents = root.findall(".//DOLScheduleAData")
     ordered_records = sorted(records or [], key=lambda item: _record_sort_key(item.get("ftw_seq_no")))
+    selected_sequence = str(matched_ftw_seq_no or "").strip()
     gaps: list[str] = []
     if len(documents) < len(ordered_records):
         gaps.append(
@@ -766,12 +772,16 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
         current_values = record.get("query_results") or {}
         expected_fields = current_values_for_schedule_a_update(current_values)
         actual_fields = {
-            child.tag
+            child.tag: str(child.text or "").strip()
             for child in list(document)
             if child.tag != "DOLSubPartData" and str(child.text or "").strip()
         }
-        for tag in sorted(set(expected_fields) - actual_fields):
+        for tag in sorted(set(expected_fields) - set(actual_fields)):
             gaps.append(f"sequence {sequence} missing field {tag}")
+        if selected_sequence and sequence != selected_sequence:
+            for tag in sorted(set(expected_fields) & set(actual_fields)):
+                if actual_fields[tag] != str(expected_fields[tag] or "").strip():
+                    gaps.append(f"sequence {sequence} changed field {tag}")
 
         expected_brokers = schedule_a_broker_multipart_rows(
             current_values,
@@ -793,6 +803,10 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
             actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
             for tag in sorted(set(expected_broker) - set(actual_broker)):
                 gaps.append(f"sequence {sequence} missing broker row {index + 1} field {tag}")
+            if selected_sequence and sequence != selected_sequence:
+                for tag in sorted(set(expected_broker) & set(actual_broker)):
+                    if actual_broker[tag] != str(expected_broker[tag] or "").strip():
+                        gaps.append(f"sequence {sequence} changed broker row {index + 1} field {tag}")
     return gaps
 
 

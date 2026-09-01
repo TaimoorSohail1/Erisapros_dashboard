@@ -1244,6 +1244,28 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
         self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
 
+    def test_schedule_a_replace_preflight_rejects_changed_sibling_values(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "Selected Carrier", "InsPrsnCoveredEoyCnt": "10"},
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {"InsCarrierName": "Manual Carrier", "InsPrsnCoveredEoyCnt": "25"},
+                "query_subparts": {"Broker": [{"Name1": "Manual Broker"}]},
+            },
+        ]
+        unsafe_xml = """<ftwLink><DataBatch>
+          <DOLScheduleAData><InsCarrierName>Selected Carrier</InsCarrierName><InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt></DOLScheduleAData>
+          <DOLScheduleAData><InsCarrierName>Manual Carrier</InsCarrierName><InsPrsnCoveredEoyCnt>0</InsPrsnCoveredEoyCnt><DOLSubPartData><Broker><NameXX>Wrong Broker</NameXX></Broker></DOLSubPartData></DOLScheduleAData>
+        </DataBatch></ftwLink>"""
+
+        gaps = schedule_a_replacement_data_gaps(records, unsafe_xml, matched_ftw_seq_no="1")
+
+        self.assertIn("sequence 2 changed field InsPrsnCoveredEoyCnt", gaps)
+        self.assertIn("sequence 2 changed broker row 1 field NameXX", gaps)
+
     def test_schedule_a_records_update_preserves_all_existing_records_with_no_selected_changes(self):
         records = [
             {
