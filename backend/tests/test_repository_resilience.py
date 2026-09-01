@@ -42,6 +42,14 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             def sort(self, *_args):
                 return self
 
+            def batch_size(self, value):
+                captured["batch_size"] = value
+                return self
+
+            async def to_list(self, length):
+                captured["to_list_length"] = length
+                return self.documents
+
             def __aiter__(self):
                 return self
 
@@ -76,6 +84,8 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         filings = asyncio.run(repository.list_dashboard_filings())
 
         self.assertEqual(len(filings), 125)
+        self.assertEqual(captured["batch_size"], 1_000)
+        self.assertIsNone(captured["to_list_length"])
         self.assertNotIn("proposed_xml", captured["projection"])
         self.assertNotIn("package_documents", captured["projection"])
         self.assertIn("dashboard_client_name", captured["projection"])

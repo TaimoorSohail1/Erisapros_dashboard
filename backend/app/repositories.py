@@ -346,8 +346,8 @@ class MongoRepository(Repository):
         cursor = self.db.filings.find(
             {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
             projection,
-        ).sort("created_at", -1)
-        docs = [document async for document in cursor]
+        ).sort("created_at", -1).batch_size(1_000)
+        docs = await cursor.to_list(length=None)
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
