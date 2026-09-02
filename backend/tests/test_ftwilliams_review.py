@@ -19,6 +19,7 @@ from app.models import (
     FormType,
     FTWilliamsBrokerMatchDecision,
     FTWilliamsBrokerMatchesRequest,
+    FTWilliamsScheduleABrokerRowsRequest,
     FTWilliamsManualMatchRequest,
     FTWilliamsComparisonField,
     FTWilliamsPlanLookup,
@@ -2146,7 +2147,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 filing.id,
                 {
                     "schedule_a_broker_rows": [
-                        ScheduleABrokerRow(name="NFP LLC", commission_total="111893")
+                        ScheduleABrokerRow(name="NFP LLC", organization_code="3", commission_total="111893")
                     ]
                 },
             )
@@ -2280,6 +2281,62 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", confirmed.update_xml_schedule_a)
         self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", confirmed.update_xml_schedule_a)
         self.assertEqual(confirmed.update_xml_schedule_a.count("<Broker>"), 2)
+
+    def test_reviewer_can_remove_parser_fragment_and_rebuild_broker_preview(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        rows = [
+            ScheduleABrokerRow(
+                name="HUB INTERNATIONAL TEXAS INC",
+                address_line_1="3221 COLLINSWORTH ST",
+                city="FORT WORTH",
+                state="TX",
+                zip_code="76107-5739",
+                organization_code="3",
+                fee_total="44",
+            ),
+            ScheduleABrokerRow(
+                name="HUB INTERNATIONAL TEXAS INC",
+                city="FORT WORTH ST: TX ZIP: 76107-5739",
+                fee_total="3",
+            ),
+        ]
+
+        review = run_async(
+            FTWilliamsReviewService().update_schedule_a_broker_rows(
+                filing.id,
+                FTWilliamsScheduleABrokerRowsRequest(rows=rows),
+            )
+        )
+        stored = run_async(repo.get_filing(filing.id))
+
+        self.assertEqual(len(stored.schedule_a_broker_rows), 1)
+        self.assertEqual(len(review.schedule_a_broker_rows), 1)
+        self.assertEqual(review.schedule_a_broker_rows[0].city, "FORT WORTH")
+        self.assertEqual(review.schedule_a_broker_rows[0].fee_total, "44")
+
+    def test_reviewer_broker_edit_returns_exact_invalid_field(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Broker row 1 - City: maximum length is 30 characters.*FORT WORTH ST: TX ZIP: 76107-5739",
+        ):
+            run_async(
+                FTWilliamsReviewService().update_schedule_a_broker_rows(
+                    filing.id,
+                    FTWilliamsScheduleABrokerRowsRequest(
+                        rows=[
+                            ScheduleABrokerRow(
+                                name="HUB INTERNATIONAL TEXAS INC",
+                                city="FORT WORTH ST: TX ZIP: 76107-5739",
+                                organization_code="3",
+                            )
+                        ]
+                    ),
+                )
+            )
 
     def test_prepare_review_excludes_broker_name_when_it_contains_address_text(self):
         repo = repositories.get_repository()
@@ -6149,6 +6206,31 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(documents[0]["__ftw_seq_no"], "1")
         self.assertEqual(documents[1]["__ftw_seq_no"], "2")
+
+    def test_schedule_a_payload_error_reports_exact_invalid_broker_field(self):
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            error_message=(
+                "FT Williams pre-send validation failed: "
+                "City8:FORT WORTH ST: TX ZIP: 76107-5739 (maximum length is 30 characters)"
+            ),
+            fields=[
+                FTWilliamsComparisonField(
+                    label="10a. Total premiums",
+                    form_type=FormType.SCHEDULE_A,
+                    changed=True,
+                    update_included=True,
+                )
+            ],
+            update_xml_schedule_a="",
+        )
+
+        message = FTWilliamsReviewService(FakeFTWilliamsService())._missing_required_schedule_a_payload(review)
+
+        self.assertEqual(
+            message,
+            "Broker row 8 - City: maximum length is 30 characters. Current value: FORT WORTH ST: TX ZIP: 76107-5739",
+        )
 
 
 if __name__ == "__main__":

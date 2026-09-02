@@ -869,6 +869,16 @@ def merge_schedule_a_broker_rows(
         )
         if not identity[0]:
             continue
+        # Some carrier tables are returned once as a complete structured row
+        # and again as a label fragment such as
+        # ``FORT WORTH ST: TX ZIP: 76107-5739`` in the city column.  The
+        # fragment has no independent address identity and must enrich, never
+        # duplicate, the one complete row for the same broker.
+        same_name_keys = [key for key in order if key[0] == identity[0]]
+        if _broker_row_is_parser_fragment(row) and len(same_name_keys) == 1:
+            identity = same_name_keys[0]
+        elif len(same_name_keys) == 1 and _broker_row_is_parser_fragment(merged[same_name_keys[0]]):
+            identity = same_name_keys[0]
         current = merged.get(identity)
         if current is None:
             order.append(identity)
@@ -891,7 +901,7 @@ def merge_schedule_a_broker_rows(
             winner.address_line_1,
             other.address_line_1,
         )
-        for attribute in ("address_line_2", "city", "state", "zip_code", "organization_code"):
+        for attribute in ("address_line_2", "city", "state", "zip_code", "organization_code", "purpose"):
             if not getattr(winner, attribute) and getattr(other, attribute):
                 setattr(winner, attribute, getattr(other, attribute))
         winner.source_page = winner.source_page or other.source_page
@@ -910,6 +920,18 @@ def merge_schedule_a_broker_rows(
             # broker; generic service-provider rows remain reviewable.
             row.organization_code = "3"
     return output
+
+
+def _broker_row_is_parser_fragment(row: ScheduleABrokerRow) -> bool:
+    """Identify a repeated label fragment, not a genuine second broker row."""
+    if row.address_line_1 or row.address_line_2 or row.state or row.zip_code:
+        return False
+    city = re.sub(r"\s+", " ", str(row.city or "")).strip()
+    return bool(
+        city
+        and re.search(r"\bST\s*:\s*[A-Z]{2}\b", city, flags=re.IGNORECASE)
+        and re.search(r"\bZIP\s*:\s*\d{5}(?:-\d{4})?\b", city, flags=re.IGNORECASE)
+    )
 
 
 _BROKER_LEGAL_SUFFIX = r"(?:LLC|L\.L\.C\.?|INC(?:ORPORATED)?|CORP(?:ORATION)?|LTD|LLP|LP)"

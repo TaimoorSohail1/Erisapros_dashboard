@@ -238,6 +238,9 @@ assert.match(
 );
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
+assert.match(source, /Save broker row/, "Reviewers must be able to edit a broker row before sending it to FT Williams.");
+assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
+assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
 assert.doesNotMatch(source, /Resolved · not sent to FTW/, "Unsupported FTW fields must not appear as successfully resolved updates.");
 assert.match(

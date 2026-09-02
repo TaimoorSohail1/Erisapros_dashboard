@@ -219,6 +219,7 @@ class ScheduleABrokerRow(BaseModel):
     state: str | None = None
     zip_code: str | None = None
     organization_code: str | None = None
+    purpose: str | None = None
     commission_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     fee_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     commission_total: str | None = None
@@ -815,6 +816,10 @@ class FTWilliamsBrokerMatchDecision(BaseModel):
 
 class FTWilliamsBrokerMatchesRequest(BaseModel):
     decisions: list[FTWilliamsBrokerMatchDecision] = Field(default_factory=list)
+
+
+class FTWilliamsScheduleABrokerRowsRequest(BaseModel):
+    rows: list[ScheduleABrokerRow] = Field(default_factory=list)
 
 
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):

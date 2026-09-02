@@ -22,7 +22,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
@@ -42,6 +42,7 @@ import {
   sendApprovedFTWilliamsUpdate,
   unapproveFiling,
   updateField,
+  updateFTWilliamsScheduleABrokerRows,
 } from "../api";
 import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
@@ -659,6 +660,36 @@ export function FilingReviewPage() {
     }
   }
 
+  async function saveScheduleABrokerRows(
+    rows: ScheduleABrokerRow[],
+    action: "edited" | "excluded",
+  ): Promise<boolean> {
+    if (!id) return false;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await updateFTWilliamsScheduleABrokerRows(id, rows);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: action === "edited" ? "Broker row updated" : "Broker row excluded",
+        message: "The FT Williams preview was rebuilt. Confirm the broker matches before sending.",
+      });
+      return true;
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: action === "edited" ? "Broker row was not updated" : "Broker row was not excluded",
+        message: error instanceof Error ? error.message : "Check the broker values and try again.",
+      });
+      return false;
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function sendFtwUpdate() {
     if (!id || ftwSendInFlightRef.current) return;
     ftwSendInFlightRef.current = true;
@@ -933,6 +964,7 @@ export function FilingReviewPage() {
               busy={ftwBusy}
               matches={scheduleABrokerMatches}
               onConfirm={saveScheduleABrokerMatch}
+              onSaveRows={saveScheduleABrokerRows}
               rows={scheduleABrokerRows}
             />
           </section>
@@ -2855,14 +2887,46 @@ function ScheduleABrokerRowsPanel({
   busy,
   matches,
   onConfirm,
+  onSaveRows,
   rows,
 }: {
   busy: boolean;
   matches: ScheduleABrokerMatch[];
   onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+  onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded") => Promise<boolean>;
   rows: ScheduleABrokerRow[];
 }) {
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
   if (!rows.length) return null;
+
+  function beginEdit(row: ScheduleABrokerRow, index: number) {
+    setEditingIndex(index);
+    setDraft({ ...row, purpose: formatBrokerPurpose(row) });
+  }
+
+  function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
+    setDraft((current) => current ? { ...current, [field]: value } : current);
+  }
+
+  async function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (editingIndex === null || !draft) return;
+    const nextRows = rows.map((row, index) => index === editingIndex ? draft : row);
+    if (await onSaveRows(nextRows, "edited")) {
+      setEditingIndex(null);
+      setDraft(null);
+    }
+  }
+
+  async function excludeRow(index: number) {
+    if (!window.confirm("Exclude this broker row from the FT Williams update?")) return;
+    if (await onSaveRows(rows.filter((_, rowIndex) => rowIndex !== index), "excluded")) {
+      setEditingIndex(null);
+      setDraft(null);
+    }
+  }
+
   return (
     <section className="schedule-a-broker-panel card">
       <div className="schedule-a-broker-panel-head">
@@ -2885,13 +2949,15 @@ function ScheduleABrokerRowsPanel({
               <th>Fees</th>
               <th>Purpose</th>
               <th>FT Williams row</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row, index) => {
               const match = matches.find((candidate) => candidate.extracted_index === index);
               return (
-              <tr key={`${row.name}-${row.zip_code || ""}-${index}`}>
+              <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
+              <tr>
                 <td>{row.name}</td>
                 <td>{formatBrokerAddress(row)}</td>
                 <td>{row.organization_code || "-"}</td>
@@ -2910,7 +2976,40 @@ function ScheduleABrokerRowsPanel({
                   )}
                   {match?.reason ? <small className="broker-match-reason">{match.reason}</small> : null}
                 </td>
+                <td>
+                  <div className="broker-row-actions">
+                    <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
+                      <Edit3 size={13} /> Edit
+                    </button>
+                    <button className="button danger" type="button" disabled={busy} onClick={() => void excludeRow(index)}>
+                      <Ban size={13} /> Exclude
+                    </button>
+                  </div>
+                </td>
               </tr>
+              {editingIndex === index && draft ? (
+                <tr className="broker-edit-row">
+                  <td colSpan={8}>
+                    <form className="broker-edit-form" onSubmit={submitEdit}>
+                      <label>Broker / person<input required maxLength={35} value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
+                      <label>Address line 1<input maxLength={35} value={draft.address_line_1 || ""} onChange={(event) => updateDraft("address_line_1", event.target.value)} /></label>
+                      <label>Address line 2<input maxLength={35} value={draft.address_line_2 || ""} onChange={(event) => updateDraft("address_line_2", event.target.value)} /></label>
+                      <label>City<input maxLength={30} value={draft.city || ""} onChange={(event) => updateDraft("city", event.target.value)} /></label>
+                      <label>State<input maxLength={2} value={draft.state || ""} onChange={(event) => updateDraft("state", event.target.value.toUpperCase())} /></label>
+                      <label>ZIP code<input maxLength={10} value={draft.zip_code || ""} onChange={(event) => updateDraft("zip_code", event.target.value)} /></label>
+                      <label>Organization code<input required inputMode="numeric" maxLength={3} value={draft.organization_code || ""} onChange={(event) => updateDraft("organization_code", event.target.value)} /></label>
+                      <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
+                      <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
+                      <label className="broker-purpose-input">Purpose<input maxLength={70} value={draft.purpose || ""} onChange={(event) => updateDraft("purpose", event.target.value)} /></label>
+                      <div className="broker-edit-actions">
+                        <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); }}>Cancel</button>
+                        <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
+                      </div>
+                    </form>
+                  </td>
+                </tr>
+              ) : null}
+              </Fragment>
               );
             })}
           </tbody>
@@ -2961,6 +3060,7 @@ function formatBrokerAddress(row: ScheduleABrokerRow) {
 }
 
 function formatBrokerPurpose(row: ScheduleABrokerRow) {
+  if (row.purpose?.trim()) return row.purpose.trim();
   return [...new Set([...(row.commission_rows || []), ...(row.fee_rows || [])]
     .map((item) => String(item.purpose || "").trim())
     .filter(Boolean))]

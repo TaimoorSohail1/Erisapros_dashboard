@@ -5,7 +5,11 @@ import re
 import xml.etree.ElementTree as ET
 from app.config import get_settings
 from app.models import ExtractedField, FieldPriority, FormType
-from app.services.ftwilliams_contract import normalize_ftw_update_value
+from app.services.ftwilliams_contract import (
+    FTWFieldValidationIssue,
+    FTWPayloadValidationError,
+    normalize_ftw_update_value,
+)
 from app.services.ftwilliams_tags import (
     SCHEDULE_A_CURRENT_TAGS_BY_RULE,
     SCHEDULE_A_TAGS_BY_RULE,
@@ -889,6 +893,10 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
 
 
 def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
+    # A None slot means "preserve the current FT Williams row at this index".
+    # It is produced by the broker matcher and is not an incomplete new row.
+    if row is None:
+        return {}
     name = _ftw_broker_name(_broker_row_attr(row, "name"))
     address_line_1, address_line_2 = _ftw_broker_address_lines(
         _broker_row_attr(row, "address_line_1"),
@@ -901,6 +909,26 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
     fees = _broker_row_attr(row, "fee_total")
     code = _broker_row_attr(row, "organization_code")
     purpose = _broker_row_purpose(row, commission, fees)
+
+    required_issues: list[FTWFieldValidationIssue] = []
+    if not name:
+        required_issues.append(
+            FTWFieldValidationIssue(
+                tag=f"Name{index}",
+                value="",
+                reason="value is required for every broker row",
+            )
+        )
+    if not code:
+        required_issues.append(
+            FTWFieldValidationIssue(
+                tag=f"Code{index}",
+                value="",
+                reason="organization code is required for every broker row",
+            )
+        )
+    if required_issues:
+        raise FTWPayloadValidationError(required_issues)
 
     values = {
         f"Name{index}": name,
@@ -979,6 +1007,9 @@ def _broker_row_attr(row: object, key: str) -> str:
 
 
 def _broker_row_purpose(row: object, commission: str, fees: str) -> str:
+    explicit = _broker_row_attr(row, "purpose")
+    if explicit:
+        return explicit.upper()
     commission_amount = _money_to_float(commission)
     fee_amount = _money_to_float(fees)
     if commission_amount > 0 and fee_amount > 0:

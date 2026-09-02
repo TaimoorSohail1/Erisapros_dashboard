@@ -23,6 +23,7 @@ from app.models import (
     FTWilliamsEditCheckIssue,
     FTWilliamsManualMatchRequest,
     FTWilliamsBrokerMatchesRequest,
+    FTWilliamsScheduleABrokerRowsRequest,
     FTWilliamsOperationDiagnostic,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
@@ -79,6 +80,7 @@ from app.services.xml_builder import (
     build_schedule_a_records_update_xml,
     combine_ftw_update_xml,
     schedule_a_broker_multipart_rows,
+    schedule_a_broker_update_values,
     schedule_a_replacement_data_gaps,
 )
 
@@ -1072,6 +1074,72 @@ class FTWilliamsReviewService:
             )
         )
         return updated_review
+
+    async def update_schedule_a_broker_rows(
+        self,
+        filing_id: str,
+        payload: FTWilliamsScheduleABrokerRowsRequest,
+    ) -> FTWilliamsReview:
+        """Replace reviewer-visible broker rows after validating the exact FTW payload."""
+        repo = get_repository()
+        filing = await repo.get_filing(filing_id)
+        if not filing:
+            raise ValueError("Filing not found")
+
+        rows = self._normalized_schedule_a_broker_rows(payload.rows)
+        for index, row in enumerate(rows, start=1):
+            if not str(row.name or "").strip():
+                raise ValueError(f"Broker row {index} - Broker / person: value is required.")
+            if not str(row.organization_code or "").strip():
+                raise ValueError(f"Broker row {index} - Organization code: value is required by FT Williams.")
+        try:
+            schedule_a_broker_update_values(rows)
+        except FTWPayloadValidationError as exc:
+            raise ValueError(self._friendly_broker_validation_error(exc)) from exc
+
+        await repo.update_filing(filing_id, {"schedule_a_broker_rows": rows, "error_message": None})
+        review = await repo.get_ftwilliams_review(filing_id)
+        if review:
+            # Row indexes may change after an edit or exclusion. Re-resolve them
+            # instead of carrying a decision to the wrong FT Williams row.
+            review.schedule_a_broker_matches = []
+            await repo.upsert_ftwilliams_review(review)
+        updated_review = await self.prepare_review(filing_id, send_queries=False)
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_SCHEDULE_A_BROKER_ROWS_UPDATED",
+                message="Reviewer edited the Schedule A broker rows used for the FT Williams update.",
+                details={"broker_row_count": len(rows)},
+            )
+        )
+        return updated_review
+
+    def _friendly_broker_validation_error(
+        self,
+        error: FTWPayloadValidationError,
+    ) -> str:
+        if not error.issues:
+            return "The broker rows are not valid for FT Williams."
+        issue = error.issues[0]
+        match = re.fullmatch(
+            r"(Name|AddressLine1|AddressLine2|City|State|ZipCode|CommPdAmt|FeesPdAmt|FeesPdText|Code)(\d+|XX)",
+            issue.tag,
+        )
+        field_name = {
+            "Name": "Broker / person",
+            "AddressLine1": "Address line 1",
+            "AddressLine2": "Address line 2",
+            "City": "City",
+            "State": "State",
+            "ZipCode": "ZIP code",
+            "CommPdAmt": "Commission",
+            "FeesPdAmt": "Fee",
+            "FeesPdText": "Purpose",
+            "Code": "Organization code",
+        }.get(match.group(1) if match else issue.tag, issue.tag)
+        row_number = int(match.group(2)) if match and match.group(2).isdigit() else 1
+        return f"Broker row {row_number} - {field_name}: {issue.reason}. Current value: {issue.value}"
 
     async def set_schedule_a_contract_type(
         self,
@@ -3615,7 +3683,37 @@ class FTWilliamsReviewService:
             return None
         if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
             return None
+        validation_error = self._friendly_payload_validation_error(review.error_message)
+        if validation_error:
+            return validation_error
         return "Schedule A payload is required before sending this Form 5500 update because Schedule A is attached."
+
+    @staticmethod
+    def _friendly_payload_validation_error(error_message: str | None) -> str | None:
+        message = str(error_message or "")
+        if "FT Williams pre-send validation failed:" not in message:
+            return None
+        match = re.search(
+            r"\b(Name|AddressLine1|AddressLine2|City|State|ZipCode|CommPdAmt|FeesPdAmt|FeesPdText|Code)(\d+)"
+            r":(.*?) \(([^()]*)\)(?:;|$)",
+            message,
+        )
+        if not match:
+            return message[message.index("FT Williams pre-send validation failed:"):].strip()
+        field, row_number, value, reason = match.groups()
+        labels = {
+            "Name": "Broker name",
+            "AddressLine1": "Address line 1",
+            "AddressLine2": "Address line 2",
+            "City": "City",
+            "State": "State",
+            "ZipCode": "ZIP code",
+            "CommPdAmt": "Commission amount",
+            "FeesPdAmt": "Fee amount",
+            "FeesPdText": "Fee purpose",
+            "Code": "Organization code",
+        }
+        return f"Broker row {row_number} - {labels[field]}: {reason}. Current value: {value.strip()}"
 
     @staticmethod
     def _review_plan_year_block_reason(review: FTWilliamsReview) -> str | None:

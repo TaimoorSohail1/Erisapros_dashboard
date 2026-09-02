@@ -168,6 +168,22 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
             _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
         return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
 
+    if re.fullmatch(r"State(?:\d+|XX)", tag):
+        if not re.fullmatch(r"[A-Za-z]{2}", text):
+            _raise(tag, text, "expected a two-letter US state code")
+        return text.upper()
+
+    if re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        digits = re.sub(r"\D", "", text)
+        if len(digits) not in {5, 9} or re.search(r"[A-Za-z]", text):
+            _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
+        return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
+
+    if re.fullmatch(r"Code(?:\d+|XX)", tag):
+        if not re.fullmatch(r"\d{1,3}", text):
+            _raise(tag, text, "expected a numeric organization code with at most 3 digits")
+        return text
+
     if tag in ZERO_ONE_INDICATOR_TAGS:
         choices = {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"}
         if tag == "SchAAttachedInd":

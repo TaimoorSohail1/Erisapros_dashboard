@@ -517,6 +517,46 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
         self.assertEqual(merged[0].source_page, 3)
         self.assertTrue(merged[0].evidence)
 
+    def test_broker_merge_discards_parser_fragment_for_same_broker(self):
+        complete_row = ScheduleABrokerRow(
+            name="HUB INTERNATIONAL TEXAS INC",
+            address_line_1="3221 COLLINSWORTH ST",
+            city="FORT WORTH",
+            state="TX",
+            zip_code="76107-5739",
+            commission_total="4616",
+            fee_total="44",
+            source_page=4,
+            evidence=[
+                SourceEvidence(
+                    provider="GroundX structured extract",
+                    page=4,
+                    source_text="Name: HUB INTERNATIONAL TEXAS INC Address: 3221 COLLINSWORTH ST City: FORT WORTH ST: TX ZIP: 76107-5739",
+                )
+            ],
+        )
+        parser_fragment = ScheduleABrokerRow(
+            name="HUB INTERNATIONAL TEXAS INC",
+            city="FORT WORTH ST: TX ZIP: 76107-5739",
+            fee_total="3",
+            source_page=4,
+            evidence=[
+                SourceEvidence(
+                    provider="Schedule A semantic layer",
+                    page=4,
+                    source_text="Name: HUB INTERNATIONAL TEXAS INC Address: 3221 COLLINSWORTH ST City: FORT WORTH ST: TX ZIP: 76107-5739",
+                )
+            ],
+        )
+
+        merged = merge_schedule_a_broker_rows([complete_row, parser_fragment], [])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].city, "FORT WORTH")
+        self.assertEqual(merged[0].state, "TX")
+        self.assertEqual(merged[0].zip_code, "76107-5739")
+        self.assertEqual(merged[0].fee_total, "44")
+
 
 if __name__ == "__main__":
     unittest.main()

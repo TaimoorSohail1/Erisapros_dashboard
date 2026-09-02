@@ -113,6 +113,7 @@ class XmlBuilderTests(unittest.TestCase):
                     "city": "Chicago",
                     "state": "IL",
                     "zip_code": "60673",
+                    "organization_code": "3",
                     "commission_total": "10281.67",
                     "fee_total": "0",
                 }
@@ -145,6 +146,7 @@ class XmlBuilderTests(unittest.TestCase):
                         "city": "CHICAGO",
                         "state": "IL",
                         "zip_code": "60673",
+                        "organization_code": "3",
                     }
                 ],
             )
@@ -165,12 +167,70 @@ class XmlBuilderTests(unittest.TestCase):
             schedule_a_broker_rows=[
                 {
                     "name": "Nth Insurance Agency dba: Alliance 360 I",
+                    "organization_code": "3",
                     "commission_total": "2340.80",
                 }
             ],
         )
 
         self.assertIn("<NameXX>Nth Insurance Agency</NameXX>", xml)
+
+    def test_schedule_a_broker_reviewer_purpose_is_sent(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Example Broker",
+                    "commission_total": "100",
+                    "fee_total": "20",
+                    "purpose": "Benefits consulting",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        self.assertIn("<FeesPdTextXX>BENEFITS CONSULTING</FeesPdTextXX>", xml)
+
+    def test_schedule_a_broker_rejects_invalid_state_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected a two-letter US state code"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "state": "Texas", "organization_code": "3"}],
+            )
+
+    def test_schedule_a_broker_rejects_invalid_organization_code_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected a numeric organization code"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "ABC"}],
+            )
+
+    def test_schedule_a_broker_requires_organization_code_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "organization code is required"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker"}],
+            )
 
     def test_schedule_a_new_broker_rejects_unshortenable_name_over_ftw_limit(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
@@ -184,6 +244,7 @@ class XmlBuilderTests(unittest.TestCase):
                 schedule_a_broker_rows=[
                     {
                         "name": "A Very Long Broker Legal Name That Cannot Be Safely Shortened",
+                        "organization_code": "3",
                         "commission_total": "2340.80",
                     }
                 ],

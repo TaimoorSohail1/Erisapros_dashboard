@@ -43,6 +43,7 @@ export interface ScheduleABrokerRow {
   state?: string | null;
   zip_code?: string | null;
   organization_code?: string | null;
+  purpose?: string | null;
   commission_rows?: ScheduleABrokerMoneyRow[];
   fee_rows?: ScheduleABrokerMoneyRow[];
   commission_total?: string | null;
