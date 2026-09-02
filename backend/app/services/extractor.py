@@ -885,9 +885,16 @@ def merge_schedule_a_broker_rows(
         if current is None:
             merged[identity] = row.model_copy(deep=True)
             continue
+        current_is_fragment = _broker_row_is_parser_fragment(current)
+        row_is_fragment = _broker_row_is_parser_fragment(row)
         current_evidence = _broker_evidence_score(current)
         row_evidence = _broker_evidence_score(row)
-        if row_evidence > current_evidence or (
+        if current_is_fragment != row_is_fragment:
+            # Structural completeness is authoritative here. A fragment can
+            # carry more provider evidence and still contain a malformed city.
+            winner = row.model_copy(deep=True) if not row_is_fragment else current.model_copy(deep=True)
+            other = current if not row_is_fragment else row
+        elif row_evidence > current_evidence or (
             row_evidence == current_evidence and row.confidence > current.confidence
         ):
             winner = row.model_copy(deep=True)

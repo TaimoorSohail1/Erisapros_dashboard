@@ -545,8 +545,14 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
                     provider="Schedule A semantic layer",
                     page=4,
                     source_text="Name: HUB INTERNATIONAL TEXAS INC Address: 3221 COLLINSWORTH ST City: FORT WORTH ST: TX ZIP: 76107-5739",
-                )
+                ),
+                SourceEvidence(
+                    provider="Fallback table parser",
+                    page=4,
+                    source_text="FORT WORTH ST: TX ZIP: 76107-5739",
+                ),
             ],
+            confidence=0.99,
         )
 
         merged = merge_schedule_a_broker_rows([complete_row, parser_fragment], [])
