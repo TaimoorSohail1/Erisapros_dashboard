@@ -964,6 +964,7 @@ export function FilingReviewPage() {
                 decisionAction={decisionAction}
                 filingStatus={filing.status}
                 showFtwSendAction={showFtwSendAction}
+                ftwReadyToSend={ftwReadyToSend}
                 ftwSendBusy={ftwSendBusy}
                 queryBusy={ftwInteractionBusy}
                 retryBusy={retryBusy}
@@ -1527,6 +1528,7 @@ function ReviewPrimaryActions({
   decisionAction,
   filingStatus,
   showFtwSendAction,
+  ftwReadyToSend,
   ftwSendBusy,
   onApprove,
   onOpenBringForward,
@@ -1549,6 +1551,7 @@ function ReviewPrimaryActions({
   decisionAction: "approve" | "reject" | "unapprove" | null;
   filingStatus: string;
   showFtwSendAction: boolean;
+  ftwReadyToSend: boolean;
   ftwSendBusy: boolean;
   onApprove: () => void;
   onOpenBringForward: () => void;
@@ -1593,7 +1596,12 @@ function ReviewPrimaryActions({
       ) : null}
       {approved ? <span className="review-approved-badge"><CheckCircle2 size={16} /> Approved</span> : null}
       {showFtwSendAction ? (
-        <button className="button" disabled={busy} onClick={onSend}>
+        <button
+          className="button"
+          disabled={busy || !ftwReadyToSend}
+          title={!ftwReadyToSend ? "Resolve the remaining FT Williams validation issues before sending." : undefined}
+          onClick={onSend}
+        >
           {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> {failed ? "Retry remaining" : "Send to FT Williams"}</>}
         </button>
       ) : null}

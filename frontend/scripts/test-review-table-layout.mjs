@@ -654,6 +654,11 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
+  /ftwReadyToSend=\{ftwReadyToSend\}[\s\S]*?disabled=\{busy \|\| !ftwReadyToSend\}[\s\S]*?Send to FT Williams/,
+  "The toolbar may show the FT Williams action after approval, but it must stay disabled until send validation passes.",
+);
+assert.match(
+  source,
   /placeholder=\{expectedFormat \|\| "Enter the FT Williams value"\}/,
   "Field editing must show the expected FT Williams format.",
 );
