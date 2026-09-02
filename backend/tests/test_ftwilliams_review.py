@@ -2315,6 +2315,39 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.schedule_a_broker_rows[0].city, "FORT WORTH")
         self.assertEqual(review.schedule_a_broker_rows[0].fee_total, "44")
 
+    def test_reviewer_can_save_one_broker_while_other_rows_are_incomplete(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        rows = [
+            ScheduleABrokerRow(
+                name="EOI SERVICE COMPANY INC",
+                city="ANAHEIM",
+                state="CA",
+                organization_code="3",
+                commission_total="8567",
+            ),
+            ScheduleABrokerRow(
+                name="GIS BENEFITS INC",
+                city="MORRIS",
+                state="IL",
+                organization_code="",
+                commission_total="4661",
+            ),
+        ]
+
+        review = run_async(
+            FTWilliamsReviewService().update_schedule_a_broker_rows(
+                filing.id,
+                FTWilliamsScheduleABrokerRowsRequest(rows=rows),
+            )
+        )
+        stored = run_async(repo.get_filing(filing.id))
+
+        self.assertEqual(stored.schedule_a_broker_rows[0].organization_code, "3")
+        self.assertEqual(stored.schedule_a_broker_rows[1].organization_code, "")
+        self.assertEqual(len(review.schedule_a_broker_rows), 2)
+        self.assertEqual(review.update_xml_schedule_a, "")
+
     def test_reviewer_broker_edit_returns_exact_invalid_field(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))

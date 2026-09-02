@@ -705,10 +705,18 @@ def current_values_for_schedule_a_update(current_values: dict[str, str]) -> dict
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
 
 
-def schedule_a_broker_update_values(rows: list) -> dict[str, str]:
+def schedule_a_broker_update_values(
+    rows: list,
+    *,
+    require_complete: bool = True,
+) -> dict[str, str]:
     values: dict[str, str] = {}
     for index, row in enumerate(rows or [], start=1):
-        row_values = _schedule_a_broker_row_update_values(row, index)
+        row_values = _schedule_a_broker_row_update_values(
+            row,
+            index,
+            require_complete=require_complete,
+        )
         if row_values:
             values.update(row_values)
     return values
@@ -892,7 +900,12 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
     return lines
 
 
-def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
+def _schedule_a_broker_row_update_values(
+    row: object,
+    index: int,
+    *,
+    require_complete: bool = True,
+) -> dict[str, str]:
     # A None slot means "preserve the current FT Williams row at this index".
     # It is produced by the broker matcher and is not an incomplete new row.
     if row is None:
@@ -911,7 +924,7 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
     purpose = _broker_row_purpose(row, commission, fees)
 
     required_issues: list[FTWFieldValidationIssue] = []
-    if not name:
+    if require_complete and not name:
         required_issues.append(
             FTWFieldValidationIssue(
                 tag=f"Name{index}",
@@ -919,7 +932,7 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
                 reason="value is required for every broker row",
             )
         )
-    if not code:
+    if require_complete and not code:
         required_issues.append(
             FTWFieldValidationIssue(
                 tag=f"Code{index}",

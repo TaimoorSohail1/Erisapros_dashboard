@@ -1087,13 +1087,11 @@ class FTWilliamsReviewService:
             raise ValueError("Filing not found")
 
         rows = self._normalized_schedule_a_broker_rows(payload.rows)
-        for index, row in enumerate(rows, start=1):
-            if not str(row.name or "").strip():
-                raise ValueError(f"Broker row {index} - Broker / person: value is required.")
-            if not str(row.organization_code or "").strip():
-                raise ValueError(f"Broker row {index} - Organization code: value is required by FT Williams.")
         try:
-            schedule_a_broker_update_values(rows)
+            # A reviewer may correct incomplete rows one at a time. Validate all
+            # values that are present here, but enforce required fields only in
+            # the final FT Williams payload-building/send path.
+            schedule_a_broker_update_values(rows, require_complete=False)
         except FTWPayloadValidationError as exc:
             raise ValueError(self._friendly_broker_validation_error(exc)) from exc
 
