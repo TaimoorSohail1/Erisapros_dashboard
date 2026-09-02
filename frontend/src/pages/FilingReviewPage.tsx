@@ -753,12 +753,13 @@ export function FilingReviewPage() {
   async function saveScheduleABrokerRows(
     rows: ScheduleABrokerRow[],
     action: "edited" | "excluded",
+    editedIndex?: number,
   ): Promise<boolean> {
     if (!id) return false;
     setFtwBusy(true);
     setToast(null);
     try {
-      await updateFTWilliamsScheduleABrokerRows(id, rows);
+      await updateFTWilliamsScheduleABrokerRows(id, rows, editedIndex, action);
       const updated = await getFiling(id);
       setFiling(updated);
       previousFilingRef.current = updated;
@@ -3361,7 +3362,7 @@ function ScheduleABrokerRowsPanel({
   busy: boolean;
   matches: ScheduleABrokerMatch[];
   onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
-  onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded") => Promise<boolean>;
+  onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   rows: ScheduleABrokerRow[];
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -3397,7 +3398,7 @@ function ScheduleABrokerRowsPanel({
       return;
     }
     const nextRows = rows.map((row, index) => index === editingIndex ? draft : row);
-    if (await onSaveRows(nextRows, "edited")) {
+    if (await onSaveRows(nextRows, "edited", editingIndex)) {
       setEditingIndex(null);
       setDraft(null);
       setShowDraftValidation(false);

@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -872,6 +873,8 @@ class FTWilliamsBrokerMatchesRequest(BaseModel):
 
 class FTWilliamsScheduleABrokerRowsRequest(BaseModel):
     rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    edited_index: int | None = None
+    action: Literal["edited", "excluded"] = "edited"
 
 
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):

@@ -1132,10 +1132,16 @@ class FTWilliamsReviewService:
 
         rows = self._normalized_schedule_a_broker_rows(payload.rows)
         try:
-            # A reviewer may correct incomplete rows one at a time. Validate all
-            # values that are present here, but enforce required fields only in
-            # the final FT Williams payload-building/send path.
-            schedule_a_broker_update_values(rows, require_complete=False)
+            # Let reviewers correct one broker at a time even when another row
+            # is still invalid. The complete set is validated again before send.
+            if payload.edited_index is not None:
+                if payload.edited_index < 0 or payload.edited_index >= len(rows):
+                    raise ValueError("The edited broker row no longer exists. Refresh and try again.")
+                validation_rows: list[ScheduleABrokerRow | None] = [None] * payload.edited_index
+                validation_rows.append(rows[payload.edited_index])
+                schedule_a_broker_update_values(validation_rows, require_complete=False)
+            elif payload.action != "excluded":
+                schedule_a_broker_update_values(rows, require_complete=False)
         except FTWPayloadValidationError as exc:
             raise ValueError(self._friendly_broker_validation_error(exc)) from exc
 
@@ -1152,7 +1158,7 @@ class FTWilliamsReviewService:
                 filing_id=filing_id,
                 event="FTWILLIAMS_SCHEDULE_A_BROKER_ROWS_UPDATED",
                 message="Reviewer edited the Schedule A broker rows used for the FT Williams update.",
-                details={"broker_row_count": len(rows)},
+                details={"broker_row_count": len(rows), "edited_index": payload.edited_index},
             )
         )
         return updated_review

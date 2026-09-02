@@ -2449,6 +2449,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.schedule_a_broker_rows[1].fee_total, "25.50")
         self.assertEqual(review.schedule_a_broker_rows[1].purpose, "Contingent Compensation")
 
+    def test_reviewer_can_fix_one_broker_without_being_blocked_by_another_invalid_row(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        rows = [
+            ScheduleABrokerRow(
+                name="BROWN & BROWN INSURANCE SERVICES INC",
+                organization_code="3",
+            ),
+            ScheduleABrokerRow(
+                name="BROWN & BROWN OF MASSACHUSETTS",
+                address_line_1="144 TURNPIKE RD STE 330",
+                city="SOUTHBOROUGH",
+                state="MA",
+                zip_code="01772",
+                organization_code="3",
+                commission_total="16512.76",
+                fee_total="0",
+                purpose="CONTINGENT COMPENSATION",
+            ),
+        ]
+
+        review = run_async(
+            FTWilliamsReviewService().update_schedule_a_broker_rows(
+                filing.id,
+                FTWilliamsScheduleABrokerRowsRequest(rows=rows, edited_index=1),
+            )
+        )
+
+        self.assertEqual(len(review.schedule_a_broker_rows), 2)
+        self.assertEqual(review.schedule_a_broker_rows[1].commission_total, "16512.76")
+        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "CONTINGENT COMPENSATION")
+
     def test_reviewer_broker_edit_returns_exact_invalid_field(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))

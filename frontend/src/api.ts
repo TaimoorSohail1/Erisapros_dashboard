@@ -239,11 +239,13 @@ export async function setFTWilliamsScheduleABrokerMatches(
 export async function updateFTWilliamsScheduleABrokerRows(
   filingId: string,
   rows: ScheduleABrokerRow[],
+  editedIndex?: number,
+  action: "edited" | "excluded" = "edited",
 ): Promise<{ ftw_review: FTWilliamsReview }> {
   return request("/filings/" + filingId + "/ftw/schedule-a-broker-rows", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rows }),
+    body: JSON.stringify({ rows, edited_index: editedIndex, action }),
   });
 }
 

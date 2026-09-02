@@ -293,6 +293,16 @@ assert.match(
 );
 assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
 assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
+assert.match(
+  api,
+  /updateFTWilliamsScheduleABrokerRows[\s\S]*?edited_index: editedIndex/,
+  "Broker saves must identify the edited row so another invalid row cannot block incremental correction.",
+);
+assert.match(
+  source,
+  /onSaveRows\(nextRows, "edited", editingIndex\)/,
+  "The broker editor must send the exact edited row index to the validation API.",
+);
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
 assert.match(
   source,
