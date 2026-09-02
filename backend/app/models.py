@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FilingStatus(str, Enum):
@@ -825,6 +825,13 @@ class FTWilliamsReview(BaseModel):
     fields: list[FTWilliamsComparisonField] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("client_error", "active_failure_client_error", mode="before")
+    @classmethod
+    def normalize_legacy_empty_client_error(cls, value):
+        # Older reviews may contain an empty embedded document. Treat it as
+        # "no friendly error" so those records remain readable in the queue.
+        return None if value == {} else value
 
 
 class FTWilliamsPrepareReviewRequest(BaseModel):

@@ -9,11 +9,26 @@ from pymongo.errors import NetworkTimeout
 from pymongo.read_preferences import ReadPreference
 
 from app import repositories
-from app.models import ScheduleABrokerRow
+from app.models import FTWilliamsReview, ScheduleABrokerRow
 from app.repositories import MongoRepository, dashboard_identity_values, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_legacy_empty_client_errors_load_as_missing_errors(self):
+        review = repositories.from_mongo(
+            {
+                "_id": ObjectId(),
+                "filing_id": str(ObjectId()),
+                "active_failure": True,
+                "client_error": {},
+                "active_failure_client_error": {},
+            },
+            FTWilliamsReview,
+        )
+
+        self.assertIsNone(review.client_error)
+        self.assertIsNone(review.active_failure_client_error)
+
     def test_update_filing_serializes_nested_pydantic_models_for_mongo(self):
         async def scenario():
             filing_id = str(ObjectId())
