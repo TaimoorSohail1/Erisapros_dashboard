@@ -637,5 +637,30 @@ assert.match(
   /\.schedule-a-broker-table th\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
   "The broker table header must remain visible while its rows scroll.",
 );
+assert.match(
+  source,
+  /validation_status === "INVALID"[\s\S]*?Invalid FT Williams format/,
+  "Invalid FT Williams values must use a specific status instead of appearing unsupported.",
+);
+assert.match(
+  source,
+  /validation-blocker-banner[\s\S]*?Approval and sending stay locked/,
+  "Blocking validation errors must be explained before approval or sending.",
+);
+assert.match(
+  source,
+  /placeholder=\{expectedFormat \|\| "Enter the FT Williams value"\}/,
+  "Field editing must show the expected FT Williams format.",
+);
+assert.match(
+  source,
+  /Select organization code/,
+  "Broker organization codes must use an explicit placeholder.",
+);
+assert.match(
+  source,
+  /brokerRowValidationIssues\(draft\)[\s\S]*?setShowDraftValidation\(true\)/,
+  "Broker rows must be validated before save.",
+);
 
 console.log("Guided filing review workflow passed.");

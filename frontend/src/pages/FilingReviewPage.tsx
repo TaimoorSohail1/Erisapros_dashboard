@@ -137,6 +137,9 @@ interface ReviewDecisionRow {
   extractedField?: ExtractedField;
   failedByFtw?: boolean;
   ftwFailureReason?: string;
+  validationStatus?: string;
+  validationBlocking?: boolean;
+  validationExpectedFormat?: string;
 }
 
 interface ScheduleAIdentitySummary {
@@ -167,6 +170,7 @@ export function FilingReviewPage() {
   const [retryBusy, setRetryBusy] = useState(false);
   const [decisionAction, setDecisionAction] = useState<"approve" | "reject" | "unapprove" | null>(null);
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
+  const [fieldValidationErrors, setFieldValidationErrors] = useState<Record<string, string>>({});
   const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<WorkflowStepKey | null>(null);
@@ -254,7 +258,12 @@ export function FilingReviewPage() {
   const missingRows = reviewRows.filter((row) => row.group === "MISSING");
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
   const actionRequiredRows = reviewRows.filter(isActionRequiredRow);
-  const actionRequiredCount = actionRequiredRows.length + (planYearConflictRequired ? 1 : 0);
+  const fieldValidationBlockerRows = reviewRows.filter((row) => row.validationBlocking);
+  const brokerValidationIssues = scheduleABrokerRows.flatMap((row, index) =>
+    brokerRowValidationIssues(row).map((message) => ({ index, message })),
+  );
+  const hardValidationBlockerCount = fieldValidationBlockerRows.length + brokerValidationIssues.length;
+  const actionRequiredCount = actionRequiredRows.length + brokerValidationIssues.length + (planYearConflictRequired ? 1 : 0);
   const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
   const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
@@ -297,14 +306,20 @@ export function FilingReviewPage() {
     () => selectedFieldId ? fields.find((field) => field.id === selectedFieldId) : undefined,
     [fields, selectedFieldId],
   );
-  const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0;
+  const selectedReviewRow = selectedFieldId
+    ? reviewRows.find((row) => row.fieldId === selectedFieldId)
+    : undefined;
+  const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0 || hardValidationBlockerCount > 0;
   const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
   const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
-  const scheduleABrokersReady = !scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false;
+  const scheduleABrokersReady = (
+    (!scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false)
+    && brokerValidationIssues.length === 0
+  );
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
   const bringForwardRequired = Boolean(ftwReview?.bring_forward_required);
   const ftwCurrentLoaded = Boolean(
@@ -334,6 +349,7 @@ export function FilingReviewPage() {
     form5500SafetyReady &&
     scheduleASafetyReady &&
     scheduleABrokersReady &&
+    hardValidationBlockerCount === 0 &&
     !planYearConflictRequired,
   );
   const scheduleAUpdateIncluded = Boolean(
@@ -376,6 +392,7 @@ export function FilingReviewPage() {
     !scheduleASafetyReady,
     !scheduleABrokersReady,
     planYearConflictRequired,
+    hardValidationBlockerCount > 0,
   ].filter(Boolean).length;
   const sendWarningCount = actionRequiredCount + schemaIssueCount;
   const foundCount = extracted.length;
@@ -404,6 +421,11 @@ export function FilingReviewPage() {
     setToast(null);
     try {
       const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
+      setFieldValidationErrors((current) => {
+        const next = { ...current };
+        delete next[fieldId];
+        return next;
+      });
       setFiling((current) => current ? {
         ...current,
         ftw_review: mergeFieldDecisionReview(current.ftw_review, result.ftw_review, fieldId),
@@ -419,10 +441,13 @@ export function FilingReviewPage() {
       });
       return true;
     } catch (error) {
+      const validationMessage = error instanceof Error ? error.message : "Please correct this value.";
+      setFieldValidationErrors((current) => ({ ...current, [fieldId]: validationMessage }));
+      setSelectedFieldId(fieldId);
       setToast({
         tone: "error",
         title: "Field decision was not saved",
-        message: error instanceof Error ? error.message : "Please try again.",
+        message: validationMessage,
       });
       return false;
     } finally {
@@ -972,6 +997,30 @@ export function FilingReviewPage() {
               />
             ) : null}
 
+            {hardValidationBlockerCount > 0 ? (
+              <div className="validation-blocker-banner" role="alert">
+                <div>
+                  <strong>Fix {hardValidationBlockerCount} FT Williams validation issue{hardValidationBlockerCount === 1 ? "" : "s"}</strong>
+                  <span>Approval and sending stay locked until these values are valid.</span>
+                </div>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => {
+                    const firstField = fieldValidationBlockerRows[0];
+                    if (firstField?.fieldId) {
+                      setActiveTab("NEEDS_DECISION");
+                      setSelectedFieldId(firstField.fieldId);
+                    } else {
+                      document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }
+                  }}
+                >
+                  Review first issue
+                </button>
+              </div>
+            ) : null}
+
             <div className="field-filter-row approval-filter-row">
               <SelectFilter label="Form" value={formFilter} onChange={setFormFilter} options={["SCHEDULE_A", "FORM_5500"]} />
               <SelectFilter label="Contract" value={contractTypeFilter} onChange={(value) => setContractTypeFilter(value as ContractTypeFilter)} options={["EXPERIENCE_RATED", "NONEXPERIENCE_RATED", "NEEDS_REVIEW", "UNKNOWN"]} />
@@ -1058,6 +1107,8 @@ export function FilingReviewPage() {
       {selectedField ? (
         <FieldReviewModal
           field={selectedField}
+          expectedFormat={selectedReviewRow?.validationExpectedFormat}
+          validationError={fieldValidationErrors[selectedField.id] || (selectedReviewRow?.validationBlocking ? selectedReviewRow.issue : undefined)}
           onClose={() => setSelectedFieldId(null)}
           onSave={saveField}
           saving={fieldSavingId === selectedField.id}
@@ -1529,7 +1580,8 @@ function ReviewPrimaryActions({
         <>
           <button
             className={`button ${approvalBlocked ? "button-warn" : ""}`}
-            disabled={busy}
+            disabled={busy || approvalBlocked}
+            title={approvalBlocked ? "Fix all blocking validation issues before approval." : undefined}
             onClick={onApprove}
           >
             {decisionAction === "approve" ? <InlineLoader label="Approving" /> : <><CheckCircle2 size={16} /> Approve Filing</>}
@@ -1837,7 +1889,8 @@ function WorkflowDetailDialog({
               <button
                 className={`button ${approvalBlocked ? "button-warn" : ""}`}
                 type="button"
-                disabled={busy}
+                disabled={busy || approvalBlocked}
+                title={approvalBlocked ? "Fix all blocking validation issues before approval." : undefined}
                 onClick={onApprove}
               >
                 <CheckCircle2 size={15} /> Approve filing
@@ -3140,6 +3193,28 @@ function PlanYearConflictPanel({
   );
 }
 
+function brokerRowValidationIssues(row: ScheduleABrokerRow): string[] {
+  const issues: string[] = [];
+  if (!String(row.name || "").trim()) issues.push("Broker / person is required.");
+  const organizationCode = String(row.organization_code || "").trim();
+  if (!organizationCode) issues.push("Organization code is required.");
+  else if (!/^[0-9]$/.test(organizationCode)) issues.push("Organization code must be from 0 to 9.");
+  const moneyPattern = /^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/;
+  for (const [label, value] of [["Commission", row.commission_total], ["Fees", row.fee_total]] as const) {
+    if (String(value || "").trim() && !moneyPattern.test(String(value).trim().replace("$", ""))) {
+      issues.push(`${label} must be a number with at most 2 decimal places.`);
+    }
+  }
+  if (String(row.state || "").trim() && !/^[A-Za-z]{2}$/.test(String(row.state).trim())) {
+    issues.push("State must be a two-letter code.");
+  }
+  if (String(row.zip_code || "").trim()) {
+    const zipDigits = String(row.zip_code).replace(/\D/g, "");
+    if (zipDigits.length !== 5 && zipDigits.length !== 9) issues.push("ZIP code must contain 5 or 9 digits.");
+  }
+  return issues;
+}
+
 function ScheduleABrokerRowsPanel({
   busy,
   matches,
@@ -3155,11 +3230,13 @@ function ScheduleABrokerRowsPanel({
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
+  const [showDraftValidation, setShowDraftValidation] = useState(false);
   if (!rows.length) return null;
 
   function beginEdit(row: ScheduleABrokerRow, index: number) {
     setEditingIndex(index);
     setDraft({ ...row, purpose: formatBrokerPurpose(row) });
+    setShowDraftValidation(brokerRowValidationIssues(row).length > 0);
   }
 
   function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
@@ -3169,10 +3246,15 @@ function ScheduleABrokerRowsPanel({
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (editingIndex === null || !draft) return;
+    if (brokerRowValidationIssues(draft).length) {
+      setShowDraftValidation(true);
+      return;
+    }
     const nextRows = rows.map((row, index) => index === editingIndex ? draft : row);
     if (await onSaveRows(nextRows, "edited")) {
       setEditingIndex(null);
       setDraft(null);
+      setShowDraftValidation(false);
     }
   }
 
@@ -3185,7 +3267,7 @@ function ScheduleABrokerRowsPanel({
   }
 
   return (
-    <section className="schedule-a-broker-panel card">
+    <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
       <div className="schedule-a-broker-panel-head">
         <PanelHeading icon={<ListChecks size={16} />} title="Schedule A broker rows" />
         <span>{rows.length} extracted</span>
@@ -3212,12 +3294,17 @@ function ScheduleABrokerRowsPanel({
           <tbody>
             {rows.map((row, index) => {
               const match = matches.find((candidate) => candidate.extracted_index === index);
+              const rowIssues = brokerRowValidationIssues(row);
+              const draftIssues = editingIndex === index && draft ? brokerRowValidationIssues(draft) : [];
               return (
               <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
               <tr>
                 <td>{row.name}</td>
                 <td>{formatBrokerAddress(row)}</td>
-                <td>{organizationCodeLabel(row.organization_code)}</td>
+                <td>
+                  <span className={rowIssues.length ? "broker-value-invalid" : ""}>{organizationCodeLabel(row.organization_code)}</span>
+                  {rowIssues.length ? <small className="broker-validation-message"><AlertTriangle size={12} /> {rowIssues[0]}</small> : null}
+                </td>
                 <td>{row.commission_total || "0"}</td>
                 <td>{row.fee_total || "0"}</td>
                 <td>{formatBrokerPurpose(row) || "-"}</td>
@@ -3227,7 +3314,7 @@ function ScheduleABrokerRowsPanel({
                       {match.status === "CONFIRMED_NEW" ? "New broker row" : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
                     </span>
                   ) : match ? (
-                    <BrokerMatchDecision match={match} busy={busy} onConfirm={onConfirm} />
+                    <BrokerMatchDecision match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />
                   ) : (
                     <span className="broker-match-status">Load current FTW data to match</span>
                   )}
@@ -3248,6 +3335,12 @@ function ScheduleABrokerRowsPanel({
                 <tr className="broker-edit-row">
                   <td colSpan={8}>
                     <form className="broker-edit-form" onSubmit={submitEdit}>
+                      {showDraftValidation && draftIssues.length ? (
+                        <div className="broker-edit-validation" role="alert">
+                          <strong>Fix this broker row before saving</strong>
+                          {draftIssues.map((issue) => <span key={issue}>{issue}</span>)}
+                        </div>
+                      ) : null}
                       <label>Broker / person<input required maxLength={35} value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
                       <label>Address line 1<input maxLength={35} value={draft.address_line_1 || ""} onChange={(event) => updateDraft("address_line_1", event.target.value)} /></label>
                       <label>Address line 2<input maxLength={35} value={draft.address_line_2 || ""} onChange={(event) => updateDraft("address_line_2", event.target.value)} /></label>
@@ -3257,7 +3350,7 @@ function ScheduleABrokerRowsPanel({
                       <label>
                         Organization code
                         <select required value={draft.organization_code || ""} onChange={(event) => updateDraft("organization_code", event.target.value)}>
-                          <option value="">Select organization type</option>
+                          <option value="">Select organization code</option>
                           {FTW_ORGANIZATION_CODE_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>{option.value} — {option.label}</option>
                           ))}
@@ -3268,7 +3361,7 @@ function ScheduleABrokerRowsPanel({
                       <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
                       <label className="broker-purpose-input">Purpose<input maxLength={70} value={draft.purpose || ""} onChange={(event) => updateDraft("purpose", event.target.value)} /></label>
                       <div className="broker-edit-actions">
-                        <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); }}>Cancel</button>
+                        <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); setShowDraftValidation(false); }}>Cancel</button>
                         <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
                       </div>
                     </form>
@@ -3769,6 +3862,9 @@ function rowFromComparison(
     extractedField: field,
     failedByFtw: Boolean(rejectedField),
     ftwFailureReason: rejectedField ? rejectedFieldDescription(rejectedField) : undefined,
+    validationStatus: comparison.validation_status,
+    validationBlocking: Boolean(comparison.validation_blocking),
+    validationExpectedFormat: comparison.validation_expected_format || undefined,
   };
 }
 
@@ -3795,6 +3891,7 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
   if (comparison.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "SAME";
+  if (comparison.validation_blocking) return "NEEDS_DECISION";
   if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
   if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") return "LOW_CONFIDENCE";
@@ -3812,6 +3909,10 @@ function groupForExtractedField(field: ExtractedField): ReviewRowGroup {
 }
 
 function issueForComparison(comparison: FTWilliamsComparisonField, field: ExtractedField | undefined, group: ReviewRowGroup) {
+  if (comparison.validation_message) {
+    const expected = comparison.validation_expected_format ? ` Expected: ${comparison.validation_expected_format}.` : "";
+    return `${comparison.validation_message}.${expected}`.replace("..", ".");
+  }
   if (field?.status === "EDITED" && group === "WILL_UPDATE") return "Reviewer confirmed this FT Williams update.";
   if (field?.status === "EDITED" && comparison.changed && !comparison.update_included) {
     if (comparison.update_exclusion_reason) return comparison.update_exclusion_reason;
@@ -3836,6 +3937,10 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
+  if (comparison?.validation_status === "INVALID") return "Invalid FT Williams format";
+  if (comparison?.validation_status === "REQUIRED") return "Required";
+  if (comparison?.validation_status === "REVIEW_REQUIRED") return "Review required";
+  if (comparison?.validation_status === "UNSUPPORTED") return "Review only · not supported";
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
   if (comparison?.changed && comparison.update_exclusion_reason) return "Review only · more FTW details required";
   if (comparison?.changed && !comparison.update_included) return "Review only · not supported";
@@ -3853,6 +3958,7 @@ function displayFtwChangeValue(value?: string | null) {
 
 function isActionRequiredRow(row: ReviewDecisionRow) {
   if (row.failedByFtw) return true;
+  if (row.validationBlocking) return true;
   if (row.extractedField?.status === "EDITED") return false;
   return Boolean(
     row.group === "NEEDS_DECISION" ||
@@ -3958,24 +4064,30 @@ function FieldTableRow({ field, selected, onSelect }: { field: ExtractedField; s
 }
 
 function FieldReviewModal({
+  expectedFormat,
   field,
   onClose,
   onSave,
   saving,
+  validationError,
 }: {
+  expectedFormat?: string;
   field: ExtractedField;
   onClose: () => void;
   onSave: (fieldId: string, proposedValue: string, options?: FieldSaveOptions) => Promise<boolean>;
   saving: boolean;
+  validationError?: string;
 }) {
   const [draft, setDraft] = useState(field?.proposed_value ?? "");
+  const [inlineError, setInlineError] = useState(validationError || "");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
 
   useEffect(() => {
     setDraft(field?.proposed_value ?? "");
-  }, [field?.id, field?.proposed_value]);
+    setInlineError(validationError || "");
+  }, [field?.id, field?.proposed_value, validationError]);
 
   async function save(value: string, options: FieldSaveOptions = {}) {
     const saved = await onSave(field.id, value, options);
@@ -4016,8 +4128,23 @@ function FieldReviewModal({
               </label>
               <label className="field-review-value-card field-review-value-proposed">
                 <span className="field-review-value-label"><Sparkles size={15} /> Proposed to FT Williams</span>
-                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} />
-                <small className="field-edit-hint">Edit if needed, then confirm. Empty values must be marked missing.</small>
+                <input
+                  ref={inputRef}
+                  aria-invalid={Boolean(inlineError)}
+                  className={`input ${inlineError ? "input-invalid" : ""}`}
+                  value={draft}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setInlineError("");
+                  }}
+                  disabled={saving}
+                  placeholder={expectedFormat || "Enter the FT Williams value"}
+                />
+                {inlineError ? <small className="field-validation-error"><AlertTriangle size={14} /> {inlineError}</small> : null}
+                <small className="field-edit-hint">
+                  {expectedFormat ? `FT Williams format: ${expectedFormat}. ` : ""}
+                  Edit if needed, then confirm. Empty values must be marked missing.
+                </small>
               </label>
             </div>
           </div>

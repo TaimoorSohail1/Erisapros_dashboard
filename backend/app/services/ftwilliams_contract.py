@@ -226,6 +226,37 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
     return re.sub(r"\s+", " ", text)
 
 
+def ftw_expected_format(tag: str) -> str:
+    """Return the reviewer-facing format from the same contract used at send time."""
+    if tag in DATE_TAGS:
+        return "Valid date in MM/DD/YYYY format"
+    if tag in INTEGER_TAGS:
+        return "Non-negative whole number"
+    if tag in EIN_TAGS:
+        return "9-digit EIN (NN-NNNNNNN)"
+    if tag in NAIC_TAGS:
+        return "Exactly 5 digits"
+    if tag in PLAN_NUMBER_TAGS:
+        return "Numeric plan number with at most 3 digits"
+    if tag in BUSINESS_CODE_TAGS:
+        return "Exactly 6 digits"
+    if tag == "SDState" or re.fullmatch(r"State(?:\d+|XX)", tag):
+        return "Two-letter US state code"
+    if tag == "SDZipCode" or re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        return "5- or 9-digit US ZIP code"
+    if re.fullmatch(r"Code(?:\d+|XX)", tag):
+        return "Organization code from 0 to 9"
+    if tag in ZERO_ONE_INDICATOR_TAGS:
+        return "Yes/no value"
+    if tag in ONE_TWO_INDICATOR_TAGS:
+        return "Yes/no value"
+    if _is_money_tag(tag):
+        return "Numeric amount with at most 2 decimal places"
+    if tag == "ScheduleDesc":
+        return "1 to 8 letters or numbers"
+    return f"Text up to {_text_limit(tag)} characters"
+
+
 def _tag_is_allowed(form_type: FormType, tag: str) -> bool:
     if form_type == FormType.FORM_5500:
         return tag in FORM_5500_ALLOWED_UPDATE_TAGS

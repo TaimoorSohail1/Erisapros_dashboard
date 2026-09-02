@@ -46,7 +46,12 @@ from app.services.error_normalizer import normalize_client_error
 from app.services.extractor import merge_schedule_a_broker_rows
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
-from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
+from app.services.ftwilliams_contract import (
+    FTWFieldValidationIssue,
+    FTWPayloadValidationError,
+    ftw_expected_format,
+    normalize_ftw_update_value,
+)
 from app.services.ftwilliams_schema import FTWilliamsSchemaService
 from app.services.ftwilliams_failures import classify_ftwilliams_failure, failure_issue_groups
 from app.services.storage import StorageService
@@ -83,6 +88,7 @@ from app.services.xml_builder import (
     schedule_a_broker_multipart_rows,
     schedule_a_broker_update_values,
     schedule_a_replacement_data_gaps,
+    update_values_for_form,
 )
 
 
@@ -2309,6 +2315,9 @@ class FTWilliamsReviewService:
             plan_year_error = self._review_plan_year_block_reason(review) if review else None
             if plan_year_error:
                 raise ValueError(plan_year_error)
+            validation_error = self._review_validation_blocking_error(review, fields=approval_fields) if review else None
+            if validation_error:
+                raise ValueError(validation_error)
             if approval_error and not override_blockers:
                 raise ValueError(approval_error)
             await repo.update_filing(
@@ -2338,6 +2347,13 @@ class FTWilliamsReviewService:
         # Schedule A updates as a full replacement set, so sending stale XML that
         # only contains the selected schedule can remove the other Schedule A rows.
         existing_review = await repo.get_ftwilliams_review(filing_id)
+        if existing_review:
+            validation_error = self._review_validation_blocking_error(
+                existing_review,
+                fields=await repo.list_fields(filing_id),
+            )
+            if validation_error:
+                raise ValueError(validation_error)
         had_active_failure = bool(
             existing_review
             and (
@@ -2395,6 +2411,10 @@ class FTWilliamsReviewService:
         if plan_year_error:
             await self._record_update_failure(repo, filing_id, review, plan_year_error)
             raise ValueError(plan_year_error)
+        validation_error = self._review_validation_blocking_error(review)
+        if validation_error:
+            await self._record_update_failure(repo, filing_id, review, validation_error)
+            raise ValueError(validation_error)
         schedule_a_required_error = self._missing_required_schedule_a_payload(review)
         if schedule_a_required_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_required_error)
@@ -3476,6 +3496,52 @@ class FTWilliamsReviewService:
             parts.append(f"{unmapped} unmapped field{'s' if unmapped != 1 else ''}")
         return f"Resolve {' and '.join(parts)} before approving this filing."
 
+    def _review_validation_blocking_error(
+        self,
+        review: FTWilliamsReview,
+        *,
+        fields: list[ExtractedField] | None = None,
+    ) -> str | None:
+        comparisons = review.fields or []
+        if fields:
+            safe_form_fields = self._safe_update_fields(
+                fields,
+                FormType.FORM_5500,
+                review.form_5500_current_values or {},
+            )
+            safe_schedule_fields = self._safe_update_fields(
+                fields,
+                FormType.SCHEDULE_A,
+                review.schedule_a_current_values or {},
+                has_structured_schedule_a_brokers=bool(review.schedule_a_broker_rows),
+            )
+            comparisons = self._comparison_fields(
+                fields,
+                review.form_5500_current_values or {},
+                review.schedule_a_current_values or {},
+                update_fields=[*safe_form_fields, *safe_schedule_fields],
+                schedule_a_contract_type=review.schedule_a_contract_type,
+            )
+            self._mark_structured_broker_comparisons(comparisons, review.schedule_a_broker_rows)
+        field_issues = [field for field in comparisons if field.validation_blocking]
+        broker_issue = None
+        if review.schedule_a_broker_rows:
+            try:
+                schedule_a_broker_update_values(review.schedule_a_broker_rows, require_complete=True)
+            except FTWPayloadValidationError as exc:
+                broker_issue = self._friendly_broker_validation_error(exc)
+        if not field_issues and not broker_issue:
+            return None
+        parts: list[str] = []
+        if field_issues:
+            parts.append(
+                f"{len(field_issues)} FT Williams field validation issue"
+                f"{'s' if len(field_issues) != 1 else ''}"
+            )
+        if broker_issue:
+            parts.append(broker_issue)
+        return f"Fix {' and '.join(parts)} before approving this filing."
+
     def _effective_schedule_a_classification(
         self,
         filing,
@@ -3849,6 +3915,7 @@ class FTWilliamsReviewService:
             if field.priority == FieldPriority.IGNORE:
                 continue
             tag = resolve_ftw_current_tag(field)
+            update_tag = resolve_ftw_update_tag(field)
             current_values = form_5500_current if field.form_type == FormType.FORM_5500 else schedule_a_current
             current_value = resolve_ftw_current_value(field, current_values)
             extracted_proposed_value = str(field.proposed_value or "")
@@ -3857,17 +3924,38 @@ class FTWilliamsReviewService:
             # column while still excluding blank extraction fields from updates.
             proposed_value = extracted_proposed_value if extracted_proposed_value.strip() else current_value
             update_allowed = update_field_ids is None or id(field) in update_field_ids
-            update_exclusion_reason = (
-                self._unsafe_form_5500_field_reason(field, current_values)
-                if field.form_type == FormType.FORM_5500 and not update_allowed
-                else None
-            )
+            update_exclusion_reason = None
+            if not update_allowed:
+                if field.form_type == FormType.FORM_5500:
+                    update_exclusion_reason = self._unsafe_form_5500_field_reason(field, current_values)
+                elif field.form_type == FormType.SCHEDULE_A:
+                    update_exclusion_reason = self._unsafe_schedule_a_field_reason(field, fields, current_values)
             contract_type_allowed = (
                 field.form_type != FormType.SCHEDULE_A
                 or schedule_a_contract_type is None
                 or schedule_a_contract_type_allows_rule(schedule_a_contract_type, field.mapped_rule_key)
             )
             changed = values_meaningfully_different(current_value, proposed_value, tag=tag) and contract_type_allowed
+            validation_status = "VALID"
+            validation_message = None
+            validation_expected_format = self._field_expected_format(field, update_tag) if update_tag else None
+            validation_normalized_value = None
+            validation_blocking = False
+            if extracted_proposed_value.strip() and not update_tag:
+                validation_status = "UNSUPPORTED"
+                validation_message = "This field is review-only and is not supported by the FT Williams update contract."
+            elif extracted_proposed_value.strip() and update_tag:
+                try:
+                    validation_normalized_value = self._validated_field_value(field)
+                except FTWPayloadValidationError as exc:
+                    issue = exc.issues[0]
+                    validation_status = "INVALID"
+                    validation_message = issue.reason
+                    validation_blocking = True
+            if update_exclusion_reason:
+                validation_status = "REVIEW_REQUIRED"
+                validation_message = update_exclusion_reason
+                validation_blocking = True
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,
@@ -3890,6 +3978,11 @@ class FTWilliamsReviewService:
                         and contract_type_allowed
                     ),
                     update_exclusion_reason=update_exclusion_reason,
+                    validation_status=validation_status,
+                    validation_message=validation_message,
+                    validation_expected_format=validation_expected_format,
+                    validation_normalized_value=validation_normalized_value,
+                    validation_blocking=validation_blocking,
                 )
             )
         return comparison
@@ -3909,6 +4002,10 @@ class FTWilliamsReviewService:
                 continue
             if not resolve_ftw_update_tag(field):
                 continue
+            try:
+                self._validated_field_value(field)
+            except FTWPayloadValidationError:
+                continue
             if form_type != FormType.SCHEDULE_A:
                 if self._unsafe_form_5500_field_reason(field, current_values):
                     continue
@@ -3926,6 +4023,31 @@ class FTWilliamsReviewService:
                 continue
             safe_fields.append(field)
         return safe_fields
+
+    @staticmethod
+    def _field_expected_format(field: ExtractedField, update_tag: str) -> str:
+        if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address":
+            return "Street, city, two-letter state, and 5- or 9-digit ZIP"
+        if field.mapped_rule_key in {
+            "form_5500_part_ii_9_plan_funding_arrangement",
+            "form_5500_part_ii_10a_plan_benefit_arrangement",
+        }:
+            return "One or more supported FT Williams arrangement choices"
+        return ftw_expected_format(update_tag)
+
+    @staticmethod
+    def _validated_field_value(field: ExtractedField) -> str:
+        update_tag = resolve_ftw_update_tag(field)
+        if not update_tag:
+            return ""
+        if field.mapped_rule_key in {
+            "form_5500_part_i_1f_plan_sponsor_address",
+            "form_5500_part_ii_9_plan_funding_arrangement",
+            "form_5500_part_ii_10a_plan_benefit_arrangement",
+        }:
+            update_values_for_form([field], field.form_type)
+            return str(field.proposed_value or "").strip()
+        return normalize_ftw_update_value(field.form_type, update_tag, field.proposed_value)
 
     @staticmethod
     def _unsafe_form_5500_field_reason(
@@ -3971,6 +4093,9 @@ class FTWilliamsReviewService:
                 comparison.update_exclusion_reason = (
                     "Managed in the Schedule A broker rows section so each broker is matched and updated separately."
                 )
+                comparison.validation_status = "VALID"
+                comparison.validation_message = comparison.update_exclusion_reason
+                comparison.validation_blocking = False
 
     def _normalized_schedule_a_broker_rows(self, rows) -> list:
         normalized: list[ScheduleABrokerRow] = []
@@ -4313,7 +4438,10 @@ class FTWilliamsReviewService:
             proposed_number = self._money_number(proposed)
             if current_number is not None and proposed_number is not None:
                 larger = max(abs(current_number), abs(proposed_number), 1.0)
-                if abs(current_number - proposed_number) / larger > 0.2:
+                if (
+                    field.status != ExtractedFieldStatus.EDITED
+                    and abs(current_number - proposed_number) / larger > 0.2
+                ):
                     return "premium differs by more than 20 percent from current FTW value"
 
         return None

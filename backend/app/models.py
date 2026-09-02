@@ -682,6 +682,11 @@ class FTWilliamsComparisonField(BaseModel):
     changed: bool = False
     update_included: bool = False
     update_exclusion_reason: str | None = None
+    validation_status: str = "VALID"
+    validation_message: str | None = None
+    validation_expected_format: str | None = None
+    validation_normalized_value: str | None = None
+    validation_blocking: bool = False
 
 
 class ClientRejectedField(BaseModel):

@@ -1676,6 +1676,62 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(safe, [administrator])
 
+    def test_comparison_exposes_invalid_ftw_format_as_blocking(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1c. NAIC Code",
+            normalized_field_name="naic_code",
+            mapped_rule_key="schedule_a_part_i_1c_naic_code",
+            mapped_label="1c. NAIC Code",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="1",
+            proposed_value="1",
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"InsCarrierNAICCode": "64246"},
+            update_fields=[],
+        )[0]
+
+        self.assertEqual(comparison.validation_status, "INVALID")
+        self.assertTrue(comparison.validation_blocking)
+        self.assertEqual(comparison.validation_expected_format, "Exactly 5 digits")
+        self.assertIn("exactly 5 digits", comparison.validation_message or "")
+        self.assertFalse(comparison.update_included)
+
+    def test_explicitly_confirmed_large_premium_change_is_ready_to_update(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="10a. Total premiums",
+            normalized_field_name="total_premiums",
+            mapped_rule_key="schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+            mapped_label="10a. Total premiums",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            status=ExtractedFieldStatus.EDITED,
+            value="1972.94",
+            proposed_value="0",
+        )
+        current = {"TotPremSubChrgPaidAmt": "35560"}
+        service = FTWilliamsReviewService()
+        safe = service._safe_update_fields([field], FormType.SCHEDULE_A, current)
+        comparison = service._comparison_fields(
+            [field],
+            {},
+            current,
+            update_fields=safe,
+        )[0]
+
+        self.assertEqual(safe, [field])
+        self.assertEqual(comparison.validation_status, "VALID")
+        self.assertFalse(comparison.validation_blocking)
+        self.assertTrue(comparison.update_included)
+
     def test_prepare_review_reports_pre_send_validation_without_crashing(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
@@ -1700,9 +1756,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         review = run_async(FTWilliamsReviewService().prepare_review(filing.id, send_queries=False))
 
-        self.assertIsNotNone(review.client_error)
-        self.assertEqual(review.client_error.code, "FTW_PRE_SEND_VALIDATION")
-        self.assertEqual(review.client_error.rejected_fields[0].tag, "TotActivePartcpCnt")
+        comparison = next(field for field in review.fields if field.ftw_tag == "TotActivePartcpCnt")
+        self.assertIsNone(review.client_error)
+        self.assertEqual(comparison.validation_status, "INVALID")
+        self.assertTrue(comparison.validation_blocking)
+        self.assertIn("whole number", comparison.validation_message or "")
         self.assertNotIn("TotActivePartcpCnt", review.update_xml_5500 or "")
 
     def test_proposed_xml_uses_real_schedule_a_and_5500_tags(self):
@@ -4192,6 +4250,63 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(updated_filing.status, FilingStatus.APPROVED)
         self.assertTrue(approved_audit.details["override_blockers"])
         self.assertIn("high-priority missing field", approved_audit.details["approval_blockers"])
+
+    def test_approve_cannot_override_ftw_format_validation(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+                    fields=[
+                        FTWilliamsComparisonField(
+                            label="1c. NAIC Code",
+                            proposed_value="1",
+                            validation_status="INVALID",
+                            validation_message="expected exactly 5 digits",
+                            validation_expected_format="Exactly 5 digits",
+                            validation_blocking=True,
+                        )
+                    ],
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "1 FT Williams field validation issue"):
+            run_async(
+                FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
+                    filing.id,
+                    override_blockers=True,
+                )
+            )
+
+        self.assertNotEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
+
+    def test_approve_blocks_incomplete_broker_row_before_send(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+                    schedule_a_broker_rows=[
+                        ScheduleABrokerRow(name="Example Broker", organization_code="")
+                    ],
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "Organization code.*required"):
+            run_async(
+                FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
+                    filing.id,
+                    override_blockers=True,
+                )
+            )
+
+        self.assertNotEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
 
     def test_send_update_blocks_selected_schedule_a_when_other_records_are_not_fetched(self):
         repo = repositories.get_repository()

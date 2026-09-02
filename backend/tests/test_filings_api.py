@@ -416,7 +416,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(untouched.status, ExtractedFieldStatus.MISSING)
         self.assertEqual(untouched.proposed_value, "")
 
-    def test_field_edit_applies_preview_validation_only_to_the_selected_field(self):
+    def test_field_edit_rejects_invalid_selected_value_without_saving_it(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -454,21 +454,73 @@ class FilingsApiTests(unittest.TestCase):
             )
             untouched_before = fields[1].model_dump()
 
-            response = await update_field(
-                filing.id,
-                fields[0].id,
-                FieldEditRequest(proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS"),
-            )
+            try:
+                await update_field(
+                    filing.id,
+                    fields[0].id,
+                    FieldEditRequest(proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS"),
+                )
+            except HTTPException as exc:
+                error = exc
+            else:
+                self.fail("Invalid FT Williams value should be rejected before it is saved")
             saved = await repo.list_fields(filing.id)
-            return response, saved, untouched_before
+            return error, saved, fields[0].model_dump(), untouched_before
 
-        response, saved, untouched_before = run_async(scenario())
+        error, saved, selected_before, untouched_before = run_async(scenario())
 
-        selected = next(field for field in saved if field.id == response["field"].id)
-        untouched = next(field for field in saved if field.id != response["field"].id)
-        self.assertEqual(selected.status, ExtractedFieldStatus.LOW_CONFIDENCE)
-        self.assertIn("FT Williams pre-send validation", selected.status_reason)
+        selected = next(field for field in saved if field.id == selected_before["id"])
+        untouched = next(field for field in saved if field.id != selected_before["id"])
+        self.assertEqual(error.status_code, 422)
+        self.assertEqual(error.detail["code"], "FTW_FIELD_VALIDATION_FAILED")
+        self.assertEqual(error.detail["expected_format"], "Text up to 35 characters")
+        self.assertIn("maximum length is 35 characters", error.detail["message"])
+        self.assertEqual(selected.model_dump(), selected_before)
         self.assertEqual(untouched.model_dump(), untouched_before)
+
+    def test_field_edit_accepts_structured_address_longer_than_one_ftw_component(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Structured address.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/structured-address",
+                    intake_source="SHAREFILE",
+                )
+            )
+            field = (
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1f. Plan Sponsor Address",
+                            normalized_field_name="sponsor_address",
+                            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                            mapped_label="1f. Plan Sponsor Address",
+                            form_type=FormType.FORM_5500,
+                            ftw_resolved_tag="SDAddressLine1",
+                            proposed_value="OLD ADDRESS",
+                        )
+                    ]
+                )
+            )[0]
+            return await update_field(
+                filing.id,
+                field.id,
+                FieldEditRequest(
+                    proposed_value="123 MAIN STREET SUITE 200, SPRINGFIELD, IL 62704"
+                ),
+            )
+
+        response = run_async(scenario())
+
+        self.assertEqual(response["field"].status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(
+            response["field"].proposed_value,
+            "123 MAIN STREET SUITE 200, SPRINGFIELD, IL 62704",
+        )
 
     def test_filing_detail_reads_independent_collections_concurrently(self):
         class ConcurrentReadRepository(repositories.MemoryRepository):

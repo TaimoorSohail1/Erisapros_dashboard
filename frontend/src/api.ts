@@ -26,7 +26,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(API_BASE + path, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail || payload.error || "Request failed");
+    const detail = payload.detail;
+    if (detail && typeof detail === "object") {
+      const message = String(detail.message || detail.reason || "Value is not valid for FT Williams");
+      const expected = detail.expected_format ? ` Expected: ${detail.expected_format}.` : "";
+      throw new Error(`${message}.${expected}`.replace("..", "."));
+    }
+    throw new Error(detail || payload.error || "Request failed");
   }
   return response.json();
 }

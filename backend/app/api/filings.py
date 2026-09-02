@@ -35,7 +35,12 @@ from app.services.filing_pipeline import (
     summarize_mapped_fields,
 )
 from app.services.field_rule_admin import FieldRuleService
-from app.services.ftwilliams_contract import FTWPayloadValidationError
+from app.services.ftwilliams_contract import (
+    FTWPayloadValidationError,
+    ftw_expected_format,
+    normalize_ftw_update_value,
+)
+from app.services.ftwilliams_tags import resolve_ftw_update_tag
 from app.services.schedule_a_classification import (
     apply_schedule_a_classification,
     classify_schedule_a_fields,
@@ -43,7 +48,7 @@ from app.services.schedule_a_classification import (
 )
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.storage import StorageService
-from app.services.xml_builder import build_proposed_ftw_xml
+from app.services.xml_builder import build_proposed_ftw_xml, update_values_for_form
 
 router = APIRouter(prefix="/filings", tags=["filings"])
 
@@ -273,13 +278,49 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         FieldRuleService(repo).published_rules(),
         repo.get_ftwilliams_review(filing_id),
     )
+    existing_field = next((item for item in existing_fields if item.id == field_id), None)
+    if not existing_field:
+        raise HTTPException(status_code=404, detail="Field not found")
+    proposed_value = "" if payload.mark_missing else payload.proposed_value
+    update_tag = resolve_ftw_update_tag(existing_field)
+    if not payload.mark_missing and update_tag:
+        try:
+            preview_field = existing_field.model_copy(
+                update={"proposed_value": proposed_value, "status": ExtractedFieldStatus.EDITED}
+            )
+            # Validate the exact outbound components. Some UI fields (such as
+            # sponsor address and indicator groups) expand into multiple FTW tags.
+            update_values_for_form([preview_field], existing_field.form_type)
+            if existing_field.mapped_rule_key not in {
+                "form_5500_part_i_1f_plan_sponsor_address",
+                "form_5500_part_ii_9_plan_funding_arrangement",
+                "form_5500_part_ii_10a_plan_benefit_arrangement",
+            }:
+                proposed_value = normalize_ftw_update_value(
+                    existing_field.form_type,
+                    update_tag,
+                    proposed_value,
+                )
+        except FTWPayloadValidationError as exc:
+            issue = exc.issues[0]
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "FTW_FIELD_VALIDATION_FAILED",
+                    "field_id": field_id,
+                    "tag": issue.tag,
+                    "message": issue.reason,
+                    "expected_format": ftw_expected_format(issue.tag),
+                    "value": issue.value,
+                },
+            ) from exc
     before = next((field.proposed_value for field in existing_fields if field.id == field_id), None)
     field_status = ExtractedFieldStatus.MISSING if payload.mark_missing else ExtractedFieldStatus.EDITED
     status_reason = "Marked missing by reviewer." if payload.mark_missing else "Value confirmed by reviewer."
     field = await repo.update_field(
         filing_id,
         field_id,
-        "" if payload.mark_missing else payload.proposed_value,
+        proposed_value,
         status=field_status,
         status_reason=status_reason,
     )
@@ -352,7 +393,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
             type="MARK_MISSING" if payload.mark_missing else "EDIT",
             field_id=field_id,
             before=before,
-            after="" if payload.mark_missing else payload.proposed_value,
+            after=proposed_value,
         )
     )
     return {"field": field, "proposed_xml": proposed_xml, "ftw_review": ftw_review}

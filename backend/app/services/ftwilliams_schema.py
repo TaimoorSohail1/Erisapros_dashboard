@@ -18,17 +18,12 @@ from app.models import (
     FormType,
 )
 from app.services.ftwilliams_contract import (
-    BUSINESS_CODE_TAGS,
     DATE_TAGS,
     EIN_TAGS,
     FTW_CONTRACT_VERSION,
     FTWPayloadValidationError,
-    INTEGER_TAGS,
     NAIC_TAGS,
-    ONE_TWO_INDICATOR_TAGS,
-    PLAN_NUMBER_TAGS,
-    TEXT_LIMITS,
-    ZERO_ONE_INDICATOR_TAGS,
+    ftw_expected_format,
     normalize_ftw_update_value,
 )
 
@@ -274,25 +269,7 @@ class FTWilliamsSchemaService:
 
     @staticmethod
     def _expected_format(tag: str) -> str:
-        if tag in DATE_TAGS:
-            return "Valid date in MM/DD/YYYY format"
-        if tag in INTEGER_TAGS:
-            return "Non-negative whole number"
-        if tag in EIN_TAGS:
-            return "9-digit EIN (NN-NNNNNNN)"
-        if tag in NAIC_TAGS:
-            return "Exactly 5 digits"
-        if tag in PLAN_NUMBER_TAGS:
-            return "Numeric plan number with at most 3 digits"
-        if tag in BUSINESS_CODE_TAGS:
-            return "Exactly 6 digits"
-        if tag in ZERO_ONE_INDICATOR_TAGS:
-            return "FT Williams 1/0 indicator"
-        if tag in ONE_TWO_INDICATOR_TAGS:
-            return "FT Williams 1/2 indicator"
-        if tag.endswith("Amt") or re.fullmatch(r"(?:CommPdAmt|FeesPdAmt)\d+", tag):
-            return "Numeric amount with at most 2 decimal places"
-        return f"Text up to {TEXT_LIMITS.get(tag, 250)} characters"
+        return ftw_expected_format(tag)
 
     @staticmethod
     def _correction(tag: str) -> str:

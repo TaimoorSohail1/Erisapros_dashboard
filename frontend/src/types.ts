@@ -172,6 +172,11 @@ export interface FTWilliamsComparisonField {
   changed: boolean;
   update_included: boolean;
   update_exclusion_reason?: string | null;
+  validation_status?: "VALID" | "INVALID" | "REQUIRED" | "UNSUPPORTED" | "REVIEW_REQUIRED" | string;
+  validation_message?: string | null;
+  validation_expected_format?: string | null;
+  validation_normalized_value?: string | null;
+  validation_blocking?: boolean;
 }
 
 export interface FTWilliamsPlanLookup {
