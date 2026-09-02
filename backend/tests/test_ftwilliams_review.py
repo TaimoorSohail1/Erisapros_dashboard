@@ -2363,7 +2363,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         review = run_async(
             FTWilliamsReviewService().update_schedule_a_broker_rows(
                 filing.id,
-                FTWilliamsScheduleABrokerRowsRequest(rows=rows),
+                FTWilliamsScheduleABrokerRowsRequest(rows=rows[:1]),
             )
         )
         stored = run_async(repo.get_filing(filing.id))
@@ -2405,6 +2405,49 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(stored.schedule_a_broker_rows[1].organization_code, "")
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertEqual(review.update_xml_schedule_a, "")
+
+    def test_reviewer_broker_edits_preserve_each_submitted_row_and_value(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        rows = [
+            ScheduleABrokerRow(
+                name="BROWN & BROWN OF MASSACHUSETTS",
+                address_line_1="144 TURNPIKE RD STE 330",
+                city="SOUTHBOROUGH",
+                state="MA",
+                zip_code="01772",
+                organization_code="3",
+                commission_total="0",
+                fee_total="0",
+            ),
+            ScheduleABrokerRow(
+                name="BROWN & BROWN OF MASSACHUSETTS",
+                address_line_1="144 TURNPIKE RD STE 330",
+                city="SOUTHBOROUGH",
+                state="MA",
+                zip_code="01772",
+                organization_code="3",
+                commission_total="16512.76",
+                fee_total="25.50",
+                purpose="Contingent Compensation",
+            ),
+        ]
+
+        review = run_async(
+            FTWilliamsReviewService().update_schedule_a_broker_rows(
+                filing.id,
+                FTWilliamsScheduleABrokerRowsRequest(rows=rows),
+            )
+        )
+        stored = run_async(repo.get_filing(filing.id))
+
+        self.assertEqual(len(stored.schedule_a_broker_rows), 2)
+        self.assertEqual(len(review.schedule_a_broker_rows), 2)
+        self.assertEqual(review.schedule_a_broker_rows[1].name, "BROWN & BROWN OF MASSACHUSETTS")
+        self.assertEqual(review.schedule_a_broker_rows[1].address_line_1, "144 TURNPIKE RD STE 330")
+        self.assertEqual(review.schedule_a_broker_rows[1].commission_total, "16512.76")
+        self.assertEqual(review.schedule_a_broker_rows[1].fee_total, "25.50")
+        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "Contingent Compensation")
 
     def test_reviewer_broker_edit_returns_exact_invalid_field(self):
         repo = repositories.get_repository()

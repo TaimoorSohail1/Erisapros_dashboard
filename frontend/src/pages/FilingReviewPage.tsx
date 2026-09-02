@@ -3367,6 +3367,16 @@ function ScheduleABrokerRowsPanel({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
   const [showDraftValidation, setShowDraftValidation] = useState(false);
+  const editorRef = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    if (editingIndex === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editingIndex]);
+
   if (!rows.length) return null;
 
   function beginEdit(row: ScheduleABrokerRow, index: number) {
@@ -3430,20 +3440,25 @@ function ScheduleABrokerRowsPanel({
           <tbody>
             {rows.map((row, index) => {
               const match = matches.find((candidate) => candidate.extracted_index === index);
-              const rowIssues = brokerRowValidationIssues(row);
-              const draftIssues = editingIndex === index && draft ? brokerRowValidationIssues(draft) : [];
+              const isEditing = editingIndex === index && Boolean(draft);
+              const displayRow = editingIndex === index && draft ? draft : row;
+              const rowIssues = brokerRowValidationIssues(displayRow);
+              const draftIssues = isEditing && draft ? brokerRowValidationIssues(draft) : [];
               return (
               <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
-              <tr>
-                <td>{row.name}</td>
-                <td>{formatBrokerAddress(row)}</td>
+              <tr className={isEditing ? "broker-row-editing" : undefined}>
                 <td>
-                  <span className={rowIssues.length ? "broker-value-invalid" : ""}>{organizationCodeLabel(row.organization_code)}</span>
+                  {displayRow.name}
+                  {isEditing ? <small className="broker-draft-badge">Unsaved changes</small> : null}
+                </td>
+                <td>{formatBrokerAddress(displayRow)}</td>
+                <td>
+                  <span className={rowIssues.length ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
                   {rowIssues.length ? <small className="broker-validation-message"><AlertTriangle size={12} /> {rowIssues[0]}</small> : null}
                 </td>
-                <td>{row.commission_total || "0"}</td>
-                <td>{row.fee_total || "0"}</td>
-                <td>{formatBrokerPurpose(row) || "-"}</td>
+                <td>{displayRow.commission_total || "0"}</td>
+                <td>{displayRow.fee_total || "0"}</td>
+                <td>{formatBrokerPurpose(displayRow) || "-"}</td>
                 <td>
                   {match?.resolved ? (
                     <span className="broker-match-status broker-match-ready">
@@ -3467,10 +3482,20 @@ function ScheduleABrokerRowsPanel({
                   </div>
                 </td>
               </tr>
-              {editingIndex === index && draft ? (
-                <tr className="broker-edit-row">
+              {isEditing && draft ? (
+                <tr className="broker-edit-row" ref={editorRef}>
                   <td colSpan={8}>
                     <form className="broker-edit-form" onSubmit={submitEdit}>
+                      <div className="broker-edit-toolbar">
+                        <div>
+                          <strong>Editing broker row {index + 1}</strong>
+                          <span>Changes preview above and are saved only when you confirm.</span>
+                        </div>
+                        <div className="broker-edit-actions">
+                          <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); setShowDraftValidation(false); }}>Cancel</button>
+                          <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
+                        </div>
+                      </div>
                       {showDraftValidation && draftIssues.length ? (
                         <div className="broker-edit-validation" role="alert">
                           <strong>Fix this broker row before saving</strong>
@@ -3496,10 +3521,6 @@ function ScheduleABrokerRowsPanel({
                       <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
                       <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
                       <label className="broker-purpose-input">Purpose<input maxLength={70} value={draft.purpose || ""} onChange={(event) => updateDraft("purpose", event.target.value)} /></label>
-                      <div className="broker-edit-actions">
-                        <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); setShowDraftValidation(false); }}>Cancel</button>
-                        <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
-                      </div>
                     </form>
                   </td>
                 </tr>

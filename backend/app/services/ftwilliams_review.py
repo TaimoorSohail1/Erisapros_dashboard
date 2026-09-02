@@ -43,7 +43,6 @@ from app.models import (
 )
 from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
-from app.services.extractor import merge_schedule_a_broker_rows
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import (
@@ -4109,10 +4108,13 @@ class FTWilliamsReviewService:
         normalized: list[ScheduleABrokerRow] = []
         for row in rows or []:
             if isinstance(row, ScheduleABrokerRow):
-                normalized.append(row)
+                normalized.append(row.model_copy(deep=True))
             elif isinstance(row, dict):
                 normalized.append(ScheduleABrokerRow.model_validate(row))
-        return merge_schedule_a_broker_rows(normalized, [])
+        # Extraction already removes parser duplicates. Rows reaching the review
+        # workspace are reviewer-controlled records, so preserve their order and
+        # exact values even when two recipients share the same name/address.
+        return normalized
 
     def _resolve_schedule_a_brokers(
         self,

@@ -275,6 +275,22 @@ assert.match(
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
 assert.match(source, /Save broker row/, "Reviewers must be able to edit a broker row before sending it to FT Williams.");
+assert.match(
+  source,
+  /const displayRow = editingIndex === index && draft \? draft : row;/,
+  "The broker summary row must preview the reviewer's draft values while editing.",
+);
+assert.match(source, /Unsaved changes/, "The broker editor must clearly identify draft values that are not saved yet.");
+assert.match(
+  source,
+  /editorRef\.current\?\.scrollIntoView/,
+  "Opening a broker editor must bring its controls into view.",
+);
+assert.match(
+  styles,
+  /\.broker-edit-toolbar\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
+  "Broker Save and Cancel actions must remain visible inside the scrolling table.",
+);
 assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
 assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
