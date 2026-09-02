@@ -559,5 +559,20 @@ assert.match(
   /\.compact-table-search input\s*\{[^}]*background:\s*transparent;[^}]*height:\s*100%;[^}]*min-height:\s*0;/,
   "The compact field search input must not inherit the full-size search height.",
 );
+assert.match(
+  source,
+  /aria-label="Schedule A broker rows"[\s\S]*?role="region"[\s\S]*?tabIndex=\{0\}/,
+  "The broker-row scroll region must be keyboard accessible.",
+);
+assert.match(
+  styles,
+  /\.schedule-a-broker-table-wrap\s*\{[^}]*max-height:\s*min\(420px, 50vh\);[^}]*overflow:\s*auto;/,
+  "The broker table must use a contained scrolling region instead of growing the page indefinitely.",
+);
+assert.match(
+  styles,
+  /\.schedule-a-broker-table th\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
+  "The broker table header must remain visible while its rows scroll.",
+);
 
 console.log("Guided filing review workflow passed.");

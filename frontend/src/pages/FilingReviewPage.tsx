@@ -2869,7 +2869,12 @@ function ScheduleABrokerRowsPanel({
         <PanelHeading icon={<ListChecks size={16} />} title="Schedule A broker rows" />
         <span>{rows.length} extracted</span>
       </div>
-      <div className="schedule-a-broker-table-wrap">
+      <div
+        aria-label="Schedule A broker rows"
+        className="schedule-a-broker-table-wrap"
+        role="region"
+        tabIndex={0}
+      >
         <table className="schedule-a-broker-table">
           <thead>
             <tr>
