@@ -30,6 +30,22 @@ assert.match(
   /ftwReadyToSend = Boolean\([\s\S]*?!planYearConflictRequired/,
   "FT Williams send readiness must remain locked until the plan-year conflict is resolved.",
 );
+assert.match(
+  source,
+  /const hasPendingFtwUpdate = Boolean\([\s\S]*?update_xml_5500[\s\S]*?update_xml_schedule_a/,
+  "Send readiness must require a real outgoing FT Williams payload.",
+);
+const sendReadinessSource = source.match(/const ftwReadyToSend = Boolean\(([\s\S]*?)\n  \);/)?.[1] || "";
+assert.doesNotMatch(
+  sendReadinessSource,
+  /current_query_success|current_query_complete|form5500SafetyReady|scheduleASafetyReady|scheduleABrokersReady|actionRequiredCount/,
+  "Resolved review warnings and stale current-query flags must not keep a valid approved payload disabled.",
+);
+assert.match(
+  sendReadinessSource,
+  /hasPendingFtwUpdate[\s\S]*?hardValidationBlockerCount === 0/,
+  "Only a missing payload or blocking validation issue should prevent an approved FT Williams update.",
+);
 
 assert.match(
   source,

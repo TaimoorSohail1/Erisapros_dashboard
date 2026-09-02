@@ -339,16 +339,17 @@ export function FilingReviewPage() {
   const showFtwSendAction = !verifiedUpdateComplete && (
     filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown))
   );
+  const hasPendingFtwUpdate = Boolean(
+    ftwReview?.update_xml_5500?.includes("DOL5500Data")
+    || ftwReview?.update_xml_schedule_a?.includes("DOLScheduleAData"),
+  );
   const ftwReadyToSend = Boolean(
     showFtwSendAction &&
     !verifiedUpdateComplete &&
     ftwReview?.configured &&
-    ftwReview.current_query_success &&
-    ftwReview.current_query_complete !== false &&
     ftwReview.ftw_editable !== false &&
-    form5500SafetyReady &&
-    scheduleASafetyReady &&
-    scheduleABrokersReady &&
+    !bringForwardRequired &&
+    hasPendingFtwUpdate &&
     hardValidationBlockerCount === 0 &&
     !planYearConflictRequired,
   );
@@ -385,12 +386,9 @@ export function FilingReviewPage() {
   );
   const sendBlockingIssueCount = [
     !ftwReview?.configured,
-    !ftwReview?.current_query_success,
-    ftwReview?.current_query_complete === false,
     ftwReview?.ftw_editable === false,
-    !form5500SafetyReady,
-    !scheduleASafetyReady,
-    !scheduleABrokersReady,
+    bringForwardRequired,
+    !hasPendingFtwUpdate,
     planYearConflictRequired,
     hardValidationBlockerCount > 0,
   ].filter(Boolean).length;
