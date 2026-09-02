@@ -902,7 +902,14 @@ def merge_schedule_a_broker_rows(
         if not winner.fee_rows and other.fee_rows:
             winner.fee_rows = [item.model_copy(deep=True) for item in other.fee_rows]
         merged[identity] = winner
-    return [merged[identity] for identity in order]
+    output = [merged[identity] for identity in order]
+    for row in output:
+        if not row.organization_code and _row_has_explicit_broker_evidence(row):
+            # FT Williams code 3 represents an insurance agent or broker. Only
+            # derive it when the source itself explicitly labels the row as a
+            # broker; generic service-provider rows remain reviewable.
+            row.organization_code = "3"
+    return output
 
 
 _BROKER_LEGAL_SUFFIX = r"(?:LLC|L\.L\.C\.?|INC(?:ORPORATED)?|CORP(?:ORATION)?|LTD|LLP|LP)"
@@ -941,6 +948,18 @@ def _preferred_broker_address(first: str | None, second: str | None) -> str | No
             bool(re.match(rf"^{_BROKER_LEGAL_SUFFIX}\s*[-,:]", value, flags=re.IGNORECASE)),
             len(value),
         ),
+    )
+
+
+def _row_has_explicit_broker_evidence(row: ScheduleABrokerRow) -> bool:
+    evidence_texts = [
+        row.commission_source_text,
+        row.fee_source_text,
+        *(item.source_text for item in row.evidence),
+    ]
+    return any(
+        re.search(r"\bBROKER(?:AGE)?\b", str(text or ""), flags=re.IGNORECASE)
+        for text in evidence_texts
     )
 
 

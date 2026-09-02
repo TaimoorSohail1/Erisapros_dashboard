@@ -502,7 +502,7 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
                 SourceEvidence(
                     provider="Local layout parser",
                     page=3,
-                    source_text="EMERSON ROGERS LLC 5200 N PALM AVE #114 $30,270.00",
+                    source_text="Broker EMERSON ROGERS LLC 5200 N PALM AVE #114 $30,270.00",
                 )
             ],
         )
@@ -512,6 +512,7 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].name, "EMERSON ROGERS LLC")
         self.assertEqual(merged[0].address_line_1, "5200 N PALM AVE #114")
+        self.assertEqual(merged[0].organization_code, "3")
         self.assertEqual(merged[0].fee_rows[0].purpose, "incentives, education, communication and training")
         self.assertEqual(merged[0].source_page, 3)
         self.assertTrue(merged[0].evidence)
