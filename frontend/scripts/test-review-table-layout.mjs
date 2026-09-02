@@ -279,6 +279,11 @@ assert.match(
 );
 assert.match(
   source,
+  /!verifiedUpdateComplete/,
+  "A fully verified filing must not offer another no-op FT Williams send.",
+);
+assert.match(
+  source,
   /FT Williams accepted the update/,
   "The interface must show vendor acceptance separately from read-back verification.",
 );

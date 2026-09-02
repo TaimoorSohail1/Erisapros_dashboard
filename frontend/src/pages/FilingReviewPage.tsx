@@ -324,6 +324,7 @@ export function FilingReviewPage() {
   const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown));
   const ftwReadyToSend = Boolean(
     showFtwSendAction &&
+    !verifiedUpdateComplete &&
     ftwReview?.configured &&
     ftwReview.current_query_success &&
     ftwReview.current_query_complete !== false &&
