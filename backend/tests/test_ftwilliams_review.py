@@ -5869,6 +5869,91 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual({record["ftw_seq_no"] for record in result["schedule_a_records"]}, {"1"})
         self.assertNotIn("none safely matched", result["error_message"] or "")
 
+    def test_new_schedule_a_selection_rejects_duplicate_existing_identity(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1a. Name of Insurance Company",
+                        normalized_field_name="carrier",
+                        mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                        mapped_label="1a. Name of Insurance Company",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="Existing Carrier",
+                        proposed_value="Existing Carrier",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. Insurance Carrier EIN",
+                        normalized_field_name="carrier_ein",
+                        mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                        mapped_label="1b. Insurance Carrier EIN",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="12-3456789",
+                        proposed_value="12-3456789",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1d. Contract / Policy Number",
+                        normalized_field_name="contract",
+                        mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                        mapped_label="1d. Contract / Policy Number",
+                        form_type=FormType.SCHEDULE_A,
+                        source_document_type=DocumentType.SCHEDULE_A,
+                        priority=FieldPriority.HIGH,
+                        value="DUP-100",
+                        proposed_value="DUP-100",
+                    ),
+                ]
+            )
+        )
+        review = FTWilliamsReview(
+            filing_id=filing.id,
+            configured=True,
+            current_query_sent=True,
+            current_query_success=True,
+            current_query_complete=True,
+            current_year_exists=True,
+            schedule_a_candidates=[
+                {
+                    "ftw_seq_no": "1",
+                    "carrier": "Existing Carrier",
+                    "carrier_ein": "12-3456789",
+                    "contract": "DUP100",
+                    "has_current_data": True,
+                }
+            ],
+            schedule_a_records=[
+                {
+                    "ftw_seq_no": "1",
+                    "carrier": "Existing Carrier",
+                    "carrier_ein": "12-3456789",
+                    "contract": "DUP100",
+                    "query_results": {
+                        "InsCarrierName": "Existing Carrier",
+                        "InsCarrierEIN": "12-3456789",
+                        "InsContractNum": "DUP100",
+                    },
+                }
+            ],
+        )
+        run_async(repo.upsert_ftwilliams_review(review))
+
+        with self.assertRaisesRegex(ValueError, "already matches existing FT Williams Schedule A sequence 1"):
+            run_async(
+                FTWilliamsReviewService(FakeFTWilliamsService()).select_schedule_a_match(
+                    filing.id,
+                    FTWilliamsScheduleAMatchRequest(create_new=True),
+                )
+            )
+
     def test_prepare_review_never_loads_prior_year_when_target_year_has_no_ftw_data(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))

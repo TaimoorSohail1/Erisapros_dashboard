@@ -855,6 +855,13 @@ class FTWilliamsReviewService:
 
         new_schedule_desc = None
         if payload.create_new:
+            duplicate_record = self._matching_existing_schedule_a_for_create(fields, schedule_a_records)
+            if duplicate_record:
+                sequence = str(duplicate_record.get("ftw_seq_no") or "").strip() or "unknown"
+                raise ValueError(
+                    "The uploaded Schedule A already matches existing FT Williams Schedule A "
+                    f"sequence {sequence}. Select that record instead of creating a duplicate."
+                )
             schedule_a_current = {}
             new_schedule_desc = self._schedule_desc_from_payload_or_fields(payload, fields, schedule_a_records)
             schedule_a_match = {
@@ -5160,6 +5167,30 @@ class FTWilliamsReviewService:
             "Cannot safely send Schedule A because the selected record identity changed after refresh "
             f"({', '.join(conflicts)}). Re-select the Schedule A and review the latest FT Williams values."
         )
+
+    def _matching_existing_schedule_a_for_create(
+        self,
+        fields: list[ExtractedField],
+        records: list[dict],
+    ) -> dict | None:
+        """Return an existing record only when contract and carrier identity both agree."""
+        for record in records:
+            current = record.get("query_results") or {}
+            if not isinstance(current, dict) or not current:
+                continue
+            status = FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no=str(record.get("ftw_seq_no") or "").strip() or None,
+                query_results=dict(current),
+            )
+            details = self._schedule_match_details(fields, status)
+            reasons = set(details["reasons"])
+            contract_matches = bool({"Exact contract", "Contract"} & reasons)
+            carrier_matches = bool({"Carrier EIN", "NAIC", "Carrier name", "Carrier name partial"} & reasons)
+            if contract_matches and carrier_matches and not self._schedule_identity_conflicts(fields, status):
+                return record
+        return None
 
     def _sequence_sort_key(self, value: object) -> tuple[int, str]:
         text = str(value or "").strip()

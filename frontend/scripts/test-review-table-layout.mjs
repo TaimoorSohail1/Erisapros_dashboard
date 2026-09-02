@@ -181,7 +181,7 @@ assert.match(
 );
 assert.match(
   source,
-  /label=\{scheduleMatchSelected \? "Best match selected" : scheduleDecisionRequired \? "Needs your decision"/,
+  /label=\{scheduleAIsNew \? "New Schedule A prepared" : scheduleMatchSelected \? "Best match selected" : scheduleDecisionRequired \? "Needs your decision"/,
   "The FTW Loaded dialog must repeat the Schedule A match decision clearly.",
 );
 assert.match(
@@ -193,6 +193,26 @@ assert.match(
   source,
   /Selected Schedule A[\s\S]*?Match score \{selectedScheduleScore\}/,
   "The FTW Loaded dialog must show the selected Schedule A and its match score.",
+);
+assert.match(
+  source,
+  /Create new Schedule A[\s\S]*?Existing Schedule A records stay unchanged/,
+  "The primary FTW Loaded workflow must offer a safe new Schedule A path.",
+);
+assert.match(
+  source,
+  /const canChooseScheduleA = Boolean\([\s\S]*?review\?\.current_query_success[\s\S]*?!review\?\.bring_forward_required/,
+  "The create-new path must remain available when FT Williams has no existing Schedule A candidates.",
+);
+assert.match(
+  source,
+  /Use as new Schedule A/,
+  "Creating a Schedule A must require an explicit confirmation after identity review.",
+);
+assert.match(
+  source,
+  /create_new:\s*true/,
+  "The new Schedule A choice must be sent through the existing reviewed match API.",
 );
 assert.match(
   source,

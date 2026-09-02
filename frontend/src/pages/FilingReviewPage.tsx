@@ -1646,7 +1646,7 @@ function WorkflowDetailDialog({
   onOpenBringForward: () => void;
   onQuery: () => void;
   onViewAuditPDF: () => void;
-  onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string }) => void;
+  onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string; create_new?: boolean; schedule_desc?: string }) => void;
   onShowTab: (tab: ReviewTab) => void;
   scheduleCandidates: Array<Record<string, unknown>>;
   step: WorkflowStepKey;
@@ -1670,17 +1670,31 @@ function WorkflowDetailDialog({
   const confirmed = review?.update_confirmed_count || 0;
   const remaining = review?.update_remaining_count || 0;
   const packageCount = filing.package_document_count || 1;
+  const scheduleAIsNew = Boolean(review?.schedule_a_match?.create_new);
+  const newScheduleIdentity = scheduleACreationIdentity(review);
+  const newScheduleIdentityReady = Boolean(
+    newScheduleIdentity.carrier
+    && newScheduleIdentity.carrierEin
+    && newScheduleIdentity.naic
+    && newScheduleIdentity.contract,
+  );
+  const preservedScheduleCount = review?.schedule_a_records?.length || 0;
   const currentScheduleSequence = textValue(review?.schedule_a_match?.ftw_seq_no);
+  const [showCreateNewConfirmation, setShowCreateNewConfirmation] = useState(false);
   const [selectedScheduleIndex, setSelectedScheduleIndex] = useState(() => {
     const currentIndex = scheduleCandidates.findIndex((candidate) => textValue(candidate.ftw_seq_no) === currentScheduleSequence);
     return currentIndex >= 0 ? String(currentIndex) : "";
   });
   const selectedSchedule = selectedScheduleIndex === "" ? null : scheduleCandidates[Number(selectedScheduleIndex)] || null;
   const scheduleMatchSelected = Boolean(review?.schedule_a_match);
+  const canChooseScheduleA = Boolean(
+    review?.current_query_success
+    && !review?.bring_forward_required,
+  ) || scheduleCandidates.length > 0;
   const scheduleDecisionRequired = Boolean(
     (review?.current_query_success || ftwCurrentLoaded)
     && !scheduleMatchSelected
-    && (scheduleCandidates.length || review?.bring_forward_required),
+    && (canChooseScheduleA || review?.bring_forward_required),
   );
   const matchSource = textValue(review?.schedule_a_match?.source).toUpperCase();
   const recommendedSequence = scheduleMatchSelected && !["MANUAL", "NEW_SCHEDULE_A"].includes(matchSource)
@@ -1691,7 +1705,9 @@ function WorkflowDetailDialog({
   const selectedScheduleReasons = Array.isArray(rawMatchReasons)
     ? rawMatchReasons.map(textValue).filter(Boolean).join(", ")
     : "";
-  const selectedScheduleLabel = selectedSchedule
+  const selectedScheduleLabel = scheduleAIsNew
+    ? ["New Schedule A", newScheduleIdentity.carrier, newScheduleIdentity.contract && `Contract ${newScheduleIdentity.contract}`].filter(Boolean).join(" · ")
+    : selectedSchedule
     ? textValue(selectedSchedule.carrier) || textValue(selectedSchedule.description) || `FTW sequence ${textValue(selectedSchedule.ftw_seq_no)}`
     : currentScheduleSequence
       ? formatScheduleAMatch(review?.schedule_a_match)
@@ -1706,6 +1722,7 @@ function WorkflowDetailDialog({
   };
 
   function handleScheduleChange(index: string) {
+    setShowCreateNewConfirmation(false);
     setSelectedScheduleIndex(index);
     if (index === "") return;
     const candidate = scheduleCandidates[Number(index)];
@@ -1715,6 +1732,18 @@ function WorkflowDetailDialog({
       carrier: textValue(candidate.carrier) || undefined,
       carrier_ein: textValue(candidate.carrier_ein) || undefined,
       contract: textValue(candidate.contract) || undefined,
+    });
+  }
+
+  function confirmCreateNewScheduleA() {
+    if (!newScheduleIdentityReady || busy) return;
+    setShowCreateNewConfirmation(false);
+    setSelectedScheduleIndex("");
+    onSelectSchedule({
+      carrier: newScheduleIdentity.carrier,
+      carrier_ein: newScheduleIdentity.carrierEin,
+      contract: newScheduleIdentity.contract,
+      create_new: true,
     });
   }
 
@@ -1758,15 +1787,15 @@ function WorkflowDetailDialog({
             <>
               <WorkflowStatus
                 tone={scheduleDecisionRequired || !ftwCurrentLoaded ? "warning" : "success"}
-                label={scheduleMatchSelected ? "Best match selected" : scheduleDecisionRequired ? "Needs your decision" : ftwCurrentLoaded ? "FTW current data loaded" : "Processing"}
+                label={scheduleAIsNew ? "New Schedule A prepared" : scheduleMatchSelected ? "Best match selected" : scheduleDecisionRequired ? "Needs your decision" : ftwCurrentLoaded ? "FTW current data loaded" : "Processing"}
               />
               {scheduleMatchSelected ? (
                 <div className="workflow-schedule-match-summary">
-                  <span><CheckCircle2 aria-hidden="true" size={14} /> Selected Schedule A</span>
+                  <span><CheckCircle2 aria-hidden="true" size={14} /> {scheduleAIsNew ? "New Schedule A" : "Selected Schedule A"}</span>
                   <strong>{selectedScheduleLabel}</strong>
                   <small>
-                    <span>Match score {selectedScheduleScore}</span>
-                    {selectedScheduleReasons ? <span>Matched by {selectedScheduleReasons}</span> : null}
+                    {scheduleAIsNew ? <span>{preservedScheduleCount} existing Schedule A record{preservedScheduleCount === 1 ? "" : "s"} will stay unchanged</span> : <span>Match score {selectedScheduleScore}</span>}
+                    {!scheduleAIsNew && selectedScheduleReasons ? <span>Matched by {selectedScheduleReasons}</span> : null}
                   </small>
                 </div>
               ) : scheduleDecisionRequired && review?.bring_forward_required ? (
@@ -1778,13 +1807,26 @@ function WorkflowDetailDialog({
                   FT Williams returned {scheduleCandidates.length} possible Schedule A {scheduleCandidates.length === 1 ? "record" : "records"}, but none passed the safe identity match. Choose the correct record to continue.
                 </p>
               ) : null}
-              {scheduleCandidates.length ? (
+              {canChooseScheduleA ? (
                 <WorkflowScheduleSelect
                   busy={busy}
                   candidates={scheduleCandidates}
+                  createNewSelected={scheduleAIsNew}
+                  newScheduleLabel={newScheduleIdentity.carrier || "Uploaded Schedule A"}
                   recommendedSequence={recommendedSequence}
                   selectedIndex={selectedScheduleIndex}
                   onChange={handleScheduleChange}
+                  onCreateNew={() => setShowCreateNewConfirmation(true)}
+                />
+              ) : null}
+              {showCreateNewConfirmation ? (
+                <NewScheduleAConfirmation
+                  busy={busy}
+                  identity={newScheduleIdentity}
+                  identityReady={newScheduleIdentityReady}
+                  onCancel={() => setShowCreateNewConfirmation(false)}
+                  onConfirm={confirmCreateNewScheduleA}
+                  preservedScheduleCount={preservedScheduleCount}
                 />
               ) : null}
               <p className="workflow-explanation">ERISAPros fetches current FT Williams values so extracted and existing data can be compared.</p>
@@ -1804,8 +1846,27 @@ function WorkflowDetailDialog({
           {step === "REVIEW" ? (
             <>
               <WorkflowStatus tone={actionRequiredCount ? "warning" : "success"} label={actionRequiredCount ? "Needs review" : "Review complete"} />
-              {scheduleCandidates.length ? (
-                <WorkflowScheduleSelect busy={busy} candidates={scheduleCandidates} recommendedSequence={recommendedSequence} selectedIndex={selectedScheduleIndex} onChange={handleScheduleChange} />
+              {canChooseScheduleA ? (
+                <WorkflowScheduleSelect
+                  busy={busy}
+                  candidates={scheduleCandidates}
+                  createNewSelected={scheduleAIsNew}
+                  newScheduleLabel={newScheduleIdentity.carrier || "Uploaded Schedule A"}
+                  recommendedSequence={recommendedSequence}
+                  selectedIndex={selectedScheduleIndex}
+                  onChange={handleScheduleChange}
+                  onCreateNew={() => setShowCreateNewConfirmation(true)}
+                />
+              ) : null}
+              {showCreateNewConfirmation ? (
+                <NewScheduleAConfirmation
+                  busy={busy}
+                  identity={newScheduleIdentity}
+                  identityReady={newScheduleIdentityReady}
+                  onCancel={() => setShowCreateNewConfirmation(false)}
+                  onConfirm={confirmCreateNewScheduleA}
+                  preservedScheduleCount={preservedScheduleCount}
+                />
               ) : null}
               <WorkflowReviewCenter
                 actionRequiredCount={actionRequiredCount}
@@ -1928,20 +1989,28 @@ function WorkflowActivity({ items }: { items: string[] }) {
 function WorkflowScheduleSelect({
   busy,
   candidates,
+  createNewSelected,
+  newScheduleLabel,
   onChange,
+  onCreateNew,
   recommendedSequence,
   selectedIndex,
 }: {
   busy: boolean;
   candidates: Array<Record<string, unknown>>;
+  createNewSelected: boolean;
+  newScheduleLabel: string;
   onChange: (index: string) => void;
+  onCreateNew: () => void;
   recommendedSequence: string;
   selectedIndex: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   const selectedCandidate = selectedIndex === "" ? null : candidates[Number(selectedIndex)] || null;
-  const selectedLabel = selectedCandidate
+  const selectedLabel = createNewSelected
+    ? `New Schedule A · ${newScheduleLabel}`
+    : selectedCandidate
     ? [
       textValue(selectedCandidate.carrier) || textValue(selectedCandidate.description) || "Schedule A",
       textValue(selectedCandidate.contract) && `Contract ${textValue(selectedCandidate.contract)}`,
@@ -2024,9 +2093,27 @@ function WorkflowScheduleSelect({
               </button>
             );
           })}
+          <button
+            aria-selected={createNewSelected}
+            className={`workflow-schedule-create-option ${createNewSelected ? "selected" : ""}`}
+            disabled={busy}
+            onClick={() => {
+              onCreateNew();
+              setOpen(false);
+            }}
+            role="option"
+            type="button"
+          >
+            <span className="workflow-schedule-create-icon"><Plus aria-hidden="true" size={15} /></span>
+            <span className="workflow-schedule-candidate-copy">
+              <strong>Create new Schedule A</strong>
+              <small>Use the reviewed extracted values as a separate FT Williams record.</small>
+              <span className="workflow-schedule-create-safety"><ShieldCheck aria-hidden="true" size={11} /> Existing schedules stay unchanged</span>
+            </span>
+          </button>
         </div>
       ) : null}
-      <small>{candidates.length} Schedule A filing{candidates.length === 1 ? "" : "s"} available</small>
+      <small>{candidates.length} existing Schedule A filing{candidates.length === 1 ? "" : "s"} available · create new when none matches</small>
     </div>
   );
 }
@@ -2912,6 +2999,47 @@ function FTWilliamsSendConfirmationModal({
   );
 }
 
+function NewScheduleAConfirmation({
+  busy,
+  identity,
+  identityReady,
+  onCancel,
+  onConfirm,
+  preservedScheduleCount,
+}: {
+  busy: boolean;
+  identity: { carrier: string; carrierEin: string; naic: string; contract: string };
+  identityReady: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  preservedScheduleCount: number;
+}) {
+  return (
+    <section className="workflow-new-schedule-confirmation" aria-label="Confirm new Schedule A">
+      <header>
+        <span><Plus aria-hidden="true" size={17} /></span>
+        <div><small>New FT Williams record</small><strong>Create new Schedule A</strong></div>
+      </header>
+      <p>No existing record will be selected or overwritten. The Schedule A will be created only when the approved update is sent.</p>
+      <div className="workflow-new-schedule-identity">
+        <span><small>Carrier</small><strong>{identity.carrier || "Required"}</strong></span>
+        <span><small>Carrier EIN</small><strong>{identity.carrierEin || "Required"}</strong></span>
+        <span><small>NAIC</small><strong>{identity.naic || "Required"}</strong></span>
+        <span><small>Contract</small><strong>{identity.contract || "Required"}</strong></span>
+      </div>
+      <div className="workflow-new-schedule-preservation">
+        <ShieldCheck aria-hidden="true" size={17} />
+        <span><strong>Existing Schedule A records stay unchanged</strong><small>{preservedScheduleCount} existing record{preservedScheduleCount === 1 ? "" : "s"} will be preserved and verified after sending.</small></span>
+      </div>
+      {!identityReady ? <p className="workflow-new-schedule-error"><AlertTriangle size={14} /> Complete the carrier, EIN, NAIC, and contract fields before creating a new Schedule A.</p> : null}
+      <div className="workflow-dialog-actions">
+        <button className="button secondary" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+        <button className="button" type="button" disabled={busy || !identityReady} onClick={onConfirm}><Plus size={15} /> Use as new Schedule A</button>
+      </div>
+    </section>
+  );
+}
+
 function ApproveConfirmationModal({
   blockers,
   hasBlockers,
@@ -3767,6 +3895,20 @@ function formatScheduleAMatch(match?: Record<string, unknown> | null) {
   const desc = typeof match.schedule_desc === "string" ? match.schedule_desc : "";
   const parts = [isNew ? "New Schedule A" : seq ? `Seq ${seq}` : "", desc, carrier, contract ? `Contract ${contract}` : ""].filter(Boolean);
   return parts.length ? parts.join(" / ") : "Matched";
+}
+
+function scheduleACreationIdentity(review: FTWilliamsReview | null) {
+  const byRule = new Map(
+    (review?.fields || [])
+      .filter((field) => field.rule_key)
+      .map((field) => [field.rule_key, field.proposed_value || field.extracted_value || ""]),
+  );
+  return {
+    carrier: byRule.get("schedule_a_part_i_1a_name_of_insurance_company") || "",
+    carrierEin: byRule.get("schedule_a_part_i_1b_insurance_carrier_ein") || "",
+    naic: byRule.get("schedule_a_part_i_1c_naic_code") || "",
+    contract: byRule.get("schedule_a_part_i_1d_contract_policy_number") || "",
+  };
 }
 
 function formatFtwLookupStatus(status: string) {
