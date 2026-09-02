@@ -10,6 +10,7 @@ from pymongo import ReturnDocument, UpdateOne
 from pymongo.errors import PyMongoError
 from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 from app.config import get_settings
 from app.models import (
     AuditLog,
@@ -118,6 +119,19 @@ def to_mongo(model):
     data = model.model_dump(mode="json", by_alias=False)
     data.pop("id", None)
     return data
+
+
+def _mongo_update_value(value):
+    """Convert nested API models into values the BSON encoder accepts."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=False)
+    if isinstance(value, list):
+        return [_mongo_update_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_mongo_update_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _mongo_update_value(item) for key, item in value.items()}
+    return value
 
 
 def from_mongo(data: dict, model):
@@ -383,7 +397,7 @@ class MongoRepository(Repository):
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         if not ObjectId.is_valid(filing_id):
             return None
-        values = dict(values)
+        values = {key: _mongo_update_value(value) for key, value in values.items()}
         if "proposed_xml" in values or "package_documents" in values:
             values.update(dashboard_identity_values(values))
         values["updated_at"] = datetime.utcnow()

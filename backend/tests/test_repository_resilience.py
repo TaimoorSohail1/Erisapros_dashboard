@@ -9,10 +9,29 @@ from pymongo.errors import NetworkTimeout
 from pymongo.read_preferences import ReadPreference
 
 from app import repositories
+from app.models import ScheduleABrokerRow
 from app.repositories import MongoRepository, dashboard_identity_values, retry_repository_read
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_update_filing_serializes_nested_pydantic_models_for_mongo(self):
+        async def scenario():
+            filing_id = str(ObjectId())
+            collection = SimpleNamespace(find_one_and_update=AsyncMock(return_value=None))
+            repository = MongoRepository.__new__(MongoRepository)
+            repository.db = SimpleNamespace(filings=collection)
+
+            await repository.update_filing(
+                filing_id,
+                {"schedule_a_broker_rows": [ScheduleABrokerRow(name="EOI SERVICE COMPANY INC", organization_code="3")]},
+            )
+            return collection.find_one_and_update.await_args.args[1]["$set"]
+
+        values = asyncio.run(scenario())
+
+        self.assertIsInstance(values["schedule_a_broker_rows"][0], dict)
+        self.assertEqual(values["schedule_a_broker_rows"][0]["organization_code"], "3")
+
     def test_dashboard_identity_is_denormalized_from_xml_and_package_metadata(self):
         values = dashboard_identity_values(
             {
