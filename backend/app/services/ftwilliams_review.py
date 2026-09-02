@@ -2569,6 +2569,32 @@ class FTWilliamsReviewService:
                 recovery_responses=recovery_responses,
             )
 
+        mixed_schedule_response = next(
+            (
+                response
+                for response in responses
+                if response.operation == "update_schedule_a"
+                and self._update_response_is_mixed(response)
+            ),
+            None,
+        )
+        if mixed_schedule_response is not None:
+            vendor_error = self._status_error(mixed_schedule_response.statuses)
+            error_message = "FT Williams partially accepted the Schedule A replacement set" + (
+                f": {vendor_error}" if vendor_error else "."
+            )
+            if schedule_a_snapshot_xml:
+                schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
+                recovery_responses.extend(schedule_a_restore.get("responses") or [])
+                if schedule_a_restore["success"]:
+                    error_message += " The original Schedule A records were automatically restored and verified."
+                else:
+                    error_message += (
+                        " Automatic restoration could not be verified; manual FT Williams recovery is required."
+                    )
+            else:
+                error_message += " No complete pre-update snapshot was available; manual FT Williams recovery is required."
+
         if ftw_accepted:
             clear_ftw_current_snapshot_cache()
             verification = await self._verify_update_readback(review)
@@ -2588,11 +2614,10 @@ class FTWilliamsReviewService:
                     "FT Williams accepted the update, but read-back verification did not match the sent values"
                     f" ({mismatch_fields or 'updated fields'})."
                 )
-                schedule_a_verification_failed = any(
-                    str(item.get("form") or "") == "DOLScheduleAData"
-                    for item in verification_mismatches
+                schedule_a_corruption_confirmed = self._schedule_a_verification_confirms_corruption(
+                    verification_mismatches
                 )
-                if schedule_a_verification_failed and schedule_a_snapshot_xml:
+                if schedule_a_corruption_confirmed and schedule_a_snapshot_xml:
                     schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
                     recovery_responses.extend(schedule_a_restore.get("responses") or [])
                     if schedule_a_restore["success"]:
@@ -2601,6 +2626,13 @@ class FTWilliamsReviewService:
                         error_message += (
                             " Automatic restoration could not be verified; manual FT Williams recovery is required."
                         )
+                elif any(
+                    str(item.get("form") or "") == "DOLScheduleAData"
+                    for item in verification_mismatches
+                ):
+                    error_message += (
+                        " The Schedule A record set is still present, so no destructive full-record rollback was attempted."
+                    )
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
@@ -2873,6 +2905,16 @@ class FTWilliamsReviewService:
         return not raw_response or parse_failed
 
     @staticmethod
+    def _update_response_is_mixed(response) -> bool:
+        """True when FT Williams accepted some records and rejected others."""
+        status_codes = {
+            str(status.error_code or "").strip()
+            for status in response.statuses or []
+            if str(status.error_code or "").strip()
+        }
+        return "0" in status_codes and any(code != "0" for code in status_codes)
+
+    @staticmethod
     def _comparison_field_key(field: FTWilliamsComparisonField) -> str:
         return str(
             field.field_id
@@ -2956,6 +2998,25 @@ class FTWilliamsReviewService:
             "response_xml": "\n\n".join(all_response_xmls) or None,
         }
 
+    @staticmethod
+    def _schedule_a_verification_confirms_corruption(mismatches: list[dict]) -> bool:
+        """Restore only when read-back proves the replacement set was damaged.
+
+        A rejected or normalized field is not evidence that a Schedule A was
+        deleted. Replacing the full set again in that situation creates more
+        risk. Missing schedules and changed broker-row counts are structural
+        failures and are safe reasons to restore the pre-send snapshot.
+        """
+        for mismatch in mismatches:
+            if str(mismatch.get("form") or "") != "DOLScheduleAData":
+                continue
+            if str(mismatch.get("category") or "").upper() == "STRUCTURE":
+                return True
+            tag = str(mismatch.get("tag") or "")
+            if tag in {"DOLScheduleAData", "DOLSubPartData/Broker"}:
+                return True
+        return False
+
     async def _verify_update_readback_once(self, review: FTWilliamsReview) -> dict:
         identity = self._current_query_identity_from_review(review)
         request_xmls: list[str] = []
@@ -3012,6 +3073,7 @@ class FTWilliamsReviewService:
                         {
                             "form": "DOLScheduleAData",
                             "tag": "DOLScheduleAData",
+                            "category": "STRUCTURE",
                             "expected": document.get("InsContractNum") or document.get("InsCarrierName") or "Schedule A",
                             "reason": schedule_error or "The sent Schedule A record could not be found during read-back.",
                         }
@@ -3261,6 +3323,7 @@ class FTWilliamsReviewService:
                     {
                         "form": form_type.value,
                         "tag": "DOLSubPartData/Broker",
+                        "category": "STRUCTURE",
                         "expected": len(expected_brokers),
                         "actual": len(actual_brokers),
                         "reason": "FT Williams returned a different broker row count after the update.",
@@ -4926,7 +4989,48 @@ class FTWilliamsReviewService:
         selected_seq = str(review.schedule_a_match.get("ftw_seq_no") or "").strip()
         if selected_seq not in record_seqs:
             return f"Cannot safely send Schedule A because selected FT Williams Schedule A sequence {selected_seq} was not fetched."
+        selected_record = next(
+            (
+                record
+                for record in review.schedule_a_records or []
+                if str(record.get("ftw_seq_no") or "").strip() == selected_seq
+            ),
+            None,
+        )
+        identity_error = self._schedule_a_match_identity_error(
+            review.schedule_a_match,
+            selected_record or {},
+        )
+        if identity_error:
+            return identity_error
         return None
+
+    def _schedule_a_match_identity_error(self, selected: dict, record: dict) -> str | None:
+        current = record.get("query_results") or {}
+        comparisons = [
+            (
+                "carrier name",
+                normalize_compare_value(selected.get("carrier")),
+                normalize_compare_value(record.get("carrier") or current.get("InsCarrierName") or current.get("INS_CARRIER_NAME")),
+            ),
+            (
+                "carrier EIN",
+                self._normalize_ein_digits(selected.get("carrier_ein")),
+                self._normalize_ein_digits(record.get("carrier_ein") or current.get("InsCarrierEIN") or current.get("INS_CARRIER_EIN")),
+            ),
+            (
+                "policy number",
+                self._contract_text(selected.get("contract")),
+                self._contract_text(record.get("contract") or current.get("InsContractNum") or current.get("INS_CONTRACT_NUM")),
+            ),
+        ]
+        conflicts = [label for label, expected, actual in comparisons if expected and actual and expected != actual]
+        if not conflicts:
+            return None
+        return (
+            "Cannot safely send Schedule A because the selected record identity changed after refresh "
+            f"({', '.join(conflicts)}). Re-select the Schedule A and review the latest FT Williams values."
+        )
 
     def _sequence_sort_key(self, value: object) -> tuple[int, str]:
         text = str(value or "").strip()

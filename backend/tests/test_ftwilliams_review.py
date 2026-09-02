@@ -2371,6 +2371,36 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 )
             )
 
+    def test_reviewer_cannot_save_out_of_range_broker_organization_code(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.update_filing(
+                filing.id,
+                {
+                    "schedule_a_broker_rows": [
+                        ScheduleABrokerRow(name="Example Broker", organization_code="3")
+                    ]
+                },
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Broker row 1 - Organization code: expected an organization code from 0 to 9.*12",
+        ):
+            run_async(
+                FTWilliamsReviewService().update_schedule_a_broker_rows(
+                    filing.id,
+                    FTWilliamsScheduleABrokerRowsRequest(
+                        rows=[ScheduleABrokerRow(name="Example Broker", organization_code="12")]
+                    ),
+                )
+            )
+
+        stored = run_async(repo.get_filing(filing.id))
+        self.assertEqual(stored.schedule_a_broker_rows[0].organization_code, "3")
+
     def test_prepare_review_excludes_broker_name_when_it_contains_address_text(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
@@ -4364,6 +4394,267 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(result.schedule_a_restore_attempted)
         self.assertTrue(result.schedule_a_restore_success)
         self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertIn("restored", (result.error_message or "").lower())
+
+    def test_schedule_a_field_rejection_does_not_trigger_destructive_full_restore(self):
+        class RecordingFTWilliamsService:
+            def __init__(self):
+                self.sent = []
+
+            @staticmethod
+            def mask_key_id(value):
+                return value
+
+            async def send_xml(self, operation, request_xml):
+                self.sent.append((operation, request_xml))
+                return FTWilliamsQueryResponse(
+                    operation=operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    http_status=200,
+                    success=True,
+                    raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                    statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="0")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        changed_field = FTWilliamsComparisonField(
+            field_id="field-1",
+            label="1e. Persons Covered",
+            form_type=FormType.SCHEDULE_A,
+            ftw_tag="InsPrsnCoveredEoyCnt",
+            current_value="10",
+            proposed_value="12",
+            changed=True,
+            update_included=True,
+        )
+        review = FTWilliamsReview(
+            filing_id=filing.id,
+            status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+            configured=True,
+            current_query_sent=True,
+            current_query_success=True,
+            current_query_complete=True,
+            current_year_exists=True,
+            ftw_editable=True,
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_match={"ftw_seq_no": "1", "carrier": "Target Carrier", "contract": "TARGET-1"},
+            schedule_a_candidates=[{"ftw_seq_no": "1"}],
+            schedule_a_records=[{
+                "ftw_seq_no": "1",
+                "carrier": "Target Carrier",
+                "contract": "TARGET-1",
+                "query_results": {
+                    "ScheduleDesc": "TARGET",
+                    "InsCarrierName": "Target Carrier",
+                    "InsContractNum": "TARGET-1",
+                    "InsPrsnCoveredEoyCnt": "10",
+                },
+            }],
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+            schedule_a_contract_type_confirmed=True,
+            fields=[changed_field],
+            update_xml_schedule_a="""<?xml version="1.0" encoding="utf-8"?>
+<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><ScheduleDesc>TARGET</ScheduleDesc><InsCarrierName>Target Carrier</InsCarrierName><InsContractNum>TARGET-1</InsContractNum><InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt></DOLScheduleAData></DataBatch></ftwLink>""",
+        )
+        reconciled = review.model_copy(deep=True)
+        run_async(repo.upsert_ftwilliams_review(review))
+        verification = {
+            "success": False,
+            "mismatches": [{
+                "form": "DOLScheduleAData",
+                "tag": "InsPrsnCoveredEoyCnt",
+                "expected": "12",
+                "actual": "10",
+                "reason": "FT Williams returned a different value after the update.",
+            }],
+            "request_xml": "<query />",
+            "response_xml": "<unchanged-field />",
+        }
+        settings = SimpleNamespace(
+            ftwlink_schedule_a_updates_enabled=True,
+            ftw_schema_validation_enabled=False,
+            ftw_schema_enforcement_enabled=False,
+            ftw_auto_edit_checks_enabled=False,
+            ftw_pdf_audit_enabled=False,
+        )
+        fake_ftw = RecordingFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+
+        with (
+            patch.object(service, "prepare_review", AsyncMock(side_effect=[review, reconciled])),
+            patch.object(service, "_verify_update_readback", AsyncMock(return_value=verification)),
+            patch("app.services.ftwilliams_review.get_settings", return_value=settings),
+        ):
+            result = run_async(service.approve_and_update(filing.id, send_to_ftw=True))
+
+        self.assertEqual([operation for operation, _ in fake_ftw.sent], ["update_schedule_a"])
+        self.assertFalse(result.schedule_a_restore_attempted)
+        self.assertFalse(result.update_verification_success)
+        self.assertIn("accepted", (result.error_message or "").lower())
+
+    def test_safe_send_rejects_schedule_match_identity_conflict(self):
+        review = FTWilliamsReview(
+            filing_id="filing-identity-conflict",
+            schedule_a_match={
+                "ftw_seq_no": "2",
+                "carrier": "Correct Carrier",
+                "carrier_ein": "12-3456789",
+                "contract": "POLICY-123",
+            },
+            schedule_a_candidates=[{"ftw_seq_no": "2"}],
+            schedule_a_records=[{
+                "ftw_seq_no": "2",
+                "carrier": "Correct Carrier",
+                "carrier_ein": "12-3456789",
+                "contract": "DIFFERENT-POLICY",
+                "query_results": {
+                    "InsCarrierName": "Correct Carrier",
+                    "InsCarrierEIN": "12-3456789",
+                    "InsContractNum": "DIFFERENT-POLICY",
+                },
+            }],
+            update_xml_schedule_a="""<ftwLink><DataBatch><DOLScheduleAData><TransactionType>2</TransactionType><InsCarrierName>Correct Carrier</InsCarrierName><InsCarrierEIN>12-3456789</InsCarrierEIN><InsContractNum>DIFFERENT-POLICY</InsContractNum></DOLScheduleAData></DataBatch></ftwLink>""",
+        )
+
+        error = FTWilliamsReviewService(FakeFTWilliamsService())._missing_schedule_a_records_for_safe_send(review)
+
+        self.assertIsNotNone(error)
+        self.assertIn("identity changed", error.lower())
+        self.assertIn("policy number", error.lower())
+
+    def test_mixed_schedule_a_response_restores_complete_snapshot(self):
+        class MixedResponseFTWilliamsService:
+            def __init__(self):
+                self.sent = []
+
+            @staticmethod
+            def mask_key_id(value):
+                return value
+
+            async def send_xml(self, operation, request_xml):
+                self.sent.append((operation, request_xml))
+                if len(self.sent) == 1:
+                    return FTWilliamsQueryResponse(
+                        operation=operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        http_status=200,
+                        success=False,
+                        raw_response="<ftwLinkResponse><Status><ErrorCode>62</ErrorCode><ErrorDesc>Code1:12</ErrorDesc></Status><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                        statuses=[
+                            FTWilliamsStatusItem(type="DOLScheduleAData", error_code="62", error_desc="Code1:12"),
+                            FTWilliamsStatusItem(type="DOLScheduleAData", error_code="0"),
+                        ],
+                    )
+                return FTWilliamsQueryResponse(
+                    operation=operation,
+                    configured=True,
+                    sent=True,
+                    request_xml=request_xml,
+                    http_status=200,
+                    success=True,
+                    raw_response="<ftwLinkResponse><Status><ErrorCode>0</ErrorCode></Status></ftwLinkResponse>",
+                    statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="0")],
+                )
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        changed_field = FTWilliamsComparisonField(
+            field_id="field-1",
+            label="1e. Persons Covered",
+            form_type=FormType.SCHEDULE_A,
+            ftw_tag="InsPrsnCoveredEoyCnt",
+            current_value="10",
+            proposed_value="12",
+            changed=True,
+            update_included=True,
+        )
+        baseline_records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "ScheduleDesc": "TARGET",
+                    "InsCarrierName": "Target Carrier",
+                    "InsContractNum": "TARGET-1",
+                    "InsPrsnCoveredEoyCnt": "10",
+                },
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {
+                    "ScheduleDesc": "MANUAL",
+                    "InsCarrierName": "Manually Created Carrier",
+                    "InsContractNum": "MANUAL-2",
+                    "InsPrsnCoveredEoyCnt": "25",
+                },
+            },
+        ]
+        update_xml = """<?xml version="1.0" encoding="utf-8"?>
+<ftwLink><DataBatch>
+<DOLScheduleAData><TransactionType>2</TransactionType><ScheduleDesc>TARGET</ScheduleDesc><InsCarrierName>Target Carrier</InsCarrierName><InsContractNum>TARGET-1</InsContractNum><InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt></DOLScheduleAData>
+<DOLScheduleAData><TransactionType>2</TransactionType><ScheduleDesc>MANUAL</ScheduleDesc><InsCarrierName>Manually Created Carrier</InsCarrierName><InsContractNum>MANUAL-2</InsContractNum><InsPrsnCoveredEoyCnt>25</InsPrsnCoveredEoyCnt></DOLScheduleAData>
+</DataBatch></ftwLink>"""
+        review = FTWilliamsReview(
+            filing_id=filing.id,
+            status=FTWilliamsReviewStatus.CURRENT_QUERIED,
+            configured=True,
+            current_query_sent=True,
+            current_query_success=True,
+            current_query_complete=True,
+            current_year_exists=True,
+            ftw_editable=True,
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_match={"ftw_seq_no": "1"},
+            schedule_a_candidates=[{"ftw_seq_no": "1"}, {"ftw_seq_no": "2"}],
+            schedule_a_records=baseline_records,
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+            schedule_a_contract_type_confirmed=True,
+            fields=[changed_field],
+            update_xml_schedule_a=update_xml,
+        )
+        reconciled = review.model_copy(deep=True)
+        run_async(repo.upsert_ftwilliams_review(review))
+
+        fake_ftw = MixedResponseFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+        restored_verification = {
+            "success": True,
+            "mismatches": [],
+            "request_xml": "<restore-query />",
+            "response_xml": "<restored />",
+        }
+        settings = SimpleNamespace(
+            ftwlink_schedule_a_updates_enabled=True,
+            ftw_schema_validation_enabled=False,
+            ftw_schema_enforcement_enabled=False,
+            ftw_auto_edit_checks_enabled=False,
+            ftw_pdf_audit_enabled=False,
+        )
+
+        with (
+            patch.object(service, "prepare_review", AsyncMock(side_effect=[review, reconciled])),
+            patch.object(service, "_verify_update_readback", AsyncMock(return_value=restored_verification)),
+            patch("app.services.ftwilliams_review.get_settings", return_value=settings),
+        ):
+            result = run_async(service.approve_and_update(filing.id, send_to_ftw=True))
+
+        self.assertEqual([operation for operation, _ in fake_ftw.sent], ["update_schedule_a", "update_schedule_a"])
+        restore_xml = fake_ftw.sent[1][1]
+        self.assertEqual(restore_xml.count("<DOLScheduleAData>"), 2)
+        self.assertIn("<InsPrsnCoveredEoyCnt>10</InsPrsnCoveredEoyCnt>", restore_xml)
+        self.assertNotIn("<InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt>", restore_xml)
+        self.assertTrue(result.schedule_a_restore_attempted)
+        self.assertTrue(result.schedule_a_restore_success)
+        self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+        self.assertIn("partially accepted", (result.error_message or "").lower())
         self.assertIn("restored", (result.error_message or "").lower())
 
     def test_live_updates_for_the_same_ft_plan_are_serialized(self):

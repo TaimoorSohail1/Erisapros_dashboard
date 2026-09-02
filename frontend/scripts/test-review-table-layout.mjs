@@ -242,6 +242,61 @@ assert.match(source, /Save broker row/, "Reviewers must be able to edit a broker
 assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
 assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
+assert.match(
+  source,
+  /const FTW_ORGANIZATION_CODE_OPTIONS[\s\S]*?value: "3", label: "Insurance agent or broker"/,
+  "Broker organization codes must come from a labelled FT Williams option list.",
+);
+assert.match(
+  source,
+  /Organization code[\s\S]*?<select required value=\{draft\.organization_code \|\| ""\}/,
+  "The broker editor must use a required organization-code dropdown instead of free text.",
+);
+assert.doesNotMatch(
+  source,
+  /<label>Organization code<input/,
+  "The broker editor must not allow arbitrary organization codes.",
+);
+assert.match(
+  source,
+  /Choose 3 for an insurance broker/,
+  "The organization-code field must explain the common insurance-broker choice.",
+);
+assert.match(
+  source,
+  /Will update FT Williams:.*→/,
+  "Edited fields must clearly show the current and proposed FT Williams values.",
+);
+assert.match(
+  source,
+  /function FTWilliamsSendConfirmationModal/,
+  "FT Williams sends must show a final change-and-preservation confirmation.",
+);
+assert.match(
+  source,
+  /review\.update_verification_success === true/,
+  "The interface must require explicit read-back success before showing an FT Williams update as complete.",
+);
+assert.match(
+  source,
+  /FT Williams accepted the update/,
+  "The interface must show vendor acceptance separately from read-back verification.",
+);
+assert.match(
+  source,
+  /Unchanged Schedule A records/,
+  "The confirmation modal must keep unchanged Schedule A identities in a collapsed summary.",
+);
+assert.match(
+  source,
+  /Send and verify/,
+  "The final FT Williams action must explain that read-back verification follows the send.",
+);
+assert.match(
+  source,
+  /onSend=\{requestFtwSend\}/,
+  "Toolbar sends must open the confirmation step instead of writing immediately.",
+);
 assert.doesNotMatch(source, /Resolved · not sent to FTW/, "Unsupported FTW fields must not appear as successfully resolved updates.");
 assert.match(
   source,
@@ -260,8 +315,8 @@ assert.match(
 );
 assert.match(
   source,
-  /showFtwSendAction=\{showFtwSendAction\}[\s\S]*?onSend=\{sendFtwUpdate\}/,
-  "The toolbar must receive approved-state send visibility independently from the strict workflow readiness signal.",
+  /showFtwSendAction=\{showFtwSendAction\}[\s\S]*?onSend=\{requestFtwSend\}/,
+  "The toolbar must receive approved-state send visibility and route sends through final confirmation.",
 );
 assert.match(
   source,

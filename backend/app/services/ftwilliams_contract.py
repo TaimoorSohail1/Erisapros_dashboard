@@ -180,9 +180,12 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
         return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
 
     if re.fullmatch(r"Code(?:\d+|XX)", tag):
-        if not re.fullmatch(r"\d{1,3}", text):
-            _raise(tag, text, "expected a numeric organization code with at most 3 digits")
-        return text
+        if not re.fullmatch(r"\d+", text):
+            _raise(tag, text, "expected a numeric organization code")
+        normalized_code = str(int(text))
+        if normalized_code not in {str(code) for code in range(10)}:
+            _raise(tag, text, "expected an organization code from 0 to 9")
+        return normalized_code
 
     if tag in ZERO_ONE_INDICATOR_TAGS:
         choices = {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"}

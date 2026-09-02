@@ -220,6 +220,31 @@ class XmlBuilderTests(unittest.TestCase):
                 schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "ABC"}],
             )
 
+    def test_schedule_a_broker_rejects_out_of_range_organization_code_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected an organization code from 0 to 9"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "12"}],
+            )
+
+    def test_schedule_a_broker_normalizes_zero_padded_organization_code(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "03"}],
+        )
+
+        self.assertIn("<CodeXX>3</CodeXX>", xml)
+
     def test_schedule_a_broker_requires_organization_code_before_send(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "organization code is required"):
             build_schedule_a_records_update_xml(
