@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from html import escape
 import re
 import xml.etree.ElementTree as ET
@@ -335,6 +336,8 @@ def _document_xml(
             current_values or {},
             overrides=broker_overrides,
         )
+        if schedule_a_broker_rows is not None:
+            broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
     if not values:
         if not broker_rows:
             return ""
@@ -385,6 +388,8 @@ def _schedule_a_record_document_xml(
         query_subparts=query_subparts,
         overrides=broker_overrides,
     )
+    if schedule_a_broker_rows is not None:
+        broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
     if not values and not broker_rows:
         return ""
     xml_lines = [
@@ -745,6 +750,24 @@ def schedule_a_broker_multipart_rows(
         else:
             rows[index - 1].pop(multipart_tag, None)
     return [row for row in rows if row]
+
+
+def _sort_schedule_a_broker_rows_by_payment(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Meet FT Williams' highest-to-lowest provider ordering requirement."""
+    return sorted(rows, key=_schedule_a_broker_payment_total, reverse=True)
+
+
+def _schedule_a_broker_payment_total(row: dict[str, str]) -> Decimal:
+    total = Decimal("0")
+    for tag in ("CommPdAmtXX", "FeesPdAmtXX"):
+        text = re.sub(r"[^0-9.-]", "", str(row.get(tag) or ""))
+        if not text:
+            continue
+        try:
+            total += Decimal(text)
+        except InvalidOperation:
+            continue
+    return total
 
 
 def schedule_a_replacement_data_gaps(

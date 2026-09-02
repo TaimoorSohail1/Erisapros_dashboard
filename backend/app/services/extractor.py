@@ -863,8 +863,8 @@ def merge_schedule_a_broker_rows(
     order: list[tuple[str, str, str]] = []
     for row in [*primary_rows, *fallback_rows]:
         identity = (
-            normalize_rule_label(row.name),
-            normalize_rule_label(row.address_line_1 or ""),
+            _canonical_broker_name(row.name),
+            _canonical_broker_address(row.address_line_1 or ""),
             normalize_rule_label(row.zip_code or ""),
         )
         if not identity[0]:
@@ -886,6 +886,14 @@ def merge_schedule_a_broker_rows(
             winner = current.model_copy(deep=True)
             other = row
         winner.evidence = _merge_source_evidence(winner.evidence, other.evidence)
+        winner.name = _preferred_broker_name(winner.name, other.name)
+        winner.address_line_1 = _preferred_broker_address(
+            winner.address_line_1,
+            other.address_line_1,
+        )
+        for attribute in ("address_line_2", "city", "state", "zip_code", "organization_code"):
+            if not getattr(winner, attribute) and getattr(other, attribute):
+                setattr(winner, attribute, getattr(other, attribute))
         winner.source_page = winner.source_page or other.source_page
         winner.commission_source_text = winner.commission_source_text or other.commission_source_text
         winner.fee_source_text = winner.fee_source_text or other.fee_source_text
@@ -895,6 +903,45 @@ def merge_schedule_a_broker_rows(
             winner.fee_rows = [item.model_copy(deep=True) for item in other.fee_rows]
         merged[identity] = winner
     return [merged[identity] for identity in order]
+
+
+_BROKER_LEGAL_SUFFIX = r"(?:LLC|L\.L\.C\.?|INC(?:ORPORATED)?|CORP(?:ORATION)?|LTD|LLP|LP)"
+
+
+def _canonical_broker_name(value: str | None) -> str:
+    normalized = normalize_rule_label(value or "")
+    return re.sub(rf"(?:\s+{_BROKER_LEGAL_SUFFIX})+$", "", normalized, flags=re.IGNORECASE).strip()
+
+
+def _canonical_broker_address(value: str | None) -> str:
+    normalized = normalize_rule_label(value or "")
+    return re.sub(rf"^{_BROKER_LEGAL_SUFFIX}\s*[-,:]?\s*", "", normalized, flags=re.IGNORECASE).strip()
+
+
+def _preferred_broker_name(first: str | None, second: str | None) -> str:
+    candidates = [str(value or "").strip() for value in (first, second) if str(value or "").strip()]
+    if not candidates:
+        return ""
+    return max(
+        candidates,
+        key=lambda value: (
+            bool(re.search(rf"\b{_BROKER_LEGAL_SUFFIX}\.?$", value, flags=re.IGNORECASE)),
+            len(value),
+        ),
+    )
+
+
+def _preferred_broker_address(first: str | None, second: str | None) -> str | None:
+    candidates = [str(value or "").strip() for value in (first, second) if str(value or "").strip()]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda value: (
+            bool(re.match(rf"^{_BROKER_LEGAL_SUFFIX}\s*[-,:]", value, flags=re.IGNORECASE)),
+            len(value),
+        ),
+    )
 
 
 def _broker_evidence_score(row: ScheduleABrokerRow) -> tuple[int, int, int]:

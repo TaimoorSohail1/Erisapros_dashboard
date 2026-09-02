@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Mapping
 
@@ -80,7 +81,8 @@ def match_schedule_a_brokers(
         name_matches = [
             index
             for index in available
-            if _key(row.name) and _key(row.name) == _key(normalized_current[index].name)
+            if _broker_name_key(row.name)
+            and _broker_name_key(row.name) == _broker_name_key(normalized_current[index].name)
         ]
         identity_scores = {
             index: _secondary_identity_score(row, normalized_current[index]) for index in name_matches
@@ -259,15 +261,67 @@ def _secondary_identity_score(extracted: ScheduleABrokerRow, current: ScheduleAB
 
 
 def _same_broker_business_row(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:
-    if not _key(extracted.name) or _key(extracted.name) != _key(current.name):
+    if not _broker_name_key(extracted.name) or _broker_name_key(extracted.name) != _broker_name_key(current.name):
         return False
-    if _secondary_identity_score(extracted, current) == 0:
+    if _secondary_identity_score(extracted, current) == 0 and not _broker_compensation_matches(extracted, current):
         return False
-    for attribute in ("commission_total", "fee_total", "organization_code"):
+    for attribute in ("commission_total", "fee_total"):
         proposed = getattr(extracted, attribute)
-        if str(proposed or "").strip() and _key(proposed) != _key(getattr(current, attribute)):
+        current_value = getattr(current, attribute)
+        if str(proposed or "").strip() and not _amounts_equivalent(proposed, current_value):
             return False
+    if (
+        str(extracted.organization_code or "").strip()
+        and _key(extracted.organization_code) != _key(current.organization_code)
+    ):
+        return False
     return True
+
+
+def _broker_name_key(value: object) -> str:
+    aliases = {
+        "INS": "INSURANCE",
+        "INSUR": "INSURANCE",
+        "SVCS": "SERVICES",
+        "SVC": "SERVICES",
+    }
+    words = re.findall(r"[A-Z0-9]+", str(value or "").upper())
+    return "".join(aliases.get(word, word) for word in words)
+
+
+def _broker_compensation_matches(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:
+    compared = False
+    nonzero = False
+    for attribute in ("commission_total", "fee_total"):
+        proposed = getattr(extracted, attribute)
+        current_value = getattr(current, attribute)
+        if not str(proposed or "").strip() or not str(current_value or "").strip():
+            continue
+        compared = True
+        proposed_amount = _decimal_amount(proposed)
+        current_amount = _decimal_amount(current_value)
+        if proposed_amount is None or current_amount is None or abs(proposed_amount - current_amount) > Decimal("1"):
+            return False
+        nonzero = nonzero or proposed_amount != 0 or current_amount != 0
+    return compared and nonzero
+
+
+def _amounts_equivalent(first: object, second: object) -> bool:
+    first_amount = _decimal_amount(first)
+    second_amount = _decimal_amount(second)
+    if first_amount is None or second_amount is None:
+        return _key(first) == _key(second)
+    return abs(first_amount - second_amount) <= Decimal("1")
+
+
+def _decimal_amount(value: object) -> Decimal | None:
+    text = re.sub(r"[^0-9.-]", "", str(value or ""))
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
 
 
 def _key(value: object) -> str:

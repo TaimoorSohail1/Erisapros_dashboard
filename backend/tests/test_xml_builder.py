@@ -16,6 +16,42 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_selected_schedule_a_brokers_are_written_in_descending_payment_order(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Anthem", "InsContractNum": "300683"},
+                    "query_subparts": {"Broker": []},
+                }
+            ],
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "EMERSON ROGERS LLC",
+                    "commission_total": "0",
+                    "fee_total": "30270",
+                    "organization_code": "3",
+                },
+                {
+                    "name": "RSC INS BROKERAGE INC",
+                    "commission_total": "104203.61",
+                    "fee_total": "0",
+                    "organization_code": "3",
+                },
+            ],
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], [
+            "RSC INS BROKERAGE INC",
+            "EMERSON ROGERS LLC",
+        ])
+
     def test_schedule_a_new_broker_row_writes_complete_address(self):
         records = [
             {

@@ -240,6 +240,36 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual(len(aligned), 1)
         self.assertEqual(aligned[0].name, "NFP CORPORATE SERVICES NY LLC")
 
+    def test_ins_abbreviation_and_rounded_amount_match_existing_broker(self):
+        extracted_rows = [
+            ScheduleABrokerRow(
+                name="RSC INS BROKERAGE INC",
+                address_line_1="2101 FLORENCE AVE",
+                city="CINCINNATI",
+                state="OH",
+                zip_code="45206",
+                commission_total="104203.61",
+                fee_total="0",
+            )
+        ]
+        current_rows = [
+            {
+                "Name1": "RSC INSURANCE BROKERAGE INC",
+                "CommPdAmt01": "104204",
+                "FeesPdAmt01": "0",
+                "Code01": "3",
+            }
+        ]
+
+        matches = match_schedule_a_brokers(
+            extracted_rows,
+            current_rows,
+            decisions={0: {"create_new": True}},
+        )
+
+        self.assertEqual(matches[0].status, "AUTO_MATCHED")
+        self.assertEqual(matches[0].ftw_index, 0)
+
     def test_partial_extracted_broker_set_preserves_current_breakdown(self):
         extracted_rows = [
             ScheduleABrokerRow(
@@ -312,7 +342,7 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
                 decisions={0: {"ftw_index": 0}, 1: {"ftw_index": 0}},
             )
 
-    def test_full_replace_keeps_ft_order_and_preserves_unmatched_current_broker(self):
+    def test_full_replace_sorts_payments_and_preserves_unmatched_current_broker(self):
         extracted_rows = [
             extracted("Alpha Broker", "1 Main St", "10001", "100"),
             extracted("Beta Broker", "2 Main St", "10002", "200"),
@@ -343,8 +373,8 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         )
 
         brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
-        self.assertEqual([broker.findtext("NameXX") for broker in brokers], ["Beta Broker", "Keep Broker", "Alpha Broker"])
-        self.assertEqual([broker.findtext("CommPdAmtXX") for broker in brokers], ["200", "50", "100"])
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], ["Beta Broker", "Alpha Broker", "Keep Broker"])
+        self.assertEqual([broker.findtext("CommPdAmtXX") for broker in brokers], ["200", "100", "50"])
         self.assertEqual(schedule_a_replacement_data_gaps(records, xml), [])
 
 

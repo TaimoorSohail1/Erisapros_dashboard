@@ -42,6 +42,7 @@ from app.models import (
 )
 from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
+from app.services.extractor import merge_schedule_a_broker_rows
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
@@ -2829,7 +2830,7 @@ class FTWilliamsReviewService:
         # nested broker row is visible to subsequent query calls. Give the
         # vendor read model enough time to converge before declaring a real
         # verification failure.
-        max_attempts = 5
+        max_attempts = 8
         for attempt in range(max_attempts):
             result = await self._verify_update_readback_once(review)
             all_request_xmls.extend(result["request_xmls"])
@@ -2999,6 +3000,18 @@ class FTWilliamsReviewService:
                 error = response.error or self._status_error(response.statuses, ignore_error_codes={"59"})
                 if error:
                     errors.append(error)
+        returned_sequences = {
+            str(status.ftw_seq_no or "").strip()
+            for status in statuses
+            if str(status.ftw_seq_no or "").strip()
+        }
+        if set(known_sequences) - returned_sequences:
+            scanned, scan_requests, scan_responses, scan_error = await self._query_schedule_a_statuses(identity)
+            statuses = self._merge_schedule_statuses(statuses, scanned)
+            request_xmls.extend(scan_requests)
+            response_xmls.extend(scan_responses)
+            if scan_error:
+                errors.append(scan_error)
         return statuses, request_xmls, response_xmls, "; ".join(errors) or None
 
     def _update_documents(self, xml: str | None, data_tag: str) -> list[dict]:
@@ -3058,8 +3071,29 @@ class FTWilliamsReviewService:
                 for status in statuses
                 if str(status.ftw_seq_no or "").strip() == expected_seq_no
             ]
-            return exact_sequence_matches[0] if len(exact_sequence_matches) == 1 else None
-        scored: list[tuple[int, int, FTWilliamsStatusItem]] = []
+            if len(exact_sequence_matches) == 1:
+                _, conflicts = self._readback_schedule_identity_score(expected, exact_sequence_matches[0])
+                if not conflicts:
+                    return exact_sequence_matches[0]
+        scored: list[tuple[int, FTWilliamsStatusItem]] = []
+        for status in statuses:
+            score, conflicts = self._readback_schedule_identity_score(expected, status)
+            if not conflicts and score > 0:
+                scored.append((score, status))
+        if not scored:
+            return statuses[0] if not expected_seq_no and len(statuses) == 1 else None
+        scored.sort(key=lambda item: (-item[0], self._sequence_sort_key(item[1].ftw_seq_no)))
+        if len(scored) > 1 and scored[0][0] == scored[1][0]:
+            return None
+        return scored[0][1]
+
+    def _readback_schedule_identity_score(
+        self,
+        expected: dict[str, str],
+        status: FTWilliamsStatusItem,
+    ) -> tuple[int, int]:
+        score = 0
+        conflicts = 0
         identity_tags = [
             ("InsContractNum", 8),
             ("InsCarrierEIN", 7),
@@ -3067,24 +3101,16 @@ class FTWilliamsReviewService:
             ("InsCarrierName", 4),
             ("ScheduleDesc", 3),
         ]
-        for status in statuses:
-            score = 0
-            conflicts = 0
-            for tag, weight in identity_tags:
-                expected_value = expected.get(tag)
-                actual_value = self._readback_value(status.query_results, FormType.SCHEDULE_A, tag)
-                if not expected_value or not actual_value:
-                    continue
-                if self._readback_values_equal(expected_value, actual_value):
-                    score += weight
-                elif tag in {"InsContractNum", "InsCarrierEIN", "InsCarrierNAICCode"}:
-                    conflicts += 1
-            scored.append((conflicts, -score, status))
-        scored.sort(key=lambda item: (item[0], item[1], self._sequence_sort_key(item[2].ftw_seq_no)))
-        conflicts, negative_score, status = scored[0]
-        if conflicts or (-negative_score <= 0 and len(statuses) > 1):
-            return None
-        return status
+        for tag, weight in identity_tags:
+            expected_value = expected.get(tag)
+            actual_value = self._readback_value(status.query_results, FormType.SCHEDULE_A, tag)
+            if not expected_value or not actual_value:
+                continue
+            if self._readback_values_equal(expected_value, actual_value):
+                score += weight
+            elif tag in {"InsContractNum", "InsCarrierEIN", "InsCarrierNAICCode"}:
+                conflicts += 1
+        return score, conflicts
 
     def _compare_readback_document(
         self,
@@ -3746,13 +3772,13 @@ class FTWilliamsReviewService:
                 )
 
     def _normalized_schedule_a_broker_rows(self, rows) -> list:
-        normalized = []
+        normalized: list[ScheduleABrokerRow] = []
         for row in rows or []:
-            if hasattr(row, "model_dump"):
+            if isinstance(row, ScheduleABrokerRow):
                 normalized.append(row)
             elif isinstance(row, dict):
-                normalized.append(row)
-        return normalized
+                normalized.append(ScheduleABrokerRow.model_validate(row))
+        return merge_schedule_a_broker_rows(normalized, [])
 
     def _resolve_schedule_a_brokers(
         self,

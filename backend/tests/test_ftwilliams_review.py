@@ -1409,6 +1409,78 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             [],
         )
 
+    def test_schedule_a_readback_falls_back_to_unique_identity_when_sequence_moves(self) -> None:
+        service = FTWilliamsReviewService()
+        expected = {
+            "__ftw_seq_no": "4",
+            "InsCarrierName": "Cigna Health and Life Insurance Company",
+            "InsContractNum": "3346625",
+            "InsCarrierEIN": "59-1031071",
+        }
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="4",
+                query_results={
+                    "InsCarrierName": "Anthem Blue Cross",
+                    "InsContractNum": "300683",
+                    "InsCarrierEIN": "23-7391136",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="5",
+                query_results={
+                    "InsCarrierName": "Cigna Health and Life Insurance Company",
+                    "InsContractNum": "3346625",
+                    "InsCarrierEIN": "59-1031071",
+                },
+            ),
+        ]
+
+        matched = service._match_readback_schedule_status(expected, statuses)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.ftw_seq_no, "5")
+
+    def test_schedule_a_readback_full_scans_when_targeted_sequences_are_incomplete(self) -> None:
+        service = FTWilliamsReviewService()
+        service.ftwilliams.run_query = AsyncMock(
+            return_value=FTWilliamsQueryResponse(
+                operation="query_schedule_a",
+                configured=True,
+                sent=True,
+                request_xml="targeted-request",
+                success=True,
+                statuses=[],
+            )
+        )
+        fallback_status = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="1",
+            query_results={"InsContractNum": "300683"},
+        )
+        service._query_schedule_a_statuses = AsyncMock(
+            return_value=([fallback_status], ["scan-request"], ["scan-response"], None)
+        )
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            schedule_a_records=[{"ftw_seq_no": "1", "query_results": {"InsContractNum": "300683"}}],
+        )
+
+        statuses, requests, responses, error = run_async(
+            service._query_schedule_a_readback(review, {}, require_full_scan=False)
+        )
+
+        self.assertEqual(statuses, [fallback_status])
+        self.assertEqual(requests, ["targeted-request", "scan-request"])
+        self.assertEqual(responses, ["scan-response"])
+        self.assertIsNone(error)
+        service._query_schedule_a_statuses.assert_awaited_once()
+
     def setUp(self):
         clear_ftw_current_snapshot_cache()
         repositories._repository = repositories.MemoryRepository()

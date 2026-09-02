@@ -5,6 +5,7 @@ from app.models import (
     FieldRule,
     NormalizedExtractionField,
     NormalizedExtractionResult,
+    ScheduleABrokerMoneyRow,
     ScheduleABrokerRow,
     SourceEvidence,
 )
@@ -470,6 +471,50 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].source_page, 2)
         self.assertEqual(merged[0].evidence[0].page, 2)
+
+    def test_broker_merge_deduplicates_legal_suffix_split_into_address(self):
+        provider_row = ScheduleABrokerRow(
+            name="EMERSON ROGERS LLC",
+            address_line_1="5200 N PALM AVE #114",
+            city="FRESNO",
+            state="CA",
+            zip_code="93704",
+            fee_rows=[
+                ScheduleABrokerMoneyRow(
+                    amount="30,270",
+                    purpose="incentives, education, communication and training",
+                )
+            ],
+            commission_total="0",
+            fee_total="30270",
+            confidence=0.98,
+        )
+        source_row = ScheduleABrokerRow(
+            name="EMERSON ROGERS",
+            address_line_1="LLC - 5200 N PALM AVE #114",
+            city="FRESNO",
+            state="CA",
+            zip_code="93704",
+            commission_total="0.00",
+            fee_total="30,270.00",
+            source_page=3,
+            evidence=[
+                SourceEvidence(
+                    provider="Local layout parser",
+                    page=3,
+                    source_text="EMERSON ROGERS LLC 5200 N PALM AVE #114 $30,270.00",
+                )
+            ],
+        )
+
+        merged = merge_schedule_a_broker_rows([provider_row], [source_row])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].name, "EMERSON ROGERS LLC")
+        self.assertEqual(merged[0].address_line_1, "5200 N PALM AVE #114")
+        self.assertEqual(merged[0].fee_rows[0].purpose, "incentives, education, communication and training")
+        self.assertEqual(merged[0].source_page, 3)
+        self.assertTrue(merged[0].evidence)
 
 
 if __name__ == "__main__":
