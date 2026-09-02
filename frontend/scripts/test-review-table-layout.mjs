@@ -315,8 +315,8 @@ assert.match(
 );
 assert.match(
   source,
-  /const showFtwSendAction = filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\)\);/,
-  "Approved filings must always expose the FT Williams send action, even when the UI readiness snapshot is stale.",
+  /const showFtwSendAction = !verifiedUpdateComplete && \([\s\S]*?filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\)\)[\s\S]*?\);/,
+  "Approved filings may expose the FT Williams send action, but verified updates must not be sent again.",
 );
 assert.match(
   source,
