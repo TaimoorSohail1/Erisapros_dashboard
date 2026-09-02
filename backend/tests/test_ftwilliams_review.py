@@ -4251,7 +4251,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(approved_audit.details["override_blockers"])
         self.assertIn("high-priority missing field", approved_audit.details["approval_blockers"])
 
-    def test_approve_cannot_override_ftw_format_validation(self):
+    def test_approve_can_override_ftw_format_validation_while_send_stays_blocked(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(
@@ -4273,17 +4273,24 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+        run_async(
+            FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
+                filing.id,
+                override_blockers=True,
+            )
+        )
+
+        self.assertEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
+
         with self.assertRaisesRegex(ValueError, "1 FT Williams field validation issue"):
             run_async(
                 FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
                     filing.id,
-                    override_blockers=True,
+                    send_to_ftw=True,
                 )
             )
 
-        self.assertNotEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
-
-    def test_approve_blocks_incomplete_broker_row_before_send(self):
+    def test_approve_can_override_incomplete_broker_row_while_send_stays_blocked(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(
@@ -4298,15 +4305,22 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+        run_async(
+            FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
+                filing.id,
+                override_blockers=True,
+            )
+        )
+
+        self.assertEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
+
         with self.assertRaisesRegex(ValueError, "Organization code.*required"):
             run_async(
                 FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
                     filing.id,
-                    override_blockers=True,
+                    send_to_ftw=True,
                 )
             )
-
-        self.assertNotEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
 
     def test_send_update_blocks_selected_schedule_a_when_other_records_are_not_fetched(self):
         repo = repositories.get_repository()

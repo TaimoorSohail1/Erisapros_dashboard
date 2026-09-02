@@ -1001,7 +1001,7 @@ export function FilingReviewPage() {
               <div className="validation-blocker-banner" role="alert">
                 <div>
                   <strong>Fix {hardValidationBlockerCount} FT Williams validation issue{hardValidationBlockerCount === 1 ? "" : "s"}</strong>
-                  <span>Approval and sending stay locked until these values are valid.</span>
+                  <span>Approval remains available; sending stays locked until these values are valid.</span>
                 </div>
                 <button
                   className="button secondary"
@@ -1580,8 +1580,8 @@ function ReviewPrimaryActions({
         <>
           <button
             className={`button ${approvalBlocked ? "button-warn" : ""}`}
-            disabled={busy || approvalBlocked}
-            title={approvalBlocked ? "Fix all blocking validation issues before approval." : undefined}
+            disabled={busy}
+            title={approvalBlocked ? "You can approve now; unresolved issues must be fixed before sending to FT Williams." : undefined}
             onClick={onApprove}
           >
             {decisionAction === "approve" ? <InlineLoader label="Approving" /> : <><CheckCircle2 size={16} /> Approve Filing</>}
@@ -1889,8 +1889,8 @@ function WorkflowDetailDialog({
               <button
                 className={`button ${approvalBlocked ? "button-warn" : ""}`}
                 type="button"
-                disabled={busy || approvalBlocked}
-                title={approvalBlocked ? "Fix all blocking validation issues before approval." : undefined}
+                disabled={busy}
+                title={approvalBlocked ? "You can approve now; unresolved issues must be fixed before sending to FT Williams." : undefined}
                 onClick={onApprove}
               >
                 <CheckCircle2 size={15} /> Approve filing

@@ -644,8 +644,13 @@ assert.match(
 );
 assert.match(
   source,
-  /validation-blocker-banner[\s\S]*?Approval and sending stay locked/,
-  "Blocking validation errors must be explained before approval or sending.",
+  /validation-blocker-banner[\s\S]*?Approval remains available; sending stays locked/,
+  "Blocking validation errors must explain that approval remains available while sending stays protected.",
+);
+assert.doesNotMatch(
+  source,
+  /disabled=\{busy \|\| approvalBlocked\}/,
+  "Approval actions must stay clickable when unresolved validation issues exist.",
 );
 assert.match(
   source,

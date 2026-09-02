@@ -2316,10 +2316,11 @@ class FTWilliamsReviewService:
             if plan_year_error:
                 raise ValueError(plan_year_error)
             validation_error = self._review_validation_blocking_error(review, fields=approval_fields) if review else None
-            if validation_error:
-                raise ValueError(validation_error)
-            if approval_error and not override_blockers:
-                raise ValueError(approval_error)
+            approval_blockers = "; ".join(
+                message for message in (approval_error, validation_error) if message
+            ) or None
+            if approval_blockers and not override_blockers:
+                raise ValueError(approval_blockers)
             await repo.update_filing(
                 filing_id,
                 {
@@ -2336,8 +2337,8 @@ class FTWilliamsReviewService:
                     message="Reviewer approved filing.",
                     details={
                         "reason": reason,
-                        "override_blockers": bool(approval_error and override_blockers),
-                        "approval_blockers": approval_error,
+                        "override_blockers": bool(approval_blockers and override_blockers),
+                        "approval_blockers": approval_blockers,
                     },
                 )
             )
