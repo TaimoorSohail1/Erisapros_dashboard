@@ -321,7 +321,9 @@ export function FilingReviewPage() {
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
   const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
-  const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown));
+  const showFtwSendAction = !verifiedUpdateComplete && (
+    filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown))
+  );
   const ftwReadyToSend = Boolean(
     showFtwSendAction &&
     !verifiedUpdateComplete &&
