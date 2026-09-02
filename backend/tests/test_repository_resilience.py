@@ -156,6 +156,8 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         self.assertIn("job_filing_created_idx", indexes["extraction_jobs"])
         self.assertIn("ftw_review_filing_idx", indexes["ftwilliams_reviews"])
         self.assertIn("ftw_review_status_updated_idx", indexes["ftwilliams_reviews"])
+        self.assertIn("ftw_review_failure_date_filing_idx", indexes["ftwilliams_reviews"])
+        self.assertIn("ftw_review_failure_type_date_idx", indexes["ftwilliams_reviews"])
         self.assertIn("ftwilliams_schema_cache_key_idx", indexes["ftwilliams_schemas"])
         self.assertIn("ftw_plan_mapping_identity_idx", indexes["ftwilliams_plan_mappings"])
         self.assertIn("field_rule_key_version_idx", indexes["field_rule_versions"])

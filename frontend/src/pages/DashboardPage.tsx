@@ -52,7 +52,7 @@ export function DashboardPage() {
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
   const ftwFailuresState = useFTWilliamsFailures();
-  const ftwFailures = ftwFailuresState.data;
+  const ftwFailureCount = ftwFailuresState.data.total;
   const [rowsLimit, setRowsLimit] = useState(25);
   const [currentPage, setCurrentPage] = useState(1);
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(readExpandedCompanyGroups);
@@ -219,7 +219,7 @@ export function DashboardPage() {
         <DashboardKpi loading={initialLoading} icon={<FileText size={24} />} value={filings.length} label="Total Filings" tone="info" note="Tracked packages" />
         <DashboardKpi loading={initialLoading} icon={<HelpCircle size={24} />} value={needsReview.length} label="Needs Review" tone="warn" note={filings.length ? `${Math.round((needsReview.length / filings.length) * 100)}% of total` : "0% of total"} />
         <DashboardKpi loading={initialLoading} icon={<CheckCircle2 size={24} />} value={readyToSend.length} label="Ready to Send" tone="ready" note={filings.length ? `${Math.round((readyToSend.length / filings.length) * 100)}% of total` : "0% of total"} />
-        <DashboardKpi loading={!ftwFailuresState.updatedAt && ftwFailuresState.loading} icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
+        <DashboardKpi loading={!ftwFailuresState.updatedAt && ftwFailuresState.loading} icon={<XCircle size={24} />} value={ftwFailureCount} label="FTW Failed" tone="danger" featured={ftwFailureCount > 0} note={ftwFailureCount ? "Needs attention" : "Clear"} />
       </section>
 
       {message ? <div className="dashboard-message card">{message}</div> : null}

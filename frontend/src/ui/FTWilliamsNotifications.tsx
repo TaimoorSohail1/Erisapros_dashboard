@@ -2,7 +2,7 @@ import { Activity, AlertTriangle, Bell, CheckCircle2, Eye, X, XCircle } from "lu
 import { useMemo, useRef, useState, type RefObject } from "react";
 import { Link } from "../router";
 import { classifyFTWilliamsFailure, failureTypeLabels, ftwFailureTypeClass } from "../ftwFailures";
-import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem } from "../types";
+import type { FTWilliamsFailureQueueSummary, FTWilliamsHistoryItem } from "../types";
 import { formatFilingDisplayName } from "../utils";
 import { InlineLoader } from "./Loading";
 import { useDialogFocus } from "./useDialogFocus";
@@ -15,13 +15,15 @@ export function FTWilliamsNotifications() {
   const [isOpen, setIsOpen] = useState(false);
   const failuresState = useFTWilliamsFailures();
   const historyState = useFTWilliamsHistory(isOpen && activeTab === "activity");
-  const failures = failuresState.data;
+  const failures = failuresState.data.items;
+  const failureTotal = failuresState.data.total;
   const history = historyState.data;
   const failureMessage = failuresState.error;
   const historyMessage = historyState.error;
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const warningCount = useMemo(() => history.filter((item) => item.status === "warning").length, [history]);
-  const issueCount = failures.length + warningCount;
+  const issueCount = failureTotal + warningCount;
+  const failuresInitialLoad = failuresState.loading && !failuresState.updatedAt;
 
   return (
     <>
@@ -38,12 +40,17 @@ export function FTWilliamsNotifications() {
       >
         <Bell size={18} />
         <span>FT Williams</span>
-        {issueCount ? <strong title={`${failures.length} failures, ${warningCount} warnings`}>{issueCount}</strong> : <em>{history.length}</em>}
+        {failuresInitialLoad ? (
+          <strong className="ftw-notification-count-loading" title="Loading FT Williams status" aria-label="Loading FT Williams status">…</strong>
+        ) : issueCount ? (
+          <strong title={`${failureTotal} failures, ${warningCount} warnings`}>{issueCount}</strong>
+        ) : <em>{history.length}</em>}
       </button>
       {isOpen ? <FTWilliamsSidePanel
         activeTab={activeTab}
         failureMessage={failureMessage}
         failures={failures}
+        failureTotal={failureTotal}
         failuresLoading={failuresState.loading}
         failuresUpdatedAt={failuresState.updatedAt}
         history={history}
@@ -63,6 +70,7 @@ function FTWilliamsSidePanel({
   activeTab,
   failureMessage,
   failures,
+  failureTotal,
   failuresLoading,
   failuresUpdatedAt,
   history,
@@ -76,7 +84,8 @@ function FTWilliamsSidePanel({
 }: {
   activeTab: FTWPanelTab;
   failureMessage: string;
-  failures: FTWilliamsFailureQueueItem[];
+  failures: FTWilliamsFailureQueueSummary[];
+  failureTotal: number;
   failuresLoading: boolean;
   failuresUpdatedAt: number;
   history: FTWilliamsHistoryItem[];
@@ -88,7 +97,7 @@ function FTWilliamsSidePanel({
   onTabChange: (tab: FTWPanelTab) => void;
   returnFocusRef: RefObject<HTMLElement | null>;
 }) {
-  const previewFailures = failures.slice(0, 3);
+  const previewFailures = failures;
   const previewHistory = history.slice(0, 5);
   const failuresInitialLoad = failuresLoading && !failuresUpdatedAt;
   const historyInitialLoad = historyLoading && !historyUpdatedAt;
@@ -108,7 +117,7 @@ function FTWilliamsSidePanel({
 
       <div className="ftw-side-tabs">
         <button className={activeTab === "failures" ? "active" : ""} type="button" onClick={() => onTabChange("failures")}>
-          Failures <span>{failures.length}</span>
+          Failures <span>{failuresInitialLoad ? "…" : failureTotal}</span>
         </button>
         <button className={activeTab === "activity" ? "active" : ""} type="button" onClick={() => onTabChange("activity")}>
           Activity <span>{history.length}</span>
@@ -118,7 +127,12 @@ function FTWilliamsSidePanel({
       {activeTab === "failures" ? (
         <div className="ftw-side-content" aria-busy={failuresLoading}>
           <div className="ftw-side-scroll">
-            {failureMessage ? <div className="ftw-side-message">{failureMessage}</div> : null}
+            {failureMessage ? (
+              <div className="ftw-side-message ftw-side-message-with-action">
+                <span>{failureMessage}</span>
+                <button className="button secondary" type="button" onClick={() => void refreshFTWilliamsFailures().catch(() => undefined)}>Retry</button>
+              </div>
+            ) : null}
             {failuresInitialLoad ? (
               <FTWilliamsDrawerLoading label="Loading active failures" />
             ) : previewFailures.length ? (
@@ -136,8 +150,8 @@ function FTWilliamsSidePanel({
             ) : null}
           </div>
           <div className="ftw-side-footer">
-            {failures.length > previewFailures.length ? (
-              <p className="ftw-side-more-count">+{failures.length - previewFailures.length} more active failures</p>
+            {failureTotal > previewFailures.length ? (
+              <p className="ftw-side-more-count">+{failureTotal - previewFailures.length} more active failures</p>
             ) : failuresLoading && failuresUpdatedAt ? <InlineLoader label="Refreshing" /> : null}
             <Link className="button secondary ftw-side-footer-action" to="/ftwilliams/failures">
               View all failures <Eye size={15} />
@@ -176,7 +190,7 @@ function FTWilliamsSidePanel({
   );
 }
 
-function FTWilliamsFailureCard({ item }: { item: FTWilliamsFailureQueueItem }) {
+function FTWilliamsFailureCard({ item }: { item: FTWilliamsFailureQueueSummary }) {
   const displayName = formatFilingDisplayName(item.filing_name);
   const planIdentity = item.company_employer_id && item.plan_number
     ? `${item.company_employer_id} / ${item.plan_number}`
@@ -195,10 +209,15 @@ function FTWilliamsFailureCard({ item }: { item: FTWilliamsFailureQueueItem }) {
         <time>{shortDate(item.failed_at)}<small>{shortTime(item.failed_at)}</small></time>
       </div>
       <span className={`ftw-side-status type-${ftwFailureTypeClass(failureType)}`}>{failureTypeLabels[failureType]}</span>
-      <p title={plainFailureReason(item.failure_reason)}>{plainFailureReason(item.failure_reason)}</p>
+      <p title={plainFailureReason(item.short_reason)}>{plainFailureReason(item.short_reason)}</p>
+      {item.issue_groups.length ? (
+        <div className="ftw-failure-groups">
+          {item.issue_groups.map((group) => <span key={group.label}>{group.label} × {group.count}</span>)}
+        </div>
+      ) : null}
       {item.error_code ? <small className="ftw-side-error-code">{item.error_code}</small> : null}
       <div className="ftw-side-card-bottom">
-        <span>{item.attempted_field_count} fields attempted</span>
+        <span>{item.issue_count ? `${item.issue_count} issues` : `${item.attempted_field_count} fields attempted`}</span>
         <Link className="button danger" to={`/filings/${item.filing_id}`}>
           Review / Retry <Eye size={14} />
         </Link>

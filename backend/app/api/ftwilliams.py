@@ -1,5 +1,7 @@
 import asyncio
+import math
 from datetime import datetime, timedelta
+from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import require_field_rule_admin
@@ -9,8 +11,12 @@ from app.models import (
     Filing,
     FilingStatus,
     FTWilliamsDismissFailureRequest,
+    FTWilliamsFailureCounts,
+    FTWilliamsFailureNotificationResponse,
     FTWilliamsFailureQueueItem,
     FTWilliamsFailureQueueResponse,
+    FTWilliamsFailureQueueSummary,
+    FTWilliamsFailureType,
     FTWilliamsHistoryItem,
     FTWilliamsHistoryResponse,
     FTWilliamsQueryRequest,
@@ -22,6 +28,12 @@ from app.models import (
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_failures import (
+    classify_ftwilliams_failure,
+    failure_issue_groups,
+    failure_reason,
+    short_failure_reason,
+)
 from app.services.ftwilliams_schema import FTWilliamsSchemaService
 
 
@@ -42,8 +54,58 @@ async def query(payload: FTWilliamsQueryRequest):
 
 
 @router.get("/failure-queue", response_model=FTWilliamsFailureQueueResponse)
-async def failure_queue():
-    return await retry_repository_read(_build_failure_queue)
+async def failure_queue(
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+    search: Annotated[str, Query(max_length=120)] = "",
+    failure_type: Annotated[FTWilliamsFailureType | None, Query()] = None,
+    date: Annotated[str, Query(pattern="^(ALL|TODAY|LAST_7|LAST_30)$")] = "ALL",
+):
+    if isinstance(failure_type, str):
+        failure_type = FTWilliamsFailureType(failure_type)
+    return await retry_repository_read(
+        lambda repo: _build_failure_queue(
+            repo,
+            page=page,
+            page_size=page_size,
+            search=search,
+            failure_type=failure_type,
+            failed_since=_failure_date_threshold(date),
+        )
+    )
+
+
+@router.get("/failure-notifications", response_model=FTWilliamsFailureNotificationResponse)
+async def failure_notifications():
+    queue = await retry_repository_read(
+        lambda repo: _build_failure_queue(repo, page=1, page_size=3)
+    )
+    return FTWilliamsFailureNotificationResponse(
+        total=queue.counts.active,
+        counts=queue.counts,
+        items=queue.items,
+    )
+
+
+@router.get("/failure-queue/{filing_id}", response_model=FTWilliamsFailureQueueItem)
+async def failure_detail(filing_id: str):
+    async def load(repo):
+        filing, review, audits = await asyncio.gather(
+            repo.get_filing(filing_id),
+            repo.get_ftwilliams_review(filing_id),
+            repo.list_latest_ftwilliams_failure_audits({filing_id}),
+        )
+        if not filing or not review:
+            raise HTTPException(status_code=404, detail="FT Williams failure was not found.")
+        failed_audit = audits[0] if audits else None
+        if not review.active_failure and review.status not in {
+            FTWilliamsReviewStatus.UPDATE_FAILED,
+            FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+        }:
+            raise HTTPException(status_code=404, detail="FT Williams failure is no longer active.")
+        return _failure_queue_item(filing, review, failed_audit)
+
+    return await retry_repository_read(load)
 
 
 @router.post("/failure-queue/{filing_id}/dismiss", response_model=FTWilliamsReview)
@@ -72,34 +134,101 @@ async def refresh_schema(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-async def _build_failure_queue(repo):
-    items: list[FTWilliamsFailureQueueItem] = []
-    # Persistent failure state is authoritative for new records. Unresolved
-    # lifecycle audits recover older failures that Query Current accidentally
-    # hid before persistent failure state existed.
-    active_reviews, audit_rows = await asyncio.gather(
-        repo.list_failed_ftwilliams_reviews(),
-        repo.list_unresolved_ftwilliams_failure_audits(),
+async def _build_failure_queue(
+    repo,
+    *,
+    page: int = 1,
+    page_size: int = 10,
+    search: str = "",
+    failure_type: FTWilliamsFailureType | None = None,
+    failed_since: datetime | None = None,
+) -> FTWilliamsFailureQueueResponse:
+    result = await repo.query_ftwilliams_failures(
+        page=page,
+        page_size=page_size,
+        search=search,
+        failure_type=failure_type,
+        failed_since=failed_since,
     )
-    failed_audits = {audit.filing_id: audit for audit in audit_rows if audit.filing_id}
-    filing_ids = {review.filing_id for review in active_reviews} | set(failed_audits)
-    filing_rows, review_rows = await asyncio.gather(
-        repo.get_filings_by_ids(filing_ids),
-        repo.get_ftwilliams_reviews_by_filing_ids(filing_ids),
+    items = [
+        _failure_queue_summary(
+            record.filing,
+            record.review,
+            record.failed_audit,
+        )
+        for record in result.records
+    ]
+    counts = _failure_counts(result.counts)
+    return FTWilliamsFailureQueueResponse(
+        total=result.total,
+        page=page,
+        page_size=page_size,
+        total_pages=max(1, math.ceil(result.total / page_size)),
+        counts=counts,
+        items=items,
     )
-    filings = {filing.id: filing for filing in filing_rows if filing.id}
-    reviews = {review.filing_id: review for review in review_rows}
-    for filing_id in filing_ids:
-        review = reviews.get(filing_id)
-        filing = filings.get(filing_id)
-        if not review:
-            continue
-        if not filing or not filing.id or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
-            continue
-        failed_audit = failed_audits.get(filing.id)
-        items.append(_failure_queue_item(filing, review, failed_audit))
-    items.sort(key=lambda item: item.failed_at, reverse=True)
-    return FTWilliamsFailureQueueResponse(total=len(items), items=items)
+
+
+def _failure_date_threshold(value: str) -> datetime | None:
+    now = datetime.utcnow()
+    if value == "TODAY":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if value == "LAST_7":
+        return now - timedelta(days=7)
+    if value == "LAST_30":
+        return now - timedelta(days=30)
+    return None
+
+
+def _failure_counts(values: dict[str, int]) -> FTWilliamsFailureCounts:
+    return FTWilliamsFailureCounts(
+        active=sum(values.values()),
+        needs_retry=values.get(FTWilliamsFailureType.NEEDS_RETRY.value, 0),
+        needs_data_fix=values.get(FTWilliamsFailureType.NEEDS_DATA_FIX.value, 0),
+        needs_plan_match=values.get(FTWilliamsFailureType.NEEDS_PLAN_MATCH.value, 0),
+        needs_service_check=values.get(FTWilliamsFailureType.NEEDS_SERVICE_CHECK.value, 0),
+    )
+
+
+def _failure_queue_summary(
+    filing: Filing,
+    review: FTWilliamsReview,
+    failed_audit: AuditLog | None,
+) -> FTWilliamsFailureQueueSummary:
+    lookup = review.plan_lookup
+    client_error = review.active_failure_client_error or review.client_error
+    details = failed_audit.details if failed_audit and failed_audit.details else {}
+    reason = failure_reason(review, failed_audit)
+    issue_count, issue_groups = failure_issue_groups(review)
+    return FTWilliamsFailureQueueSummary(
+        filing_id=filing.id or review.filing_id,
+        filing_name=filing.file_name,
+        filing_status=filing.status,
+        review_status=review.status,
+        failure_type=classify_ftwilliams_failure(review, failed_audit),
+        short_reason=short_failure_reason(reason),
+        next_action=(client_error.next_action if client_error else None),
+        plan_name=(lookup.plan_name if lookup else None),
+        sponsor_name=(lookup.sponsor_name if lookup else None),
+        company_employer_id=(lookup.company_employer_id if lookup else None),
+        plan_number=(lookup.plan_number if lookup else None),
+        customer_id=review.customer_id,
+        plan_id=review.plan_id,
+        ftw_customer_id=review.ftw_customer_id,
+        ftw_plan_id=review.ftw_plan_id,
+        year=review.year or review.comparison_year,
+        attempted_field_count=review.update_attempted_count,
+        issue_count=issue_count,
+        issue_groups=issue_groups,
+        failed_at=(review.active_failure_at or (failed_audit.created_at if failed_audit else review.updated_at)),
+        last_action_label=(
+            "Verification required"
+            if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN
+            or any(item.outcome_code in {"EMPTY_RESPONSE", "MALFORMED_RESPONSE", "NO_RESPONSE"} for item in review.update_diagnostics)
+            else "Update failed"
+        ),
+        error_code=(client_error.code if client_error else _text(details.get("error_code"))),
+    )
 
 
 @router.get("/history", response_model=FTWilliamsHistoryResponse)
@@ -137,41 +266,11 @@ def _failure_queue_item(
     review: FTWilliamsReview,
     failed_audit: AuditLog | None,
 ) -> FTWilliamsFailureQueueItem:
-    lookup = review.plan_lookup
+    summary = _failure_queue_summary(filing, review, failed_audit)
     client_error = review.active_failure_client_error or review.client_error
-    details = failed_audit.details if failed_audit and failed_audit.details else {}
-    error = (
-        (client_error.message if client_error else None)
-        or _text(details.get("error"))
-        or review.active_failure_reason
-        or review.error_message
-        or ("FT Williams update requires verification." if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN else "FT Williams update failed.")
-    )
     return FTWilliamsFailureQueueItem(
-        filing_id=filing.id or review.filing_id,
-        filing_name=filing.file_name,
-        filing_status=filing.status,
-        review_status=review.status,
-        failure_reason=error,
-        next_action=(client_error.next_action if client_error else None),
-        plan_name=(lookup.plan_name if lookup else None),
-        sponsor_name=(lookup.sponsor_name if lookup else None),
-        company_employer_id=(lookup.company_employer_id if lookup else None),
-        plan_number=(lookup.plan_number if lookup else None),
-        customer_id=review.customer_id,
-        plan_id=review.plan_id,
-        ftw_customer_id=review.ftw_customer_id,
-        ftw_plan_id=review.ftw_plan_id,
-        year=review.year or review.comparison_year,
-        attempted_field_count=review.update_attempted_count,
-        failed_at=(review.active_failure_at or (failed_audit.created_at if failed_audit else review.updated_at)),
-        last_action_label=(
-            "Verification required"
-            if review.status == FTWilliamsReviewStatus.UPDATE_UNKNOWN
-            or any(item.outcome_code in {"EMPTY_RESPONSE", "MALFORMED_RESPONSE", "NO_RESPONSE"} for item in review.update_diagnostics)
-            else "Update failed"
-        ),
-        error_code=(client_error.code if client_error else _text(details.get("error_code"))),
+        **summary.model_dump(),
+        failure_reason=failure_reason(review, failed_audit),
         technical_details=(client_error.technical_details if client_error else None),
         operation_diagnostics=list(review.update_diagnostics or []),
         edit_check_issues=list(review.edit_check_final_issues or review.edit_check_baseline_issues or []),

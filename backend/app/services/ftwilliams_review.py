@@ -48,6 +48,7 @@ from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
 from app.services.ftwilliams_schema import FTWilliamsSchemaService
+from app.services.ftwilliams_failures import classify_ftwilliams_failure, failure_issue_groups
 from app.services.storage import StorageService
 from app.services.ftwilliams_tags import (
     FORM_5500_CURRENT_TAGS_BY_RULE,
@@ -1334,6 +1335,9 @@ class FTWilliamsReviewService:
             raise ValueError("No active FT Williams failure to dismiss")
         dismissed_reason = reason.strip() or "Dismissed by operator"
         review.active_failure = False
+        review.active_failure_type = None
+        review.active_failure_issue_count = None
+        review.active_failure_issue_groups = []
         review.failure_dismissed_at = datetime.utcnow()
         review.failure_dismissed_reason = dismissed_reason
         await repo.upsert_ftwilliams_review(review)
@@ -2728,6 +2732,9 @@ class FTWilliamsReviewService:
             review.active_failure = False
             review.active_failure_reason = None
             review.active_failure_client_error = None
+            review.active_failure_type = None
+            review.active_failure_issue_count = None
+            review.active_failure_issue_groups = []
             review.active_failure_at = None
             review.failure_dismissed_at = None
             review.failure_dismissed_reason = None
@@ -3596,6 +3603,10 @@ class FTWilliamsReviewService:
         review.active_failure = True
         review.active_failure_reason = error_message
         review.active_failure_client_error = self._normalize_review_error(error_message, review.fields)
+        review.active_failure_type = classify_ftwilliams_failure(review)
+        review.active_failure_issue_count = None
+        review.active_failure_issue_groups = []
+        review.active_failure_issue_count, review.active_failure_issue_groups = failure_issue_groups(review)
         review.active_failure_at = datetime.utcnow()
         review.failure_dismissed_at = None
         review.failure_dismissed_reason = None

@@ -5,7 +5,10 @@ import type {
   FTWFieldCatalogEntry,
   Filing,
   FilingDetail,
+  FTWilliamsFailureNotificationResponse,
+  FTWilliamsFailureQueueItem,
   FTWilliamsFailureQueueResponse,
+  FTWilliamsFailureType,
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
   FTWilliamsReview,
@@ -28,6 +31,26 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
+async function requestWithTimeout<T>(path: string, options: RequestInit = {}, timeoutMs = 8_000): Promise<T> {
+  const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  const timeout = window.setTimeout(() => controller.abort("Request timed out"), timeoutMs);
+  try {
+    return await request<T>(path, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      throw new Error("FT Williams data took too long to load. Please retry.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  }
+}
+
 export async function listFilings(): Promise<Filing[]> {
   const payload = await request<{ filings: Filing[] }>("/filings");
   return payload.filings;
@@ -37,8 +60,30 @@ export async function listFTWilliamsHistory(range: FTWilliamsHistoryRange): Prom
   return request<FTWilliamsHistoryResponse>("/ftwilliams/history?range=" + encodeURIComponent(range));
 }
 
-export async function listFTWilliamsFailureQueue(): Promise<FTWilliamsFailureQueueResponse> {
-  return request<FTWilliamsFailureQueueResponse>("/ftwilliams/failure-queue");
+export async function listFTWilliamsFailureNotifications(): Promise<FTWilliamsFailureNotificationResponse> {
+  return requestWithTimeout<FTWilliamsFailureNotificationResponse>("/ftwilliams/failure-notifications");
+}
+
+export async function listFTWilliamsFailureQueue(options: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  failureType?: "ALL" | FTWilliamsFailureType;
+  date?: "ALL" | "TODAY" | "LAST_7" | "LAST_30";
+  signal?: AbortSignal;
+} = {}): Promise<FTWilliamsFailureQueueResponse> {
+  const params = new URLSearchParams({
+    page: String(options.page || 1),
+    page_size: String(options.pageSize || 10),
+    date: options.date || "ALL",
+  });
+  if (options.search?.trim()) params.set("search", options.search.trim());
+  if (options.failureType && options.failureType !== "ALL") params.set("failure_type", options.failureType);
+  return requestWithTimeout<FTWilliamsFailureQueueResponse>(`/ftwilliams/failure-queue?${params}`, { signal: options.signal });
+}
+
+export async function getFTWilliamsFailureDetail(filingId: string, signal?: AbortSignal): Promise<FTWilliamsFailureQueueItem> {
+  return requestWithTimeout<FTWilliamsFailureQueueItem>(`/ftwilliams/failure-queue/${filingId}`, { signal });
 }
 
 export async function openFTWilliamsAuditPDF(filingId: string): Promise<void> {

@@ -92,6 +92,13 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
+class FTWilliamsFailureType(str, Enum):
+    NEEDS_RETRY = "NEEDS_RETRY"
+    NEEDS_DATA_FIX = "NEEDS_DATA_FIX"
+    NEEDS_PLAN_MATCH = "NEEDS_PLAN_MATCH"
+    NEEDS_SERVICE_CHECK = "NEEDS_SERVICE_CHECK"
+
+
 class ScheduleAContractType(str, Enum):
     UNKNOWN = "UNKNOWN"
     EXPERIENCE_RATED = "EXPERIENCE_RATED"
@@ -598,12 +605,18 @@ class FTWilliamsHistoryResponse(BaseModel):
     items: list[FTWilliamsHistoryItem] = Field(default_factory=list)
 
 
-class FTWilliamsFailureQueueItem(BaseModel):
+class FTWilliamsFailureIssueGroup(BaseModel):
+    label: str
+    count: int = 1
+
+
+class FTWilliamsFailureQueueSummary(BaseModel):
     filing_id: str
     filing_name: str
     filing_status: FilingStatus
     review_status: FTWilliamsReviewStatus
-    failure_reason: str
+    failure_type: FTWilliamsFailureType
+    short_reason: str
     next_action: str | None = None
     plan_name: str | None = None
     sponsor_name: str | None = None
@@ -615,18 +628,42 @@ class FTWilliamsFailureQueueItem(BaseModel):
     ftw_plan_id: str | None = None
     year: str | None = None
     attempted_field_count: int = 0
+    issue_count: int = 1
+    issue_groups: list[FTWilliamsFailureIssueGroup] = Field(default_factory=list)
     failed_at: datetime
     last_action_label: str = "Update failed"
     error_code: str | None = None
+    can_dismiss: bool = True
+
+
+class FTWilliamsFailureQueueItem(FTWilliamsFailureQueueSummary):
+    failure_reason: str
     technical_details: str | None = None
     operation_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
     edit_check_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
-    can_dismiss: bool = True
+
+
+class FTWilliamsFailureCounts(BaseModel):
+    active: int = 0
+    needs_retry: int = 0
+    needs_data_fix: int = 0
+    needs_plan_match: int = 0
+    needs_service_check: int = 0
 
 
 class FTWilliamsFailureQueueResponse(BaseModel):
     total: int
-    items: list[FTWilliamsFailureQueueItem] = Field(default_factory=list)
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
+    counts: FTWilliamsFailureCounts = Field(default_factory=FTWilliamsFailureCounts)
+    items: list[FTWilliamsFailureQueueSummary] = Field(default_factory=list)
+
+
+class FTWilliamsFailureNotificationResponse(BaseModel):
+    total: int
+    counts: FTWilliamsFailureCounts = Field(default_factory=FTWilliamsFailureCounts)
+    items: list[FTWilliamsFailureQueueSummary] = Field(default_factory=list)
 
 
 class FTWilliamsComparisonField(BaseModel):
@@ -779,6 +816,9 @@ class FTWilliamsReview(BaseModel):
     active_failure: bool = False
     active_failure_reason: str | None = None
     active_failure_client_error: ClientFacingError | None = None
+    active_failure_type: FTWilliamsFailureType | None = None
+    active_failure_issue_count: int | None = None
+    active_failure_issue_groups: list[FTWilliamsFailureIssueGroup] = Field(default_factory=list)
     active_failure_at: datetime | None = None
     failure_dismissed_at: datetime | None = None
     failure_dismissed_reason: str | None = None

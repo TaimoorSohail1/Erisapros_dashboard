@@ -394,12 +394,20 @@ export interface FTWilliamsHistoryResponse {
   items: FTWilliamsHistoryItem[];
 }
 
-export interface FTWilliamsFailureQueueItem {
+export type FTWilliamsFailureType = "NEEDS_RETRY" | "NEEDS_DATA_FIX" | "NEEDS_PLAN_MATCH" | "NEEDS_SERVICE_CHECK";
+
+export interface FTWilliamsFailureIssueGroup {
+  label: string;
+  count: number;
+}
+
+export interface FTWilliamsFailureQueueSummary {
   filing_id: string;
   filing_name: string;
   filing_status: FilingStatus;
   review_status: string;
-  failure_reason: string;
+  failure_type: FTWilliamsFailureType;
+  short_reason: string;
   next_action?: string | null;
   plan_name?: string | null;
   sponsor_name?: string | null;
@@ -411,18 +419,42 @@ export interface FTWilliamsFailureQueueItem {
   ftw_plan_id?: string | null;
   year?: string | null;
   attempted_field_count: number;
+  issue_count: number;
+  issue_groups: FTWilliamsFailureIssueGroup[];
   failed_at: string;
   last_action_label: string;
   error_code?: string | null;
+  can_dismiss?: boolean;
+}
+
+export interface FTWilliamsFailureQueueItem extends FTWilliamsFailureQueueSummary {
+  failure_reason: string;
   technical_details?: string | null;
   operation_diagnostics?: FTWilliamsOperationDiagnostic[];
   edit_check_issues?: FTWilliamsEditCheckIssue[];
-  can_dismiss?: boolean;
+}
+
+export interface FTWilliamsFailureCounts {
+  active: number;
+  needs_retry: number;
+  needs_data_fix: number;
+  needs_plan_match: number;
+  needs_service_check: number;
 }
 
 export interface FTWilliamsFailureQueueResponse {
   total: number;
-  items: FTWilliamsFailureQueueItem[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+  counts: FTWilliamsFailureCounts;
+  items: FTWilliamsFailureQueueSummary[];
+}
+
+export interface FTWilliamsFailureNotificationResponse {
+  total: number;
+  counts: FTWilliamsFailureCounts;
+  items: FTWilliamsFailureQueueSummary[];
 }
 
 export interface ReviewEvent {

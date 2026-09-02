@@ -1,6 +1,7 @@
 import asyncio
 import html
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -12,16 +13,19 @@ from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 from app.config import get_settings
+from app.services.ftwilliams_failures import classify_ftwilliams_failure, failure_reason
 from app.models import (
     AuditLog,
     ExtractedField,
     ExtractedFieldStatus,
     ExtractionJob,
     FTWilliamsReview,
+    FTWilliamsFailureType,
     FTWilliamsSchemaSnapshot,
     FTWilliamsPlanMapping,
     RawExtraction,
     Filing,
+    FilingStatus,
     FieldRule,
     FieldRuleStatus,
     ReviewEvent,
@@ -29,7 +33,7 @@ from app.models import (
 )
 
 
-FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
+FTWILLIAMS_FAILURE_LIST_PROJECTION = {
     "filing_id": 1,
     "status": 1,
     "comparison_year": 1,
@@ -41,21 +45,48 @@ FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
     "plan_lookup": 1,
     "update_attempted_count": 1,
     "update_confirmed_count": 1,
-    "update_diagnostics": 1,
-    "edit_check_baseline_issues": 1,
-    "edit_check_final_issues": 1,
+    "update_remaining_count": 1,
     "error_message": 1,
-    "client_error": 1,
+    "client_error.title": 1,
+    "client_error.message": 1,
+    "client_error.next_action": 1,
+    "client_error.code": 1,
     "active_failure": 1,
     "active_failure_reason": 1,
-    "active_failure_client_error": 1,
+    "active_failure_client_error.title": 1,
+    "active_failure_client_error.message": 1,
+    "active_failure_client_error.next_action": 1,
+    "active_failure_client_error.code": 1,
+    "active_failure_type": 1,
+    "active_failure_issue_count": 1,
+    "active_failure_issue_groups": 1,
     "active_failure_at": 1,
     "failure_dismissed_at": 1,
     "failure_dismissed_reason": 1,
-    "fields": 1,
     "created_at": 1,
     "updated_at": 1,
 }
+
+
+FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
+    **FTWILLIAMS_FAILURE_LIST_PROJECTION,
+    "update_diagnostics": 1,
+    "fields": 1,
+}
+
+
+@dataclass
+class FTWilliamsFailureRecord:
+    filing: Filing
+    review: FTWilliamsReview
+    failed_audit: AuditLog | None = None
+
+
+@dataclass
+class FTWilliamsFailurePage:
+    total: int
+    counts: dict[str, int]
+    records: list[FTWilliamsFailureRecord]
 
 
 _DASHBOARD_XML_TAGS = {
@@ -168,6 +199,15 @@ class Repository:
     async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]: ...
     async def list_unresolved_ftwilliams_failure_audits(self) -> list[AuditLog]: ...
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]: ...
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage: ...
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]: ...
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
@@ -284,6 +324,14 @@ class MongoRepository(Repository):
         await self.db.ftwilliams_reviews.create_index(
             [("active_failure", 1), ("updated_at", -1)],
             name="ftw_review_active_failure_updated_idx",
+        )
+        await self.db.ftwilliams_reviews.create_index(
+            [("active_failure", 1), ("active_failure_at", -1), ("filing_id", 1)],
+            name="ftw_review_failure_date_filing_idx",
+        )
+        await self.db.ftwilliams_reviews.create_index(
+            [("active_failure", 1), ("active_failure_type", 1), ("active_failure_at", -1)],
+            name="ftw_review_failure_type_date_idx",
         )
         await self.db.ftwilliams_plan_mappings.create_index(
             [("company_employer_id", 1), ("plan_number", 1)],
@@ -530,6 +578,194 @@ class MongoRepository(Repository):
             FTWILLIAMS_REVIEW_SUMMARY_PROJECTION,
         ).sort("updated_at", -1).to_list(100)
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
+
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage:
+        failure_text = {
+            "$toLower": {
+                "$concat": [
+                    {"$ifNull": ["$active_failure_client_error.message", ""]},
+                    " ",
+                    {"$ifNull": ["$client_error.message", ""]},
+                    " ",
+                    {"$ifNull": ["$active_failure_reason", ""]},
+                    " ",
+                    {"$ifNull": ["$error_message", ""]},
+                    " ",
+                    {"$ifNull": ["$active_failure_client_error.next_action", ""]},
+                    " ",
+                    {"$ifNull": ["$status", ""]},
+                ]
+            }
+        }
+        computed_type = {
+            "$ifNull": [
+                "$active_failure_type",
+                {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(plan|mapping|customer|identifier|match|ein|pn|ftw id|plan id|customer id)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_PLAN_MATCH.value,
+                            },
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(field|xml|form|checkbox|edit check|value|line|schedule|payload|invalid)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_DATA_FIX.value,
+                            },
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(login|session|credential|auth|unauthorized|forbidden|token|permission|network|timeout|connection|service unavailable|gateway|rate limit)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_SERVICE_CHECK.value,
+                            },
+                        ],
+                        "default": FTWilliamsFailureType.NEEDS_RETRY.value,
+                    }
+                },
+            ]
+        }
+        pipeline: list[dict] = [
+            {
+                "$match": {
+                    "$or": [
+                        {"active_failure": True},
+                        {
+                            "active_failure": {"$exists": False},
+                            "failure_dismissed_at": {"$exists": False},
+                            "status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]},
+                        },
+                    ]
+                }
+            },
+            {
+                "$addFields": {
+                    "effective_failure_date": {"$ifNull": ["$active_failure_at", "$updated_at"]},
+                    "effective_failure_text": failure_text,
+                    "effective_failure_type": computed_type,
+                    "failure_filing_object_id": {
+                        "$convert": {
+                            "input": "$filing_id",
+                            "to": "objectId",
+                            "onError": None,
+                            "onNull": None,
+                        }
+                    },
+                }
+            },
+        ]
+        if failed_since:
+            pipeline.append({"$match": {"effective_failure_date": {"$gte": failed_since}}})
+        pipeline.extend(
+            [
+                {
+                    "$lookup": {
+                        "from": "filings",
+                        "let": {"failure_filing_object_id": "$failure_filing_object_id"},
+                        "pipeline": [
+                            {
+                                "$match": {
+                                    "$expr": {
+                                        "$eq": [
+                                            "$_id",
+                                            "$$failure_filing_object_id",
+                                        ]
+                                    },
+                                    "status": {"$nin": ["SUPERSEDED", "DELETED"]},
+                                }
+                            },
+                            {
+                                "$project": {
+                                    "file_name": 1,
+                                    "content_type": 1,
+                                    "file_size": 1,
+                                    "s3_key": 1,
+                                    "status": 1,
+                                    "created_at": 1,
+                                    "updated_at": 1,
+                                }
+                            },
+                        ],
+                        "as": "failure_filing",
+                    }
+                },
+                {"$unwind": "$failure_filing"},
+            ]
+        )
+        if search.strip():
+            pattern = re.escape(search.strip())
+            pipeline.append(
+                {
+                    "$match": {
+                        "$or": [
+                            {"effective_failure_text": {"$regex": pattern, "$options": "i"}},
+                            {"failure_filing.file_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.plan_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.sponsor_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.company_employer_id": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.plan_number": {"$regex": pattern, "$options": "i"}},
+                            {"ftw_customer_id": {"$regex": pattern, "$options": "i"}},
+                            {"ftw_plan_id": {"$regex": pattern, "$options": "i"}},
+                        ]
+                    }
+                }
+            )
+
+        projected: dict[str, object] = {
+            "filing": "$failure_filing",
+            "effective_failure_date": 1,
+            "effective_failure_type": 1,
+            "review._id": "$_id",
+        }
+        for key in FTWILLIAMS_FAILURE_LIST_PROJECTION:
+            projected[f"review.{key}"] = f"${key}"
+        pipeline.append({"$project": projected})
+
+        selected_match = (
+            [{"$match": {"effective_failure_type": failure_type.value}}]
+            if failure_type
+            else []
+        )
+        offset = max(0, (page - 1) * page_size)
+        pipeline.append(
+            {
+                "$facet": {
+                    "total": [*selected_match, {"$count": "value"}],
+                    "counts": [
+                        {"$group": {"_id": "$effective_failure_type", "value": {"$sum": 1}}}
+                    ],
+                    "items": [
+                        *selected_match,
+                        {"$sort": {"effective_failure_date": -1, "review._id": -1}},
+                        {"$skip": offset},
+                        {"$limit": page_size},
+                    ],
+                }
+            }
+        )
+        rows = await self.db.ftwilliams_reviews.aggregate(pipeline, allowDiskUse=False).to_list(1)
+        result = rows[0] if rows else {}
+        total_rows = result.get("total") or []
+        total = int(total_rows[0].get("value", 0)) if total_rows else 0
+        counts = {
+            str(item.get("_id") or FTWilliamsFailureType.NEEDS_RETRY.value): int(item.get("value", 0))
+            for item in result.get("counts") or []
+        }
+        records: list[FTWilliamsFailureRecord] = []
+        for item in result.get("items") or []:
+            review_doc = dict(item.get("review") or {})
+            filing_doc = dict(item.get("filing") or {})
+            if not review_doc.get("_id") or not filing_doc.get("_id"):
+                continue
+            review = from_mongo(review_doc, FTWilliamsReview)
+            review.active_failure_type = FTWilliamsFailureType(item["effective_failure_type"])
+            filing = from_mongo(filing_doc, Filing)
+            records.append(FTWilliamsFailureRecord(filing=filing, review=review))
+        return FTWilliamsFailurePage(total=total, counts=counts, records=records)
 
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:
         values = to_mongo(review)
@@ -963,6 +1199,73 @@ class MemoryRepository(Repository):
             ),
             key=lambda item: item.updated_at,
             reverse=True,
+        )
+
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage:
+        active = {review.filing_id: review for review in await self.list_failed_ftwilliams_reviews()}
+        legacy_audits = {
+            audit.filing_id: audit
+            for audit in await self.list_unresolved_ftwilliams_failure_audits()
+            if audit.filing_id
+        }
+        records: list[FTWilliamsFailureRecord] = []
+        needle = search.strip().lower()
+        for filing_id in set(active) | set(legacy_audits):
+            review = active.get(filing_id) or self.ftwilliams_reviews.get(filing_id)
+            filing = self.filings.get(filing_id)
+            failed_audit = legacy_audits.get(filing_id)
+            if not review or not filing or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+                continue
+            failed_at = review.active_failure_at or (failed_audit.created_at if failed_audit else review.updated_at)
+            if failed_since and failed_at < failed_since:
+                continue
+            classified = classify_ftwilliams_failure(review, failed_audit)
+            lookup = review.plan_lookup
+            haystack = " ".join(
+                str(value or "")
+                for value in (
+                    filing.file_name,
+                    failure_reason(review, failed_audit),
+                    lookup.plan_name if lookup else None,
+                    lookup.sponsor_name if lookup else None,
+                    lookup.company_employer_id if lookup else None,
+                    lookup.plan_number if lookup else None,
+                    review.ftw_customer_id,
+                    review.ftw_plan_id,
+                    review.year,
+                    classified.value,
+                )
+            ).lower()
+            if needle and needle not in haystack:
+                continue
+            review.active_failure_type = classified
+            records.append(FTWilliamsFailureRecord(filing=filing, review=review, failed_audit=failed_audit))
+
+        records.sort(
+            key=lambda item: item.review.active_failure_at
+            or (item.failed_audit.created_at if item.failed_audit else item.review.updated_at),
+            reverse=True,
+        )
+        counts: dict[str, int] = {}
+        for record in records:
+            key = classify_ftwilliams_failure(record.review, record.failed_audit).value
+            counts[key] = counts.get(key, 0) + 1
+        if failure_type:
+            records = [record for record in records if record.review.active_failure_type == failure_type]
+        total = len(records)
+        offset = max(0, (page - 1) * page_size)
+        return FTWilliamsFailurePage(
+            total=total,
+            counts=counts,
+            records=records[offset : offset + page_size],
         )
 
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:

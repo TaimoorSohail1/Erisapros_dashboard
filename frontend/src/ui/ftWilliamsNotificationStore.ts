@@ -1,11 +1,15 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { listFTWilliamsFailureQueue, listFTWilliamsHistory } from "../api";
-import type { FTWilliamsFailureQueueItem, FTWilliamsHistoryItem, FTWilliamsHistoryRange } from "../types";
+import { listFTWilliamsFailureNotifications, listFTWilliamsHistory } from "../api";
+import type { FTWilliamsFailureNotificationResponse, FTWilliamsHistoryItem, FTWilliamsHistoryRange } from "../types";
 import { createSharedPollingResource } from "./sharedPollingResource";
 
-const failuresResource = createSharedPollingResource<FTWilliamsFailureQueueItem[]>({
-  initialData: [],
-  load: async () => (await listFTWilliamsFailureQueue()).items,
+const failuresResource = createSharedPollingResource<FTWilliamsFailureNotificationResponse>({
+  initialData: {
+    total: 0,
+    counts: { active: 0, needs_retry: 0, needs_data_fix: 0, needs_plan_match: 0, needs_service_check: 0 },
+    items: [],
+  },
+  load: listFTWilliamsFailureNotifications,
   pollMs: 60_000,
 });
 
@@ -42,3 +46,5 @@ export function useFTWilliamsHistory(enabled: boolean, range: FTWilliamsHistoryR
   }, [enabled, resource]);
   return snapshot;
 }
+
+export const useFTWilliamsFailureNotifications = useFTWilliamsFailures;

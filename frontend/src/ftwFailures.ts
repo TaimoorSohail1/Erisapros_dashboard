@@ -1,6 +1,6 @@
-import type { FTWilliamsFailureQueueItem } from "./types";
+import type { FTWilliamsFailureQueueSummary, FTWilliamsFailureType } from "./types";
 
-export type FTWilliamsFailureType = "NEEDS_RETRY" | "NEEDS_DATA_FIX" | "NEEDS_PLAN_MATCH" | "NEEDS_SERVICE_CHECK";
+export type { FTWilliamsFailureType } from "./types";
 
 export const failureTypeLabels: Record<FTWilliamsFailureType, string> = {
   NEEDS_RETRY: "Needs retry",
@@ -9,8 +9,9 @@ export const failureTypeLabels: Record<FTWilliamsFailureType, string> = {
   NEEDS_SERVICE_CHECK: "Needs service check",
 };
 
-export function classifyFTWilliamsFailure(item: FTWilliamsFailureQueueItem): FTWilliamsFailureType {
-  const text = `${item.failure_reason || ""} ${item.next_action || ""} ${item.review_status || ""}`.toLowerCase();
+export function classifyFTWilliamsFailure(item: FTWilliamsFailureQueueSummary): FTWilliamsFailureType {
+  if (item.failure_type) return item.failure_type;
+  const text = `${item.short_reason || ""} ${item.next_action || ""} ${item.review_status || ""}`.toLowerCase();
   if (/(plan|mapping|customer|identifier|match|ein|pn|ftw id|plan id|customer id)/.test(text)) return "NEEDS_PLAN_MATCH";
   if (/(field|xml|form|checkbox|edit check|value|line|schedule|payload|invalid)/.test(text)) return "NEEDS_DATA_FIX";
   if (/(login|session|credential|auth|unauthorized|forbidden|token|permission|network|timeout|connection|service unavailable|gateway|rate limit)/.test(text)) return "NEEDS_SERVICE_CHECK";
@@ -21,7 +22,7 @@ export function ftwFailureTypeClass(type: FTWilliamsFailureType) {
   return type.toLowerCase().replaceAll("_", "-");
 }
 
-export function countFTWilliamsFailureTypes(items: FTWilliamsFailureQueueItem[]) {
+export function countFTWilliamsFailureTypes(items: FTWilliamsFailureQueueSummary[]) {
   return items.reduce<Record<FTWilliamsFailureType, number>>(
     (counts, item) => {
       counts[classifyFTWilliamsFailure(item)] += 1;
