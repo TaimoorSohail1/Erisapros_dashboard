@@ -2916,7 +2916,7 @@ function FTWilliamsSendConfirmationModal({
   const hasPreparedChanges = changedRows.length > 0 || scheduleAUpdateIncluded;
   return (
     <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="ftw-send-confirm-title">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal ftw-send-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="ftw-send-confirm-title">
         <header className="approve-confirm-header">
           <div>
             <span className="eyebrow">Final FT Williams check</span>
@@ -2926,63 +2926,65 @@ function FTWilliamsSendConfirmationModal({
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close FT Williams confirmation"><X size={18} /></button>
         </header>
 
-        <div className="approve-confirm-stats">
-          <ApprovalModalStat label="Known blockers" value={blockingIssueCount} tone={blockingIssueCount ? "danger" : "ready"} />
-          <ApprovalModalStat label="Warnings" value={warningCount} tone={warningCount ? "warn" : "ready"} />
-          <ApprovalModalStat label="Fields changing" value={changedRows.length} tone="ready" />
-          <ApprovalModalStat label="Schedule A records included" value={scheduleARecordCount} tone="info" />
-          <ApprovalModalStat label="Existing records preserved" value={preservedScheduleARecordCount} tone="info" />
-          <ApprovalModalStat label="Broker rows included" value={brokerRowCount} tone="info" />
-        </div>
-
-        <div className="approve-confirm-warning ready">
-          <ShieldCheck size={18} />
-          <span>
-            <strong>Complete Schedule A protection is enabled.</strong>
-            <small>The app retries delayed verification. It restores the pre-send snapshot only when read-back confirms a missing record or damaged broker-row set.</small>
-          </span>
-        </div>
-
-        <ol className="ftw-send-safety-flow" aria-label="FT Williams update safety flow">
-          <li><span>1</span><strong>Validate</strong><small>Blocking errors stop the send; warnings stay visible.</small></li>
-          <li><span>2</span><strong>Send</strong><small>The complete, identity-checked payload is sent once.</small></li>
-          <li><span>3</span><strong>Accepted</strong><small>FT Williams accepted the update is recorded separately.</small></li>
-          <li><span>4</span><strong>Verify</strong><small>Complete appears only after every saved value is read back.</small></li>
-        </ol>
-
-        {unchangedScheduleARecords.length ? (
-          <details className="ftw-preserved-records">
-            <summary>Unchanged Schedule A records <span>{unchangedScheduleARecords.length} preserved</span></summary>
-            <div>
-              {unchangedScheduleARecords.map((record) => (
-                <article key={`${record.sequence}-${record.contract}-${record.carrier}`}>
-                  <strong>{record.carrier}</strong>
-                  <small>Sequence {record.sequence} · EIN {record.carrierEin} · Policy {record.contract}</small>
-                </article>
-              ))}
-            </div>
-          </details>
-        ) : null}
-
-        <div className="approve-confirm-table-wrap">
-          <div className="approve-confirm-table-head">
-            <strong>Values that will change</strong>
-            <span>{changedRows.length} field{changedRows.length === 1 ? "" : "s"}</span>
+        <div className="approve-confirm-body">
+          <div className="approve-confirm-stats">
+            <ApprovalModalStat label="Known blockers" value={blockingIssueCount} tone={blockingIssueCount ? "danger" : "ready"} />
+            <ApprovalModalStat label="Warnings" value={warningCount} tone={warningCount ? "warn" : "ready"} />
+            <ApprovalModalStat label="Fields changing" value={changedRows.length} tone="ready" />
+            <ApprovalModalStat label="Schedule A records included" value={scheduleARecordCount} tone="info" />
+            <ApprovalModalStat label="Existing records preserved" value={preservedScheduleARecordCount} tone="info" />
+            <ApprovalModalStat label="Broker rows included" value={brokerRowCount} tone="info" />
           </div>
-          <table className="approve-confirm-table">
-            <thead><tr><th>Field</th><th>Current FTW</th><th>New value</th><th>Status</th></tr></thead>
-            <tbody>
-              {changedRows.map((row) => (
-                <tr key={row.key}>
-                  <td><strong>{row.label}</strong><small>{row.formLabel} / {row.section}</small></td>
-                  <td>{row.currentFtw || <span className="muted-value">Blank</span>}</td>
-                  <td>{row.proposed || <span className="muted-value">Blank</span>}</td>
-                  <td><span className="review-issue-pill issue-will_update">Will update</span></td>
-                </tr>
-              ))}
-              {!changedRows.length ? <tr><td colSpan={4}>{scheduleAUpdateIncluded ? "Schedule A or broker-row changes are prepared." : "No field changes are currently prepared."}</td></tr> : null}
-            </tbody>
-          </table>
+
+          <div className="approve-confirm-warning ready">
+            <ShieldCheck size={18} />
+            <span>
+              <strong>Complete Schedule A protection is enabled.</strong>
+              <small>The app retries delayed verification. It restores the pre-send snapshot only when read-back confirms a missing record or damaged broker-row set.</small>
+            </span>
+          </div>
+
+          <ol className="ftw-send-safety-flow" aria-label="FT Williams update safety flow">
+            <li><span>1</span><strong>Validate</strong><small>Blocking errors stop the send; warnings stay visible.</small></li>
+            <li><span>2</span><strong>Send</strong><small>The complete, identity-checked payload is sent once.</small></li>
+            <li><span>3</span><strong>Accepted</strong><small>FT Williams accepted the update is recorded separately.</small></li>
+            <li><span>4</span><strong>Verify</strong><small>Complete appears only after every saved value is read back.</small></li>
+          </ol>
+
+          {unchangedScheduleARecords.length ? (
+            <details className="ftw-preserved-records">
+              <summary>Unchanged Schedule A records <span>{unchangedScheduleARecords.length} preserved</span></summary>
+              <div>
+                {unchangedScheduleARecords.map((record) => (
+                  <article key={`${record.sequence}-${record.contract}-${record.carrier}`}>
+                    <strong>{record.carrier}</strong>
+                    <small>Sequence {record.sequence} · EIN {record.carrierEin} · Policy {record.contract}</small>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ) : null}
+
+          <div className="approve-confirm-table-wrap">
+            <div className="approve-confirm-table-head">
+              <strong>Values that will change</strong>
+              <span>{changedRows.length} field{changedRows.length === 1 ? "" : "s"}</span>
+            </div>
+            <table className="approve-confirm-table">
+              <thead><tr><th>Field</th><th>Current FTW</th><th>New value</th><th>Status</th></tr></thead>
+              <tbody>
+                {changedRows.map((row) => (
+                  <tr key={row.key}>
+                    <td><strong>{row.label}</strong><small>{row.formLabel} / {row.section}</small></td>
+                    <td>{row.currentFtw || <span className="muted-value">Blank</span>}</td>
+                    <td>{row.proposed || <span className="muted-value">Blank</span>}</td>
+                    <td><span className="review-issue-pill issue-will_update">Will update</span></td>
+                  </tr>
+                ))}
+                {!changedRows.length ? <tr><td colSpan={4}>{scheduleAUpdateIncluded ? "Schedule A or broker-row changes are prepared." : "No field changes are currently prepared."}</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <footer className="approve-confirm-actions">

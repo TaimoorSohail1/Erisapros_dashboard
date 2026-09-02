@@ -695,6 +695,26 @@ assert.match(
 );
 assert.match(
   source,
+  /<div className="approve-confirm-body">[\s\S]*?approve-confirm-table-wrap[\s\S]*?<\/div>\s*<footer className="approve-confirm-actions">/,
+  "The FT Williams confirmation content must scroll independently from its persistent actions.",
+);
+assert.match(
+  styles,
+  /\.ftw-send-confirm-modal\s*\{[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/,
+  "The FT Williams confirmation must reserve responsive rows for its header, content, and footer.",
+);
+assert.match(
+  styles,
+  /\.approve-confirm-body\s*\{[\s\S]*?overflow-y:\s*auto;/,
+  "Long FT Williams confirmation content must scroll inside the dialog.",
+);
+assert.match(
+  styles,
+  /@media \(max-width: 600px\)[\s\S]*?\.ftw-send-confirm-modal\s*\{[\s\S]*?height:\s*100dvh;/,
+  "The FT Williams confirmation must become a usable full-screen dialog on phones.",
+);
+assert.match(
+  source,
   /placeholder=\{expectedFormat \|\| "Enter the FT Williams value"\}/,
   "Field editing must show the expected FT Williams format.",
 );
