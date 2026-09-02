@@ -38,7 +38,19 @@ export function createSharedPollingResource<T>({
   }
 
   async function refresh({ force = false }: { force?: boolean } = {}): Promise<T> {
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      if (!force) return inFlight;
+      const olderRequest = inFlight;
+      return (async () => {
+        try {
+          await olderRequest;
+        } catch {
+          // A mutation-triggered refresh must still run after an older failed load.
+        }
+        if (inFlight && inFlight !== olderRequest) return inFlight;
+        return refresh({ force: true });
+      })();
+    }
     if (!force && snapshot.updatedAt && now() - snapshot.updatedAt < freshMs) return snapshot.data;
     publish({ loading: true });
     inFlight = load()

@@ -3386,6 +3386,19 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.audit_pdf_sha256 or ""), 64)
 
         clear_ftw_current_snapshot_cache()
+        refreshed_after_success = run_async(
+            FTWilliamsReviewService(verifying_ftw).prepare_review(
+                filing.id,
+                send_queries=True,
+            )
+        )
+        self.assertEqual(refreshed_after_success.status, FTWilliamsReviewStatus.UPDATE_SENT)
+        self.assertTrue(refreshed_after_success.update_verification_success)
+        self.assertEqual(refreshed_after_success.update_confirmed_count, 2)
+        self.assertEqual(refreshed_after_success.update_remaining_count, 0)
+        self.assertEqual(len(refreshed_after_success.update_results), 2)
+
+        clear_ftw_current_snapshot_cache()
         baseline_warning_ftw = VerifyingFTWilliamsService(
             baseline_edit_checks_success=False,
         )

@@ -58,6 +58,7 @@ type ContractTypeFilter = "ALL" | ScheduleAContractType;
 type ReviewRowGroup = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE";
 type ReviewToast = {
   message: string;
+  sticky?: boolean;
   title: string;
   tone: "error" | "success" | "warning";
 } | null;
@@ -234,6 +235,7 @@ export function FilingReviewPage() {
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
   const actionRequiredRows = reviewRows.filter(isActionRequiredRow);
   const actionRequiredCount = actionRequiredRows.length + (planYearConflictRequired ? 1 : 0);
+  const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
   const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -326,7 +328,7 @@ export function FilingReviewPage() {
   const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate && !planYearConflictRequired;
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.sticky) return;
     const timer = window.setTimeout(() => setToast(null), 6500);
     return () => window.clearTimeout(timer);
   }, [toast]);
@@ -726,6 +728,7 @@ export function FilingReviewPage() {
         message: validationOutcome?.summary || (updateCount
           ? `${updateCount} field${updateCount === 1 ? "" : "s"} verified. Current FTW values are now refreshed.`
           : "Current FTW values were refreshed and verified successfully."),
+        sticky: true,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
@@ -828,9 +831,11 @@ export function FilingReviewPage() {
         <WorkflowStepper
           filing={filing}
           ftwReadyToSend={ftwReadyToSend}
-          needsDecisionCount={actionRequiredCount}
+          needsDecisionCount={verifiedUpdateComplete ? 0 : actionRequiredCount}
           onStepSelect={setActiveWorkflowStep}
         />
+
+        {verifiedUpdateComplete && ftwReview ? <FTWUpdateSuccessNotice review={ftwReview} reviewNoteCount={actionRequiredCount} /> : null}
 
         {isProcessing && !fields.length ? (
           <ProcessingPanel filing={filing} />
@@ -844,7 +849,7 @@ export function FilingReviewPage() {
               </div>
               <div className="compact-review-meta" aria-label="Filing review summary">
                 <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
-                <span><small>Needs review</small><strong>{actionRequiredCount}</strong></span>
+                <span><small>{verifiedUpdateComplete ? "Review notes" : "Needs review"}</small><strong>{actionRequiredCount}</strong></span>
                 <span><small>FTW match</small><strong>{filing.ftw_review?.schedule_a_match ? "Matched" : "Pending"}</strong></span>
               </div>
               <div className="compact-review-toolbar">
@@ -876,7 +881,7 @@ export function FilingReviewPage() {
             </div>
 
             <div className="approval-count-tabs">
-              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Action Required" count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
+              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Action Required"} count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
@@ -1085,6 +1090,40 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
         <X size={15} />
       </button>
     </div>
+  );
+}
+
+function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined) {
+  return Boolean(
+    review
+    && review.status === "UPDATE_SENT"
+    && review.update_verification_attempted
+    && review.update_verification_success !== false
+    && (review.update_attempted_count || 0) > 0
+    && (review.update_remaining_count || 0) === 0
+  );
+}
+
+function FTWUpdateSuccessNotice({
+  review,
+  reviewNoteCount,
+}: {
+  review: FTWilliamsReview;
+  reviewNoteCount: number;
+}) {
+  const confirmed = review.update_confirmed_count || review.update_attempted_count || 0;
+  return (
+    <section className="ftw-verification-summary complete ftw-update-success-notice" role="status" aria-live="polite">
+      <div className="ftw-verification-icon"><CheckCircle2 size={22} /></div>
+      <div className="ftw-verification-copy">
+        <span>FT Williams update complete</span>
+        <strong>Data updated and verified successfully</strong>
+        <small>
+          FT Williams returned the saved values for {confirmed} field{confirmed === 1 ? "" : "s"}.
+          {reviewNoteCount ? ` ${reviewNoteCount} extraction review note${reviewNoteCount === 1 ? " remains" : "s remain"}; these do not mean the update failed.` : " No further update action is required."}
+        </small>
+      </div>
+    </section>
   );
 }
 

@@ -448,10 +448,24 @@ class FTWilliamsReviewService:
         proposed_xml = combine_ftw_update_xml(update_xml_5500, update_xml_schedule_a)
         await repo.update_filing(filing_id, {"proposed_xml": proposed_xml})
 
+        preserve_verified_update = bool(
+            existing_review
+            and existing_review.status == FTWilliamsReviewStatus.UPDATE_SENT
+            and existing_review.update_verification_attempted
+            and existing_review.update_verification_success is not False
+            and existing_review.update_remaining_count == 0
+            and current_query_success
+            and not active_failure
+            and broker_match_complete
+            and not any(field.changed and field.update_included for field in comparison_fields)
+        )
+
         review = FTWilliamsReview(
             filing_id=filing_id,
             status=(
-                FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED
+                FTWilliamsReviewStatus.UPDATE_SENT
+                if preserve_verified_update
+                else FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED
                 if bring_forward_required
                 else FTWilliamsReviewStatus.CURRENT_QUERIED
                 if current_query_success
@@ -510,6 +524,23 @@ class FTWilliamsReviewService:
             schedule_a_current_values=schedule_a_current,
             update_xml_5500=update_xml_5500,
             update_xml_schedule_a=update_xml_schedule_a,
+            update_response_xml=(existing_review.update_response_xml if preserve_verified_update else None),
+            update_verification_attempted=(existing_review.update_verification_attempted if preserve_verified_update else False),
+            update_verification_success=(existing_review.update_verification_success if preserve_verified_update else None),
+            update_verification_mismatches=(list(existing_review.update_verification_mismatches or []) if preserve_verified_update else []),
+            update_verification_request_xml=(existing_review.update_verification_request_xml if preserve_verified_update else None),
+            update_verification_response_xml=(existing_review.update_verification_response_xml if preserve_verified_update else None),
+            schedule_a_restore_attempted=(existing_review.schedule_a_restore_attempted if preserve_verified_update else False),
+            schedule_a_restore_success=(existing_review.schedule_a_restore_success if preserve_verified_update else None),
+            schedule_a_restore_response_xml=(existing_review.schedule_a_restore_response_xml if preserve_verified_update else None),
+            schedule_a_restore_verification_request_xml=(existing_review.schedule_a_restore_verification_request_xml if preserve_verified_update else None),
+            schedule_a_restore_verification_response_xml=(existing_review.schedule_a_restore_verification_response_xml if preserve_verified_update else None),
+            schedule_a_restore_verification_mismatches=(list(existing_review.schedule_a_restore_verification_mismatches or []) if preserve_verified_update else []),
+            update_attempted_count=(existing_review.update_attempted_count if preserve_verified_update else 0),
+            update_confirmed_count=(existing_review.update_confirmed_count if preserve_verified_update else 0),
+            update_remaining_count=(existing_review.update_remaining_count if preserve_verified_update else 0),
+            update_results=(list(existing_review.update_results or []) if preserve_verified_update else []),
+            update_retry_count=(existing_review.update_retry_count if preserve_verified_update else 0),
             update_diagnostics=list(existing_review.update_diagnostics or []) if existing_review else [],
             schema_validation_results=(
                 list(existing_review.schema_validation_results or []) if existing_review else []

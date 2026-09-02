@@ -36,5 +36,9 @@ assert.match(filingReview, /Update verified[^\n]*existing FT Williams issues rem
 assert.match(filingReview, /Update verified[^\n]*new FT Williams validation issues need attention/, "New FT issues must be clearly identified without misreporting the update as failed.");
 assert.match(filingReview, /comparison\.update_exclusion_reason/, "Conditionally blocked FTW fields must show their exact exclusion reason.");
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
+assert.match(filingReview, /sticky\?: boolean/, "Verified FT Williams success notifications must support remaining visible until dismissed.");
+assert.match(filingReview, /title: "FT Williams updated successfully"[\s\S]*?sticky: true/, "A verified update must show a persistent success notification.");
+assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Action Required"/, "Post-update extraction notes must not look like failed FT Williams actions.");
+assert.match(filingReview, /<FTWUpdateSuccessNotice[\s\S]*?review=\{ftwReview\}/, "Verified FT Williams updates must have a persistent success notice in the filing page.");
 
 console.log("FT Williams failure diagnostics workflow passed.");
