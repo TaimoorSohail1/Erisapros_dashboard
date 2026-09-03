@@ -55,6 +55,7 @@ assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Action R
 assert.match(filingReview, /<FTWUpdateSuccessNotice[\s\S]*?review=\{ftwReview\}/, "Verified FT Williams updates must have a persistent success notice in the filing page.");
 assert.match(api, /class ApiRequestError extends Error[\s\S]*?clientError/, "API failures must preserve structured client-facing FT Williams details.");
 assert.match(api, /payload\.client_error[\s\S]*?detail\.client_error/, "The API client must recognize structured FT Williams errors at either response level.");
+assert.match(api, /case 504:[\s\S]*?outcome is unknown[\s\S]*?Query FTW Current/, "Gateway timeouts must explain that the send outcome is unknown and require read-back before retry.");
 assert.match(filingReview, /toast\.reason[\s\S]*?toast\.nextAction[\s\S]*?toast\.code/, "The send failure toast must show the reason, recovery action, and support code.");
 assert.match(filingReview, /sendValidationNoticeFromError\([^,]+, allReviewRows\)/, "A validation failure must resolve fields against included and excluded review rows.");
 assert.match(filingReview, /function focusValidationIssue[\s\S]*?setSearch\(""\)[\s\S]*?setShowExcludedFields/, "Fix issue must clear filters and reveal the affected field before focusing it.");

@@ -38,11 +38,86 @@ function isClientFacingError(value: unknown): value is ClientFacingError {
   return typeof candidate.title === "string" && typeof candidate.message === "string";
 }
 
+function clientErrorForHttpStatus(status: number, detail?: string): ClientFacingError {
+  const receivedDetail = detail?.trim();
+  switch (status) {
+    case 401:
+      return {
+        title: "Your session has expired",
+        message: "The request was not sent because your sign-in session is no longer valid.",
+        reason: receivedDetail || "The server returned HTTP 401 Unauthorized.",
+        next_action: "Sign in again, reopen the filing, and retry the action.",
+        code: "HTTP_401",
+        source: "ERISAPros",
+      };
+    case 403:
+      return {
+        title: "FT Williams permission is missing",
+        message: "The active account is not allowed to perform this FT Williams action.",
+        reason: receivedDetail || "The server returned HTTP 403 Forbidden.",
+        next_action: "Confirm the FT Williams account and KeyID permissions, then retry.",
+        code: "HTTP_403",
+        source: "FT Williams",
+      };
+    case 429:
+      return {
+        title: "FT Williams is receiving too many requests",
+        message: "The update was paused by a service rate limit.",
+        reason: receivedDetail || "The server returned HTTP 429 Too Many Requests.",
+        next_action: "Wait briefly, click Query FTW Current, and retry only if the values were not updated.",
+        code: "HTTP_429",
+        source: "FT Williams",
+      };
+    case 502:
+    case 503:
+      return {
+        title: "FT Williams is temporarily unavailable",
+        message: "The gateway could not reach a healthy FT Williams service.",
+        reason: receivedDetail || `The server returned HTTP ${status}.`,
+        next_action: "Click Query FTW Current when the service is available, then retry only if needed.",
+        code: `HTTP_${status}`,
+        source: "FT Williams",
+      };
+    case 504:
+      return {
+        title: "FT Williams verification timed out",
+        message: "The send and read-back did not finish before the gateway time limit.",
+        reason: receivedDetail || "The request exceeded the gateway time limit, so the update outcome is unknown.",
+        next_action: "Click Query FTW Current to verify what was saved before retrying.",
+        code: "HTTP_504",
+        source: "FT Williams",
+      };
+    default:
+      return {
+        title: "FT Williams request was not completed",
+        message: "The server could not complete the requested FT Williams action.",
+        reason: receivedDetail || `The server returned HTTP ${status}.`,
+        next_action: "Review the reason and technical details, then retry only after confirming the current FT Williams values.",
+        code: `HTTP_${status}`,
+        source: "FT Williams",
+      };
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   const idToken = await getIdToken();
   if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
-  const response = await fetch(API_BASE + path, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(API_BASE + path, { ...options, headers });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "The browser could not reach the server.";
+    const clientError: ClientFacingError = {
+      title: "Connection to FT Williams was interrupted",
+      message: "The browser did not receive a response, so the action outcome is unknown.",
+      reason,
+      next_action: "Restore the connection and click Query FTW Current before retrying.",
+      code: "NETWORK_REQUEST_FAILED",
+      source: "Network",
+    };
+    throw new ApiRequestError(clientError.message, 0, clientError);
+  }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     const detail = payload.detail;
@@ -61,7 +136,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       const expected = detail.expected_format ? ` Expected: ${detail.expected_format}.` : "";
       throw new ApiRequestError(`${message}.${expected}`.replace("..", "."), response.status);
     }
-    throw new ApiRequestError(String(detail || payload.error || `Request failed with HTTP ${response.status}`), response.status);
+    const rawDetail = String(detail || payload.error || "");
+    const statusError = clientErrorForHttpStatus(response.status, rawDetail || undefined);
+    throw new ApiRequestError(statusError.message, response.status, statusError);
   }
   return response.json();
 }
