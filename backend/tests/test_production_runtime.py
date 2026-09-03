@@ -25,7 +25,7 @@ class ProductionRuntimeTests(unittest.TestCase):
 
         self.assertIn("idle_timeout.timeout_seconds", contents)
         self.assertIn('Value: "120"', contents)
-        self.assertIn("OriginReadTimeout: 60", contents)
+        self.assertIn("OriginReadTimeout: 120", contents)
         self.assertIn("OriginKeepaliveTimeout: 60", contents)
 
     def test_production_uses_plan_specific_ftw_deep_link_template(self):

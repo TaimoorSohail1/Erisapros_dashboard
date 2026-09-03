@@ -652,7 +652,7 @@ Resources:
             CustomOriginConfig:
               HTTPPort: 80
               OriginProtocolPolicy: http-only
-              OriginReadTimeout: 60
+              OriginReadTimeout: 120
               OriginKeepaliveTimeout: 60
             OriginCustomHeaders:
               - HeaderName: X-Erisapros-Origin
