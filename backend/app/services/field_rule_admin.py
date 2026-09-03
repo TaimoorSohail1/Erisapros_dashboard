@@ -48,6 +48,19 @@ class FieldRuleService:
     @classmethod
     def apply_catalog_capability(cls, rule: FieldRule) -> FieldRule:
         """Make the catalog, rather than stale saved behavior, authoritative."""
+        # Keep retired fields out of the searchable rule inventory even when an
+        # older persisted rule still carries one of their phrases as an alias.
+        if any("plan administrator" in normalize_name(alias) for alias in rule.aliases):
+            rule = rule.model_copy(
+                deep=True,
+                update={
+                    "aliases": [
+                        alias
+                        for alias in rule.aliases
+                        if "plan administrator" not in normalize_name(alias)
+                    ]
+                },
+            )
         if rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY:
             return rule
         if cls.approved_update_tag(rule.key):

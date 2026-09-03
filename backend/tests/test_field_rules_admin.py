@@ -113,6 +113,12 @@ class FieldRuleAdminTests(unittest.TestCase):
             {field.mapped_rule_key for field in fields},
         )
         self.assertNotIn("2a. Plan Administrator Name", {field.source_field_name for field in fields})
+        searchable_rule_text = " ".join(
+            text
+            for rule in published
+            for text in [rule.label, rule.ftw_field, rule.xml_tag or "", rule.notes, rule.client_notes, *rule.aliases]
+        ).lower()
+        self.assertNotIn("plan administrator", searchable_rule_text)
 
     def test_extraction_only_fields_are_limited_to_schedule_a(self):
         async def scenario():
