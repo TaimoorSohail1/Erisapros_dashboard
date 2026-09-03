@@ -221,6 +221,7 @@ export function FilingReviewPage() {
 
   const fields = filing?.fields ?? [];
   const ftwReview = filing?.ftw_review || null;
+  const ftwPlanUrl = ftwPlanPageUrl(ftwReview);
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
   const scheduleABrokerMatches = ftwReview?.schedule_a_broker_matches || [];
@@ -989,6 +990,15 @@ export function FilingReviewPage() {
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
 
+            {showFtwSendAction && ftwReview?.ftw_editable === false ? (
+              <FTWEditabilityBanner
+                busy={ftwInteractionBusy}
+                planUrl={ftwPlanUrl}
+                review={ftwReview}
+                onRefresh={() => prepareFtw(true)}
+              />
+            ) : null}
+
             {planYearConflictRequired && ftwReview?.plan_year_conflict ? (
               <PlanYearConflictPanel
                 busy={reviewInteractionBusy}
@@ -1360,6 +1370,17 @@ function hasUsableFtwCurrentValue(value: string | null | undefined) {
   return Boolean(text && text !== "no current value" && text !== "not found" && text !== "pending");
 }
 
+function ftwPlanPageUrl(review: FTWilliamsReview | null) {
+  const providedUrl = String(review?.ftw_plan_url || "").trim();
+  if (providedUrl) return providedUrl;
+  const customerId = String(review?.ftw_customer_id || "").trim();
+  const planId = String(review?.ftw_plan_id || "").trim();
+  const year = String(review?.year || review?.comparison_year || "").trim();
+  if (!customerId || !planId || !year) return "";
+  const plan = `${encodeURIComponent(customerId)},${encodeURIComponent(planId)}`;
+  return `https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan=${plan}&Year=${encodeURIComponent(year)}`;
+}
+
 function sendLockReason(
   filing: FilingDetail | null,
   form5500SafetyReady: boolean,
@@ -1515,6 +1536,46 @@ function FilingGuidancePanel({
         <small>{nextAction}</small>
       </div>
       {actions ? <div className="filing-guidance-actions">{actions}</div> : null}
+    </section>
+  );
+}
+
+function FTWEditabilityBanner({
+  busy,
+  onRefresh,
+  planUrl,
+  review,
+}: {
+  busy: boolean;
+  onRefresh: () => void;
+  planUrl: string;
+  review: FTWilliamsReview;
+}) {
+  const lockStatus = String(review.ftw_locked_status || "Locked").trim();
+  const signedStatus = String(review.ftw_signed_status || "").trim();
+  const statusLabel = [lockStatus, signedStatus].filter(Boolean).join(" and ");
+  return (
+    <section className="ftw-editability-banner" role="alert" aria-label="FT Williams filing is not editable">
+      <span className="ftw-editability-icon"><Lock size={18} /></span>
+      <div className="ftw-editability-copy">
+        <small>FT Williams editability</small>
+        <strong>Send disabled: FT Williams filing is {statusLabel}.</strong>
+        <p>Unlock the filing or use Amend Filing in FT Williams, then refresh its status here.</p>
+      </div>
+      <div className="ftw-editability-status" aria-label="FT Williams filing statuses">
+        <span><Lock size={12} /> {lockStatus}</span>
+        {signedStatus ? <span><ShieldCheck size={12} /> {signedStatus}</span> : null}
+      </div>
+      <div className="ftw-editability-actions">
+        {planUrl ? (
+          <a className="button secondary" href={planUrl} target="_blank" rel="noopener noreferrer">
+            Open FT Williams <ExternalLink size={14} />
+          </a>
+        ) : null}
+        <button className="button" type="button" disabled={busy} onClick={onRefresh}>
+          {busy ? <InlineLoader label="Checking status" /> : <><RefreshCw size={14} /> Refresh status</>}
+        </button>
+      </div>
     </section>
   );
 }

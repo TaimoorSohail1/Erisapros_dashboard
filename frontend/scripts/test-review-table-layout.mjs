@@ -709,6 +709,21 @@ assert.match(
   /validation-blocker-banner[\s\S]*?Approval remains available; sending stays locked/,
   "Blocking validation errors must explain that approval remains available while sending stays protected.",
 );
+assert.match(
+  source,
+  /function FTWEditabilityBanner[\s\S]*?Send disabled:[\s\S]*?Unlock the filing or use Amend Filing[\s\S]*?Open FT Williams[\s\S]*?Refresh status/,
+  "A locked FT Williams filing must show the exact reason and recovery actions beside the disabled send flow.",
+);
+assert.match(
+  source,
+  /ftwReview\?\.ftw_editable === false[\s\S]*?<FTWEditabilityBanner/,
+  "The FT Williams editability warning must be visible on the main review screen, not hidden in technical details.",
+);
+assert.match(
+  styles,
+  /\.ftw-editability-banner\s*\{[\s\S]*?grid-template-columns:[^;]+;/,
+  "The FT Williams editability warning must use a structured responsive layout.",
+);
 assert.doesNotMatch(
   source,
   /disabled=\{busy \|\| approvalBlocked\}/,
