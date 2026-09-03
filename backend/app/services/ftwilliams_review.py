@@ -465,6 +465,12 @@ class FTWilliamsReviewService:
             and broker_match_complete
             and not any(field.changed and field.update_included for field in comparison_fields)
         )
+        preserved_update_outcome = self._reconcile_preserved_update_outcome(
+            existing_review,
+            comparison_fields,
+            current_query_success=current_query_success,
+        )
+        preserve_update_outcome = bool(preserved_update_outcome)
 
         review = FTWilliamsReview(
             filing_id=filing_id,
@@ -530,23 +536,23 @@ class FTWilliamsReviewService:
             schedule_a_current_values=schedule_a_current,
             update_xml_5500=update_xml_5500,
             update_xml_schedule_a=update_xml_schedule_a,
-            update_response_xml=(existing_review.update_response_xml if preserve_verified_update else None),
-            update_verification_attempted=(existing_review.update_verification_attempted if preserve_verified_update else False),
-            update_verification_success=(existing_review.update_verification_success if preserve_verified_update else None),
-            update_verification_mismatches=(list(existing_review.update_verification_mismatches or []) if preserve_verified_update else []),
-            update_verification_request_xml=(existing_review.update_verification_request_xml if preserve_verified_update else None),
-            update_verification_response_xml=(existing_review.update_verification_response_xml if preserve_verified_update else None),
-            schedule_a_restore_attempted=(existing_review.schedule_a_restore_attempted if preserve_verified_update else False),
-            schedule_a_restore_success=(existing_review.schedule_a_restore_success if preserve_verified_update else None),
-            schedule_a_restore_response_xml=(existing_review.schedule_a_restore_response_xml if preserve_verified_update else None),
-            schedule_a_restore_verification_request_xml=(existing_review.schedule_a_restore_verification_request_xml if preserve_verified_update else None),
-            schedule_a_restore_verification_response_xml=(existing_review.schedule_a_restore_verification_response_xml if preserve_verified_update else None),
-            schedule_a_restore_verification_mismatches=(list(existing_review.schedule_a_restore_verification_mismatches or []) if preserve_verified_update else []),
-            update_attempted_count=(existing_review.update_attempted_count if preserve_verified_update else 0),
-            update_confirmed_count=(existing_review.update_confirmed_count if preserve_verified_update else 0),
-            update_remaining_count=(existing_review.update_remaining_count if preserve_verified_update else 0),
-            update_results=(list(existing_review.update_results or []) if preserve_verified_update else []),
-            update_retry_count=(existing_review.update_retry_count if preserve_verified_update else 0),
+            update_response_xml=(existing_review.update_response_xml if preserve_update_outcome else None),
+            update_verification_attempted=(preserved_update_outcome["verification_attempted"] if preserve_update_outcome else False),
+            update_verification_success=(preserved_update_outcome["verification_success"] if preserve_update_outcome else None),
+            update_verification_mismatches=(list(existing_review.update_verification_mismatches or []) if preserve_update_outcome else []),
+            update_verification_request_xml=(existing_review.update_verification_request_xml if preserve_update_outcome else None),
+            update_verification_response_xml=(existing_review.update_verification_response_xml if preserve_update_outcome else None),
+            schedule_a_restore_attempted=(existing_review.schedule_a_restore_attempted if preserve_update_outcome else False),
+            schedule_a_restore_success=(existing_review.schedule_a_restore_success if preserve_update_outcome else None),
+            schedule_a_restore_response_xml=(existing_review.schedule_a_restore_response_xml if preserve_update_outcome else None),
+            schedule_a_restore_verification_request_xml=(existing_review.schedule_a_restore_verification_request_xml if preserve_update_outcome else None),
+            schedule_a_restore_verification_response_xml=(existing_review.schedule_a_restore_verification_response_xml if preserve_update_outcome else None),
+            schedule_a_restore_verification_mismatches=(list(existing_review.schedule_a_restore_verification_mismatches or []) if preserve_update_outcome else []),
+            update_attempted_count=(preserved_update_outcome["attempted_count"] if preserve_update_outcome else 0),
+            update_confirmed_count=(preserved_update_outcome["confirmed_count"] if preserve_update_outcome else 0),
+            update_remaining_count=(preserved_update_outcome["remaining_count"] if preserve_update_outcome else 0),
+            update_results=(preserved_update_outcome["results"] if preserve_update_outcome else []),
+            update_retry_count=(existing_review.update_retry_count if preserve_update_outcome else 0),
             update_diagnostics=list(existing_review.update_diagnostics or []) if existing_review else [],
             schema_validation_results=(
                 list(existing_review.schema_validation_results or []) if existing_review else []
@@ -3000,6 +3006,70 @@ class FTWilliamsReviewService:
             and not verification_attempted
             and not verification_mismatches
         )
+
+    def _reconcile_preserved_update_outcome(
+        self,
+        existing_review: FTWilliamsReview | None,
+        refreshed_fields: list[FTWilliamsComparisonField],
+        *,
+        current_query_success: bool,
+    ) -> dict | None:
+        """Keep the last per-field send result visible and refresh it from current FTW values."""
+        if not existing_review or not existing_review.update_results:
+            return None
+
+        results = [dict(result) for result in existing_review.update_results]
+        fields_by_id = {
+            str(field.field_id): field
+            for field in refreshed_fields
+            if field.field_id
+        }
+        if current_query_success:
+            for result in results:
+                field = fields_by_id.get(str(result.get("field_id") or ""))
+                if field is None:
+                    field = next(
+                        (
+                            candidate
+                            for candidate in refreshed_fields
+                            if candidate.ftw_tag == result.get("tag")
+                            and candidate.label == result.get("label")
+                            and (
+                                not result.get("form_type")
+                                or not candidate.form_type
+                                or candidate.form_type.value == result.get("form_type")
+                            )
+                        ),
+                        None,
+                    )
+                if field is None:
+                    continue
+                verified = not values_meaningfully_different(
+                    field.current_value,
+                    result.get("sent_value"),
+                    tag=field.ftw_tag,
+                )
+                result["status"] = "VERIFIED" if verified else "NEEDS_CORRECTION"
+                result["reason"] = (
+                    "Confirmed by FT Williams read-back."
+                    if verified
+                    else "FT Williams still returns a different value."
+                )
+
+        attempted_count = max(existing_review.update_attempted_count, len(results))
+        confirmed_count = sum(result.get("status") == "VERIFIED" for result in results)
+        remaining_count = max(0, attempted_count - confirmed_count)
+        verification_success = existing_review.update_verification_success
+        if current_query_success:
+            verification_success = remaining_count == 0
+        return {
+            "attempted_count": attempted_count,
+            "confirmed_count": confirmed_count,
+            "remaining_count": remaining_count,
+            "results": results,
+            "verification_attempted": existing_review.update_verification_attempted or current_query_success,
+            "verification_success": verification_success,
+        }
 
     async def _verify_update_readback(self, review: FTWilliamsReview) -> dict:
         all_request_xmls: list[str] = []

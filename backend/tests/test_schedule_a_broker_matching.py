@@ -85,6 +85,53 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual([match.ftw_index for match in matches], [1, 0])
         self.assertTrue(all(match.status == "AUTO_MATCHED" for match in matches))
 
+    def test_duplicate_identity_is_disambiguated_by_compensation_and_purpose(self):
+        extracted_rows = [
+            ScheduleABrokerRow(
+                name="BROWN & BROWN OF MASSACHUSETTS",
+                address_line_1="144 TURNPIKE RD STE 330",
+                city="SOUTHBOROUGH",
+                state="MA",
+                zip_code="01772",
+                organization_code="3",
+                commission_total="0",
+                fee_total="0",
+            ),
+            ScheduleABrokerRow(
+                name="BROWN & BROWN OF MASSACHUSETTS",
+                address_line_1="144 TURNPIKE RD STE 330",
+                city="SOUTHBOROUGH",
+                state="MA",
+                zip_code="01772",
+                organization_code="3",
+                commission_total="16512.76",
+                fee_total="0",
+                purpose="Contingent Compensation",
+            ),
+        ]
+        current_rows = [
+            {
+                **current(1, "BROWN & BROWN OF MASSACHUSETTS", "144 TURNPIKE RD STE 330", "01772", "16513"),
+                "City01": "SOUTHBOROUGH",
+                "State01": "MA",
+                "FeesPdAmt01": "0",
+                "FeesPdText01": "CONTINGENT COMPENSATION",
+            },
+            {
+                **current(3, "BROWN & BROWN OF MASSACHUSETTS", "144 TURNPIKE RD STE 330", "01772", "0"),
+                "City03": "SOUTHBOROUGH",
+                "State03": "MA",
+                "FeesPdAmt03": "0",
+                "FeesPdText03": "",
+            },
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+
+        self.assertTrue(all(match.resolved for match in matches))
+        self.assertEqual([match.ftw_index for match in matches], [1, 0])
+        self.assertIn("compensation", matches[0].reason.lower())
+
     def test_dba_alias_with_unique_exact_address_keeps_current_broker_identity(self):
         extracted_rows = [
             extracted(

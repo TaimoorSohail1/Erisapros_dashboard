@@ -91,6 +91,17 @@ def match_schedule_a_brokers(
         identity_matches = [
             index for index, score in identity_scores.items() if score == best_identity_score and score > 0
         ]
+        business_candidates = identity_matches or name_matches
+        business_scores = {
+            index: _broker_business_score(row, normalized_current[index])
+            for index in business_candidates
+        }
+        best_business_score = max(business_scores.values(), default=0)
+        business_matches = [
+            index
+            for index, score in business_scores.items()
+            if score == best_business_score and score > 0
+        ]
         address_matches = [
             index
             for index in available
@@ -100,7 +111,10 @@ def match_schedule_a_brokers(
 
         selected: int | None = None
         reason = ""
-        if len(identity_matches) == 1:
+        if len(business_matches) == 1 and len(business_candidates) > 1:
+            selected = business_matches[0]
+            reason = "Matched by broker identity, compensation, fees, and purpose."
+        elif len(identity_matches) == 1:
             selected = identity_matches[0]
             reason = "Matched by broker name and address or ZIP."
         elif len(name_matches) == 1:
@@ -241,6 +255,7 @@ def _current_broker_row(row: Mapping[str, object]) -> ScheduleABrokerRow:
         organization_code=_value(row, "Code") or None,
         commission_total=_value(row, "CommPdAmt") or None,
         fee_total=_value(row, "FeesPdAmt") or None,
+        purpose=_value(row, "FeesPdText") or None,
     )
 
 
@@ -272,7 +287,7 @@ def _same_broker_business_row(extracted: ScheduleABrokerRow, current: ScheduleAB
             return False
     if (
         str(extracted.organization_code or "").strip()
-        and _key(extracted.organization_code) != _key(current.organization_code)
+        and _organization_code_key(extracted.organization_code) != _organization_code_key(current.organization_code)
     ):
         return False
     return True
@@ -304,6 +319,51 @@ def _broker_compensation_matches(extracted: ScheduleABrokerRow, current: Schedul
             return False
         nonzero = nonzero or proposed_amount != 0 or current_amount != 0
     return compared and nonzero
+
+
+def _broker_business_score(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> int:
+    """Score duplicate identities using the business values that define each payment row."""
+    score = 0
+    for attribute in ("commission_total", "fee_total"):
+        proposed = getattr(extracted, attribute)
+        current_value = getattr(current, attribute)
+        if not str(proposed or "").strip() or not str(current_value or "").strip():
+            continue
+        if _amounts_equivalent(proposed, current_value):
+            amount = _decimal_amount(proposed)
+            score += 4 if amount not in {None, Decimal("0")} else 1
+        else:
+            score -= 4
+
+    proposed_purpose = _purpose_key(extracted.purpose)
+    current_purpose = _purpose_key(current.purpose)
+    if proposed_purpose:
+        if current_purpose and proposed_purpose == current_purpose:
+            score += 3
+        elif not current_purpose:
+            score -= 2
+        else:
+            score -= 3
+
+    proposed_code = _organization_code_key(extracted.organization_code)
+    current_code = _organization_code_key(current.organization_code)
+    if proposed_code and current_code:
+        score += 1 if proposed_code == current_code else -3
+    return score
+
+
+def _purpose_key(value: object) -> str:
+    aliases = {
+        "COMP": "COMPENSATION",
+        "COMM": "COMMISSION",
+    }
+    words = re.findall(r"[A-Z0-9]+", str(value or "").upper())
+    return "".join(aliases.get(word, word) for word in words)
+
+
+def _organization_code_key(value: object) -> str:
+    key = _key(value)
+    return key.lstrip("0") or ("0" if key else "")
 
 
 def _amounts_equivalent(first: object, second: object) -> bool:

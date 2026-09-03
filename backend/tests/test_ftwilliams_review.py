@@ -1323,6 +1323,74 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_partial_update_results_are_reconciled_and_preserved_after_refresh(self) -> None:
+        service = FTWilliamsReviewService()
+        existing = FTWilliamsReview(
+            filing_id="filing-1",
+            status=FTWilliamsReviewStatus.UPDATE_FAILED,
+            update_access_status="GRANTED",
+            update_verification_attempted=True,
+            update_verification_success=False,
+            update_attempted_count=2,
+            update_confirmed_count=0,
+            update_remaining_count=2,
+            update_results=[
+                {
+                    "field_id": "field-1",
+                    "tag": "InsCarrierName",
+                    "label": "Carrier name",
+                    "form_type": "SCHEDULE_A",
+                    "sent_value": "Updated Carrier",
+                    "status": "NEEDS_CORRECTION",
+                },
+                {
+                    "field_id": "field-2",
+                    "tag": "InsContractNum",
+                    "label": "Contract number",
+                    "form_type": "SCHEDULE_A",
+                    "sent_value": "NEW-100",
+                    "status": "NEEDS_CORRECTION",
+                },
+            ],
+        )
+        refreshed_fields = [
+            FTWilliamsComparisonField(
+                field_id="field-1",
+                label="Carrier name",
+                form_type=FormType.SCHEDULE_A,
+                ftw_tag="InsCarrierName",
+                current_value="Updated Carrier",
+                proposed_value="Updated Carrier",
+                changed=False,
+                update_included=True,
+            ),
+            FTWilliamsComparisonField(
+                field_id="field-2",
+                label="Contract number",
+                form_type=FormType.SCHEDULE_A,
+                ftw_tag="InsContractNum",
+                current_value="OLD-100",
+                proposed_value="NEW-100",
+                changed=True,
+                update_included=True,
+            ),
+        ]
+
+        outcome = service._reconcile_preserved_update_outcome(
+            existing,
+            refreshed_fields,
+            current_query_success=True,
+        )
+
+        self.assertEqual(outcome["attempted_count"], 2)
+        self.assertEqual(outcome["confirmed_count"], 1)
+        self.assertEqual(outcome["remaining_count"], 1)
+        self.assertFalse(outcome["verification_success"])
+        self.assertEqual(
+            [result["status"] for result in outcome["results"]],
+            ["VERIFIED", "NEEDS_CORRECTION"],
+        )
+
     def test_only_forms_with_changed_included_fields_need_an_update_payload(self) -> None:
         service = FTWilliamsReviewService()
         fields = [
