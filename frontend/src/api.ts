@@ -12,12 +12,31 @@ import type {
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
   FTWilliamsReview,
+  ClientFacingError,
   ScheduleABrokerRow,
 } from "./types";
 import { getIdToken } from "./auth";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "/api" : "http://localhost:8001");
+
+export class ApiRequestError extends Error {
+  clientError?: ClientFacingError;
+  status: number;
+
+  constructor(message: string, status: number, clientError?: ClientFacingError) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.clientError = clientError;
+  }
+}
+
+function isClientFacingError(value: unknown): value is ClientFacingError {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ClientFacingError>;
+  return typeof candidate.title === "string" && typeof candidate.message === "string";
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
@@ -27,12 +46,22 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     const detail = payload.detail;
+    const structuredError = isClientFacingError(payload.client_error)
+      ? payload.client_error
+      : detail && typeof detail === "object" && isClientFacingError(detail.client_error)
+        ? detail.client_error
+        : isClientFacingError(detail)
+          ? detail
+          : undefined;
+    if (structuredError) {
+      throw new ApiRequestError(structuredError.message, response.status, structuredError);
+    }
     if (detail && typeof detail === "object") {
       const message = String(detail.message || detail.reason || "Value is not valid for FT Williams");
       const expected = detail.expected_format ? ` Expected: ${detail.expected_format}.` : "";
-      throw new Error(`${message}.${expected}`.replace("..", "."));
+      throw new ApiRequestError(`${message}.${expected}`.replace("..", "."), response.status);
     }
-    throw new Error(detail || payload.error || "Request failed");
+    throw new ApiRequestError(String(detail || payload.error || `Request failed with HTTP ${response.status}`), response.status);
   }
   return response.json();
 }

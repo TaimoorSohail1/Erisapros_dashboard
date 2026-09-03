@@ -42,6 +42,7 @@ from app.services.ftwilliams_contract import (
     normalize_ftw_update_value,
 )
 from app.services.ftwilliams_tags import resolve_ftw_update_tag
+from app.services.error_normalizer import normalize_client_error
 from app.services.schedule_a_classification import (
     apply_schedule_a_classification,
     classify_schedule_a_fields,
@@ -625,7 +626,16 @@ async def send_approved_ftwilliams_update(filing_id: str, payload: FTWilliamsSen
         review = await FTWilliamsReviewService().send_approved_update(filing_id, payload)
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
-        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        saved_review = await get_repository().get_ftwilliams_review(filing_id)
+        client_error = (
+            saved_review.active_failure_client_error
+            if saved_review and saved_review.active_failure_client_error
+            else saved_review.client_error
+            if saved_review and saved_review.client_error
+            else normalize_client_error(str(exc))
+        )
+        detail = client_error.model_dump(mode="json") if client_error else str(exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return {"ftw_review": review}
 
 

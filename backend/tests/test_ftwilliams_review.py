@@ -1770,6 +1770,40 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("exactly 5 digits", comparison.validation_message or "")
         self.assertFalse(comparison.update_included)
 
+    def test_nonexperience_schedule_ignores_experience_only_validation_blocker(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="9c(1)(E). Taxes",
+            normalized_field_name="taxes",
+            mapped_rule_key="schedule_a_part_iii_9c_1_e_taxes",
+            mapped_label="9c(1)(E). Taxes",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="not-a-number",
+            proposed_value="not-a-number",
+        )
+        service = FTWilliamsReviewService()
+
+        comparison = service._comparison_fields(
+            [field],
+            {},
+            {},
+            update_fields=[],
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+        )[0]
+        review = FTWilliamsReview(
+            filing_id="filing",
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+            fields=[comparison],
+        )
+
+        self.assertEqual(comparison.validation_status, "NOT_APPLICABLE")
+        self.assertFalse(comparison.validation_blocking)
+        self.assertIsNone(
+            service._review_validation_blocking_error(review, action="sending this filing")
+        )
+
     def test_explicitly_confirmed_large_premium_change_is_ready_to_update(self):
         field = ExtractedField(
             filing_id="filing",

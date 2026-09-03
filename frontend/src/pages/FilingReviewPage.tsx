@@ -26,6 +26,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
+  ApiRequestError,
   approveFiling,
   getFiling,
   getFTWilliamsBringForwardLink,
@@ -57,7 +58,10 @@ type ContractTypeFilter = "ALL" | ScheduleAContractType;
 
 type ReviewRowGroup = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE";
 type ReviewToast = {
+  code?: string | null;
   message: string;
+  nextAction?: string | null;
+  reason?: string | null;
   sticky?: boolean;
   title: string;
   tone: "error" | "success" | "warning";
@@ -256,11 +260,13 @@ export function FilingReviewPage() {
     () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false, Boolean(scheduleABrokerRows.length)),
     [fields, filing?.ftw_review, scheduleABrokerRows.length, scheduleAContractType],
   );
+  const allReviewRows = useMemo(
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true, Boolean(scheduleABrokerRows.length)),
+    [fields, filing?.ftw_review, scheduleABrokerRows.length, scheduleAContractType],
+  );
   const visibleReviewRows = useMemo(
-    () => showExcludedFields
-      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true, Boolean(scheduleABrokerRows.length))
-      : reviewRows,
-    [fields, filing?.ftw_review, reviewRows, scheduleABrokerRows.length, scheduleAContractType, showExcludedFields],
+    () => showExcludedFields ? allReviewRows : reviewRows,
+    [allReviewRows, reviewRows, showExcludedFields],
   );
   const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
   const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" && isActionRequiredRow(row));
@@ -423,6 +429,26 @@ export function FilingReviewPage() {
     const timer = window.setTimeout(() => setToast(null), 6500);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  function focusValidationIssue(fieldId?: string | null, fieldLabel?: string) {
+    if (!fieldId) {
+      document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const target = allReviewRows.find((row) => row.fieldId === fieldId);
+    setActiveTab("ALL");
+    setStatusFilter("ALL");
+    setPriorityFilter("ALL");
+    setSectionFilter("ALL");
+    setFormFilter("ALL");
+    setContractTypeFilter("ALL");
+    setShowExcludedFields(Boolean(target && !reviewRows.some((row) => row.fieldId === fieldId)));
+    setSearch(fieldLabel || target?.label || "");
+    setSelectedFieldId(fieldId);
+    window.setTimeout(() => {
+      document.querySelector(`[data-field-id="${fieldId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }
 
   async function saveField(fieldId: string, proposedValue: string, options: FieldSaveOptions = {}) {
     if (!id || !filing || fieldSavingId) return false;
@@ -813,12 +839,16 @@ export function FilingReviewPage() {
       if (!sentReview || !isVerifiedFTWilliamsUpdate(sentReview)) {
         const confirmed = sentReview?.update_confirmed_count || 0;
         const remaining = sentReview?.update_remaining_count || 0;
+        const failure = sentReview?.active_failure_client_error || sentReview?.client_error;
         setToast({
           tone: confirmed ? "warning" : "error",
           title: confirmed ? "FT Williams partially updated" : "FT Williams needs attention",
           message: confirmed
             ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need${remaining === 1 ? "s" : ""} review.`
-            : sentReview?.active_failure_client_error?.message || sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+            : failure?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+          reason: failure?.reason,
+          nextAction: failure?.next_action,
+          code: failure?.code,
         });
         return;
       }
@@ -835,15 +865,26 @@ export function FilingReviewPage() {
       setSendValidationNotice(null);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
-      const validationNotice = sendValidationNoticeFromError(errorMessage, reviewRows);
+      const failure = error instanceof ApiRequestError
+        ? error.clientError
+        : clientErrorFromRaw(errorMessage, "FT Williams");
+      const searchableError = [
+        errorMessage,
+        failure?.reason,
+        ...(failure?.rejected_fields || []).flatMap((field) => [field.label, field.tag]),
+      ].filter(Boolean).join(" ");
+      const validationNotice = sendValidationNoticeFromError(searchableError, allReviewRows);
       if (validationNotice) setSendValidationNotice(validationNotice);
       setToast({
         tone: "error",
-        title: validationNotice ? "Fix the highlighted issue" : "FT Williams needs attention",
+        title: failure?.title || (validationNotice ? "Fix the highlighted issue" : "FT Williams needs attention"),
         message: validationNotice?.fieldLabel
           ? `${validationNotice.fieldLabel} is preventing this update. Use Fix issue below for the exact reason.`
-          : errorMessage,
-        sticky: Boolean(validationNotice),
+          : failure?.message || errorMessage,
+        reason: failure?.reason || (!failure ? errorMessage : null),
+        nextAction: failure?.next_action || "Review the reason, correct the affected value, and retry Send to FT Williams.",
+        code: failure?.code || (error instanceof ApiRequestError ? `HTTP_${error.status}` : "CLIENT_REQUEST_FAILED"),
+        sticky: true,
       });
     } finally {
       void refreshFTWilliamsFailures().catch(() => undefined);
@@ -1032,12 +1073,8 @@ export function FilingReviewPage() {
                 message={sendValidationNotice?.message || fieldValidationBlockerRows[0]?.issue || brokerValidationIssues[0]?.message}
                 onFix={() => {
                   const fieldId = sendValidationNotice?.fieldId || fieldValidationBlockerRows[0]?.fieldId;
-                  if (fieldId) {
-                    setActiveTab("NEEDS_DECISION");
-                    setSelectedFieldId(fieldId);
-                  } else {
-                    document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  }
+                  const fieldLabel = sendValidationNotice?.fieldLabel || fieldValidationBlockerRows[0]?.label;
+                  focusValidationIssue(fieldId, fieldLabel);
                 }}
               />
             ) : null}
@@ -1259,6 +1296,9 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
       <span>
         <strong>{toast.title}</strong>
         <small>{toast.message}</small>
+        {toast.reason ? <small className="review-toast-detail"><b>Reason:</b> {toast.reason}</small> : null}
+        {toast.nextAction ? <small className="review-toast-detail"><b>Next step:</b> {toast.nextAction}</small> : null}
+        {toast.code ? <small className="review-toast-code">Reference: {toast.code}</small> : null}
       </span>
       <button type="button" onClick={onClose} aria-label="Dismiss notification">
         <X size={15} />
@@ -2666,7 +2706,7 @@ function ReviewDecisionTableRow({
   const canEdit = Boolean(row.fieldId);
   const issueClass = row.failedByFtw ? "issue-ftw-rejected" : `issue-${row.group.toLowerCase()}`;
   return (
-    <tr className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
+    <tr data-field-id={row.fieldId || undefined} className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
       <td>
         <strong>{row.label}</strong>
         <small>{row.formLabel} / {row.section}</small>
@@ -2905,6 +2945,7 @@ function ClientErrorBanner({ error }: { error: ClientFacingError }) {
         <p>{error.message}</p>
         {error.reason ? <small>Reason: {error.reason}</small> : null}
         {error.next_action ? <small>Next step: {error.next_action}</small> : null}
+        {error.code ? <small>Reference: {error.code}</small> : null}
         <RejectedFieldsList fields={error.rejected_fields || []} />
       </div>
     </section>

@@ -3623,7 +3623,19 @@ class FTWilliamsReviewService:
                 schedule_a_contract_type=review.schedule_a_contract_type,
             )
             self._mark_structured_broker_comparisons(comparisons, review.schedule_a_broker_rows)
-        field_issues = [field for field in comparisons if field.validation_blocking]
+        field_issues = [
+            field
+            for field in comparisons
+            if field.validation_blocking
+            and (
+                field.form_type != FormType.SCHEDULE_A
+                or review.schedule_a_contract_type is None
+                or schedule_a_contract_type_allows_rule(
+                    review.schedule_a_contract_type,
+                    field.rule_key,
+                )
+            )
+        ]
         broker_issue = None
         if review.schedule_a_broker_rows:
             try:
@@ -4069,6 +4081,14 @@ class FTWilliamsReviewService:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason
                 validation_blocking = True
+            if not contract_type_allowed:
+                validation_status = "NOT_APPLICABLE"
+                validation_message = (
+                    "This field does not apply to the selected Schedule A contract type and will not be sent."
+                )
+                validation_expected_format = None
+                validation_normalized_value = None
+                validation_blocking = False
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,

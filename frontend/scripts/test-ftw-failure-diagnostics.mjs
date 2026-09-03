@@ -53,5 +53,10 @@ assert.match(filingReview, /sticky\?: boolean/, "Verified FT Williams success no
 assert.match(filingReview, /title: "FT Williams updated successfully"[\s\S]*?sticky: true/, "A verified update must show a persistent success notification.");
 assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Action Required"/, "Post-update extraction notes must not look like failed FT Williams actions.");
 assert.match(filingReview, /<FTWUpdateSuccessNotice[\s\S]*?review=\{ftwReview\}/, "Verified FT Williams updates must have a persistent success notice in the filing page.");
+assert.match(api, /class ApiRequestError extends Error[\s\S]*?clientError/, "API failures must preserve structured client-facing FT Williams details.");
+assert.match(api, /payload\.client_error[\s\S]*?detail\.client_error/, "The API client must recognize structured FT Williams errors at either response level.");
+assert.match(filingReview, /toast\.reason[\s\S]*?toast\.nextAction[\s\S]*?toast\.code/, "The send failure toast must show the reason, recovery action, and support code.");
+assert.match(filingReview, /sendValidationNoticeFromError\([^,]+, allReviewRows\)/, "A validation failure must resolve fields against included and excluded review rows.");
+assert.match(filingReview, /function focusValidationIssue[\s\S]*?setSearch\(""\)[\s\S]*?setShowExcludedFields/, "Fix issue must clear filters and reveal the affected field before focusing it.");
 
 console.log("FT Williams failure diagnostics workflow passed.");
