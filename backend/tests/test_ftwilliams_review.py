@@ -4425,7 +4425,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
 
-        with self.assertRaisesRegex(ValueError, "1 FT Williams field validation issue"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "1 FT Williams field validation issue.*1c. NAIC Code.*expected exactly 5 digits.*before sending to FT Williams",
+        ):
             run_async(
                 FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
                     filing.id,

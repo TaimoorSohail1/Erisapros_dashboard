@@ -6477,6 +6477,87 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   font-size: 12px;
 }
 
+.ftw-validation-blocker-banner {
+  align-items: center;
+  background: linear-gradient(90deg, #fff1f2 0%, #fffafa 100%);
+  border-bottom: 1px solid #fda4af;
+  border-top: 1px solid #fda4af;
+  box-shadow: inset 4px 0 0 #e11d48;
+  color: #881337;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 36px minmax(280px, 1fr) auto;
+  padding: 12px 14px;
+}
+
+.ftw-validation-blocker-icon {
+  align-items: center;
+  background: #ffe4e6;
+  border: 1px solid #fda4af;
+  border-radius: 11px;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.ftw-validation-blocker-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ftw-validation-blocker-copy small {
+  color: #be123c;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ftw-validation-blocker-copy strong {
+  color: #881337;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.ftw-validation-field-name {
+  color: #9f1239;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.ftw-validation-blocker-copy p {
+  color: #9f1239;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.ftw-validation-policy {
+  color: #be123c;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ftw-validation-blocker-banner .button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .ftw-validation-blocker-banner {
+    align-items: start;
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .ftw-validation-blocker-banner .button {
+    grid-column: 2;
+    justify-content: center;
+    width: 100%;
+  }
+}
+
 .ftw-editability-banner {
   align-items: center;
   background: linear-gradient(90deg, #fff7f7 0%, #fffdfd 100%);

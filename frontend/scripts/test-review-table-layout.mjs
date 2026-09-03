@@ -711,6 +711,21 @@ assert.match(
 );
 assert.match(
   source,
+  /function FTWValidationBlockerBanner[\s\S]*?blocking issue[\s\S]*?prevents sending[\s\S]*?Fix issue/,
+  "A server-detected FT Williams blocker must remain visible with a direct Fix issue action.",
+);
+assert.match(
+  source,
+  /sendValidationNotice[\s\S]*?fieldLabel[\s\S]*?setSelectedFieldId/,
+  "The blocking-issue banner must identify and open the affected field.",
+);
+assert.match(
+  styles,
+  /\.ftw-validation-blocker-banner\s*\{[\s\S]*?grid-template-columns:[^;]+;/,
+  "The send-blocker banner must use a structured responsive layout.",
+);
+assert.match(
+  source,
   /function FTWEditabilityBanner[\s\S]*?Send disabled:[\s\S]*?Unlock the filing or use Amend Filing[\s\S]*?Open FT Williams[\s\S]*?Refresh status/,
   "A locked FT Williams filing must show the exact reason and recovery actions beside the disabled send flow.",
 );

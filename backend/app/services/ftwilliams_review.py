@@ -2333,9 +2333,13 @@ class FTWilliamsReviewService:
             plan_year_error = self._review_plan_year_block_reason(review) if review else None
             if plan_year_error:
                 raise ValueError(plan_year_error)
-            validation_error = self._review_validation_blocking_error(review, fields=approval_fields) if review else None
+            validation_error = self._review_validation_blocking_error(
+                review,
+                fields=approval_fields,
+                action="approving this filing",
+            ) if review else None
             approval_blockers = "; ".join(
-                message for message in (approval_error, validation_error) if message
+                str(message) for message in (approval_error, validation_error) if message
             ) or None
             if approval_blockers and not override_blockers:
                 raise ValueError(approval_blockers)
@@ -2370,6 +2374,7 @@ class FTWilliamsReviewService:
             validation_error = self._review_validation_blocking_error(
                 existing_review,
                 fields=await repo.list_fields(filing_id),
+                action="sending to FT Williams",
             )
             if validation_error:
                 raise ValueError(validation_error)
@@ -2430,7 +2435,7 @@ class FTWilliamsReviewService:
         if plan_year_error:
             await self._record_update_failure(repo, filing_id, review, plan_year_error)
             raise ValueError(plan_year_error)
-        validation_error = self._review_validation_blocking_error(review)
+        validation_error = self._review_validation_blocking_error(review, action="sending to FT Williams")
         if validation_error:
             await self._record_update_failure(repo, filing_id, review, validation_error)
             raise ValueError(validation_error)
@@ -3584,6 +3589,7 @@ class FTWilliamsReviewService:
         review: FTWilliamsReview,
         *,
         fields: list[ExtractedField] | None = None,
+        action: str = "approving this filing",
     ) -> str | None:
         comparisons = review.fields or []
         if fields:
@@ -3623,7 +3629,20 @@ class FTWilliamsReviewService:
             )
         if broker_issue:
             parts.append(broker_issue)
-        return f"Fix {' and '.join(parts)} before approving this filing."
+        field_details = "; ".join(
+            f"{field.label or field.ftw_tag or 'FT Williams field'} — "
+            f"{field.validation_message or 'the proposed value is not valid'}"
+            for field in field_issues[:3]
+        )
+        more_issue_count = max(0, len(field_issues) - 3)
+        if more_issue_count:
+            field_details = f"{field_details}; and {more_issue_count} more"
+        details = "; ".join(detail for detail in (field_details, broker_issue) if detail)
+        return (
+            f"Fix {' and '.join(parts)}. "
+            f"{details}. "
+            f"Resolve this before {action}."
+        )
 
     def _effective_schedule_a_classification(
         self,

@@ -62,6 +62,12 @@ type ReviewToast = {
   title: string;
   tone: "error" | "success" | "warning";
 } | null;
+type SendValidationNotice = {
+  fieldId?: string | null;
+  fieldLabel?: string;
+  issueCount: number;
+  message: string;
+} | null;
 type FieldSaveOptions = {
   markMissing?: boolean;
   successMessage?: string;
@@ -173,6 +179,7 @@ export function FilingReviewPage() {
   const [fieldValidationErrors, setFieldValidationErrors] = useState<Record<string, string>>({});
   const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
+  const [sendValidationNotice, setSendValidationNotice] = useState<SendValidationNotice>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<WorkflowStepKey | null>(null);
   const [showTechnicalDrawer, setShowTechnicalDrawer] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
@@ -431,6 +438,7 @@ export function FilingReviewPage() {
         proposed_xml: result.proposed_xml,
         fields: current.fields.map((field) => field.id === fieldId ? result.field : field),
       } : current);
+      setSendValidationNotice(null);
       setToast({
         tone: "success",
         title: options.successTitle || (options.markMissing ? "Field marked missing" : "Field decision saved"),
@@ -589,6 +597,7 @@ export function FilingReviewPage() {
       const updated = await getFiling(id);
       setFiling(updated);
       previousFilingRef.current = updated;
+      setSendValidationNotice(null);
       if (sendQueries && result.ftw_review.current_year_exists && !result.ftw_review.bring_forward_required) {
         setToast({
           tone: "success",
@@ -820,12 +829,18 @@ export function FilingReviewPage() {
           : "Current FTW values were refreshed and verified successfully."),
         sticky: true,
       });
+      setSendValidationNotice(null);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
+      const validationNotice = sendValidationNoticeFromError(errorMessage, reviewRows);
+      if (validationNotice) setSendValidationNotice(validationNotice);
       setToast({
         tone: "error",
-        title: "FT Williams needs attention",
-        message: errorMessage,
+        title: validationNotice ? "Fix the highlighted issue" : "FT Williams needs attention",
+        message: validationNotice?.fieldLabel
+          ? `${validationNotice.fieldLabel} is preventing this update. Use Fix issue below for the exact reason.`
+          : errorMessage,
+        sticky: Boolean(validationNotice),
       });
     } finally {
       void refreshFTWilliamsFailures().catch(() => undefined);
@@ -1007,28 +1022,21 @@ export function FilingReviewPage() {
               />
             ) : null}
 
-            {hardValidationBlockerCount > 0 ? (
-              <div className="validation-blocker-banner" role="alert">
-                <div>
-                  <strong>Fix {hardValidationBlockerCount} FT Williams validation issue{hardValidationBlockerCount === 1 ? "" : "s"}</strong>
-                  <span>Approval remains available; sending stays locked until these values are valid.</span>
-                </div>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => {
-                    const firstField = fieldValidationBlockerRows[0];
-                    if (firstField?.fieldId) {
-                      setActiveTab("NEEDS_DECISION");
-                      setSelectedFieldId(firstField.fieldId);
-                    } else {
-                      document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }
-                  }}
-                >
-                  Review first issue
-                </button>
-              </div>
+            {sendValidationNotice || hardValidationBlockerCount > 0 ? (
+              <FTWValidationBlockerBanner
+                count={sendValidationNotice?.issueCount || hardValidationBlockerCount}
+                fieldLabel={sendValidationNotice?.fieldLabel || fieldValidationBlockerRows[0]?.label}
+                message={sendValidationNotice?.message || fieldValidationBlockerRows[0]?.issue || brokerValidationIssues[0]?.message}
+                onFix={() => {
+                  const fieldId = sendValidationNotice?.fieldId || fieldValidationBlockerRows[0]?.fieldId;
+                  if (fieldId) {
+                    setActiveTab("NEEDS_DECISION");
+                    setSelectedFieldId(fieldId);
+                  } else {
+                    document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  }
+                }}
+              />
             ) : null}
 
             <div className="field-filter-row approval-filter-row">
@@ -1381,6 +1389,24 @@ function ftwPlanPageUrl(review: FTWilliamsReview | null) {
   return `https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan=${plan}&Year=${encodeURIComponent(year)}`;
 }
 
+function sendValidationNoticeFromError(
+  message: string,
+  rows: ReviewDecisionRow[],
+): NonNullable<SendValidationNotice> | null {
+  if (!/FT Williams field validation issue|organization code.*required|pre-send validation failed/i.test(message)) {
+    return null;
+  }
+  const normalizedMessage = message.toLowerCase();
+  const matchedField = rows.find((row) => row.fieldId && normalizedMessage.includes(row.label.toLowerCase()));
+  const countMatch = message.match(/(\d+) FT Williams field validation issue/i);
+  return {
+    fieldId: matchedField?.fieldId,
+    fieldLabel: matchedField?.label,
+    issueCount: Number(countMatch?.[1] || 1),
+    message,
+  };
+}
+
 function sendLockReason(
   filing: FilingDetail | null,
   form5500SafetyReady: boolean,
@@ -1576,6 +1602,34 @@ function FTWEditabilityBanner({
           {busy ? <InlineLoader label="Checking status" /> : <><RefreshCw size={14} /> Refresh status</>}
         </button>
       </div>
+    </section>
+  );
+}
+
+function FTWValidationBlockerBanner({
+  count,
+  fieldLabel,
+  message,
+  onFix,
+}: {
+  count: number;
+  fieldLabel?: string;
+  message?: string;
+  onFix: () => void;
+}) {
+  return (
+    <section className="ftw-validation-blocker-banner" role="alert" aria-label="FT Williams blocking validation issue">
+      <span className="ftw-validation-blocker-icon"><AlertTriangle size={18} /></span>
+      <div className="ftw-validation-blocker-copy">
+        <small>Action required before update</small>
+        <strong>{count} blocking issue{count === 1 ? "" : "s"} prevents sending</strong>
+        {fieldLabel ? <span className="ftw-validation-field-name">{fieldLabel}</span> : null}
+        <p>{message || "Correct the highlighted value before sending this filing to FT Williams."}</p>
+        <span className="ftw-validation-policy">Approval remains available; sending stays locked until this value is valid.</span>
+      </div>
+      <button className="button danger" type="button" onClick={onFix}>
+        <Edit3 size={14} /> Fix issue
+      </button>
     </section>
   );
 }
