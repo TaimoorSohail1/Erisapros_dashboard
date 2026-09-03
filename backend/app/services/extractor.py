@@ -1865,16 +1865,6 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     plan_name = regex_first(compact, [r"Plan name\(s\)\s+(.+?)\s+Plan year"], flags=re.IGNORECASE)
     effective_date = regex_first(compact, [r"Original ERISA plan effective date\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})"], flags=re.IGNORECASE)
     plan_year = regex_first(compact, [r"Plan year\s+begin\s*/\s*end\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})"], flags=re.IGNORECASE, groups=True)
-    administrator = regex_first(
-        compact,
-        [
-            r"Plan administrator name\s+(.+?)\s+(?:Plan administrator address|E-mail address|Participant Counts:)",
-            r"Administrator name\s+(.+?)\s+(?:Administrator address|E-mail address|Participant Counts:)",
-            r"Individual signing as plan administrator\s+(.+?)\s+(?:E-mail address of filing signer|5500 Contact|Additional 5500 Contact|Participant Counts:)",
-        ],
-        flags=re.IGNORECASE,
-    )
-
     add("1a. Plan Name", plan_name, 0.95)
     add("1b. Plan Number (PN)", plan_number, 0.95)
     add("1c. Plan Effective Date", effective_date, 0.93)
@@ -1882,7 +1872,6 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     add("1e. Plan Sponsor EIN", sponsor_ein, 0.95)
     add("1f. Plan Sponsor Address", sponsor_address, 0.92)
     add("1g. Business Code", business_code, 0.94)
-    add("2a. Plan Administrator Name", administrator, 0.92)
     if isinstance(plan_year, tuple) and len(plan_year) >= 2:
         add("6. Plan Year Beginning Date", plan_year[0], 0.95)
         add("7. Plan Year Ending Date", plan_year[1], 0.95)

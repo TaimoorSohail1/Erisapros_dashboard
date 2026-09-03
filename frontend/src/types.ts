@@ -331,6 +331,7 @@ export interface FTWilliamsReview {
     label: string;
     form_type?: string | null;
     sent_value?: string | null;
+    returned_value?: string | null;
     status: "VERIFIED" | "NEEDS_CORRECTION" | string;
     reason?: string | null;
   }>;

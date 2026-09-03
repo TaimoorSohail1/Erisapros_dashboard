@@ -543,7 +543,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<SDName>New Sponsor Name</SDName>", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
         self.assertIn("<SDAddressLine1>490B Boston Post Road</SDAddressLine1>", xml)
-        self.assertIn("<ADMINName>New Administrator</ADMINName>", xml)
+        self.assertNotIn("<ADMINName>", xml)
 
     def test_5500_verified_sponsor_ein_uses_current_ft_tag(self):
         field = ExtractedField(
@@ -572,7 +572,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_EIN", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
 
-    def test_5500_administrator_change_clears_same_as_sponsor_indicator(self):
+    def test_5500_retired_administrator_change_is_not_sent(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="2a. Plan Administrator Name",
@@ -600,10 +600,10 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<ADMINName>Leslie Hanley</ADMINName>", xml)
-        self.assertIn("<AdminNameSameAsPlanSponsInd>0</AdminNameSameAsPlanSponsInd>", xml)
+        self.assertNotIn("<ADMINName>", xml)
+        self.assertNotIn("<AdminNameSameAsPlanSponsInd>", xml)
 
-    def test_5500_administrator_restore_sets_same_as_sponsor_indicator(self):
+    def test_5500_retired_administrator_restore_is_not_sent(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="2a. Plan Administrator Name",
@@ -631,8 +631,8 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<ADMINName>NEW YORK YANKEES PARTNERSHIP</ADMINName>", xml)
-        self.assertIn("<AdminNameSameAsPlanSponsInd>1</AdminNameSameAsPlanSponsInd>", xml)
+        self.assertNotIn("<ADMINName>", xml)
+        self.assertNotIn("<AdminNameSameAsPlanSponsInd>", xml)
 
     def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
@@ -900,7 +900,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_plan_administrator_uses_verified_current_ft_tag(self):
+    def test_5500_plan_administrator_is_excluded_from_update(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -938,7 +938,7 @@ class XmlBuilderTests(unittest.TestCase):
         )
 
         self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertIn("<ADMINName>Charlotte Tallon</ADMINName>", xml)
+        self.assertNotIn("<ADMINName>", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):

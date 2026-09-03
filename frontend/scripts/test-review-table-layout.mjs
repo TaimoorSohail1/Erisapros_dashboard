@@ -726,6 +726,16 @@ assert.match(
 );
 assert.match(
   source,
+  /RETIRED_REVIEW_RULE_KEYS[\s\S]*?form_5500_part_i_2a_plan_administrator_name[\s\S]*?isRetiredReviewField/,
+  "Plan Administrator Name must be removed from existing and future review tables.",
+);
+assert.match(
+  source,
+  /Not updated\. Sent:[\s\S]*?FT Williams returned:/,
+  "Failed verification must show the sent and returned FT Williams values.",
+);
+assert.match(
+  source,
   /function FTWEditabilityBanner[\s\S]*?Send disabled:[\s\S]*?Unlock the filing or use Amend Filing[\s\S]*?Open FT Williams[\s\S]*?Refresh status/,
   "A locked FT Williams filing must show the exact reason and recovery actions beside the disabled send flow.",
 );

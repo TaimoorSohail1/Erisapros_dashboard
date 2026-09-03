@@ -5,7 +5,7 @@ import json
 import re
 
 from app.models import FTWFieldCatalogEntry, FormType
-from app.services.field_rules import DEFAULT_FIELD_RULES
+from app.services.field_rules import DEFAULT_FIELD_RULES, RETIRED_FIELD_RULE_KEYS
 from app.services.ftwilliams_contract import (
     BUSINESS_CODE_TAGS,
     DATE_TAGS,
@@ -42,15 +42,9 @@ DISCOVERED_READ_ONLY_REASON = (
 # FT Williams discovery responses. They are not useful review fields for the
 # ERISAPros workflow, so keep them out of the active catalog while preserving
 # any saved rule versions for audit history.
-RETIRED_FIELD_RULE_KEYS = frozenset(
-    {
-        "ftw_discovered_schedule_a_health_ind",
-        "ftw_discovered_schedule_a_ins_fail_provide_info_text",
-        "ftw_discovered_schedule_a_vision_ind",
-    }
-)
 _RETIRED_DISCOVERED_TAGS = frozenset(
     {
+        (FormType.FORM_5500, "ADMINName"),
         (FormType.SCHEDULE_A, "HealthInd"),
         (FormType.SCHEDULE_A, "InsFailProvideInfoText"),
         (FormType.SCHEDULE_A, "VisionInd"),

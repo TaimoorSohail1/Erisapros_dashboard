@@ -1612,7 +1612,6 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "form_5500_part_i_1e_plan_sponsor_ein": "SDEIN",
             "form_5500_part_i_1f_plan_sponsor_address": "SDAddressLine1",
             "form_5500_part_i_1g_business_code": "BusinessCode",
-            "form_5500_part_i_2a_plan_administrator_name": "ADMINName",
             "form_5500_part_i_6_plan_year_beginning_date": "PlanYearBeginDate",
             "form_5500_part_i_7_plan_year_ending_date": "PlanYearEndDate",
             "form_5500_part_ii_4_plan_characteristic_codes": "TypeWelfareBnftCode1",
@@ -1718,7 +1717,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(comparison[0].update_included)
         self.assertIn("complete FT Williams administrator contact block", comparison[0].update_exclusion_reason or "")
 
-    def test_administrator_name_can_restore_same_as_sponsor(self):
+    def test_retired_administrator_name_is_never_sent(self):
         administrator = ExtractedField(
             filing_id="filing",
             source_field_name="2a. Plan Administrator Name",
@@ -1742,7 +1741,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(safe, [administrator])
+        self.assertEqual(safe, [])
 
     def test_comparison_exposes_invalid_ftw_format_as_blocking(self):
         field = ExtractedField(
@@ -3687,6 +3686,10 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertGreater(len(mismatched.update_verification_mismatches), 0)
         self.assertTrue(
             any(item["status"] == "NEEDS_CORRECTION" for item in mismatched.update_results),
+            mismatched.update_results,
+        )
+        self.assertTrue(
+            all("returned_value" in item for item in mismatched.update_results),
             mismatched.update_results,
         )
         self.assertIn("read-back verification", mismatched.error_message or "")

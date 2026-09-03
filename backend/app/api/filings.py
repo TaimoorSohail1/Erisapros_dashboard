@@ -35,6 +35,7 @@ from app.services.filing_pipeline import (
     summarize_mapped_fields,
 )
 from app.services.field_rule_admin import FieldRuleService
+from app.services.field_rules import is_retired_field
 from app.services.ftwilliams_contract import (
     FTWPayloadValidationError,
     ftw_expected_format,
@@ -100,6 +101,12 @@ async def get_filing(filing_id: str):
         repo.list_audit_logs(filing_id),
         repo.get_ftwilliams_review(filing_id),
     )
+    fields = [field for field in fields if not is_retired_field(field)]
+    if ftw_review:
+        ftw_review = ftw_review.model_copy(
+            deep=True,
+            update={"fields": [field for field in ftw_review.fields if not is_retired_field(field)]},
+        )
     return FilingDetail(**filing.model_dump(), fields=fields, events=events, jobs=jobs, audit_logs=audit_logs, ftw_review=ftw_review)
 
 

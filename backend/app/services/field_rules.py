@@ -5,6 +5,17 @@ from pathlib import Path
 from app.models import FieldRule, FormType
 
 
+RETIRED_FIELD_RULE_KEYS = frozenset(
+    {
+        "form_5500_part_i_2a_plan_administrator_name",
+        "ftw_discovered_schedule_a_health_ind",
+        "ftw_discovered_schedule_a_ins_fail_provide_info_text",
+        "ftw_discovered_schedule_a_vision_ind",
+    }
+)
+RETIRED_FIELD_NAMES = frozenset({"2a. Plan Administrator Name", "Plan Administrator Name"})
+
+
 @lru_cache
 def load_field_rules() -> list[FieldRule]:
     data_path = Path(__file__).resolve().parents[1] / "data" / "field_rules.json"
@@ -17,6 +28,25 @@ DEFAULT_FIELD_RULES: list[FieldRule] = load_field_rules()
 
 def normalize_name(value: str) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in value).split())
+
+
+def is_retired_field(value: object) -> bool:
+    rule_key = str(
+        getattr(value, "mapped_rule_key", None)
+        or getattr(value, "rule_key", None)
+        or getattr(value, "key", None)
+        or ""
+    ).strip()
+    if rule_key in RETIRED_FIELD_RULE_KEYS:
+        return True
+    names = (
+        getattr(value, "field_name", None),
+        getattr(value, "source_field_name", None),
+        getattr(value, "mapped_label", None),
+        getattr(value, "label", None),
+    )
+    retired_names = {normalize_name(name) for name in RETIRED_FIELD_NAMES}
+    return any(normalize_name(str(name)) in retired_names for name in names if name)
 
 
 def find_rule_for_field(field_name: str, rules: list[FieldRule] | None = None) -> FieldRule | None:

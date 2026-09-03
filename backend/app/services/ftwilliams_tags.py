@@ -159,7 +159,6 @@ FORM_5500_VERIFIED_UPDATE_RULES = frozenset(
         "form_5500_part_i_1e_plan_sponsor_ein",
         "form_5500_part_i_1f_plan_sponsor_address",
         "form_5500_part_i_1g_business_code",
-        "form_5500_part_i_2a_plan_administrator_name",
         "form_5500_part_i_6_plan_year_beginning_date",
         "form_5500_part_i_7_plan_year_ending_date",
         "form_5500_part_ii_4_plan_characteristic_codes",

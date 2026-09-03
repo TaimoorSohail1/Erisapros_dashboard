@@ -44,6 +44,7 @@ from app.models import (
 from app.repositories import get_repository
 from app.services.error_normalizer import normalize_client_error
 from app.services.field_rule_admin import FieldRuleService
+from app.services.field_rules import is_retired_field
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import (
     FTWFieldValidationIssue,
@@ -166,7 +167,7 @@ class FTWilliamsReviewService:
             filing = await repo.get_filing(filing_id)
             if not filing:
                 raise ValueError("Filing not found")
-            fields = await repo.list_fields(filing_id)
+            fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
             existing_review = await repo.get_ftwilliams_review(filing_id)
         else:
             filing, fields, published_rules, existing_review = preloaded
@@ -673,7 +674,7 @@ class FTWilliamsReviewService:
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
-        fields = await repo.list_fields(filing_id)
+        fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
         identifiers = self._extract_plan_lookup_identifiers(fields, filing)
         company_employer_id = identifiers.get("company_employer_id")
         plan_number = identifiers.get("plan_number")
@@ -721,7 +722,7 @@ class FTWilliamsReviewService:
         except ValueError as exc:
             raise ValueError("Choose either the Plan Worksheet dates or the current FT Williams dates.") from exc
 
-        fields = await repo.list_fields(filing_id)
+        fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
         worksheet_begin = self._field_value_by_rule(fields, "form_5500_part_i_6_plan_year_beginning_date")
         worksheet_end = self._field_value_by_rule(fields, "form_5500_part_i_7_plan_year_ending_date")
         if selected_resolution == FTWilliamsPlanYearResolution.USE_WORKSHEET:
@@ -818,7 +819,7 @@ class FTWilliamsReviewService:
             raise ValueError("Filing not found")
         if not payload.create_new and not str(payload.ftw_seq_no or "").strip():
             raise ValueError("FTWSeqNo is required unless creating a new Schedule A.")
-        fields = await repo.list_fields(filing_id)
+        fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
         review = await repo.get_ftwilliams_review(filing_id)
         if not review:
             review = await self.prepare_review(filing_id, send_queries=False)
@@ -1230,7 +1231,7 @@ class FTWilliamsReviewService:
                 "error_message": None,
             },
         )
-        fields = await repo.list_fields(filing_id)
+        fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
         relevant_fields = filter_schedule_a_fields_for_contract_type(fields, payload.contract_type, rules=published_rules)
         await repo.update_filing(
             filing_id,
@@ -2312,7 +2313,7 @@ class FTWilliamsReviewService:
         repo = get_repository()
         published_rules = await FieldRuleService(repo).published_rules()
         if not send_to_ftw:
-            fields = await repo.list_fields(filing_id)
+            fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
             review = await repo.get_ftwilliams_review(filing_id)
             approval_fields = fields
             if review and review.schedule_a_contract_type in {
@@ -2373,7 +2374,11 @@ class FTWilliamsReviewService:
         if existing_review:
             validation_error = self._review_validation_blocking_error(
                 existing_review,
-                fields=await repo.list_fields(filing_id),
+                fields=[
+                    field
+                    for field in await repo.list_fields(filing_id)
+                    if not is_retired_field(field)
+                ],
                 action="sending to FT Williams",
             )
             if validation_error:
@@ -2738,6 +2743,11 @@ class FTWilliamsReviewService:
             {
                 **attempted_fields[key],
                 "status": "NEEDS_CORRECTION" if key in remaining_field_keys else "VERIFIED",
+                "returned_value": (
+                    mismatches_by_tag.get(str(attempted_fields[key].get("tag") or ""), {}).get("actual")
+                    if key in remaining_field_keys
+                    else attempted_fields[key].get("sent_value")
+                ),
                 "reason": (
                     mismatches_by_tag.get(str(attempted_fields[key].get("tag") or ""), {}).get("reason")
                     or ("FT Williams still returns a different value." if key in remaining_field_keys else "Confirmed by FT Williams read-back.")
@@ -3055,6 +3065,7 @@ class FTWilliamsReviewService:
                     tag=field.ftw_tag,
                 )
                 result["status"] = "VERIFIED" if verified else "NEEDS_CORRECTION"
+                result["returned_value"] = field.current_value
                 result["reason"] = (
                     "Confirmed by FT Williams read-back."
                     if verified

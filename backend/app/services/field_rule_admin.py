@@ -5,8 +5,8 @@ import re
 
 from app.models import FieldRule, FieldRuleApplicability, FieldRuleMappingMode, FieldRuleStatus
 from app.repositories import Repository
-from app.services.field_rules import DEFAULT_FIELD_RULES, normalize_name
-from app.services.ftw_field_catalog import RETIRED_FIELD_RULE_KEYS, field_catalog_entry
+from app.services.field_rules import DEFAULT_FIELD_RULES, RETIRED_FIELD_RULE_KEYS, normalize_name
+from app.services.ftw_field_catalog import field_catalog_entry
 
 
 class FieldRuleValidationError(ValueError):

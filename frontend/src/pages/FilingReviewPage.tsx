@@ -112,6 +112,9 @@ const STRUCTURED_BROKER_SUMMARY_RULES = new Set([
   "schedule_a_part_i_3d_purpose",
   "schedule_a_part_i_3e_organizational_code",
 ]);
+const RETIRED_REVIEW_RULE_KEYS = new Set([
+  "form_5500_part_i_2a_plan_administrator_name",
+]);
 const FTW_ORGANIZATION_CODE_OPTIONS = [
   { value: "0", label: "Other" },
   { value: "1", label: "Banking or financial institution" },
@@ -226,7 +229,7 @@ export function FilingReviewPage() {
     };
   }, [id, pollVersion, pollingPaused, shouldPollReview]);
 
-  const fields = filing?.fields ?? [];
+  const fields = (filing?.fields ?? []).filter((field) => !isRetiredReviewField(field));
   const ftwReview = filing?.ftw_review || null;
   const ftwPlanUrl = ftwPlanPageUrl(ftwReview);
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
@@ -2047,7 +2050,7 @@ function WorkflowDetailDialog({
                   {(review?.update_results || []).map((result, index) => (
                     <div key={result.field_id || result.tag || index} className={result.status === "VERIFIED" ? "verified" : "needs-review"}>
                       {result.status === "VERIFIED" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-                      <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                      <span><strong>{result.label}</strong><small>{verificationResultDetail(result)}</small></span>
                     </div>
                   ))}
                 </div>
@@ -2459,7 +2462,7 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
               {results.map((result, index) => (
                 <article className={result.status === "VERIFIED" ? "verified" : "needs-correction"} key={result.field_id || result.tag || index}>
                   {result.status === "VERIFIED" ? <Check size={14} /> : <AlertTriangle size={14} />}
-                  <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "the approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                  <span><strong>{result.label}</strong><small>{verificationResultDetail(result)}</small></span>
                 </article>
               ))}
             </div>
@@ -2498,7 +2501,7 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
                 <div className={result.status === "VERIFIED" ? "verified" : "needs-correction"} key={result.field_id || result.tag || index}>
                   <span>{result.status === "VERIFIED" ? <Check size={14} /> : <AlertTriangle size={14} />}</span>
                   <strong>{result.label}</strong>
-                  <small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "the approved value"}` : result.reason || "FT Williams returned a different value."}</small>
+                  <small>{verificationResultDetail(result)}</small>
                 </div>
               ))}
             </div>
@@ -2514,6 +2517,17 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
       {!complete ? <button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button> : null}
     </section>
   );
+}
+
+function verificationResultDetail(
+  result: NonNullable<FTWilliamsReview["update_results"]>[number],
+) {
+  if (result.status === "VERIFIED") {
+    return `Updated and verified: ${result.returned_value || result.sent_value || "approved value"}.`;
+  }
+  const sent = result.sent_value || "approved value";
+  const returned = result.returned_value || "not returned";
+  return `Not updated. Sent: ${sent}. FT Williams returned: ${returned}. ${result.reason || "The values do not match after refresh."}`;
 }
 
 function ftwEditCheckOutcome(review: FTWilliamsReview | null | undefined): {
@@ -4080,6 +4094,7 @@ function buildReviewDecisionRows(
   const rows: ReviewDecisionRow[] = [];
 
   (review?.fields ?? []).forEach((comparison, index) => {
+    if (isRetiredReviewField(comparison)) return;
     if (hideStructuredBrokerFields && isStructuredBrokerSummaryRule(comparison.rule_key)) return;
     const extractedField = comparison.field_id ? fieldById.get(comparison.field_id) : undefined;
     if (!includeExcluded && !comparisonAllowedForContractType(comparison, extractedField, contractType)) return;
@@ -4100,6 +4115,20 @@ function buildReviewDecisionRows(
 
 function isStructuredBrokerSummaryRule(ruleKey?: string | null) {
   return STRUCTURED_BROKER_SUMMARY_RULES.has(String(ruleKey || ""));
+}
+
+function isRetiredReviewField(field: ExtractedField | FTWilliamsComparisonField) {
+  const keyedField = field as ExtractedField & {
+    mapped_rule_key?: string | null;
+    rule_key?: string | null;
+  };
+  const ruleKey = keyedField.rule_key || keyedField.mapped_rule_key;
+  if (ruleKey && RETIRED_REVIEW_RULE_KEYS.has(ruleKey)) return true;
+
+  const labels = "source_field_name" in field
+    ? [field.source_field_name, field.mapped_label]
+    : [field.label];
+  return labels.some((label) => /^\s*(?:2a\.\s*)?Plan Administrator Name\s*$/i.test(String(label || "")));
 }
 
 function mergeFieldDecisionReview(

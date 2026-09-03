@@ -608,27 +608,6 @@
     "order": 23
   },
   {
-    "key": "form_5500_part_i_2a_plan_administrator_name",
-    "label": "2a. Plan Administrator Name",
-    "ftw_field": "2a. Plan Administrator Name",
-    "xml_tag": "field_2a_plan_administrator_name",
-    "priority": "HIGH",
-    "source": "Form 5500 - Part I",
-    "form_section": "Form 5500 - Part I",
-    "field_type": "Dynamic",
-    "existing_or_new": "BOTH",
-    "existing_behavior": "Review Only",
-    "new_behavior": "Keep FTW",
-    "notes": "Person or entity designated as plan administrator",
-    "client_notes": "",
-    "aliases": [
-      "2a. Plan Administrator Name",
-      "Plan Administrator Name"
-    ],
-    "required": true,
-    "order": 24
-  },
-  {
     "key": "form_5500_part_i_6_plan_year_beginning_date",
     "label": "6. Plan Year Beginning Date",
     "ftw_field": "6. Plan Year Beginning Date",
