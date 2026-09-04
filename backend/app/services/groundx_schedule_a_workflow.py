@@ -436,6 +436,13 @@ def normalize_groundx_schedule_a_extract(
         if current is None:
             selected[rule.key] = field
             continue
+        field_quality = _structured_candidate_quality(field)
+        current_quality = _structured_candidate_quality(current)
+        if field_quality > current_quality:
+            selected[rule.key] = field
+            continue
+        if field_quality < current_quality:
+            continue
         candidate_values = _dedupe_strings(
             [*current.candidate_values, current.value, *field.candidate_values, field.value]
         )
@@ -460,6 +467,20 @@ def normalize_groundx_schedule_a_extract(
         raw=payload,
         schedule_a_broker_rows=broker_rows,
     )
+
+
+def _structured_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int]:
+    source_texts = [field.source_text, *(item.source_text for item in field.evidence)]
+    value_key = normalize_name(field.value)
+    source_support = any(
+        value_key and value_key in normalize_name(str(source or ""))
+        for source in source_texts
+    )
+    position_support = any(
+        item.bounding_box is not None or item.table_cell is not None
+        for item in field.evidence
+    )
+    return int(source_support), int(position_support)
 
 
 def _unwrap_payload(payload: Any) -> Any:
@@ -511,11 +532,18 @@ def _evidence_from_metadata(metadata: dict[str, Any], value: str) -> SourceEvide
             bounding_box = tuple(float(item) for item in box)
         except (TypeError, ValueError):
             bounding_box = None
+    row = _int_or_none(metadata.get("row") or metadata.get("rowIndex"))
+    column = _int_or_none(
+        metadata.get("column")
+        or metadata.get("columnIndex")
+        or metadata.get("col")
+    )
     return SourceEvidence(
         provider=STRUCTURED_PROVIDER,
         page=_int_or_none(metadata.get("page") or metadata.get("pageNumber")),
         source_text=_first_text(metadata, "sourceText", "source_text", "context"),
         bounding_box=bounding_box,
+        table_cell=(row, column) if row is not None and column is not None else None,
     )
 
 

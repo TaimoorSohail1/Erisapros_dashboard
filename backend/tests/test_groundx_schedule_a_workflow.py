@@ -232,6 +232,37 @@ def test_structured_extract_preserves_conflicting_candidates_for_review():
     assert {evidence.page for evidence in field.evidence} == {1, 2}
 
 
+def test_structured_extract_prefers_position_backed_value_over_higher_label_confidence():
+    rules = schedule_a_rules()
+    carrier_rule = next(rule for rule in rules if rule.key.endswith("1a_name_of_insurance_company"))
+    payload = {
+        "label_only": {
+            carrier_rule.key: {
+                "value": "EIN (Insurance Carrier)",
+                "confidence": 0.99,
+                "page": 1,
+                "sourceText": "EIN (Insurance Carrier)",
+            }
+        },
+        "positioned_value": {
+            carrier_rule.key: {
+                "value": "Federal Insurance Company",
+                "confidence": 0.94,
+                "page": 1,
+                "rowIndex": 8,
+                "columnIndex": 2,
+                "sourceText": "Name of Insurance Company: Federal Insurance Company",
+            }
+        },
+    }
+
+    result = normalize_groundx_schedule_a_extract(payload, rules)
+
+    field = next(item for item in result.fields if item.field_name == carrier_rule.label)
+    assert field.value == "Federal Insurance Company"
+    assert field.candidate_values == ["Federal Insurance Company"]
+
+
 def test_provider_value_is_not_used_as_fabricated_source_evidence():
     rules = schedule_a_rules()
     contract_rule = next(rule for rule in rules if rule.key.endswith("1d_contract_policy_number"))
@@ -266,6 +297,8 @@ def test_broker_normalization_preserves_page_and_column_source_evidence():
                 "name": {
                     "value": "Example Broker LLC",
                     "page": 2,
+                    "rowIndex": 7,
+                    "columnIndex": 1,
                     "sourceText": "Example Broker LLC",
                 },
                 "commission_total": {
@@ -289,6 +322,7 @@ def test_broker_normalization_preserves_page_and_column_source_evidence():
     assert row.commission_source_text == "Commissions Paid $200"
     assert row.fee_source_text == "Fees Paid $100"
     assert any(evidence.page == 2 for evidence in row.evidence)
+    assert any(evidence.table_cell == (7, 1) for evidence in row.evidence)
 
 
 def test_structured_extract_normalizes_dates_rejects_guesses_and_consolidates_broker_payments():

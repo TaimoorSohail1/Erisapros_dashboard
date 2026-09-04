@@ -1,0 +1,67 @@
+[
+  {
+    "case_id": "guardian_fgf_2025",
+    "source_file": "1. 00555179 SCHEDULE A 01.01.25 TO 12.31.25 (3) (1).pdf",
+    "source_sha256": "CA5136E489F6B7C015A05830CDF425841A17C0F6849785917EC806BFCFCF7DA8",
+    "pages": [
+      {
+        "page": 1,
+        "text": "April 22, 2026\nPlan Number             : 00555179\nAnniversary Date        : 1/1/26\nEIN  : 13-5123390\nNAIC: 64246\nCertified to be correct\nThe Guardian Life Insurance Company of America."
+      },
+      {
+        "page": 2,
+        "text": "Name of Plan           :    FGF, LLC\nPlan Number            :   00555179\nData for Period From :            1/1/25                       To :   12/31/25\nThe approximate number of employees covered at the end of the plan year : 1188\nThe following figure represents commissions that are to be reported on Schedule A, Line 3, Element (b):\nContract\nIdentification         Name and Address of Recipient of Commissions\n000F5894               NFP CORPORATE SERVICES NY LLC\n                       200 PARK AVENUE SUITE 3202 NEW YORK NY  10166\nTotal Commissions Paid On Plan:                            122,729.20\nThe following figure represents fees that are to be reported on Schedule A, Line 3, Element (c):\nContract               Name of Recipient of Fees                                      Amount\nIdentification\n000F5894               NFP CORPORATE SERVICES NY LLC                             $17,582.30\nTotal Fees Paid                                                                    $17,582.30"
+      },
+      {
+        "page": 3,
+        "text": "Group Insurance Coverage(s) Gross Premium Paid\nTotals: 1,084,072.41"
+      }
+    ],
+    "expected_fields": {
+      "1a. Name of Insurance Company": "The Guardian Life Insurance Company of America",
+      "1b. Insurance Carrier EIN": "13-5123390",
+      "1c. NAIC Code": "64246",
+      "1d. Contract/Policy Number": "000F5894",
+      "1e. Persons Covered (End of Policy Year)": "1188",
+      "1f. Policy Year Beginning Date": "01/01/2025",
+      "1g. Policy Year Ending Date": "12/31/2025",
+      "10a. Total premiums or subscription charges paid to carrier": "1,084,072.41"
+    },
+    "expected_brokers": [
+      {
+        "name": "NFP CORPORATE SERVICES NY LLC",
+        "commission_total": "122,729.20",
+        "fee_total": "17,582.30",
+        "zip_code": "10166"
+      }
+    ]
+  },
+  {
+    "case_id": "federal_vanbridge_2024",
+    "source_file": "3. 99060215 SCHEDULE A 24-25 (2) (1).pdf",
+    "source_sha256": "B5FF5A61B6584BE102946E6BF45F7F1A789B7B58409D0DEED4FF3A4026B33E92",
+    "pages": [
+      {
+        "page": 1,
+        "text": "Insurance Information: Provided to assist the Plan Administrator in completing Form 5500/Schedule A.\nName of Policyholder: AMERICAN SECURITIES, LLC ACI CAPITAL CO., LLC AND AFFILIATES\nContract Identification/Policy Number: 9906-02-15\nPolicy Period:  04/01/2024 - 0     4/01/2025\nName of Insurance Company: Federal Insurance Company\nFederal Insurance Company Federal Tax ID Number: 13-1963496\nFederal Insurance Company NAIC Number: 20281\nApproximate Number of Persons Insured: To be Provided by the Plan Administrator\nInsurance Fees and Commissions Paid (form of payment, and fair market value if other than cash payment, must be disclosed):\nName and Address of Agent or Broker\nEDGEWOOD PARTNERS INSURANCE CENTER DBA VANBRIDGE\n1140 AVENUE OF THE AMERICAS 8TH FL\nNEW YORK, NY, 10036\nCommissions or Fees Paid                                      Contingent Commission Paid\n$525.90                                                       $69.00\nStraight Commission (1) Paid to Wholesaler/Broker             Contingent Commission (2) Paid to Wholesaler/Broker\nof Record                                                      of Record\nTotal Premium Paid to Federal Insurance Company: $3,506.00"
+      }
+    ],
+    "expected_fields": {
+      "1a. Name of Insurance Company": "Federal Insurance Company",
+      "1b. Insurance Carrier EIN": "13-1963496",
+      "1c. NAIC Code": "20281",
+      "1d. Contract/Policy Number": "9906-02-15",
+      "1f. Policy Year Beginning Date": "04/01/2024",
+      "1g. Policy Year Ending Date": "04/01/2025",
+      "10a. Total premiums or subscription charges paid to carrier": "3,506.00"
+    },
+    "expected_brokers": [
+      {
+        "name": "EDGEWOOD PARTNERS INSURANCE CENTER DBA VANBRIDGE",
+        "commission_total": "594.90",
+        "fee_total": "0",
+        "zip_code": "10036"
+      }
+    ]
+  }
+]

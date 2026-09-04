@@ -223,6 +223,17 @@ def _validate_source_evidence(
         for text in source_texts
         if str(text or "").strip()
     )
+    if not supports_value and field.field_name.strip().lower().startswith(("3b.", "3c.")):
+        target = parse_decimal(field.value)
+        for text in source_texts:
+            amounts = [
+                parse_decimal(match.group(1))
+                for match in re.finditer(r"\$\s*([\d,]+(?:\.\d{1,2})?)", str(text or ""))
+            ]
+            values = [amount for amount in amounts if amount is not None]
+            if target is not None and len(values) >= 2 and sum(values, Decimal("0")) == target:
+                supports_value = True
+                break
     valid = has_page and has_source_text and supports_value
     return ExtractionValidationResult(
         validator="source_evidence",
@@ -334,6 +345,7 @@ def _validate_persons_covered_semantics(
             r"(?:total\s+)?(?:persons?|people|lives?)\s+covered(?:\s+at\s+(?:the\s+)?end)?\D{0,24}([\d,]+)",
             r"total\s+covered\s+(?:persons?|people|lives?)\D{0,24}([\d,]+)",
             r"(?:subscribers?|employees?)\s*(?:\+|plus|and)\s*dependents?\D{0,24}([\d,]+)",
+            r"(?:approximate\s+number\s+of\s+)?employees\s+covered\s+at\s+(?:the\s+)?end\s+of\s+(?:the\s+)?plan\s+year\D{0,24}([\d,]+)",
         )
         for match in re.finditer(pattern, normalized, re.IGNORECASE)
     }
@@ -385,6 +397,11 @@ def _validate_financial_section_context(
             re.search(r"\bnon[- ]?experience[- ]rated\b", normalized)
             or re.search(r"\b(?:part\s+iii\s+)?line\s+10[a-z]?\b", normalized)
             or re.search(r"\b10[a-z]\s*[.(]", normalized)
+            or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)
+            or (
+                re.search(r"\bgross\s+premium\s+paid\b", normalized)
+                and re.search(r"\btotals?\s*:", normalized)
+            )
             or (
                 "payments received by carrier from plan" in normalized
                 and re.search(r"\btotal\s*:\s*\$", normalized)
@@ -574,7 +591,7 @@ def _validate_date(value: str) -> ExtractionValidationResult:
 
 
 def _normalized_date(value: str) -> str | None:
-    for pattern in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
+    for pattern in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value.strip(), pattern).strftime("%m/%d/%Y")
         except ValueError:

@@ -39,6 +39,8 @@ class SemanticLine:
     page: int
     row: int
     text: str
+    column_start: int = 0
+    column_end: int = 0
 
     @property
     def normalized(self) -> str:
@@ -85,7 +87,17 @@ class SemanticDocument:
             pages[int(page)] = clean
             for row, line in enumerate(clean.splitlines(), start=1):
                 if line.strip():
-                    lines.append(SemanticLine(page=int(page), row=row, text=line.rstrip()))
+                    rendered = line.rstrip()
+                    column_start = len(rendered) - len(rendered.lstrip())
+                    lines.append(
+                        SemanticLine(
+                            page=int(page),
+                            row=row,
+                            text=rendered,
+                            column_start=column_start,
+                            column_end=len(rendered),
+                        )
+                    )
         document = cls(lines=lines, pages=pages)
         document.groups = document._detect_policy_groups()
         return document
@@ -111,6 +123,7 @@ class SemanticDocument:
         their own contract and persons-covered labels are separate groups.
         """
         groups: list[SemanticPolicyGroup] = []
+        seen: set[tuple[str, str]] = set()
         for page, text in sorted(self.pages.items()):
             normalized = re.sub(r"\s+", " ", text)
             has_part_i = bool(re.search(r"\bPART\s+I\b", normalized, re.IGNORECASE))
@@ -127,12 +140,52 @@ class SemanticDocument:
             contract = contract_match.group(1) if contract_match else None
             persons = persons_match.group(1).replace(",", "") if persons_match else None
             identity = contract or f"page-{page}"
+            group_key = (str(contract or "").casefold(), str(persons or ""))
+            if group_key in seen:
+                continue
+            seen.add(group_key)
             groups.append(
                 SemanticPolicyGroup(
                     group_id=f"{identity}@{page}",
                     page=page,
                     contract_number=contract,
                     persons_covered=persons,
+                )
+            )
+        for page, text in sorted(self.pages.items()):
+            normalized = re.sub(r"\s+", " ", text)
+            support_contract = re.search(
+                r"Contract\s+Identification\s*/\s*Policy\s+Number\s*:\s*"
+                r"([A-Za-z0-9][A-Za-z0-9_./-]+)",
+                normalized,
+                re.IGNORECASE,
+            )
+            policy_period = re.search(
+                r"Policy\s+Period\s*:\s*"
+                r"(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:-|to|through)\s*"
+                r"(\d{1,2}/\d{1,2}/\d{2,4})",
+                normalized,
+                re.IGNORECASE,
+            )
+            carrier = re.search(
+                r"Name\s+of\s+Insurance\s+Company\s*:\s*(.+?)(?=\s+(?:Federal\s+)?(?:Tax\s+ID|EIN|NAIC|Benefits?|Approximate)|$)",
+                normalized,
+                re.IGNORECASE,
+            )
+            if not (support_contract and policy_period and carrier):
+                continue
+            contract = support_contract.group(1)
+            group_key = (contract.casefold(), policy_period.group(1) + "-" + policy_period.group(2))
+            if any(existing.contract_number and existing.contract_number.casefold() == contract.casefold() for existing in groups):
+                continue
+            if group_key in seen:
+                continue
+            seen.add(group_key)
+            groups.append(
+                SemanticPolicyGroup(
+                    group_id=f"{contract}@{page}",
+                    page=page,
+                    contract_number=contract,
                 )
             )
         return groups
@@ -265,6 +318,16 @@ def enrich_schedule_a_result(
     raw = dict(enriched.raw) if isinstance(enriched.raw, dict) else {"provider_raw": enriched.raw}
     group_count = len(document.groups) or (1 if document.lines else 0)
     ambiguities = _combined_compensation_ambiguities(enriched, document)
+    if group_count > 1:
+        # One dashboard filing cannot safely collapse distinct Schedule A
+        # identities into a single set of values. Preserve every candidate and
+        # force review before mapping or any downstream update can use it.
+        for field_item in enriched.fields:
+            field_item.confidence = min(float(field_item.confidence or 0), 0.5)
+            field_item.decision = "REVIEW_REQUIRED"
+        for broker in enriched.schedule_a_broker_rows:
+            broker.confidence = min(float(broker.confidence or 0), 0.5)
+            broker.decision = "REVIEW_REQUIRED"
     raw["semantic_resolution"] = {
         "version": 1,
         "decision": (
