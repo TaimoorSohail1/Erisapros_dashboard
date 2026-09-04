@@ -31,6 +31,10 @@ from app.models import (
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.groundx_schedule_a_workflow import normalize_groundx_schedule_a_extract
 from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline
+from app.services.schedule_a_layout_engine import (
+    extract_layout_aware_schedule_a_fields,
+    is_layout_label_text,
+)
 from app.services.schedule_a_semantic_layer import SemanticDocument, enrich_schedule_a_result
 from app.services.schedule_a_classification import classification_signals_from_text
 
@@ -1121,6 +1125,7 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
             is_blank_extraction_value(field.value)
             or is_obvious_template_placeholder(field.value)
             or _is_column_heading_broker_name(field)
+            or is_layout_label_text(field.value)
         ):
             continue
         key = field.field_name.strip().lower()
@@ -1149,7 +1154,8 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
 
 def _schedule_a_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int, int]:
     position_aware = any(
-        item.provider == "Position-aware PDF parser" and item.table_cell is not None
+        item.provider in {"Position-aware PDF parser", "Position-aware layout engine"}
+        and item.table_cell is not None
         for item in field.evidence
     )
     return (
@@ -2438,6 +2444,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     positioned_brokers = extract_position_aware_schedule_a_broker_rows(layout_pages)
     fields = [
         *_extract_fields_from_pages(plain_pages, rules=rules),
+        *extract_layout_aware_schedule_a_fields(file_bytes),
         *extract_position_aware_schedule_a_fields(layout_pages),
         *extract_rules_driven_schedule_a_fields(layout_pages, rules=rules),
         *schedule_a_broker_compensation_fields(positioned_brokers),

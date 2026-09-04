@@ -88,6 +88,21 @@ class VerifiedScheduleARegressionTests(unittest.TestCase):
 
         self.assertEqual(selected[0].value, "04/01/2024")
 
+    def test_column_heading_can_never_be_selected_as_a_carrier_value(self):
+        selected = select_best_schedule_a_fields(
+            [
+                NormalizedExtractionField(
+                    field_name="1a. Name of Insurance Company",
+                    value=") b.EIN Code Coverages",
+                    confidence=0.99,
+                    page=2,
+                    source_text="a.Name of Carrier(s)  b.EIN  c.NAIC Code  Coverages",
+                )
+            ]
+        )
+
+        self.assertEqual(selected, [])
+
     def test_positioned_broker_row_replaces_provider_amount_error_and_address_fragment(self):
         guardian = self.cases[0]
         pages = [(item["page"], item["text"]) for item in guardian["pages"]]

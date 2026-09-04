@@ -11,6 +11,7 @@ groundx[extract]>=4.0.1,<5
 python-multipart>=0.0.9
 python-dotenv>=1.0.1
 pypdf==6.12.2
+pdfplumber>=0.11,<0.12
 openpyxl>=3.1.0
 xlrd>=2.0.1
 olefile>=0.47
