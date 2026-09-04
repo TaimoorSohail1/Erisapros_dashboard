@@ -233,6 +233,43 @@ export function FilingReviewPage() {
     };
   }, [id, pollVersion, pollingPaused, shouldPollReview]);
 
+  // Another browser session can update this filing. Refresh the persisted
+  // snapshot on focus without sending another request to FT Williams.
+  useEffect(() => {
+    if (!id) return;
+    const filingId = id;
+    let active = true;
+    let requestInFlight = false;
+
+    async function refreshFilingSnapshot() {
+      if (document.visibilityState !== "visible") return;
+      if (pollingPaused || bringForwardOpenedRef.current || requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const updated = await getFiling(filingId);
+        if (!active) return;
+        previousFilingRef.current = updated;
+        setFiling(updated);
+      } catch {
+        // Keep the last valid snapshot. A passive refresh must never clear it.
+      } finally {
+        requestInFlight = false;
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void refreshFilingSnapshot();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", refreshFilingSnapshot);
+    return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", refreshFilingSnapshot);
+    };
+  }, [id, pollingPaused]);
+
   const fields = (filing?.fields ?? []).filter((field) => !isRetiredReviewField(field));
   const ftwReview = filing?.ftw_review || null;
   const ftwPlanUrl = ftwPlanPageUrl(ftwReview);
@@ -639,12 +676,28 @@ export function FilingReviewPage() {
           title: "Bring Forward still required",
           message: "The current-year FTW record is still missing. Complete Bring Forward in FT Williams, then refresh again.",
         });
+      } else if (sendQueries) {
+        const queryStatus = ftwQueryStatusContent(result.ftw_review);
+        setToast({
+          tone: "error",
+          title: queryStatus?.title || "FT Williams query was not completed",
+          message: queryStatus?.message || "FT Williams did not return usable current filing data.",
+          reason: queryStatus?.reason,
+          nextAction: queryStatus?.nextAction || "Confirm the plan match and retry the query.",
+          code: result.ftw_review.client_error?.code,
+          sticky: true,
+        });
       }
     } catch (error) {
+      const queryError = error instanceof ApiRequestError ? error.clientError : undefined;
       setToast({
         tone: "error",
-        title: "FT Williams refresh needs attention",
-        message: error instanceof Error ? error.message : "Current FT Williams data could not be refreshed.",
+        title: queryError?.title || "FT Williams refresh needs attention",
+        message: queryError?.message || (error instanceof Error ? error.message : "Current FT Williams data could not be refreshed."),
+        reason: queryError?.reason,
+        nextAction: queryError?.next_action || "Confirm the plan match and retry the query.",
+        code: queryError?.code,
+        sticky: true,
       });
     } finally {
       setFtwBusy(false);
@@ -1049,6 +1102,13 @@ export function FilingReviewPage() {
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
 
+            <FTWQueryStatusBanner
+              busy={ftwInteractionBusy}
+              onOpenBringForward={openFtwBringForward}
+              onRetry={() => prepareFtw(true)}
+              review={ftwReview}
+            />
+
             {showFtwSendAction && ftwReview?.ftw_editable === false ? (
               <FTWEditabilityBanner
                 busy={ftwInteractionBusy}
@@ -1432,6 +1492,61 @@ function ftwPlanPageUrl(review: FTWilliamsReview | null) {
   return `https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan=${plan}&Year=${encodeURIComponent(year)}`;
 }
 
+function resolvedFtwQueryState(review: FTWilliamsReview | null): NonNullable<FTWilliamsReview["query_state"]> {
+  if (!review) return "NOT_QUERIED";
+  if (review.query_state === "PLAN_MATCH_REQUIRED") return "PLAN_MATCH_REQUIRED";
+  if (review.query_state === "QUERY_FAILED") return "QUERY_FAILED";
+  if (review.query_state === "SCHEDULE_A_MISSING" || review.bring_forward_required) return "SCHEDULE_A_MISSING";
+  if (review.query_state === "MATCHED" || review.current_query_success) return "MATCHED";
+  if (!review.current_query_sent) return "NOT_QUERIED";
+  if (["MISSING_IDENTIFIERS", "FOUND_NO_FTW_IDS", "MULTIPLE_MATCHES", "NOT_FOUND"].includes(review.plan_lookup?.status || "")) {
+    return "PLAN_MATCH_REQUIRED";
+  }
+  return "QUERY_FAILED";
+}
+
+function ftwQueryStatusContent(review: FTWilliamsReview | null) {
+  if (!review) return null;
+  const state = resolvedFtwQueryState(review);
+  const clientError = review.client_error;
+  const reason = review.plan_lookup?.error_message
+    || clientError?.reason
+    || clientError?.message
+    || review.error_message
+    || undefined;
+  if (state === "PLAN_MATCH_REQUIRED") {
+    return {
+      state,
+      tone: "error" as const,
+      title: "FT Williams plan match is required",
+      message: reason || "The filing could not be matched to one FT Williams customer, plan, and year.",
+      reason,
+      nextAction: clientError?.next_action || "Confirm the plan identifiers in More actions, then query FTW Current again.",
+    };
+  }
+  if (state === "QUERY_FAILED") {
+    return {
+      state,
+      tone: "error" as const,
+      title: "FT Williams current-data query failed",
+      message: reason || "FT Williams did not return usable current filing data.",
+      reason,
+      nextAction: clientError?.next_action || "Check the FT Williams connection and retry the query.",
+    };
+  }
+  if (state === "SCHEDULE_A_MISSING") {
+    return {
+      state,
+      tone: "warning" as const,
+      title: "Current-year Schedule A is missing",
+      message: "The FT Williams plan was found, but its current-year Schedule A does not exist yet.",
+      reason,
+      nextAction: "Open FTW Bring Forward, complete it there, then return to refresh this filing.",
+    };
+  }
+  return null;
+}
+
 function sendValidationNoticeFromError(
   message: string,
   rows: ReviewDecisionRow[],
@@ -1517,6 +1632,39 @@ function WorkflowStepper({
             {index < steps.length - 1 ? <i /> : null}
           </button>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function FTWQueryStatusBanner({
+  busy,
+  onOpenBringForward,
+  onRetry,
+  review,
+}: {
+  busy: boolean;
+  onOpenBringForward: () => void;
+  onRetry: () => void;
+  review: FTWilliamsReview | null;
+}) {
+  const content = ftwQueryStatusContent(review);
+  if (!content) return null;
+  const bringForward = content.state === "SCHEDULE_A_MISSING";
+  return (
+    <section className={`filing-guidance guidance-${content.tone}`} role="alert" aria-label="FT Williams query status">
+      <div className="filing-guidance-icon"><AlertTriangle size={21} /></div>
+      <div className="filing-guidance-copy">
+        <span className="filing-guidance-source">FT Williams status</span>
+        <strong>{content.title}</strong>
+        <p>{content.message}</p>
+        <small>{content.nextAction}</small>
+        {review?.updated_at ? <small>Last checked: {formatDate(review.updated_at)}</small> : null}
+      </div>
+      <div className="filing-guidance-actions">
+        <button className={`button ${bringForward ? "button-warn" : "secondary"}`} type="button" disabled={busy} onClick={bringForward ? onOpenBringForward : onRetry}>
+          {bringForward ? <><ExternalLink size={15} /> Open FTW Bring Forward</> : <><RefreshCw size={15} /> Retry FTW query</>}
+        </button>
       </div>
     </section>
   );

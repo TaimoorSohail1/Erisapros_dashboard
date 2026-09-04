@@ -268,6 +268,7 @@ export interface FTWilliamsReview {
   current_query_sent: boolean;
   current_query_success: boolean;
   current_query_complete?: boolean | null;
+  query_state?: "NOT_QUERIED" | "MATCHED" | "SCHEDULE_A_MISSING" | "PLAN_MATCH_REQUIRED" | "QUERY_FAILED";
   current_year_exists: boolean;
   bring_forward_required: boolean;
   ftw_editable?: boolean | null;

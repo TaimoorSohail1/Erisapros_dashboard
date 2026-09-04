@@ -24,6 +24,7 @@ from app.models import (
     FTWilliamsComparisonField,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
+    FTWilliamsQueryState,
     FTWilliamsQueryResponse,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
@@ -2124,6 +2125,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertTrue(review.current_year_exists)
         self.assertTrue(review.query_access_verified)
+        self.assertEqual(review.query_state, FTWilliamsQueryState.MATCHED)
         self.assertEqual(review.update_access_status, "NOT_ATTEMPTED")
         self.assertFalse(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.CURRENT_QUERIED)
@@ -3993,6 +3995,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         refreshed = run_async(service.prepare_review(filing.id, send_queries=True))
 
         self.assertFalse(refreshed.current_query_success)
+        self.assertEqual(refreshed.query_state, FTWilliamsQueryState.QUERY_FAILED)
         self.assertFalse(refreshed.current_query_complete)
         self.assertTrue(refreshed.current_year_exists)
         self.assertFalse(refreshed.bring_forward_required)
@@ -5385,6 +5388,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             ["query_plan", "query_plan", "archive_5500_get_data", "plan_ids_batch"],
         )
         self.assertEqual(review.plan_lookup.status, FTWilliamsPlanLookupStatus.NOT_FOUND)
+        self.assertEqual(review.query_state, FTWilliamsQueryState.PLAN_MATCH_REQUIRED)
         self.assertFalse(review.current_query_success)
         self.assertIn("Could not locate existing plan", review.error_message or "")
         self.assertEqual(review.customer_id, "33-0574214")
@@ -6277,6 +6281,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(review.current_year_exists)
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
+        self.assertEqual(review.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
         self.assertEqual(
             review.ftw_plan_url,
             "https://ftwilliam.com/cgi-bin/index.cgi?"

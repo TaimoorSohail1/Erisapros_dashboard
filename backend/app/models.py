@@ -93,6 +93,14 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
+class FTWilliamsQueryState(str, Enum):
+    NOT_QUERIED = "NOT_QUERIED"
+    MATCHED = "MATCHED"
+    SCHEDULE_A_MISSING = "SCHEDULE_A_MISSING"
+    PLAN_MATCH_REQUIRED = "PLAN_MATCH_REQUIRED"
+    QUERY_FAILED = "QUERY_FAILED"
+
+
 class FTWilliamsFailureType(str, Enum):
     NEEDS_RETRY = "NEEDS_RETRY"
     NEEDS_DATA_FIX = "NEEDS_DATA_FIX"
@@ -736,6 +744,7 @@ class FTWilliamsReview(BaseModel):
     current_query_sent: bool = False
     current_query_success: bool = False
     current_query_complete: bool | None = None
+    query_state: FTWilliamsQueryState = FTWilliamsQueryState.NOT_QUERIED
     current_year_exists: bool = False
     bring_forward_required: bool = False
     ftw_editable: bool | None = None

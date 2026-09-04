@@ -30,6 +30,7 @@ from app.models import (
     FTWilliamsPlanMapping,
     FTWilliamsPlanYearResolution,
     FTWilliamsQueryRequest,
+    FTWilliamsQueryState,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
     ScheduleAContractType,
@@ -472,6 +473,12 @@ class FTWilliamsReviewService:
             current_query_success=current_query_success,
         )
         preserve_update_outcome = bool(preserved_update_outcome)
+        query_state = self._query_state(
+            attempted=send_queries or bool(existing_review and existing_review.current_query_sent),
+            success=current_query_success,
+            bring_forward_required=bring_forward_required,
+            plan_lookup=plan_lookup,
+        )
 
         review = FTWilliamsReview(
             filing_id=filing_id,
@@ -488,6 +495,7 @@ class FTWilliamsReviewService:
             current_query_sent=send_queries or bool(existing_review and existing_review.current_query_sent),
             current_query_success=current_query_success,
             current_query_complete=current_query_complete,
+            query_state=query_state,
             current_year_exists=current_year_exists,
             bring_forward_required=bring_forward_required,
             ftw_editable=ftw_editability["editable"],
@@ -5898,6 +5906,29 @@ class FTWilliamsReviewService:
 
     def _has_current_query_inputs(self, identity: dict) -> bool:
         return bool(identity.get("year")) and self._has_plan_identity(identity)
+
+    @staticmethod
+    def _query_state(
+        *,
+        attempted: bool,
+        success: bool,
+        bring_forward_required: bool,
+        plan_lookup: FTWilliamsPlanLookup,
+    ) -> FTWilliamsQueryState:
+        if bring_forward_required:
+            return FTWilliamsQueryState.SCHEDULE_A_MISSING
+        if success:
+            return FTWilliamsQueryState.MATCHED
+        if not attempted:
+            return FTWilliamsQueryState.NOT_QUERIED
+        if plan_lookup.status in {
+            FTWilliamsPlanLookupStatus.MISSING_IDENTIFIERS,
+            FTWilliamsPlanLookupStatus.FOUND_NO_FTW_IDS,
+            FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES,
+            FTWilliamsPlanLookupStatus.NOT_FOUND,
+        }:
+            return FTWilliamsQueryState.PLAN_MATCH_REQUIRED
+        return FTWilliamsQueryState.QUERY_FAILED
 
     def _has_plan_identity(self, identity: dict) -> bool:
         return bool(identity.get("customer_id") and identity.get("plan_id")) or bool(

@@ -59,5 +59,11 @@ assert.match(api, /case 504:[\s\S]*?outcome is unknown[\s\S]*?Query FTW Current/
 assert.match(filingReview, /toast\.reason[\s\S]*?toast\.nextAction[\s\S]*?toast\.code/, "The send failure toast must show the reason, recovery action, and support code.");
 assert.match(filingReview, /sendValidationNoticeFromError\([^,]+, allReviewRows\)/, "A validation failure must resolve fields against included and excluded review rows.");
 assert.match(filingReview, /function focusValidationIssue[\s\S]*?setSearch\(""\)[\s\S]*?setShowExcludedFields/, "Fix issue must clear filters and reveal the affected field before focusing it.");
+assert.match(filingReview, /function FTWQueryStatusBanner/, "An attempted FT Williams query must have a persistent status banner.");
+assert.match(filingReview, /query_state === "PLAN_MATCH_REQUIRED"/, "The filing page must identify a plan-match problem explicitly.");
+assert.match(filingReview, /query_state === "QUERY_FAILED"/, "The filing page must identify a failed FT Williams query explicitly.");
+assert.match(filingReview, /FT Williams refresh needs attention[\s\S]*?ApiRequestError[\s\S]*?clientError/, "A rejected current-data query must show its structured FT Williams reason.");
+assert.match(filingReview, /visibilitychange[\s\S]*?refreshFilingSnapshot/, "Returning to the filing must refresh server state from other browser sessions.");
+assert.match(filingReview, /window\.addEventListener\("focus", refreshFilingSnapshot\)/, "Focusing the browser must refresh the filing snapshot.");
 
 console.log("FT Williams failure diagnostics workflow passed.");
