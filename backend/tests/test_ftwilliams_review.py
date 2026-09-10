@@ -3615,6 +3615,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         verifying_ftw = VerifyingFTWilliamsService()
         settings = get_settings()
+        previous_schedule_a_updates_enabled = settings.ftwlink_schedule_a_updates_enabled
+        settings.ftwlink_schedule_a_updates_enabled = True
+        self.addCleanup(
+            setattr,
+            settings,
+            "ftwlink_schedule_a_updates_enabled",
+            previous_schedule_a_updates_enabled,
+        )
         with (
             patch.object(settings, "ftw_pdf_audit_enabled", True),
             patch(
@@ -3845,13 +3853,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         baseline_current = baseline.schedule_a_current_values
         fake_ftw.events.clear()
 
-        result = run_async(
-            service.approve_and_update(
-                filing.id,
-                send_to_ftw=True,
-                refresh_current_before_update=True,
+        with patch.object(get_settings(), "ftwlink_schedule_a_updates_enabled", True):
+            result = run_async(
+                service.approve_and_update(
+                    filing.id,
+                    send_to_ftw=True,
+                    refresh_current_before_update=True,
+                )
             )
-        )
 
         first_send = next(index for index, event in enumerate(fake_ftw.events) if event.startswith("send:"))
         self.assertTrue(any(event == "query:query_5500" for event in fake_ftw.events[:first_send]))
@@ -4102,13 +4111,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         fake_ftw = PartialUpdateFTWilliamsService()
-        review = run_async(
-            FTWilliamsReviewService(fake_ftw).approve_and_update(
-                filing.id,
-                send_to_ftw=True,
-                refresh_current_before_update=True,
+        with patch.object(get_settings(), "ftwlink_schedule_a_updates_enabled", True):
+            review = run_async(
+                FTWilliamsReviewService(fake_ftw).approve_and_update(
+                    filing.id,
+                    send_to_ftw=True,
+                    refresh_current_before_update=True,
+                )
             )
-        )
 
         self.assertEqual(review.status, FTWilliamsReviewStatus.UPDATE_FAILED)
         self.assertEqual(fake_ftw.send_operations, ["update_5500", "update_schedule_a"])

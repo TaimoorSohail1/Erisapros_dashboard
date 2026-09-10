@@ -36,6 +36,10 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
+  FtwScheduleAUpdatesEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
 
 Resources:
   FrontendBucket:
@@ -370,7 +374,7 @@ Resources:
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
-              Value: "true"
+              Value: !Ref FtwScheduleAUpdatesEnabled
             - Name: FTW_SCHEMA_VALIDATION_ENABLED
               Value: !Ref FtwSchemaValidationEnabled
             - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED
@@ -494,7 +498,7 @@ Resources:
             - Name: FTWLINK_ENDPOINT_URL
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
-              Value: "true"
+              Value: !Ref FtwScheduleAUpdatesEnabled
             - Name: FTW_SCHEMA_VALIDATION_ENABLED
               Value: !Ref FtwSchemaValidationEnabled
             - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED

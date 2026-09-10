@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     # Schedule A writes are replace-style at the vendor. Keep this capability
     # independently switchable so production can fail closed if FT returns an
     # ambiguous response or demonstrates destructive behavior.
-    ftwlink_schedule_a_updates_enabled: bool = True
+    ftwlink_schedule_a_updates_enabled: bool = False
     # Live checklist schemas are cached for one day. DOL Schedule A writes use
     # the separately published, versioned DOL contract until FT exposes an
     # equivalent live schema endpoint for DOL forms.
