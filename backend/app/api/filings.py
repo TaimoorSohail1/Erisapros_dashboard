@@ -547,11 +547,12 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
     if not review or not review.bring_forward_required:
         raise HTTPException(status_code=409, detail="FT Williams Bring Forward is not required for this filing.")
     url = FTWilliamsReviewService().plan_page_url_for_review(review)
+    plan_specific = bool(url)
     if not url:
-        raise HTTPException(
-            status_code=400,
-            detail="A plan-specific FT Williams URL cannot be created without the separate browser customer ID, browser plan ID, and year.",
-        )
+        # Preserve the established manual workflow for legacy/unmapped plans.
+        # Automatic Bring Forward still fails closed in the browser agent unless
+        # the separate plan-specific browser mapping has been confirmed.
+        url = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -575,6 +576,7 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
                 "target_year": review.year,
                 "prior_year": review.comparison_year,
                 "mutation_requested": False,
+                "plan_specific": plan_specific,
             },
         )
     )
@@ -582,6 +584,7 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
         "url": url,
         "target_year": review.year,
         "prior_year": review.comparison_year,
+        "plan_specific": plan_specific,
     }
 
 

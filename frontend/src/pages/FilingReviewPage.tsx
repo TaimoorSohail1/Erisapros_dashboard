@@ -733,7 +733,9 @@ export function FilingReviewPage() {
       setToast({
         tone: "success",
         title: "FT Williams opened",
-        message: "Complete FTW's native Bring Forward action and return here - FTW data will refresh automatically.",
+        message: result.plan_specific
+          ? "Complete FTW's native Bring Forward action and return here - FTW data will refresh automatically."
+          : "Select the plan in FT Williams, complete Bring Forward, then return here - FTW data will refresh automatically.",
       });
     } catch (error) {
       ftwWindow?.close();

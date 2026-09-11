@@ -648,8 +648,10 @@ class FilingsApiTests(unittest.TestCase):
         )
         self.assertEqual(response["target_year"], "2025")
         self.assertIsNone(response["prior_year"])
+        self.assertTrue(response["plan_specific"])
         self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
         self.assertFalse(audits[-1].details["mutation_requested"])
+        self.assertTrue(audits[-1].details["plan_specific"])
 
     def test_bring_forward_link_uses_the_selected_2026_filing_year(self):
         async def scenario():
@@ -686,7 +688,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIn("Year=2026", response["url"])
         self.assertEqual(response["target_year"], "2026")
 
-    def test_bring_forward_link_rejects_generic_homepage_when_ftw_ids_are_missing(self):
+    def test_bring_forward_link_preserves_manual_homepage_fallback_when_browser_ids_are_missing(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -710,14 +712,14 @@ class FilingsApiTests(unittest.TestCase):
                     ftw_plan_url="https://www.ftwilliam.com/",
                 )
             )
-            with self.assertRaises(HTTPException) as raised:
-                await get_ftwilliams_bring_forward_link(filing.id)
-            return raised.exception, await repo.list_audit_logs(filing.id)
+            response = await get_ftwilliams_bring_forward_link(filing.id)
+            return response, await repo.list_audit_logs(filing.id)
 
-        error, audits = run_async(scenario())
-        self.assertEqual(error.status_code, 400)
-        self.assertIn("plan-specific", str(error.detail))
-        self.assertEqual(audits, [])
+        response, audits = run_async(scenario())
+        self.assertEqual(response["url"], "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home")
+        self.assertFalse(response["plan_specific"])
+        self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
+        self.assertFalse(audits[-1].details["plan_specific"])
 
 
 if __name__ == "__main__":

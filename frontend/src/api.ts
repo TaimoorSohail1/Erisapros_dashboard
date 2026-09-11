@@ -281,6 +281,7 @@ export async function getFTWilliamsBringForwardLink(filingId: string): Promise<{
   url: string;
   target_year?: string | null;
   prior_year?: string | null;
+  plan_specific?: boolean;
 }> {
   return request("/filings/" + filingId + "/ftw/bring-forward-link", { method: "POST" });
 }
