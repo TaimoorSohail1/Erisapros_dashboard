@@ -6462,29 +6462,55 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   letter-spacing: 0.02em;
 }
 
+.workflow-command-center {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
 .automation-workflow-notice {
   align-items: center;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
-  border-radius: 12px;
+  border-radius: 8px;
   color: #1e3a8a;
-  display: grid;
-  gap: 10px 14px;
-  grid-template-columns: auto 1fr auto;
-  padding: 14px 18px 12px;
+  display: flex;
+  gap: 14px;
+  min-height: 60px;
+  padding: 9px 14px;
+}
+
+.automation-workflow-state {
+  align-items: center;
+  display: flex;
+  flex: 1 1 520px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .automation-workflow-copy {
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
 .automation-reason-list {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.15);
   display: grid;
   gap: 6px;
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   max-height: 144px;
+  min-width: 360px;
   overflow: auto;
-  padding: 0 4px 2px 20px;
+  padding: 10px 14px 10px 30px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 30;
 }
 
 .automation-reason-list li {
@@ -6496,19 +6522,28 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .automation-decision-summary {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  margin-top: 10px;
-  max-height: 210px;
+  gap: 8px;
+  margin: 0;
 }
 
 .automation-review-fields {
-  min-height: 34px;
-  padding: 0 13px;
+  min-height: 32px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.automation-workflow-controls {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .automation-decision-summary details {
-  min-width: min(100%, 320px);
+  position: relative;
 }
 
 .automation-decision-summary summary {
@@ -6520,8 +6555,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   font-weight: 800;
   gap: 7px;
   list-style: none;
-  min-height: 34px;
-  padding: 0 2px;
+  min-height: 32px;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 
 .automation-decision-summary summary::-webkit-details-marker {
@@ -6555,8 +6591,10 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   font-size: 11px;
   font-weight: 800;
   gap: 7px;
-  margin-top: 9px;
-  padding: 5px 9px;
+  margin: 0;
+  min-height: 30px;
+  padding: 4px 9px;
+  white-space: nowrap;
 }
 
 .local-agent-status i {
@@ -6570,99 +6608,6 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .local-agent-status.connected i {
   background: #059669;
   box-shadow: 0 0 0 3px #d1fae5;
-}
-
-.automation-progress {
-  display: grid;
-  gap: 8px;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  list-style: none;
-  margin: 2px 0 0;
-  padding: 9px 0 0;
-  position: relative;
-}
-
-.automation-progress::before {
-  background: #dbe7f4;
-  content: "";
-  height: 2px;
-  left: 6%;
-  position: absolute;
-  right: 6%;
-  top: 21px;
-}
-
-.automation-progress li {
-  align-items: center;
-  color: #64748b;
-  display: grid;
-  gap: 6px;
-  justify-items: center;
-  min-width: 0;
-  position: relative;
-  text-align: center;
-}
-
-.automation-progress li > span {
-  align-items: center;
-  background: #fff;
-  border: 2px solid #cbd5e1;
-  border-radius: 999px;
-  display: inline-flex;
-  font-size: 11px;
-  font-weight: 900;
-  height: 24px;
-  justify-content: center;
-  position: relative;
-  width: 24px;
-  z-index: 1;
-}
-
-.automation-progress li small {
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.25;
-}
-
-.automation-progress li.complete > span {
-  background: #07875f;
-  border-color: #07875f;
-  color: #fff;
-}
-
-.automation-progress li.active > span {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 4px #dbeafe;
-  color: #1d4ed8;
-}
-
-.automation-progress li.attention > span {
-  border-color: #d97706;
-  box-shadow: 0 0 0 4px #fef3c7;
-  color: #b45309;
-}
-
-.automation-progress li.failed > span {
-  border-color: #e11d48;
-  box-shadow: 0 0 0 4px #ffe4e6;
-  color: #be123c;
-}
-
-.automation-workflow-meta {
-  align-items: center;
-  border-top: 1px solid rgba(100, 116, 139, 0.18);
-  color: #475569;
-  display: flex;
-  font-size: 12px;
-  gap: 12px;
-  grid-column: 1 / -1;
-  justify-content: space-between;
-  padding-top: 8px;
-}
-
-.automation-workflow-meta small {
-  color: #64748b;
 }
 
 .automation-simple-summary {
@@ -6773,9 +6718,8 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .automation-workflow-notice p {
   color: #475569;
-  font-size: 13px;
-  line-height: 1.45;
-  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .automation-no-action {
@@ -6792,44 +6736,45 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   padding: 0 11px;
 }
 
+@media (max-width: 1100px) {
+  .automation-workflow-notice {
+    flex-wrap: wrap;
+  }
+
+  .automation-workflow-state {
+    flex-basis: 100%;
+  }
+
+  .automation-workflow-controls {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .automation-workflow-notice {
-    grid-template-columns: 1fr auto;
-  }
-
-  .automation-workflow-notice > .badge {
-    grid-column: 1 / -1;
-    justify-self: start;
-  }
-
-  .automation-decision-summary {
     align-items: stretch;
-    display: grid;
+    flex-direction: column;
   }
 
-  .automation-review-fields,
-  .automation-decision-summary details {
-    width: 100%;
+  .automation-workflow-state {
+    align-items: flex-start;
+    flex-basis: auto;
   }
 
-  .automation-progress {
-    gap: 10px;
-    grid-template-columns: 1fr;
+  .automation-workflow-controls {
+    justify-content: flex-start;
+    margin-left: 0;
   }
 
-  .automation-progress::before {
-    bottom: 18px;
-    height: auto;
-    left: 12px;
+  .automation-reason-list {
+    left: 0;
+    min-width: min(88vw, 360px);
     right: auto;
-    top: 28px;
-    width: 2px;
   }
 
-  .automation-progress li {
-    grid-template-columns: 26px 1fr;
-    justify-items: start;
-    text-align: left;
+  .automation-review-fields {
+    width: 100%;
   }
 
   .automation-simple-summary {

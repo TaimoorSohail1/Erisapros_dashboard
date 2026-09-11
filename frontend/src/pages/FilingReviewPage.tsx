@@ -80,15 +80,6 @@ type FieldSaveOptions = {
   successTitle?: string;
 };
 const REVIEW_POLL_MS = 30000;
-const AUTOMATION_WORKFLOW_STEPS = [
-  { key: "EXTRACT", label: "Extract" },
-  { key: "FIND_PLAN", label: "Find plan" },
-  { key: "QUERY", label: "Query" },
-  { key: "MATCH", label: "Bring forward / match" },
-  { key: "VALIDATE", label: "Validate" },
-  { key: "SEND", label: "Send" },
-  { key: "VERIFY", label: "Verify" },
-] as const;
 const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9a_premiums_1_amount_received",
   "schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid",
@@ -1131,19 +1122,21 @@ export function FilingReviewPage() {
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
 
       <main className="approval-workspace">
-        <AutomationWorkflowNotice
-          filing={filing}
-          localAgentStatus={localAgentStatus}
-          decisionLabels={actionRequiredLabels}
-          onReview={reviewBlockingFields}
-        />
+        <div className="workflow-command-center">
+          <AutomationWorkflowNotice
+            filing={filing}
+            localAgentStatus={localAgentStatus}
+            decisionLabels={actionRequiredLabels}
+            onReview={reviewBlockingFields}
+          />
 
-        <WorkflowStepper
-          filing={filing}
-          ftwReadyToSend={ftwReadyToSend}
-          needsDecisionCount={verifiedUpdateComplete ? 0 : actionRequiredCount}
-          onStepSelect={setActiveWorkflowStep}
-        />
+          <WorkflowStepper
+            filing={filing}
+            ftwReadyToSend={ftwReadyToSend}
+            needsDecisionCount={verifiedUpdateComplete ? 0 : actionRequiredCount}
+            onStepSelect={setActiveWorkflowStep}
+          />
+        </div>
 
         {verifiedUpdateComplete && ftwReview ? <FTWUpdateSuccessNotice review={ftwReview} reviewNoteCount={actionRequiredCount} /> : null}
 
@@ -1600,7 +1593,6 @@ function AutomationWorkflowNotice({
       : status === "FAILED"
         ? { label: "Failed", title: "Automation stopped safely", tone: "fail" }
         : { label: "Processing", title: "ERISAPros is handling this filing", tone: "info" };
-  const currentStep = automationCurrentStep(filing);
   const reasons = filing.automation_reasons?.filter(Boolean) || [];
   const showReasonList = !resolvedFieldException && (status === "ACTION_NEEDED" || status === "FAILED");
   const compactReasons = status === "ACTION_NEEDED" && filing.automation_next_action === "RESOLVE_ISSUES"
@@ -1609,20 +1601,24 @@ function AutomationWorkflowNotice({
   const decisionCount = compactReasons.length;
   return (
     <section className={`automation-workflow-notice ${presentation.tone}`} aria-live="polite">
-      <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
-      <div className="automation-workflow-copy">
-        <strong>{status === "ACTION_NEEDED" && decisionCount
-          ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
-          : presentation.title}</strong>
-        <p>
-          {resolvedFieldException || waitingForManualSend
-            ? filing.status === "APPROVED"
-              ? "All field decisions are complete. Review the changes below, then send them to FT Williams."
-              : "All field decisions are complete. Approve the filing to continue."
-            : showReasonList
-            ? "Automation paused safely. Review only the highlighted fields, then it will continue automatically."
-            : reasons[0] || "No manual action is required while the automated workflow is running."}
-        </p>
+      <div className="automation-workflow-state">
+        <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
+        <div className="automation-workflow-copy">
+          <strong>{status === "ACTION_NEEDED" && decisionCount
+            ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
+            : presentation.title}</strong>
+          <p>
+            {resolvedFieldException || waitingForManualSend
+              ? filing.status === "APPROVED"
+                ? "All field decisions are complete. Review the changes below, then send them to FT Williams."
+                : "All field decisions are complete. Approve the filing to continue."
+              : showReasonList
+              ? "Automation paused safely. Review the highlighted fields to continue."
+              : reasons[0] || "No manual action is required while the automated workflow is running."}
+          </p>
+        </div>
+      </div>
+      <div className="automation-workflow-controls">
         {showReasonList && compactReasons.length ? (
           <div className="automation-decision-summary">
             <button className="button automation-review-fields" type="button" onClick={onReview}>
@@ -1643,28 +1639,6 @@ function AutomationWorkflowNotice({
           </span>
         ) : null}
       </div>
-      <ShieldCheck size={24} aria-hidden="true" />
-      <ol className="automation-progress" aria-label="Automated FT Williams workflow progress">
-        {AUTOMATION_WORKFLOW_STEPS.map((step, index) => {
-          const stepState = status === "COMPLETED"
-            ? "complete"
-            : index < currentStep
-              ? "complete"
-              : index === currentStep
-                ? status === "FAILED" ? "failed" : status === "ACTION_NEEDED" ? "attention" : "active"
-                : "pending";
-          return (
-            <li className={stepState} key={step.key} aria-current={stepState === "active" ? "step" : undefined}>
-              <span>{stepState === "complete" ? <Check size={13} /> : index + 1}</span>
-              <small>{step.label}</small>
-            </li>
-          );
-        })}
-      </ol>
-      <div className="automation-workflow-meta">
-        <span><b>Next:</b> {automationNextActionLabel(filing.automation_next_action, status)}</span>
-        {filing.automation_policy_version ? <small>Policy {filing.automation_policy_version}</small> : null}
-      </div>
     </section>
   );
 }
@@ -1676,40 +1650,6 @@ function uniqueAutomationReasonLabels(reasons: string[]) {
     .replace(/\s+has no source evidence\.?$/i, "")
     .trim());
   return labels.filter((label, index) => Boolean(label) && labels.indexOf(label) === index);
-}
-
-function automationCurrentStep(filing: FilingDetail) {
-  const nextAction = filing.automation_next_action || "";
-  if (nextAction === "QUERY_FTW_CURRENT" || nextAction === "RETRY_AFTER_CURRENT_QUERY") return 2;
-  if (["MAP_FTW_BROWSER_PLAN", "CONFIRM_BRING_FORWARD", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD", "WAIT_FOR_LOCAL_AGENT", "START_LOCAL_AGENT"].includes(nextAction)) return 3;
-  if (nextAction === "RESOLVE_ISSUES") return 4;
-  if (nextAction === "AUTO_SEND") return 5;
-  if (nextAction === "VERIFY_FTW_UPDATE") return 6;
-  if (filing.automation_status === "COMPLETED") return AUTOMATION_WORKFLOW_STEPS.length - 1;
-  return filing.fields?.length ? 1 : 0;
-}
-
-function automationNextActionLabel(nextAction: string | null | undefined, status: FilingDetail["automation_status"]) {
-  if (status === "COMPLETED") return "No action required";
-  const labels: Record<string, string> = {
-    QUERY_FTW_CURRENT: "Query current FT Williams data",
-    RETRY_AFTER_CURRENT_QUERY: "Query FT Williams again",
-    MAP_FTW_BROWSER_PLAN: "Confirm the FT Williams plan once",
-    CONFIRM_BRING_FORWARD: "Confirm the exact plan and year",
-    AUTOMATE_BRING_FORWARD: "Bring Forward automatically",
-    VERIFY_BRING_FORWARD: "Verify the brought-forward record",
-    MANUAL_BRING_FORWARD: "Complete Bring Forward in FT Williams",
-    MANUAL_SCHEDULE_A_UPDATE: "Review and update Schedule A manually",
-    RESOLVE_ISSUES: "Resolve the highlighted item",
-    AUTO_SEND: "Send automatically",
-    MANUAL_SEND: "Review and send to FT Williams",
-    VERIFY_FTW_UPDATE: "Verify the FT Williams update",
-    LOGIN_TO_FTW: "Refresh the FT Williams login",
-    WAIT_FOR_LOCAL_AGENT: "Wait for the local FT Williams agent",
-    START_LOCAL_AGENT: "Start or sign in to the local FT Williams agent",
-    RETRY: "Retry the automated workflow",
-  };
-  return labels[nextAction || ""] || (status === "FAILED" ? "Review the failure and retry" : "Continue automatically");
 }
 
 function AutomationSimpleSummary({

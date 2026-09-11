@@ -17,12 +17,22 @@ assert.match(
 );
 assert.match(
   source,
-  /AUTOMATION_WORKFLOW_STEPS[\s\S]*?Extract[\s\S]*?Find plan[\s\S]*?Query[\s\S]*?Bring forward \/ match[\s\S]*?Validate[\s\S]*?Send[\s\S]*?Verify/,
-  "Automated filings should show a concise end-to-end progress tracker.",
+  /function WorkflowStepper[\s\S]*?Intake[\s\S]*?Extraction[\s\S]*?FTW loaded[\s\S]*?Review[\s\S]*?Approval[\s\S]*?FTW update/,
+  "The filing should show one concise end-to-end progress tracker.",
+);
+assert.doesNotMatch(
+  source,
+  /<ol className="automation-progress"/,
+  "The compact automation notice must not repeat the workflow already shown by WorkflowStepper.",
 );
 assert.match(
   source,
-  /automation-decision-summary[\s\S]*?Review fields[\s\S]*?automation_next_action/,
+  /automation-workflow-controls[\s\S]*?automation-decision-summary[\s\S]*?local-agent-status/,
+  "The compact notice should keep review actions and agent status together in one control row.",
+);
+assert.match(
+  source,
+  /automation-decision-summary[\s\S]*?Review fields[\s\S]*?View fields needing attention/,
   "Action Needed should use a compact decision summary with a direct review action.",
 );
 assert.doesNotMatch(
@@ -32,7 +42,7 @@ assert.doesNotMatch(
 );
 assert.match(
   styles,
-  /\.automation-decision-summary[\s\S]*?max-height:[^;]+;/,
+  /\.automation-reason-list[\s\S]*?max-height:[^;]+;/,
   "Expanded decision details must remain visually bounded.",
 );
 assert.match(
