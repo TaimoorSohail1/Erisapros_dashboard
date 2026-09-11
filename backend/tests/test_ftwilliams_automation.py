@@ -333,6 +333,8 @@ class FTWAutomationPolicyTests(unittest.TestCase):
     def test_filing_outside_demo_allowlist_stays_on_existing_manual_workflow(self):
         filing, review, extracted, settings = self.safe_case()
         review.ftw_customer_id = "production-customer"
+        review.ftw_browser_customer_id = "production-browser-customer"
+        review.ftw_browser_plan_id = "production-browser-plan"
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
@@ -351,6 +353,21 @@ class FTWAutomationPolicyTests(unittest.TestCase):
           {"ftw_customer_id":"demo","ftw_plan_id":"003","year":"2025"},
           {"ftw_customer_id":"demo","ftw_plan_id":"004","year":"2025"},
           {"ftw_customer_id":"demo","ftw_plan_id":"005","year":"2025"}
+        ]"""
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+
+    def test_allowlist_accepts_confirmed_browser_ids_when_ftwlink_ids_differ(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.ftw_customer_id = "internal-customer"
+        review.ftw_plan_id = "internal-plan"
+        review.ftw_browser_customer_id = "browser-customer"
+        review.ftw_browser_plan_id = "browser-plan"
+        review.browser_mapping_confirmed = True
+        settings.ftw_automation_allowed_targets_json = """[
+            {"ftw_customer_id":"browser-customer","ftw_plan_id":"browser-plan","year":"2025"}
         ]"""
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])

@@ -281,6 +281,11 @@ class FTWAutomationPolicy:
         review_targets = [
             (str(review.ftw_customer_id or ""), str(review.ftw_plan_id or ""), self._year(review.year)),
             (str(review.customer_id or ""), str(review.plan_id or ""), self._year(review.year)),
+            (
+                str(review.ftw_browser_customer_id or ""),
+                str(review.ftw_browser_plan_id or ""),
+                self._year(review.year),
+            ),
         ]
         for expected_customer, expected_plan, expected_year in configured_targets:
             for customer, plan, year in review_targets:
