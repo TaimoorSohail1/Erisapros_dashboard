@@ -22,8 +22,18 @@ assert.match(
 );
 assert.match(
   source,
-  /automation_reasons\?\.map[\s\S]*?automation_next_action/,
-  "Action Needed should show every blocking reason and the next automated step.",
+  /automation-decision-summary[\s\S]*?Review fields[\s\S]*?automation_next_action/,
+  "Action Needed should use a compact decision summary with a direct review action.",
+);
+assert.doesNotMatch(
+  source,
+  /filing\.automation_reasons\?\.map/,
+  "The workflow banner must not dump every raw validation message into the page.",
+);
+assert.match(
+  styles,
+  /\.automation-decision-summary[\s\S]*?max-height:[^;]+;/,
+  "Expanded decision details must remain visually bounded.",
 );
 assert.match(
   source,

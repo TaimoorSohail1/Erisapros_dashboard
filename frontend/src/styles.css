@@ -6466,12 +6466,12 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   align-items: center;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
-  border-radius: 14px;
+  border-radius: 12px;
   color: #1e3a8a;
   display: grid;
-  gap: 14px;
+  gap: 10px 14px;
   grid-template-columns: auto 1fr auto;
-  padding: 16px 18px;
+  padding: 14px 18px 12px;
 }
 
 .automation-workflow-copy {
@@ -6480,15 +6480,69 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .automation-reason-list {
   display: grid;
-  gap: 5px;
-  margin: 10px 0 0;
-  padding-left: 18px;
+  gap: 6px;
+  margin: 8px 0 0;
+  max-height: 144px;
+  overflow: auto;
+  padding: 0 4px 2px 20px;
 }
 
 .automation-reason-list li {
-  color: #475569;
+  color: #334155;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.automation-decision-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  max-height: 210px;
+}
+
+.automation-review-fields {
+  min-height: 34px;
+  padding: 0 13px;
+}
+
+.automation-decision-summary details {
+  min-width: min(100%, 320px);
+}
+
+.automation-decision-summary summary {
+  align-items: center;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 7px;
+  list-style: none;
+  min-height: 34px;
+  padding: 0 2px;
+}
+
+.automation-decision-summary summary::-webkit-details-marker {
+  display: none;
+}
+
+.automation-decision-summary summary span {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(146, 64, 14, 0.18);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  height: 21px;
+  justify-content: center;
+  min-width: 21px;
+  padding: 0 6px;
+}
+
+.automation-decision-summary details[open] summary svg {
+  transform: rotate(180deg);
 }
 
 .local-agent-status {
@@ -6525,7 +6579,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   grid-template-columns: repeat(7, minmax(0, 1fr));
   list-style: none;
   margin: 2px 0 0;
-  padding: 15px 0 0;
+  padding: 9px 0 0;
   position: relative;
 }
 
@@ -6536,7 +6590,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   left: 6%;
   position: absolute;
   right: 6%;
-  top: 27px;
+  top: 21px;
 }
 
 .automation-progress li {
@@ -6558,10 +6612,10 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   display: inline-flex;
   font-size: 11px;
   font-weight: 900;
-  height: 26px;
+  height: 24px;
   justify-content: center;
   position: relative;
-  width: 26px;
+  width: 24px;
   z-index: 1;
 }
 
@@ -6604,7 +6658,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   gap: 12px;
   grid-column: 1 / -1;
   justify-content: space-between;
-  padding-top: 11px;
+  padding-top: 8px;
 }
 
 .automation-workflow-meta small {
@@ -6746,6 +6800,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .automation-workflow-notice > .badge {
     grid-column: 1 / -1;
     justify-self: start;
+  }
+
+  .automation-decision-summary {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .automation-review-fields,
+  .automation-decision-summary details {
+    width: 100%;
   }
 
   .automation-progress {

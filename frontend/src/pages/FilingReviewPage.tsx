@@ -367,6 +367,13 @@ export function FilingReviewPage() {
   const brokerActionRequiredCount = brokerActionRequiredIndexes.size;
   const hardValidationBlockerCount = fieldValidationBlockerRows.length + brokerValidationIssues.length;
   const actionRequiredCount = actionRequiredRows.length + brokerActionRequiredCount + (planYearConflictRequired ? 1 : 0);
+  const actionRequiredLabels = [
+    ...actionRequiredRows.map((row) => row.label),
+    ...[...brokerActionRequiredIndexes].map((index) => scheduleABrokerRows[index]?.name
+      ? `Broker: ${scheduleABrokerRows[index].name}`
+      : `Broker row ${index + 1}`),
+    ...(planYearConflictRequired ? ["Plan year selection"] : []),
+  ].filter((label, index, labels) => Boolean(label) && labels.indexOf(label) === index);
   const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
   const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
@@ -1124,7 +1131,12 @@ export function FilingReviewPage() {
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
 
       <main className="approval-workspace">
-        <AutomationWorkflowNotice filing={filing} localAgentStatus={localAgentStatus} />
+        <AutomationWorkflowNotice
+          filing={filing}
+          localAgentStatus={localAgentStatus}
+          decisionLabels={actionRequiredLabels}
+          onReview={reviewBlockingFields}
+        />
 
         <WorkflowStepper
           filing={filing}
@@ -1556,11 +1568,15 @@ function AutomationExceptionActions({
 }
 
 function AutomationWorkflowNotice({
+  decisionLabels,
   filing,
   localAgentStatus,
+  onReview,
 }: {
+  decisionLabels: string[];
   filing: FilingDetail;
   localAgentStatus: FTWLocalAgentStatus | null;
+  onReview: () => void;
 }) {
   const status = filing.automation_status;
   if (!status || status === "DISABLED") return null;
@@ -1574,20 +1590,32 @@ function AutomationWorkflowNotice({
   const currentStep = automationCurrentStep(filing);
   const reasons = filing.automation_reasons?.filter(Boolean) || [];
   const showReasonList = status === "ACTION_NEEDED" || status === "FAILED";
+  const compactReasons = decisionLabels.length ? decisionLabels : uniqueAutomationReasonLabels(reasons);
+  const decisionCount = compactReasons.length;
   return (
     <section className={`automation-workflow-notice ${presentation.tone}`} aria-live="polite">
       <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
       <div className="automation-workflow-copy">
-        <strong>{presentation.title}</strong>
+        <strong>{status === "ACTION_NEEDED" && decisionCount
+          ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
+          : presentation.title}</strong>
         <p>
           {showReasonList
-            ? "Automation paused safely. Resolve the items below and it will continue automatically."
+            ? "Automation paused safely. Review only the highlighted fields, then it will continue automatically."
             : reasons[0] || "No manual action is required while the automated workflow is running."}
         </p>
-        {showReasonList && reasons.length ? (
-          <ul className="automation-reason-list">
-            {filing.automation_reasons?.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}
-          </ul>
+        {showReasonList && compactReasons.length ? (
+          <div className="automation-decision-summary">
+            <button className="button automation-review-fields" type="button" onClick={onReview}>
+              <ListChecks size={16} /> Review fields
+            </button>
+            <details>
+              <summary>View fields needing attention <span>{decisionCount}</span><ChevronDown size={15} /></summary>
+              <ul className="automation-reason-list">
+                {compactReasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+            </details>
+          </div>
         ) : null}
         {localAgentStatus?.enabled ? (
           <span className={`local-agent-status ${localAgentStatus.connected ? "connected" : "attention"}`}>
@@ -1620,6 +1648,15 @@ function AutomationWorkflowNotice({
       </div>
     </section>
   );
+}
+
+function uniqueAutomationReasonLabels(reasons: string[]) {
+  const labels = reasons.map((reason) => reason
+    .replace(/\s+confidence\s+\d+%.*$/i, "")
+    .replace(/\s+requires review\.?$/i, "")
+    .replace(/\s+has no source evidence\.?$/i, "")
+    .trim());
+  return labels.filter((label, index) => Boolean(label) && labels.indexOf(label) === index);
 }
 
 function automationCurrentStep(filing: FilingDetail) {
