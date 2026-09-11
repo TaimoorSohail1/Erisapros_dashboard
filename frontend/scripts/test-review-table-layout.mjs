@@ -835,5 +835,10 @@ assert.match(
   /brokerRowValidationIssues\(draft\)[\s\S]*?setShowDraftValidation\(true\)/,
   "Broker rows must be validated before save.",
 );
+assert.match(
+  source,
+  /nextAction === "LOGIN_TO_FTW"[\s\S]*?onClick=\{onRetry\}[\s\S]*?Retry automation[\s\S]*?onClick=\{onOpenBringForward\}[\s\S]*?Open FTW/,
+  "A refreshed automation login must offer Retry without removing the manual FT Williams fallback.",
+);
 
 console.log("Guided filing review workflow passed.");

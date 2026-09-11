@@ -1441,8 +1441,16 @@ function AutomationExceptionActions({
   if (nextAction === "MAP_FTW_BROWSER_PLAN") {
     return <button className="button" type="button" disabled={busy} onClick={onOpenTechnical}><ShieldCheck size={16} /> Confirm FTW plan</button>;
   }
-  if (nextAction === "LOGIN_TO_FTW" || nextAction === "MANUAL_BRING_FORWARD") {
-    return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Login to FTW</button>;
+  if (nextAction === "LOGIN_TO_FTW") {
+    return (
+      <>
+        <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry automation</button>
+        <button className="button secondary" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW</button>
+      </>
+    );
+  }
+  if (nextAction === "MANUAL_BRING_FORWARD") {
+    return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW Bring Forward</button>;
   }
   if (nextAction === "RETRY" || nextAction === "RETRY_AFTER_CURRENT_QUERY") {
     return <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry</button>;
