@@ -644,6 +644,28 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertIsNone(storage_state)
         self.assertIn("invalid", error.lower())
 
+    def test_browser_worker_reuses_refreshed_runtime_session_across_agent_instances(self):
+        _filing, _review, _extracted, settings = self.safe_case()
+        settings.ftw_browser_storage_state_json = '{"cookies":[],"origins":[]}'
+        refreshed = {
+            "cookies": [{"name": "fortwilliam", "value": "rotated"}],
+            "origins": [],
+        }
+
+        class Context:
+            async def storage_state(self):
+                return refreshed
+
+        PlaywrightFTWBringForwardAgent._runtime_storage_state = None
+        try:
+            run_async(PlaywrightFTWBringForwardAgent(settings)._remember_storage_state(Context()))
+            storage_state, error = PlaywrightFTWBringForwardAgent(settings)._load_storage_state()
+        finally:
+            PlaywrightFTWBringForwardAgent._runtime_storage_state = None
+
+        self.assertEqual(storage_state, refreshed)
+        self.assertIsNone(error)
+
     def test_browser_login_detection_recognizes_ftw_badpage_session_failure(self):
         self.assertIsNotNone(PlaywrightFTWBringForwardAgent._LOGIN_TEXT.search("badpage(error);"))
 

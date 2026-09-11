@@ -31,6 +31,10 @@ class PlaywrightFTWBringForwardAgent:
         r"(?:error|unable|failed|not\s+permitted).{0,120}bring\s+forward)",
         re.IGNORECASE | re.DOTALL,
     )
+    # FT Williams may rotate its authenticated cookie during navigation. Keep
+    # the refreshed state in the long-running API/worker process so a later
+    # filing does not reuse the stale deployment-secret snapshot.
+    _runtime_storage_state: dict | None = None
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -84,6 +88,8 @@ class PlaywrightFTWBringForwardAgent:
                         review,
                         timeout_ms=identity_timeout_ms,
                     )
+                    if not login_required:
+                        await self._remember_storage_state(context)
                     await page.screenshot(path=str(before_path), full_page=True)
                     if login_required:
                         return FTWBringForwardResult(
@@ -109,6 +115,7 @@ class PlaywrightFTWBringForwardAgent:
                         )
                     await locator.click(timeout=timeout_ms)
                     await page.wait_for_timeout(1_000)
+                    await self._remember_storage_state(context)
                     await page.screenshot(path=str(after_path), full_page=True)
                     if await self._visible_failure(page):
                         return FTWBringForwardResult(
@@ -160,6 +167,10 @@ class PlaywrightFTWBringForwardAgent:
             await page.wait_for_timeout(min(500, remaining_ms))
 
     def _load_storage_state(self) -> tuple[str | dict | None, str | None]:
+        runtime_state = type(self)._runtime_storage_state
+        if runtime_state is not None:
+            return runtime_state, None
+
         inline_state = str(self.settings.ftw_browser_storage_state_json or "").strip()
         if inline_state:
             try:
@@ -175,6 +186,15 @@ class PlaywrightFTWBringForwardAgent:
         if storage_path and storage_path.is_file():
             return str(storage_path), None
         return None, "A saved FT Williams login session is required for the dedicated demo account."
+
+    async def _remember_storage_state(self, context) -> None:
+        state = await context.storage_state()
+        if (
+            isinstance(state, dict)
+            and isinstance(state.get("cookies", []), list)
+            and isinstance(state.get("origins", []), list)
+        ):
+            type(self)._runtime_storage_state = state
 
     async def _bring_forward_locator(self, page):
         for frame in page.frames:
