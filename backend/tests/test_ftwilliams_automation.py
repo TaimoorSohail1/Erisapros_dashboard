@@ -671,6 +671,97 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(context.kwargs, {"indexed_db": True})
 
+    def test_browser_worker_reuses_one_live_browser_context_across_plans(self):
+        _filing, _review, _extracted, settings = self.safe_case()
+        settings.ftw_browser_storage_state_json = '{"cookies":[],"origins":[]}'
+
+        class Page:
+            closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def on(self, _event, _handler):
+                return None
+
+            async def close(self):
+                self.closed = True
+
+        class Context:
+            new_page_count = 0
+
+            async def new_page(self):
+                self.new_page_count += 1
+                return Page()
+
+            async def close(self):
+                return None
+
+        class Browser:
+            connected = True
+            new_context_count = 0
+            context = Context()
+
+            def is_connected(self):
+                return self.connected
+
+            async def new_context(self, **_kwargs):
+                self.new_context_count += 1
+                return self.context
+
+            async def close(self):
+                self.connected = False
+
+        class Chromium:
+            launch_count = 0
+            browser = Browser()
+
+            async def launch(self, **_kwargs):
+                self.launch_count += 1
+                return self.browser
+
+        class Playwright:
+            chromium = Chromium()
+
+            async def stop(self):
+                return None
+
+        class Starter:
+            playwright = Playwright()
+
+            async def start(self):
+                return self.playwright
+
+        def async_playwright():
+            return Starter()
+
+        async def scenario():
+            agent = PlaywrightFTWBringForwardAgent(settings)
+            PlaywrightFTWBringForwardAgent._runtime_page = None
+            PlaywrightFTWBringForwardAgent._runtime_context = None
+            PlaywrightFTWBringForwardAgent._runtime_browser = None
+            PlaywrightFTWBringForwardAgent._runtime_playwright = None
+            first_page, first_context = await agent._persistent_page(
+                async_playwright,
+                {"cookies": [], "origins": []},
+            )
+            second_page, second_context = await PlaywrightFTWBringForwardAgent(settings)._persistent_page(
+                async_playwright,
+                {"cookies": [], "origins": []},
+            )
+            try:
+                return first_page, first_context, second_page, second_context
+            finally:
+                await PlaywrightFTWBringForwardAgent._close_runtime_browser()
+
+        first_page, first_context, second_page, second_context = run_async(scenario())
+
+        self.assertIs(first_page, second_page)
+        self.assertIs(first_context, second_context)
+        self.assertEqual(Playwright.chromium.launch_count, 1)
+        self.assertEqual(Playwright.chromium.browser.new_context_count, 1)
+        self.assertEqual(Playwright.chromium.browser.context.new_page_count, 1)
+
     def test_browser_worker_restores_ftw_session_storage_before_navigation(self):
         _filing, _review, _extracted, settings = self.safe_case()
         agent = PlaywrightFTWBringForwardAgent(settings)

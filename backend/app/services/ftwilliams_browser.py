@@ -35,6 +35,12 @@ class PlaywrightFTWBringForwardAgent:
     # the refreshed state in the long-running API/worker process so a later
     # filing does not reuse the stale deployment-secret snapshot.
     _runtime_storage_state: dict | None = None
+    _runtime_playwright = None
+    _runtime_browser = None
+    _runtime_context = None
+    _runtime_page = None
+    _runtime_lock: asyncio.Lock | None = None
+    _runtime_lock_loop = None
     _SESSION_STORAGE_KEY = "_erisapros_session_storage"
     _USER_AGENT_KEY = "_erisapros_user_agent"
 
@@ -72,81 +78,142 @@ class PlaywrightFTWBringForwardAgent:
         timeout_ms = max(5, self.settings.ftw_browser_timeout_seconds) * 1000
 
         try:
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(headless=self.settings.ftw_browser_headless)
-                browser_state, session_storage, user_agent = self._split_storage_state(storage_state)
-                context_options = {"storage_state": browser_state}
-                if user_agent:
-                    context_options["user_agent"] = user_agent
-                context = await browser.new_context(**context_options)
-                await self._restore_session_storage(context, session_storage)
-                page = await context.new_page()
+            async with self._browser_lock():
+                page, context = await self._persistent_page(async_playwright, storage_state)
                 page.set_default_timeout(timeout_ms)
-                page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
-                try:
-                    navigation_started = asyncio.get_running_loop().time()
-                    await page.goto(str(review.ftw_plan_url), wait_until="domcontentloaded", timeout=timeout_ms)
-                    navigation_elapsed_ms = int(
-                        (asyncio.get_running_loop().time() - navigation_started) * 1_000
-                    )
-                    identity_timeout_ms = max(1_000, timeout_ms - navigation_elapsed_ms)
-                    page_text, identity_error, login_required = await self._wait_for_verified_target(
-                        page,
-                        review,
-                        timeout_ms=identity_timeout_ms,
-                    )
-                    if not login_required:
-                        await self._remember_storage_state(context, page)
-                    await page.screenshot(path=str(before_path), full_page=True)
-                    if login_required:
-                        return FTWBringForwardResult(
-                            False,
-                            "LOGIN_REQUIRED",
-                            "The saved FT Williams demo login session has expired or requires MFA.",
-                            str(before_path),
-                        )
-                    if identity_error:
-                        return FTWBringForwardResult(
-                            False,
-                            "INVALID_TARGET",
-                            identity_error,
-                            str(before_path),
-                        )
-                    locator = await self._bring_forward_locator(page)
-                    if locator is None:
-                        return FTWBringForwardResult(
-                            False,
-                            "PAGE_LAYOUT_CHANGED",
-                            "The FT Williams Bring Forward action was not found; no page action was attempted.",
-                            str(before_path),
-                        )
-                    await locator.click(timeout=timeout_ms)
-                    await page.wait_for_timeout(1_000)
+                navigation_started = asyncio.get_running_loop().time()
+                await page.goto(str(review.ftw_plan_url), wait_until="domcontentloaded", timeout=timeout_ms)
+                navigation_elapsed_ms = int(
+                    (asyncio.get_running_loop().time() - navigation_started) * 1_000
+                )
+                identity_timeout_ms = max(1_000, timeout_ms - navigation_elapsed_ms)
+                page_text, identity_error, login_required = await self._wait_for_verified_target(
+                    page,
+                    review,
+                    timeout_ms=identity_timeout_ms,
+                )
+                if not login_required:
                     await self._remember_storage_state(context, page)
-                    await page.screenshot(path=str(after_path), full_page=True)
-                    if await self._visible_failure(page):
-                        return FTWBringForwardResult(
-                            False,
-                            "FTW_REJECTED",
-                            "FT Williams displayed an error after Bring Forward; current data was not assumed to exist.",
-                            str(after_path),
-                        )
+                await page.screenshot(path=str(before_path), full_page=True)
+                if login_required:
                     return FTWBringForwardResult(
-                        True,
-                        "SUBMITTED",
-                        "FT Williams Bring Forward was submitted; ftwLink re-query will verify the current-year record.",
+                        False,
+                        "LOGIN_REQUIRED",
+                        "The saved FT Williams demo login session has expired or requires MFA.",
+                        str(before_path),
+                    )
+                if identity_error:
+                    return FTWBringForwardResult(
+                        False,
+                        "INVALID_TARGET",
+                        identity_error,
+                        str(before_path),
+                    )
+                locator = await self._bring_forward_locator(page)
+                if locator is None:
+                    return FTWBringForwardResult(
+                        False,
+                        "PAGE_LAYOUT_CHANGED",
+                        "The FT Williams Bring Forward action was not found; no page action was attempted.",
+                        str(before_path),
+                    )
+                await locator.click(timeout=timeout_ms)
+                await page.wait_for_timeout(1_000)
+                await self._remember_storage_state(context, page)
+                await page.screenshot(path=str(after_path), full_page=True)
+                if await self._visible_failure(page):
+                    return FTWBringForwardResult(
+                        False,
+                        "FTW_REJECTED",
+                        "FT Williams displayed an error after Bring Forward; current data was not assumed to exist.",
                         str(after_path),
                     )
-                finally:
-                    await context.close()
-                    await browser.close()
+                return FTWBringForwardResult(
+                    True,
+                    "SUBMITTED",
+                    "FT Williams Bring Forward was submitted; ftwLink re-query will verify the current-year record.",
+                    str(after_path),
+                )
         except Exception as exc:
+            await self._close_runtime_browser()
             return FTWBringForwardResult(
                 False,
                 "WORKER_FAILED",
                 f"FT Williams Bring Forward stopped safely: {type(exc).__name__}: {exc}",
                 str(before_path) if before_path.exists() else None,
             )
+
+    @classmethod
+    def _browser_lock(cls) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if cls._runtime_lock is None or cls._runtime_lock_loop is not loop:
+            cls._runtime_lock = asyncio.Lock()
+            cls._runtime_lock_loop = loop
+        return cls._runtime_lock
+
+    async def _persistent_page(self, async_playwright, storage_state: dict):
+        cls = type(self)
+        if (
+            cls._runtime_page is not None
+            and not cls._runtime_page.is_closed()
+            and cls._runtime_browser is not None
+            and cls._runtime_browser.is_connected()
+            and cls._runtime_context is not None
+        ):
+            return cls._runtime_page, cls._runtime_context
+
+        await self._close_runtime_browser()
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.launch(headless=self.settings.ftw_browser_headless)
+            browser_state, session_storage, user_agent = self._split_storage_state(storage_state)
+            context_options = {"storage_state": browser_state}
+            if user_agent:
+                context_options["user_agent"] = user_agent
+            context = await browser.new_context(**context_options)
+            await self._restore_session_storage(context, session_storage)
+            page = await context.new_page()
+            page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
+        except Exception:
+            await playwright.stop()
+            raise
+
+        cls._runtime_playwright = playwright
+        cls._runtime_browser = browser
+        cls._runtime_context = context
+        cls._runtime_page = page
+        return page, context
+
+    @classmethod
+    async def _close_runtime_browser(cls) -> None:
+        page = cls._runtime_page
+        context = cls._runtime_context
+        browser = cls._runtime_browser
+        playwright = cls._runtime_playwright
+        cls._runtime_page = None
+        cls._runtime_context = None
+        cls._runtime_browser = None
+        cls._runtime_playwright = None
+        try:
+            if page is not None and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+        try:
+            if browser is not None and browser.is_connected():
+                await browser.close()
+        except Exception:
+            pass
+        try:
+            if playwright is not None:
+                await playwright.stop()
+        except Exception:
+            pass
 
     async def _wait_for_verified_target(
         self,
