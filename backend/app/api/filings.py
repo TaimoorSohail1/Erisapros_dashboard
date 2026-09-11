@@ -458,6 +458,7 @@ async def approve_filing(filing_id: str, payload: ApproveRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    review = await continue_ftw_automation(filing_id, review)
     updated = await repo.get_filing(filing_id)
     return {"status": updated.status if updated else FilingStatus.APPROVED, "ftw_review": review}
 

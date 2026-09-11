@@ -313,6 +313,29 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertFalse(decision.eligible)
         self.assertTrue(any("95%" in reason for reason in decision.reasons))
 
+    def test_reviewer_confirmed_low_confidence_field_is_safe_to_send(self):
+        filing, review, extracted, settings = self.safe_case()
+        extracted.status = ExtractedFieldStatus.EDITED
+        extracted.confidence = 0.50
+        extracted.source_text = ""
+        review.fields[0].extraction_status = ExtractedFieldStatus.LOW_CONFIDENCE
+        review.fields[0].confidence = 0.50
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
+
+    def test_safe_filing_uses_manual_send_action_when_auto_send_is_disabled(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftw_automation_auto_send_enabled = False
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertEqual(decision.next_action, "MANUAL_SEND")
+
     def test_missing_required_field_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.status = ExtractedFieldStatus.MISSING

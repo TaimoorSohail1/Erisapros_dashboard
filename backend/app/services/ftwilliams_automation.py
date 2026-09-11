@@ -186,9 +186,15 @@ class FTWAutomationPolicy:
         extracted_by_id = {str(field.id): field for field in fields if field.id}
         threshold = min(1.0, max(0.0, self.settings.ftw_automation_confidence_threshold))
         for comparison in review.fields:
+            extracted = extracted_by_id.get(str(comparison.field_id or ""))
+            reviewer_confirmed = bool(
+                extracted and extracted.status == ExtractedFieldStatus.EDITED
+            )
             if comparison.validation_blocking:
                 reasons.append(f"{comparison.label} has a blocking validation error.")
             if (
+                not reviewer_confirmed
+                and
                 comparison.changed
                 and comparison.update_included
                 and comparison.extraction_status in {
@@ -203,11 +209,11 @@ class FTWAutomationPolicy:
             ):
                 reasons.append(f"{comparison.label} requires review.")
             if comparison.changed and comparison.update_included and comparison.confidence < threshold:
-                reasons.append(
-                    f"{comparison.label} confidence {comparison.confidence:.0%} is below the {threshold:.0%} automation threshold."
-                )
-            if comparison.changed and comparison.update_included:
-                extracted = extracted_by_id.get(str(comparison.field_id or ""))
+                if not reviewer_confirmed:
+                    reasons.append(
+                        f"{comparison.label} confidence {comparison.confidence:.0%} is below the {threshold:.0%} automation threshold."
+                    )
+            if comparison.changed and comparison.update_included and not reviewer_confirmed:
                 if not extracted or not (str(extracted.source_text or "").strip() or extracted.page is not None):
                     reasons.append(f"{comparison.label} has no source evidence.")
 
@@ -260,7 +266,12 @@ class FTWAutomationPolicy:
                 ["FT Williams already matches the verified extracted values; no update is needed."],
                 None,
             )
-        return self._decision(FTWAutomationStatus.SAFE_TO_SEND, True, [], "AUTO_SEND")
+        next_action = (
+            "AUTO_SEND"
+            if self.settings.ftw_automation_auto_send_enabled
+            else "MANUAL_SEND"
+        )
+        return self._decision(FTWAutomationStatus.SAFE_TO_SEND, True, [], next_action)
 
     def _schedule_match_error(self, review: FTWilliamsReview) -> str | None:
         selected = review.schedule_a_match or {}

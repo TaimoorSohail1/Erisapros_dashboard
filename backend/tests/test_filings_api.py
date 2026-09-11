@@ -2,12 +2,14 @@ import asyncio
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
 from fastapi import HTTPException
 from app.api.filings import (
+    approve_filing,
     delete_filing_from_dashboard,
     get_filing,
     get_ftwilliams_bring_forward_link,
@@ -16,7 +18,7 @@ from app.api.filings import (
     unapprove_filing,
     update_field,
 )
-from app.models import ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FormType, FTWilliamsReview
+from app.models import ApproveRequest, ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FormType, FTWilliamsReview
 
 
 def run_async(coro):
@@ -190,6 +192,39 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIsNone(updated.approved_at)
         self.assertEqual(events[-1].type, "UNAPPROVE")
         self.assertEqual(audits[-1].event, "UNAPPROVED")
+
+    def test_approve_refreshes_automation_decision_before_returning(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Approved Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/approved",
+                    status=FilingStatus.READY_FOR_APPROVAL,
+                )
+            )
+            approved_review = FTWilliamsReview(filing_id=filing.id)
+            refreshed_review = FTWilliamsReview(filing_id=filing.id, configured=True)
+            review_service = AsyncMock()
+            review_service.approve_and_update.return_value = approved_review
+
+            with (
+                patch("app.api.filings.FTWilliamsReviewService", return_value=review_service),
+                patch(
+                    "app.api.filings.continue_ftw_automation",
+                    new=AsyncMock(return_value=refreshed_review),
+                ) as continue_automation,
+            ):
+                response = await approve_filing(filing.id, ApproveRequest())
+
+            return response, continue_automation
+
+        response, continue_automation = run_async(scenario())
+
+        continue_automation.assert_awaited_once()
+        self.assertIs(response["ftw_review"], continue_automation.return_value)
 
     def test_field_review_actions_distinguish_confirmed_values_from_marked_missing(self):
         async def scenario():

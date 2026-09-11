@@ -42,8 +42,23 @@ assert.match(
 );
 assert.match(
   source,
-  /automationRequiresOperatorAction\(filing\)[\s\S]*?<AutomationExceptionActions[\s\S]*?Resolve & Continue/,
+  /automationRequiresOperatorAction\(filing, actionRequiredCount\)[\s\S]*?<AutomationExceptionActions[\s\S]*?Resolve & Continue/,
   "Action Needed should replace the legacy multi-button toolbar with one contextual action.",
+);
+assert.match(
+  source,
+  /function automationRequiresOperatorAction[\s\S]*?automation_next_action !== "RESOLVE_ISSUES" \|\| currentDecisionCount > 0/,
+  "A stale field-review automation status must not hide approval or FT Williams send actions after all current decisions are resolved.",
+);
+assert.match(
+  source,
+  /status === "SAFE_TO_SEND" && filing\.automation_next_action === "AUTO_SEND"/,
+  "Only true auto-send ownership may replace the manual approval and send controls.",
+);
+assert.match(
+  source,
+  /waitingForManualSend[\s\S]*?Ready to update FT Williams[\s\S]*?send them to FT Williams/,
+  "Manual-send mode should clearly present the approved filing's FT Williams update step.",
 );
 assert.match(
   source,

@@ -1173,7 +1173,7 @@ export function FilingReviewPage() {
               <div className="compact-review-toolbar">
               {automationNeedsNoOperatorAction(filing) ? (
                 <span className="automation-no-action"><ShieldCheck size={16} /> No action required</span>
-              ) : automationRequiresOperatorAction(filing) ? (
+              ) : automationRequiresOperatorAction(filing, actionRequiredCount) ? (
                 <AutomationExceptionActions
                   busy={reviewInteractionBusy}
                   nextAction={filing.automation_next_action}
@@ -1313,7 +1313,7 @@ export function FilingReviewPage() {
             {!displayRows.length ? (
               <div className="empty-state">
                 <SearchX size={18} />
-                {activeTab === "NEEDS_DECISION" && automationRequiresOperatorAction(filing)
+                {activeTab === "NEEDS_DECISION" && automationRequiresOperatorAction(filing, actionRequiredCount)
                   ? "No field decisions are required. Complete the workflow action above to continue."
                   : "No fields match this view."}
               </div>
@@ -1507,13 +1507,15 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
 }
 
 function automationNeedsNoOperatorAction(filing: FilingDetail) {
-  return ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND", "COMPLETED"].includes(
-    filing.automation_status || "DISABLED",
-  );
+  const status = filing.automation_status || "DISABLED";
+  return ["PROCESSING", "BRING_FORWARD_REQUIRED", "COMPLETED"].includes(status)
+    || (status === "SAFE_TO_SEND" && filing.automation_next_action === "AUTO_SEND");
 }
 
-function automationRequiresOperatorAction(filing: FilingDetail) {
-  return filing.automation_status === "ACTION_NEEDED" || filing.automation_status === "FAILED";
+function automationRequiresOperatorAction(filing: FilingDetail, currentDecisionCount: number) {
+  if (filing.automation_status === "FAILED") return true;
+  if (filing.automation_status !== "ACTION_NEEDED") return false;
+  return filing.automation_next_action !== "RESOLVE_ISSUES" || currentDecisionCount > 0;
 }
 
 function AutomationExceptionActions({
@@ -1580,8 +1582,19 @@ function AutomationWorkflowNotice({
 }) {
   const status = filing.automation_status;
   if (!status || status === "DISABLED") return null;
+  const resolvedFieldException = status === "ACTION_NEEDED"
+    && filing.automation_next_action === "RESOLVE_ISSUES"
+    && decisionLabels.length === 0;
+  const waitingForManualSend = status === "SAFE_TO_SEND"
+    && filing.automation_next_action === "MANUAL_SEND";
   const presentation = status === "COMPLETED"
     ? { label: "Completed", title: "FT Williams update verified", tone: "ready" }
+    : resolvedFieldException || waitingForManualSend
+      ? {
+          label: "Ready",
+          title: filing.status === "APPROVED" ? "Ready to update FT Williams" : "Ready for approval",
+          tone: "ready",
+        }
     : status === "ACTION_NEEDED"
       ? { label: "Action Needed", title: "One or more items need your decision", tone: "warn" }
       : status === "FAILED"
@@ -1589,8 +1602,10 @@ function AutomationWorkflowNotice({
         : { label: "Processing", title: "ERISAPros is handling this filing", tone: "info" };
   const currentStep = automationCurrentStep(filing);
   const reasons = filing.automation_reasons?.filter(Boolean) || [];
-  const showReasonList = status === "ACTION_NEEDED" || status === "FAILED";
-  const compactReasons = decisionLabels.length ? decisionLabels : uniqueAutomationReasonLabels(reasons);
+  const showReasonList = !resolvedFieldException && (status === "ACTION_NEEDED" || status === "FAILED");
+  const compactReasons = status === "ACTION_NEEDED" && filing.automation_next_action === "RESOLVE_ISSUES"
+    ? decisionLabels
+    : decisionLabels.length ? decisionLabels : uniqueAutomationReasonLabels(reasons);
   const decisionCount = compactReasons.length;
   return (
     <section className={`automation-workflow-notice ${presentation.tone}`} aria-live="polite">
@@ -1600,7 +1615,11 @@ function AutomationWorkflowNotice({
           ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
           : presentation.title}</strong>
         <p>
-          {showReasonList
+          {resolvedFieldException || waitingForManualSend
+            ? filing.status === "APPROVED"
+              ? "All field decisions are complete. Review the changes below, then send them to FT Williams."
+              : "All field decisions are complete. Approve the filing to continue."
+            : showReasonList
             ? "Automation paused safely. Review only the highlighted fields, then it will continue automatically."
             : reasons[0] || "No manual action is required while the automated workflow is running."}
         </p>
@@ -1683,6 +1702,7 @@ function automationNextActionLabel(nextAction: string | null | undefined, status
     MANUAL_SCHEDULE_A_UPDATE: "Review and update Schedule A manually",
     RESOLVE_ISSUES: "Resolve the highlighted item",
     AUTO_SEND: "Send automatically",
+    MANUAL_SEND: "Review and send to FT Williams",
     VERIFY_FTW_UPDATE: "Verify the FT Williams update",
     LOGIN_TO_FTW: "Refresh the FT Williams login",
     WAIT_FOR_LOCAL_AGENT: "Wait for the local FT Williams agent",
