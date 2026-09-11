@@ -14,10 +14,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createFTWLocalAgentPairingCode,
   getFTWLocalAgentStatus,
+  listFTWClientWorkspaces,
   listFTWLocalAgentDevices,
   revokeFTWLocalAgentDevice,
 } from "../api";
-import type { FTWLocalAgentDevice, FTWLocalAgentPairingCodeResponse, FTWLocalAgentStatus } from "../types";
+import type { FTWClientWorkspace, FTWLocalAgentDevice, FTWLocalAgentPairingCodeResponse, FTWLocalAgentStatus } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
 type LoadState = "loading" | "ready" | "error";
@@ -25,6 +26,8 @@ type LoadState = "loading" | "ready" | "error";
 export function FTWilliamsAgentSettingsPage() {
   const [status, setStatus] = useState<FTWLocalAgentStatus | null>(null);
   const [devices, setDevices] = useState<FTWLocalAgentDevice[]>([]);
+  const [workspaces, setWorkspaces] = useState<FTWClientWorkspace[]>([]);
+  const [workspaceId, setWorkspaceId] = useState("");
   const [state, setState] = useState<LoadState>("loading");
   const [message, setMessage] = useState("");
   const [pairing, setPairing] = useState<FTWLocalAgentPairingCodeResponse | null>(null);
@@ -36,12 +39,19 @@ export function FTWilliamsAgentSettingsPage() {
     if (!quiet) setState("loading");
     setMessage("");
     try {
-      const [nextStatus, nextDevices] = await Promise.all([
+      const [nextStatus, nextDevices, nextWorkspaces] = await Promise.all([
         getFTWLocalAgentStatus(),
         listFTWLocalAgentDevices(),
+        listFTWClientWorkspaces(),
       ]);
       setStatus(nextStatus);
       setDevices(nextDevices.filter((device) => !device.revoked_at));
+      setWorkspaces(nextWorkspaces.filter((workspace) => workspace.enabled));
+      setWorkspaceId((current) => (
+        nextWorkspaces.some((workspace) => workspace.id === current)
+          ? current
+          : nextWorkspaces.find((workspace) => workspace.enabled)?.id || ""
+      ));
       setState("ready");
     } catch (error) {
       setState("error");
@@ -62,7 +72,7 @@ export function FTWilliamsAgentSettingsPage() {
     setCopied(false);
     setMessage("");
     try {
-      setPairing(await createFTWLocalAgentPairingCode());
+      setPairing(await createFTWLocalAgentPairingCode(workspaceId || undefined));
       await refresh(true);
     } catch (error) {
       setMessage(errorMessage(error, "The one-time connection code could not be created."));
@@ -136,6 +146,15 @@ export function FTWilliamsAgentSettingsPage() {
                 <span className="eyebrow">One-time setup</span>
                 <h2>Connect this computer</h2>
                 <p>Create a short-lived code, then enter it in the signed ERISAPros FT Williams Agent on the Windows computer that will run FT Williams.</p>
+                {workspaces.length ? (
+                  <label className="agent-workspace-select">
+                    <span>Client workspace</span>
+                    <select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} disabled={creatingCode}>
+                      {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name} · {workspace.expected_account}</option>)}
+                    </select>
+                    <small>The computer and its future jobs stay inside this client workspace.</small>
+                  </label>
+                ) : null}
               </div>
               <button className="button" type="button" onClick={() => void createCode()} disabled={creatingCode || !status?.enabled}>
                 {creatingCode ? <InlineLoader label="Creating code" /> : <><Link2 size={17} /> Connect this computer</>}
@@ -182,7 +201,7 @@ export function FTWilliamsAgentSettingsPage() {
                     <span className={`agent-device-state ${deviceStateClass(device)}`}><Laptop size={18} /></span>
                     <div className="agent-device-name">
                       <strong>{device.name}</strong>
-                      <small>{device.expected_account} · Agent {device.agent_version || "version pending"}</small>
+                      <small>{workspaceName(device.workspace_id, workspaces) || device.expected_account} · Agent {device.agent_version || "version pending"}</small>
                     </div>
                     <div className="agent-device-detail">
                       <span className={`agent-device-badge ${deviceStateClass(device)}`}>{deviceStateLabel(device)}</span>
@@ -239,6 +258,11 @@ function formatDateTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "soon";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function workspaceName(workspaceId: string | null | undefined, workspaces: FTWClientWorkspace[]) {
+  const workspace = workspaces.find((item) => item.id === workspaceId);
+  return workspace ? `${workspace.name} · ${workspace.expected_account}` : "";
 }
 
 function errorMessage(error: unknown, fallback: string) {

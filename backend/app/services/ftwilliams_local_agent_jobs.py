@@ -46,7 +46,13 @@ class FTWLocalAgentService:
     def _hash_token(value: str) -> str:
         return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
-    async def create_pairing_code(self, *, created_by: str | None = None) -> FTWLocalAgentPairingCodeResponse:
+    async def create_pairing_code(
+        self,
+        *,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+        expected_account: str | None = None,
+    ) -> FTWLocalAgentPairingCodeResponse:
         code = secrets.token_urlsafe(9)
         now = datetime.utcnow()
         expires_at = now + timedelta(seconds=max(60, self.settings.ftw_local_agent_pairing_ttl_seconds))
@@ -54,12 +60,17 @@ class FTWLocalAgentService:
             FTWLocalAgentPairingCode(
                 code_hash=self._hash_token(code),
                 code_prefix=code[:4],
-                expected_account=self.settings.ftw_local_agent_expected_account,
+                expected_account=(expected_account or self.settings.ftw_local_agent_expected_account),
+                workspace_id=workspace_id,
                 created_by=created_by,
                 expires_at=expires_at,
             )
         )
-        return FTWLocalAgentPairingCodeResponse(pairing_code=code, expires_at=expires_at)
+        return FTWLocalAgentPairingCodeResponse(
+            pairing_code=code,
+            expires_at=expires_at,
+            workspace_id=workspace_id,
+        )
 
     async def pair(self, payload: FTWLocalAgentPairRequest) -> FTWLocalAgentPairResponse:
         code = str(payload.pairing_code or "").strip()
@@ -78,6 +89,7 @@ class FTWLocalAgentService:
                 token_hash=self._hash_token(token),
                 token_prefix=token[:6],
                 expected_account=pairing.expected_account,
+                workspace_id=pairing.workspace_id,
                 status=FTWLocalAgentDeviceStatus.OFFLINE,
                 agent_version=version[:40],
                 paired_by=pairing.created_by,
@@ -87,6 +99,7 @@ class FTWLocalAgentService:
             device_id=str(device.id),
             device_token=token,
             expected_account=device.expected_account,
+            workspace_id=device.workspace_id,
         )
 
     async def authenticate(self, token: str) -> FTWLocalAgentDevice:

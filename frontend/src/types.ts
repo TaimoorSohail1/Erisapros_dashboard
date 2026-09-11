@@ -48,6 +48,7 @@ export interface FTWLocalAgentDevice {
   id: string;
   name: string;
   expected_account: string;
+  workspace_id?: string | null;
   status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED";
   agent_version?: string | null;
   browser_ready: boolean;
@@ -64,6 +65,15 @@ export interface FTWLocalAgentDevicesResponse {
 export interface FTWLocalAgentPairingCodeResponse {
   pairing_code: string;
   expires_at: string;
+  workspace_id?: string | null;
+}
+
+export interface FTWClientWorkspace {
+  id: string;
+  name: string;
+  slug: string;
+  expected_account: string;
+  enabled: boolean;
 }
 
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";

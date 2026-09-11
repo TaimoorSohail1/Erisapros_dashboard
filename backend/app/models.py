@@ -157,6 +157,12 @@ class FTWClientWorkspaceCreateRequest(BaseModel):
     admin_subjects: list[str] = Field(default_factory=list)
 
 
+class FTWLocalAgentPairingCodeRequest(BaseModel):
+    """Optional workspace binding for a one-time local-agent pairing code."""
+
+    workspace_id: str | None = None
+
+
 class FTWLocalAgentDevice(BaseModel):
     id: str | None = None
     name: str
@@ -218,6 +224,7 @@ class FTWLocalAgentJob(BaseModel):
 class FTWLocalAgentPairingCodeResponse(BaseModel):
     pairing_code: str
     expires_at: datetime
+    workspace_id: str | None = None
 
 
 class FTWLocalAgentPairRequest(BaseModel):
@@ -230,6 +237,7 @@ class FTWLocalAgentPairResponse(BaseModel):
     device_id: str
     device_token: str
     expected_account: str
+    workspace_id: str | None = None
 
 
 class FTWLocalAgentHeartbeatRequest(BaseModel):

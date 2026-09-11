@@ -14,6 +14,7 @@ import type {
   FTWLocalAgentStatus,
   FTWLocalAgentDevice,
   FTWLocalAgentPairingCodeResponse,
+  FTWClientWorkspace,
   FTWilliamsReview,
   ClientFacingError,
   ScheduleABrokerRow,
@@ -183,8 +184,16 @@ export async function getFTWLocalAgentStatus(): Promise<FTWLocalAgentStatus> {
   return requestWithTimeout<FTWLocalAgentStatus>("/ftwilliams/local-agent/status", {}, 5_000);
 }
 
-export async function createFTWLocalAgentPairingCode(): Promise<FTWLocalAgentPairingCodeResponse> {
-  return request<FTWLocalAgentPairingCodeResponse>("/ftwilliams/local-agent/pairing-codes", { method: "POST" });
+export async function createFTWLocalAgentPairingCode(workspaceId?: string): Promise<FTWLocalAgentPairingCodeResponse> {
+  return request<FTWLocalAgentPairingCodeResponse>("/ftwilliams/local-agent/pairing-codes", {
+    method: "POST",
+    ...(workspaceId ? { body: JSON.stringify({ workspace_id: workspaceId }) } : {}),
+  });
+}
+
+export async function listFTWClientWorkspaces(): Promise<FTWClientWorkspace[]> {
+  const payload = await request<{ workspaces: FTWClientWorkspace[] }>("/ftwilliams/local-agent/workspaces");
+  return payload.workspaces;
 }
 
 export async function listFTWLocalAgentDevices(): Promise<FTWLocalAgentDevice[]> {

@@ -6822,6 +6822,10 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .agent-setup-card, .agent-devices-card { padding: 22px; }
 .agent-section-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; }
 .agent-section-heading > div { max-width: 720px; }
+.agent-workspace-select { display: grid; gap: 5px; margin-top: 14px; max-width: 430px; }
+.agent-workspace-select > span { color: #42536a; font-size: 12px; font-weight: 750; }
+.agent-workspace-select select { background: #fff; border: 1px solid #c9d5e2; border-radius: 8px; color: #26384f; font: inherit; min-height: 38px; padding: 7px 10px; }
+.agent-workspace-select small { color: #67768a; font-size: 12px; line-height: 1.4; }
 .agent-inline-warning { margin-top: 18px; }
 .agent-pairing-code { align-items: center; background: linear-gradient(135deg, #eff9f4, #f7fcfa); border: 1px solid #b9e4cc; border-radius: 12px; display: flex; gap: 18px; justify-content: space-between; margin-top: 18px; padding: 16px 18px; }
 .agent-pairing-code > div { display: grid; gap: 4px; }

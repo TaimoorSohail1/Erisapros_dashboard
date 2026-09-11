@@ -31,6 +31,7 @@ from app.models import (
     FTWLocalAgentJobResultResponse,
     FTWLocalAgentPairRequest,
     FTWLocalAgentPairResponse,
+    FTWLocalAgentPairingCodeRequest,
     FTWLocalAgentPairingCodeResponse,
     FTWLocalAgentStatusResponse,
     FTWClientWorkspace,
@@ -60,6 +61,20 @@ def _local_agent_owner(claims: dict | None) -> str:
     return str(claims.get("email") or claims.get("cognito:username") or claims.get("sub") or "local-admin").strip() or "local-admin"
 
 
+def _workspace_allows_owner(workspace: FTWClientWorkspace, owner: str) -> bool:
+    """A workspace is private unless this signed-in owner was assigned to it."""
+    owner_key = owner.strip().casefold()
+    return owner_key in {subject.strip().casefold() for subject in workspace.admin_subjects}
+
+
+async def _get_owned_workspace(workspace_id: str, owner: str) -> FTWClientWorkspace:
+    workspace = await get_repository().get_ftw_client_workspace(workspace_id)
+    if not workspace or not workspace.enabled or not _workspace_allows_owner(workspace, owner):
+        # Do not disclose that another customer's workspace exists.
+        raise HTTPException(status_code=404, detail="Client workspace not found.")
+    return workspace
+
+
 async def require_local_agent_device(request: Request) -> FTWLocalAgentDevice:
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
@@ -82,15 +97,20 @@ async def local_agent_status(claims: dict = Depends(require_field_rule_admin)):
 
 
 @router.get("/local-agent/workspaces")
-async def list_local_agent_workspaces(_claims: dict = Depends(require_field_rule_admin)):
-    workspaces = await get_repository().list_ftw_client_workspaces()
+async def list_local_agent_workspaces(claims: dict = Depends(require_field_rule_admin)):
+    owner = _local_agent_owner(claims)
+    workspaces = [
+        workspace
+        for workspace in await get_repository().list_ftw_client_workspaces()
+        if _workspace_allows_owner(workspace, owner)
+    ]
     return {"workspaces": [workspace.model_dump(mode="json") for workspace in workspaces]}
 
 
 @router.post("/local-agent/workspaces")
 async def create_local_agent_workspace(
     payload: FTWClientWorkspaceCreateRequest,
-    _claims: dict = Depends(require_field_rule_admin),
+    claims: dict = Depends(require_field_rule_admin),
 ):
     name = payload.name.strip()
     slug = payload.slug.strip().casefold()
@@ -99,12 +119,16 @@ async def create_local_agent_workspace(
         raise HTTPException(status_code=400, detail="Workspace name, slug, and FT Williams account are required.")
     if any(workspace.slug == slug for workspace in await get_repository().list_ftw_client_workspaces()):
         raise HTTPException(status_code=409, detail="A client workspace already uses this slug.")
+    owner = _local_agent_owner(claims)
     workspace = await get_repository().create_ftw_client_workspace(
         FTWClientWorkspace(
             name=name[:160],
             slug=slug[:80],
             expected_account=account[:160],
-            admin_subjects=sorted({item.strip().casefold() for item in payload.admin_subjects if item.strip()}),
+            admin_subjects=sorted({
+                owner.casefold(),
+                *(item.strip().casefold() for item in payload.admin_subjects if item.strip()),
+            }),
         )
     )
     return workspace.model_dump(mode="json")
@@ -112,10 +136,22 @@ async def create_local_agent_workspace(
 
 @router.post("/local-agent/pairing-codes", response_model=FTWLocalAgentPairingCodeResponse)
 async def create_local_agent_pairing_code(
+    payload: FTWLocalAgentPairingCodeRequest | None = None,
     claims: dict = Depends(require_field_rule_admin),
 ):
     created_by = _local_agent_owner(claims)
-    return await FTWLocalAgentService().create_pairing_code(created_by=created_by)
+    requested_workspace_id = str((payload.workspace_id if payload else "") or "").strip()
+    service = FTWLocalAgentService()
+    if not requested_workspace_id:
+        if service.settings.ftw_local_agent_workspace_routing_enabled:
+            raise HTTPException(status_code=400, detail="Select your client workspace before connecting a computer.")
+        return await service.create_pairing_code(created_by=created_by)
+    workspace = await _get_owned_workspace(requested_workspace_id, created_by)
+    return await service.create_pairing_code(
+        created_by=created_by,
+        workspace_id=str(workspace.id),
+        expected_account=workspace.expected_account,
+    )
 
 
 @router.post("/local-agent/pair", response_model=FTWLocalAgentPairResponse)
@@ -136,6 +172,7 @@ async def list_local_agent_devices(claims: dict = Depends(require_field_rule_adm
                 "id": device.id,
                 "name": device.name,
                 "expected_account": device.expected_account,
+                "workspace_id": device.workspace_id,
                 "status": device.status,
                 "agent_version": device.agent_version,
                 "browser_ready": device.browser_ready,

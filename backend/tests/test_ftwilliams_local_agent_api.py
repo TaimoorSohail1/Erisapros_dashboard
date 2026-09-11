@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 
 import app.repositories as repositories
 from app.main import app
-from app.models import FTWLocalAgentDevice
+from app.config import get_settings
+from app.models import FTWClientWorkspace, FTWLocalAgentDevice
 
 
 def test_local_agent_pairing_heartbeat_and_revocation_do_not_expose_device_tokens():
@@ -126,3 +127,69 @@ def test_client_workspaces_have_unique_slugs_for_future_agent_routing():
         assert duplicate.status_code == 409
     finally:
         repositories._repository = None
+
+
+def test_workspace_pairing_code_binds_the_device_to_only_that_client_workspace():
+    repo = repositories.MemoryRepository()
+    repositories._repository = repo
+    client = TestClient(app)
+    try:
+        first_workspace = client.post(
+            "/api/ftwilliams/local-agent/workspaces",
+            json={"name": "Client A", "slug": "client-a", "expected_account": "ClientA"},
+        )
+        assert first_workspace.status_code == 200
+        workspace_id = first_workspace.json()["id"]
+
+        code_response = client.post(
+            "/api/ftwilliams/local-agent/pairing-codes",
+            json={"workspace_id": workspace_id},
+        )
+        assert code_response.status_code == 200
+        assert code_response.json()["workspace_id"] == workspace_id
+
+        paired = client.post(
+            "/api/ftwilliams/local-agent/pair",
+            json={
+                "pairing_code": code_response.json()["pairing_code"],
+                "device_name": "Client A computer",
+                "agent_version": "0.1.0",
+            },
+        )
+        assert paired.status_code == 200
+        assert paired.json()["expected_account"] == "ClientA"
+        assert paired.json()["workspace_id"] == workspace_id
+
+        devices = client.get("/api/ftwilliams/local-agent/devices").json()["devices"]
+        assert devices[0]["workspace_id"] == workspace_id
+
+        other_workspace = asyncio.run(repo.create_ftw_client_workspace(FTWClientWorkspace(
+            name="Client B",
+            slug="client-b",
+            expected_account="ClientB",
+            admin_subjects=["client-b-admin@example.com"],
+        )))
+        # Client A's dashboard does not discover Client B and cannot mint a code
+        # that would attach a computer to Client B.
+        visible_workspaces = client.get("/api/ftwilliams/local-agent/workspaces").json()["workspaces"]
+        assert [item["id"] for item in visible_workspaces] == [workspace_id]
+        assert client.post(
+            "/api/ftwilliams/local-agent/pairing-codes",
+            json={"workspace_id": other_workspace.id},
+        ).status_code == 404
+    finally:
+        repositories._repository = None
+
+
+def test_workspace_routing_rejects_unscoped_pairing_codes_when_enabled(monkeypatch):
+    repositories._repository = repositories.MemoryRepository()
+    monkeypatch.setenv("FTW_LOCAL_AGENT_WORKSPACE_ROUTING_ENABLED", "true")
+    get_settings.cache_clear()
+    client = TestClient(app)
+    try:
+        response = client.post("/api/ftwilliams/local-agent/pairing-codes")
+        assert response.status_code == 400
+        assert "workspace" in response.json()["detail"].lower()
+    finally:
+        repositories._repository = None
+        get_settings.cache_clear()
