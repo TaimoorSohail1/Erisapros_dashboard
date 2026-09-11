@@ -7,6 +7,7 @@ from scripts.verify_ftw_demo_update_restore import (
     _canonical_schedule_set,
     _matching_schedule_record,
     _query_all_schedule_records,
+    _single_record_block_reason,
 )
 
 
@@ -25,6 +26,14 @@ def schedule_record(sequence: str, carrier: str, contract: str, brokers: list[di
 
 
 class FTWDemoCanarySnapshotTests(unittest.TestCase):
+    def test_canary_blocks_before_any_write_unless_exactly_one_schedule_exists(self):
+        self.assertIsNone(_single_record_block_reason([schedule_record("1", "Carrier", "A-1", [])]))
+        self.assertIn("found 0", _single_record_block_reason([]))
+        self.assertIn("found 2", _single_record_block_reason([
+            schedule_record("1", "Carrier A", "A-1", []),
+            schedule_record("2", "Carrier B", "B-1", []),
+        ]))
+
     def test_full_slot_query_collects_every_successful_schedule(self):
         class FakeService:
             async def run_query(self, request):

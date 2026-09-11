@@ -96,6 +96,15 @@ def _canonical_schedule_set(records: list[dict]) -> tuple:
     return tuple(sorted(_canonical_schedule_record(record) for record in records))
 
 
+def _single_record_block_reason(records: list[dict]) -> str | None:
+    if len(records) == 1:
+        return None
+    return (
+        "Single-Schedule-A canary requires exactly 1 current record; "
+        f"found {len(records)}. No update was sent."
+    )
+
+
 def _matching_schedule_record(baseline: dict, candidates: list[dict]) -> dict | None:
     baseline_sequence = str(baseline.get("ftw_seq_no") or "").strip()
     by_sequence = [
@@ -284,6 +293,13 @@ async def main() -> int:
         encoding="utf-8",
     )
     report["baseline_saved"] = str(baseline_path)
+
+    single_record_block = _single_record_block_reason(records)
+    if single_record_block:
+        report["schedule_a"]["blocked_before_send"] = single_record_block
+        report["stopped_safely"] = single_record_block
+        print(json.dumps(report, sort_keys=True))
+        return 3
 
     form_original = str(form_before.get("TotPartcpBoyCnt") or "").strip()
     if form_original.isdigit():
