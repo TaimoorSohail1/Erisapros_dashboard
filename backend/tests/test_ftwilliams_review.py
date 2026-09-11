@@ -1032,6 +1032,41 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertLess(service._plan_lookup_score(wrong_year, lookup), 0)
         self.assertEqual(service._plan_lookup_matches([wrong_year], lookup), [])
 
+    def test_plan_matching_rejects_same_ein_and_plan_number_when_plan_name_differs(self):
+        service = FTWilliamsReviewService()
+        lookup = FTWilliamsPlanLookup(
+            company_employer_id="32-0561094",
+            plan_number="501",
+            year="2025",
+            plan_name="Fgf,Llc Employee Benefits Plan test",
+        )
+        wrong_plan = {
+            "CompanyEmployerID": "32-0561094",
+            "PlanNumber": "501",
+            "PlanLine1": "Fgf,Llc Employee Benefits Plan",
+            "PlanYear": "2025",
+        }
+
+        self.assertLess(service._plan_lookup_score(wrong_plan, lookup), 0)
+        self.assertEqual(service._plan_lookup_matches([wrong_plan], lookup), [])
+
+    def test_plan_page_url_uses_separate_browser_ids(self):
+        service = FTWilliamsReviewService()
+        review = FTWilliamsReview(
+            filing_id="fgf-test",
+            bring_forward_required=True,
+            year="2025",
+            ftw_customer_id="1870755347",
+            ftw_plan_id="2262415502",
+            ftw_browser_customer_id="2429100964",
+            ftw_browser_plan_id="2986383641",
+        )
+
+        url = service.plan_page_url_for_review(review)
+
+        self.assertIn("plan=2429100964,2986383641", url)
+        self.assertNotIn("plan=1870755347,2262415502", url)
+
     def test_plan_ids_batch_probes_only_a_bounded_filtered_candidate_set(self):
         class LargePlanBatchFTWilliamsService(FTWilliamsService):
             def __init__(self):
@@ -5932,6 +5967,74 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.ftw_customer_id, "782023768")
         self.assertEqual(review.ftw_plan_id, "959357188")
 
+    def test_manual_match_can_confirm_browser_mapping_from_plan_url(self):
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+        run_async(
+            repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Plan Sponsor EIN",
+                        normalized_field_name="sponsor_ein",
+                        mapped_rule_key="form_5500_part_i_1e_plan_sponsor_ein",
+                        mapped_label="1e. Plan Sponsor EIN",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.MEDIUM,
+                        value="54-1038721",
+                        proposed_value="54-1038721",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1b. Plan Number (PN)",
+                        normalized_field_name="plan_number",
+                        mapped_rule_key="form_5500_part_i_1b_plan_number_pn",
+                        mapped_label="1b. Plan Number (PN)",
+                        form_type=FormType.FORM_5500,
+                        source_document_type=DocumentType.PLAN_WORKSHEET,
+                        priority=FieldPriority.MEDIUM,
+                        value="505",
+                        proposed_value="505",
+                    ),
+                ]
+            )
+        )
+
+        review = run_async(
+            FTWilliamsReviewService().apply_manual_plan_match(
+                filing.id,
+                FTWilliamsManualMatchRequest(
+                    ftw_customer_id="2424918262",
+                    ftw_plan_id="2980764197",
+                    ftw_plan_url=(
+                        "https://www.ftwilliam.com/cgi-bin/index.cgi#go=iframe&"
+                        "page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
+                        "plan=2449411222,3012303660&Year=2025"
+                    ),
+                    year="2025",
+                ),
+            )
+        )
+
+        stored = run_async(repo.get_ftwilliams_plan_mapping("54-1038721", "505"))
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.ftw_browser_customer_id, "2449411222")
+        self.assertEqual(stored.ftw_browser_plan_id, "3012303660")
+        self.assertTrue(stored.browser_mapping_confirmed)
+        self.assertTrue(review.browser_mapping_confirmed)
+
+    def test_manual_match_rejects_non_ftw_browser_url(self):
+        payload = FTWilliamsManualMatchRequest(
+            ftw_customer_id="2424918262",
+            ftw_plan_id="2980764197",
+            ftw_plan_url="https://example.com/?plan=2449411222,3012303660&Year=2025",
+            year="2025",
+        )
+
+        with self.assertRaisesRegex(ValueError, "ftwilliam.com"):
+            FTWilliamsReviewService()._manual_browser_identity(payload)
+
     def test_manual_schedule_a_selection_sets_sequence_and_rebuilds_update_xml(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
@@ -6292,12 +6395,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
         self.assertEqual(review.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
-        self.assertEqual(
-            review.ftw_plan_url,
-            "https://ftwilliam.com/cgi-bin/index.cgi?"
-            "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-            "plan=900000001,900000002&Year=2024",
-        )
+        self.assertEqual(review.ftw_plan_url, "")
         self.assertEqual(review.year, "2024")
         self.assertIsNone(review.comparison_year)
         self.assertIsNone(review.comparison_year_source)

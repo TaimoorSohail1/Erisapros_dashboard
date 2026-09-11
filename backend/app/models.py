@@ -101,6 +101,25 @@ class FTWilliamsQueryState(str, Enum):
     QUERY_FAILED = "QUERY_FAILED"
 
 
+class FTWAutomationStatus(str, Enum):
+    DISABLED = "DISABLED"
+    PROCESSING = "PROCESSING"
+    ACTION_NEEDED = "ACTION_NEEDED"
+    BRING_FORWARD_REQUIRED = "BRING_FORWARD_REQUIRED"
+    SAFE_TO_SEND = "SAFE_TO_SEND"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class FTWAutomationDecision(BaseModel):
+    status: FTWAutomationStatus
+    eligible: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    next_action: str | None = None
+    policy_version: str
+    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class FTWilliamsFailureType(str, Enum):
     NEEDS_RETRY = "NEEDS_RETRY"
     NEEDS_DATA_FIX = "NEEDS_DATA_FIX"
@@ -364,6 +383,20 @@ class Filing(BaseModel):
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     proposed_xml: str | None = None
+    automation_status: FTWAutomationStatus = FTWAutomationStatus.DISABLED
+    automation_reasons: list[str] = Field(default_factory=list)
+    automation_next_action: str | None = None
+    automation_policy_version: str | None = None
+    automation_last_evaluated_at: datetime | None = None
+    automation_completed_at: datetime | None = None
+    automation_run_id: str | None = None
+    automation_bring_forward_target_key: str | None = None
+    automation_bring_forward_submitted_at: datetime | None = None
+    automation_bring_forward_verified_at: datetime | None = None
+    automation_bring_forward_before_record_ids: list[str] = Field(default_factory=list)
+    automation_bring_forward_new_record_ids: list[str] = Field(default_factory=list)
+    automation_lease_id: str | None = None
+    automation_lease_expires_at: datetime | None = None
     error_message: str | None = None
     rejection_reason: str | None = None
     approved_at: datetime | None = None
@@ -722,6 +755,9 @@ class FTWilliamsPlanLookup(BaseModel):
     error_message: str | None = None
     matches: list[dict] = Field(default_factory=list)
     matched_identity: dict | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
 
 
 class ClientFacingError(BaseModel):
@@ -778,6 +814,9 @@ class FTWilliamsReview(BaseModel):
     year: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
     ftw_seq_no: str | None = None
     plan_lookup: FTWilliamsPlanLookup | None = None
     query_request_xml: str | None = None
@@ -858,6 +897,9 @@ class FTWilliamsManualMatchRequest(BaseModel):
     plan_id: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    ftw_plan_url: str | None = None
     year: str | None = None
 
 
@@ -911,11 +953,16 @@ class FTWilliamsPlanMapping(BaseModel):
     plan_number: str
     year: str | None = None
     plan_name: str | None = None
+    plan_name_key: str | None = None
     sponsor_name: str | None = None
     customer_id: str | None = None
     plan_id: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
+    browser_mapping_confirmed_at: datetime | None = None
     source: str = "MANUAL"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

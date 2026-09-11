@@ -8,6 +8,7 @@ from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_automation import FTWAutomationService, automation_reset_values
 from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
@@ -135,6 +136,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             summary = summarize_mapped_fields(relevant_fields)
             fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
 
+            automation_values = automation_reset_values(
+                get_settings(),
+                "Extraction completed; automation is waiting for fresh FT Williams current data.",
+            )
             await repo.update_filing(
                 filing_id,
                 {
@@ -160,6 +165,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in schedule_a_worksheet_summaries],
                     "proposed_xml": proposed_xml,
                     "error_message": None,
+                    **automation_values,
                 },
             )
             await supersede_duplicate_active_package_rows(filing_id)
@@ -342,6 +348,24 @@ async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsRevie
                 reuse_current_snapshot=True,
             )
         await repo.update_filing(filing_id, {"status": previous_status})
+        if get_settings().ftw_automation_enabled:
+            try:
+                await FTWAutomationService(settings=get_settings()).run(
+                    filing_id,
+                    review=review,
+                )
+            except Exception as automation_error:
+                # Automation is an optional layer above the existing workflow.
+                # Its failure must never turn a successful extraction/query into
+                # a failed filing or remove the operator's manual fallback.
+                await repo.add_audit(
+                    AuditLog(
+                        filing_id=filing_id,
+                        event="FTW_AUTOMATION_FAILED",
+                        message="Optional FT Williams automation stopped; manual review remains available.",
+                        details={"error": str(automation_error)},
+                    )
+                )
         if review.current_query_success:
             await repo.add_audit(
                 AuditLog(

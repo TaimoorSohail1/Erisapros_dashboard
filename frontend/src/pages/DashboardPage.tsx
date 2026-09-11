@@ -17,7 +17,7 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "../router";
 import { deleteFiling, listFilings } from "../api";
-import type { Filing, FilingStatus, ScheduleAContractType } from "../types";
+import type { Filing, FilingStatus, FTWAutomationStatus, ScheduleAContractType } from "../types";
 import { StatusBadge } from "../ui/StatusBadge";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { useDialogFocus } from "../ui/useDialogFocus";
@@ -78,7 +78,9 @@ export function DashboardPage() {
         const toastMessage = announceChanges ? dashboardChangeToast(previousFilingsRef.current, shareFileRows) : null;
         previousFilingsRef.current = shareFileRows;
         setFilings(shareFileRows);
-        nextPollMs = shareFileRows.some((item) => isProcessingStatus(item.status))
+        nextPollMs = shareFileRows.some(
+          (item) => isProcessingStatus(item.status) || automationIsActive(item.automation_status),
+        )
           ? DASHBOARD_ACTIVE_POLL_MS
           : DASHBOARD_IDLE_POLL_MS;
         if (toastMessage) setToast(toastMessage);
@@ -99,7 +101,7 @@ export function DashboardPage() {
   }, []);
 
   const sortedFilings = useMemo(
-    () => [...filings].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+    () => [...filings].sort(compareDashboardFilings),
     [filings],
   );
   const needsReview = filings.filter((item) => item.status === "NEEDS_REVIEW");
@@ -660,8 +662,13 @@ function DashboardFilingRow({
   const clientName = filingClientName(filing);
   const planIdentity = filingPlanIdentity(filing);
   const planName = filingPlanName(filing, pipelineStage);
-  const readyAction = filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL";
-  const statusDotTone = filing.status === "FAILED" || filing.status === "REJECTED"
+  const automation = dashboardAutomationState(filing);
+  const readyAction = automation
+    ? automation.status === "COMPLETED"
+    : filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL";
+  const statusDotTone = automation
+    ? automation.tone
+    : filing.status === "FAILED" || filing.status === "REJECTED"
     ? "danger"
     : filing.status === "APPROVED"
       ? "ready"
@@ -689,9 +696,13 @@ function DashboardFilingRow({
       </td>
       <td>
         <div className="dashboard-stage-cell">
-          <StatusBadge status={filing.status} />
+          {automation ? (
+            <span className={`badge automation-status ${automation.badgeClass}`}>{automation.label}</span>
+          ) : (
+            <StatusBadge status={filing.status} />
+          )}
           <ScheduleAContractBadge type={filing.schedule_a_contract_type || "UNKNOWN"} compact />
-          <small>{pipelineStage.detail}</small>
+          <small>{automation?.detail || pipelineStage.detail}</small>
         </div>
       </td>
       <td>
@@ -719,7 +730,7 @@ function DashboardFilingRow({
       <td>
         <div className="dashboard-row-actions">
           <Link className="button dashboard-review-button" to={`/filings/${filing.id}`} aria-label={`Review ${displayName}`}>
-            {readyAction ? "View" : "Review"} <Eye size={16} />
+            {automation?.actionLabel || (readyAction ? "View" : "Review")} <Eye size={16} />
           </Link>
         </div>
       </td>
@@ -736,6 +747,48 @@ function DashboardFilingRow({
       </td>
     </tr>
   );
+}
+
+type AutomationPresentation = {
+  actionLabel: string;
+  badgeClass: "info" | "warn" | "ready" | "fail";
+  detail: string;
+  label: "Processing" | "Action Needed" | "Completed" | "Failed";
+  status: FTWAutomationStatus;
+  tone: "info" | "warn" | "ready" | "danger";
+};
+
+function dashboardAutomationState(filing: Filing): AutomationPresentation | null {
+  const status = filing.automation_status;
+  if (!status || status === "DISABLED") return null;
+  const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";
+  if (status === "COMPLETED") {
+    return { status, label: "Completed", detail, actionLabel: "View result", badgeClass: "ready", tone: "ready" };
+  }
+  if (status === "ACTION_NEEDED") {
+    return { status, label: "Action Needed", detail, actionLabel: "Resolve issue", badgeClass: "warn", tone: "warn" };
+  }
+  if (status === "FAILED") {
+    return { status, label: "Failed", detail, actionLabel: "View issue", badgeClass: "fail", tone: "danger" };
+  }
+  return { status, label: "Processing", detail, actionLabel: "View progress", badgeClass: "info", tone: "info" };
+}
+
+function automationPriority(status?: FTWAutomationStatus) {
+  if (status === "ACTION_NEEDED") return 0;
+  if (status === "PROCESSING" || status === "BRING_FORWARD_REQUIRED" || status === "SAFE_TO_SEND") return 1;
+  if (status === "FAILED") return 2;
+  if (status === "COMPLETED") return 3;
+  return 2;
+}
+
+function automationIsActive(status?: FTWAutomationStatus) {
+  return status === "PROCESSING" || status === "BRING_FORWARD_REQUIRED" || status === "SAFE_TO_SEND";
+}
+
+function compareDashboardFilings(a: Filing, b: Filing) {
+  const priorityDifference = automationPriority(a.automation_status) - automationPriority(b.automation_status);
+  return priorityDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 }
 
 function ScheduleAContractBadge({ type, compact = false }: { type: ScheduleAContractType; compact?: boolean }) {
@@ -1073,7 +1126,7 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
 
   return [...groups.entries()]
     .map(([key, companyFilings]) => {
-      const sorted = [...companyFilings].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const sorted = [...companyFilings].sort(compareDashboardFilings);
       const namedFiling = sorted.find((filing) => filingClientName(filing) !== "Client pending") || sorted[0];
       return {
         key,
@@ -1081,7 +1134,10 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
         filings: sorted,
       };
     })
-    .sort((a, b) => new Date(b.filings[0].created_at).getTime() - new Date(a.filings[0].created_at).getTime());
+    .sort((a, b) => {
+      const priorityDifference = automationPriority(a.filings[0].automation_status) - automationPriority(b.filings[0].automation_status);
+      return priorityDifference || new Date(b.filings[0].created_at).getTime() - new Date(a.filings[0].created_at).getTime();
+    });
 }
 
 function filingCompanyGroupKey(filing: Filing) {

@@ -2,7 +2,7 @@ import asyncio
 import html
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 from uuid import uuid4
@@ -179,6 +179,8 @@ class Repository:
     async def get_filing(self, filing_id: str) -> Filing | None: ...
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool: ...
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None: ...
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def list_fields(self, filing_id: str) -> list[ExtractedField]: ...
@@ -213,7 +215,12 @@ class Repository:
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
     async def get_ftwilliams_schema(self, cache_key: str) -> FTWilliamsSchemaSnapshot | None: ...
     async def upsert_ftwilliams_schema(self, snapshot: FTWilliamsSchemaSnapshot) -> FTWilliamsSchemaSnapshot: ...
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None: ...
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None: ...
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping: ...
     async def create_extraction_job(self, job: ExtractionJob) -> ExtractionJob: ...
     async def update_extraction_job(self, job_id: str, values: dict) -> ExtractionJob | None: ...
@@ -337,6 +344,10 @@ class MongoRepository(Repository):
             [("company_employer_id", 1), ("plan_number", 1)],
             name="ftw_plan_mapping_identity_idx",
         )
+        await self.db.ftwilliams_plan_mappings.create_index(
+            [("company_employer_id", 1), ("plan_number", 1), ("plan_name_key", 1)],
+            name="ftw_plan_mapping_exact_identity_idx",
+        )
         await self.db.field_rule_versions.create_index(
             [("key", 1), ("version", -1), ("created_at", -1)],
             name="field_rule_key_version_idx",
@@ -400,6 +411,18 @@ class MongoRepository(Repository):
             "schedule_a_contract_type_evidence": 1,
             "ftw_schedule_a_contract_type": 1,
             "ftw_schedule_a_contract_type_reason": 1,
+            "automation_status": 1,
+            "automation_reasons": 1,
+            "automation_next_action": 1,
+            "automation_policy_version": 1,
+            "automation_last_evaluated_at": 1,
+            "automation_completed_at": 1,
+            "automation_run_id": 1,
+            "automation_bring_forward_target_key": 1,
+            "automation_bring_forward_submitted_at": 1,
+            "automation_bring_forward_verified_at": 1,
+            "automation_bring_forward_before_record_ids": 1,
+            "automation_bring_forward_new_record_ids": 1,
             "error_message": 1,
             "rejection_reason": 1,
             "created_at": 1,
@@ -451,6 +474,39 @@ class MongoRepository(Repository):
         values["updated_at"] = datetime.utcnow()
         doc = await self.db.filings.find_one_and_update({"_id": ObjectId(filing_id)}, {"$set": values}, return_document=ReturnDocument.AFTER)
         return from_mongo(doc, Filing) if doc else None
+
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
+        if not ObjectId.is_valid(filing_id):
+            return False
+        now = datetime.utcnow()
+        doc = await self.db.filings.find_one_and_update(
+            {
+                "_id": ObjectId(filing_id),
+                "$or": [
+                    {"automation_lease_id": lease_id},
+                    {"automation_lease_id": None},
+                    {"automation_lease_id": {"$exists": False}},
+                    {"automation_lease_expires_at": {"$lte": now}},
+                ],
+            },
+            {
+                "$set": {
+                    "automation_lease_id": lease_id,
+                    "automation_lease_expires_at": now + timedelta(seconds=max(30, seconds)),
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return doc is not None
+
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None:
+        if not ObjectId.is_valid(filing_id):
+            return
+        await self.db.filings.update_one(
+            {"_id": ObjectId(filing_id), "automation_lease_id": lease_id},
+            {"$set": {"automation_lease_id": None, "automation_lease_expires_at": None}},
+        )
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
         if not fields:
@@ -793,18 +849,29 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, FTWilliamsSchemaSnapshot)
 
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None:
-        doc = await self.db.ftwilliams_plan_mappings.find_one(
-            {"company_employer_id": company_employer_id, "plan_number": plan_number}
-        )
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None:
+        query: dict = {"company_employer_id": company_employer_id, "plan_number": plan_number}
+        if plan_name_key:
+            query["plan_name_key"] = plan_name_key
+        doc = await self.db.ftwilliams_plan_mappings.find_one(query)
         return from_mongo(doc, FTWilliamsPlanMapping) if doc else None
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
         values = to_mongo(mapping)
         created_at = values.pop("created_at", mapping.created_at)
         values["updated_at"] = datetime.utcnow()
+        identity = {
+            "company_employer_id": mapping.company_employer_id,
+            "plan_number": mapping.plan_number,
+            "plan_name_key": mapping.plan_name_key or "",
+        }
         doc = await self.db.ftwilliams_plan_mappings.find_one_and_update(
-            {"company_employer_id": mapping.company_employer_id, "plan_number": mapping.plan_number},
+            identity,
             {"$set": self._mongo_safe_value(values), "$setOnInsert": {"created_at": created_at}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
@@ -1049,7 +1116,7 @@ class MemoryRepository(Repository):
         self.raw_extractions: dict[str, RawExtraction] = {}
         self.ftwilliams_reviews: dict[str, FTWilliamsReview] = {}
         self.ftwilliams_schemas: dict[str, FTWilliamsSchemaSnapshot] = {}
-        self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
+        self.ftwilliams_plan_mappings: dict[tuple[str, str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
         self.sharefile_suppressions: dict[str, dict] = {}
@@ -1090,6 +1157,28 @@ class MemoryRepository(Repository):
             setattr(filing, key, value)
         filing.updated_at = datetime.utcnow()
         return filing
+
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
+        filing = self.filings.get(filing_id)
+        if not filing:
+            return False
+        now = datetime.utcnow()
+        if (
+            filing.automation_lease_id
+            and filing.automation_lease_id != lease_id
+            and filing.automation_lease_expires_at
+            and filing.automation_lease_expires_at > now
+        ):
+            return False
+        filing.automation_lease_id = lease_id
+        filing.automation_lease_expires_at = now + timedelta(seconds=max(30, seconds))
+        return True
+
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None:
+        filing = self.filings.get(filing_id)
+        if filing and filing.automation_lease_id == lease_id:
+            filing.automation_lease_id = None
+            filing.automation_lease_expires_at = None
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
         for field in fields:
@@ -1276,11 +1365,25 @@ class MemoryRepository(Repository):
         self.ftwilliams_reviews[review.filing_id] = review
         return review
 
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None:
-        return self.ftwilliams_plan_mappings.get((company_employer_id, plan_number))
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None:
+        if plan_name_key is not None:
+            return self.ftwilliams_plan_mappings.get((company_employer_id, plan_number, plan_name_key))
+        return next(
+            (
+                mapping
+                for (employer_id, number, _name), mapping in self.ftwilliams_plan_mappings.items()
+                if employer_id == company_employer_id and number == plan_number
+            ),
+            None,
+        )
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
-        key = (mapping.company_employer_id, mapping.plan_number)
+        key = (mapping.company_employer_id, mapping.plan_number, mapping.plan_name_key or "")
         existing = self.ftwilliams_plan_mappings.get(key)
         mapping.id = existing.id if existing and existing.id else mapping.id or str(uuid4())
         mapping.created_at = existing.created_at if existing else mapping.created_at

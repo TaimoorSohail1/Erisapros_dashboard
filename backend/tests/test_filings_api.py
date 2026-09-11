@@ -629,6 +629,8 @@ class FilingsApiTests(unittest.TestCase):
                     year="2025",
                     ftw_customer_id="1822236451",
                     ftw_plan_id="2196092986",
+                    ftw_browser_customer_id="2429100964",
+                    ftw_browser_plan_id="2986383641",
                     ftw_plan_url="https://www.ftwilliam.com/",
                 )
             )
@@ -642,7 +644,7 @@ class FilingsApiTests(unittest.TestCase):
             response["url"],
             "https://ftwilliam.com/cgi-bin/index.cgi?"
             "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-            "plan=1822236451,2196092986&Year=2025",
+            "plan=2429100964,2986383641&Year=2025",
         )
         self.assertEqual(response["target_year"], "2025")
         self.assertIsNone(response["prior_year"])
@@ -672,6 +674,8 @@ class FilingsApiTests(unittest.TestCase):
                     year="2026",
                     ftw_customer_id="1822236451",
                     ftw_plan_id="2196092986",
+                    ftw_browser_customer_id="2429100964",
+                    ftw_browser_plan_id="2986383641",
                 )
             )
             return await get_ftwilliams_bring_forward_link(filing.id)

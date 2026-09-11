@@ -6,6 +6,37 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
 
 assert.match(
+  source,
+  /automationNeedsNoOperatorAction\(filing\)[\s\S]*?No action required/,
+  "Approve and send controls should disappear while automation owns a safe filing.",
+);
+assert.match(
+  source,
+  /function AutomationWorkflowNotice[\s\S]*?Action Needed[\s\S]*?Automation stopped safely/,
+  "The review page should explain automated progress and exceptions in plain language.",
+);
+assert.match(
+  source,
+  /AUTOMATION_WORKFLOW_STEPS[\s\S]*?Extract[\s\S]*?Find plan[\s\S]*?Query[\s\S]*?Bring forward \/ match[\s\S]*?Validate[\s\S]*?Send[\s\S]*?Verify/,
+  "Automated filings should show a concise end-to-end progress tracker.",
+);
+assert.match(
+  source,
+  /automation_reasons\?\.map[\s\S]*?automation_next_action/,
+  "Action Needed should show every blocking reason and the next automated step.",
+);
+assert.match(
+  source,
+  /showAdvancedReview[\s\S]*?Open Advanced Review/,
+  "Safe automated filings should keep the detailed manual workspace behind Advanced Review.",
+);
+assert.match(
+  source,
+  /automationRequiresOperatorAction\(filing\)[\s\S]*?<AutomationExceptionActions[\s\S]*?Resolve & Continue/,
+  "Action Needed should replace the legacy multi-button toolbar with one contextual action.",
+);
+
+assert.match(
   api,
   /export async function resolveFTWilliamsPlanYearConflict[\s\S]*?\/ftw\/plan-year-resolution/,
   "The client must expose the explicit FT Williams plan-year resolution endpoint.",
@@ -297,6 +328,16 @@ assert.match(
   api,
   /updateFTWilliamsScheduleABrokerRows[\s\S]*?edited_index: editedIndex/,
   "Broker saves must identify the edited row so another invalid row cannot block incremental correction.",
+);
+assert.match(
+  source,
+  /Plan Registry[\s\S]*?One-time mapping needed/,
+  "The technical fallback must show whether the permanent FT Williams plan mapping is confirmed.",
+);
+assert.match(
+  source,
+  /FT Williams Plan URL[\s\S]*?Paste the exact FT Williams plan page URL/,
+  "A one-time plan mapping must accept the exact FT Williams plan URL instead of requiring users to extract browser IDs manually.",
 );
 assert.match(
   source,

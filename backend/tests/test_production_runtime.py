@@ -34,10 +34,37 @@ class ProductionRuntimeTests(unittest.TestCase):
         expected = (
             'Value: "https://ftwilliam.com/cgi-bin/index.cgi?'
             '#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&'
-            'plan={ftw_customer_id},{ftw_plan_id}&Year={year}"'
+            'plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"'
         )
 
         self.assertEqual(contents.count(expected), 2)
+
+    def test_production_automation_defaults_off_and_supports_demo_plan_allowlist(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertIn("FtwAutomationEnabled:", contents)
+        self.assertIn("FtwAutomationBringForwardEnabled:", contents)
+        self.assertIn("FtwAutomationAutoSendEnabled:", contents)
+        self.assertIn("FtwAutomationAllowedTargetsJson:", contents)
+        self.assertGreaterEqual(contents.count('Default: "false"'), 3)
+        self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ENABLED"), 2)
+        self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON"), 2)
+
+    def test_production_injects_ftw_browser_session_from_a_dedicated_secret(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertIn("FTWBrowserSessionSecret:", contents)
+        self.assertEqual(contents.count("- Name: FTW_BROWSER_STORAGE_STATE_JSON"), 2)
+        self.assertIn("FTWBrowserSessionSecretArn:", contents)
+
+    def test_production_image_installs_browser_runtime_and_runs_nonroot(self):
+        dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+        contents = dockerfile.read_text(encoding="utf-8")
+
+        self.assertIn("playwright install --with-deps chromium", contents)
+        self.assertIn("USER app", contents)
 
     def test_production_container_does_not_log_webhook_query_secrets(self):
         dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"

@@ -99,6 +99,24 @@ class Settings(BaseSettings):
     ftw_schema_enforcement_enabled: bool = False
     ftw_auto_edit_checks_enabled: bool = False
     ftw_pdf_audit_enabled: bool = False
+    # Straight-through FT Williams processing is released behind independent
+    # controls. All three default off so the established reviewer workflow is
+    # unchanged until a test-plan allowlist is configured explicitly.
+    ftw_automation_enabled: bool = False
+    ftw_automation_bring_forward_enabled: bool = False
+    ftw_automation_auto_send_enabled: bool = False
+    ftw_automation_confidence_threshold: float = 0.95
+    ftw_automation_policy_version: str = "2026-09-11-v2"
+    ftw_automation_allowed_targets_json: str = "[]"
+    ftw_automation_lease_seconds: int = 600
+    # Browser credentials are never stored in application configuration. A
+    # designated operator signs into the FT Williams demo account once and saves a
+    # Playwright storage-state file outside source control.
+    ftw_browser_storage_state_path: str | None = None
+    ftw_browser_storage_state_json: str | None = None
+    ftw_browser_headless: bool = True
+    ftw_browser_timeout_seconds: int = 45
+    ftw_browser_audit_directory: str = "outputs/ftw-automation"
     # FT Williams Schedule A slots are independent. Query a small batch in
     # parallel to reduce latency without flooding the upstream service.
     ftw_slot_query_concurrency: int = 5
@@ -113,7 +131,7 @@ class Settings(BaseSettings):
     ftw_plan_page_url_template: str = (
         "https://ftwilliam.com/cgi-bin/index.cgi?"
         "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-        "plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
+        "plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"
     )
 
     @property

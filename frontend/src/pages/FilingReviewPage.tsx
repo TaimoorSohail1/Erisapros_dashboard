@@ -78,6 +78,15 @@ type FieldSaveOptions = {
   successTitle?: string;
 };
 const REVIEW_POLL_MS = 30000;
+const AUTOMATION_WORKFLOW_STEPS = [
+  { key: "EXTRACT", label: "Extract" },
+  { key: "FIND_PLAN", label: "Find plan" },
+  { key: "QUERY", label: "Query" },
+  { key: "MATCH", label: "Bring forward / match" },
+  { key: "VALIDATE", label: "Validate" },
+  { key: "SEND", label: "Send" },
+  { key: "VERIFY", label: "Verify" },
+] as const;
 const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9a_premiums_1_amount_received",
   "schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid",
@@ -193,11 +202,17 @@ export function FilingReviewPage() {
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const [showFtwSendConfirm, setShowFtwSendConfirm] = useState(false);
+  const [showAdvancedReview, setShowAdvancedReview] = useState(false);
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
   const ftwSendInFlightRef = useRef(false);
   const pollingPaused = ftwBusy || ftwSendBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
-  const shouldPollReview = !pollingPaused && isProcessingStatus(filing?.status ?? "UPLOADED");
+  const shouldPollReview = !pollingPaused && (
+    isProcessingStatus(filing?.status ?? "UPLOADED")
+    || ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND"].includes(filing?.automation_status || "DISABLED")
+  );
+
+  useEffect(() => setShowAdvancedReview(false), [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -737,6 +752,9 @@ export function FilingReviewPage() {
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   }) {
     if (!id) return;
@@ -1043,6 +1061,8 @@ export function FilingReviewPage() {
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
 
       <main className="approval-workspace">
+        <AutomationWorkflowNotice filing={filing} />
+
         <WorkflowStepper
           filing={filing}
           ftwReadyToSend={ftwReadyToSend}
@@ -1056,6 +1076,14 @@ export function FilingReviewPage() {
           <ProcessingPanel filing={filing} />
         ) : filing.status === "FAILED" && !fields.length ? (
           <ExtractionFailurePanel busy={retryBusy} onRetry={retryFailedExtraction} />
+        ) : automationNeedsNoOperatorAction(filing) && !showAdvancedReview ? (
+          <AutomationSimpleSummary
+            filing={filing}
+            foundCount={foundCount}
+            totalFields={totalFields}
+            willUpdateCount={willUpdateRows.length}
+            onOpenAdvancedReview={() => setShowAdvancedReview(true)}
+          />
         ) : (
           <section className="approval-decision-table-shell approval-preview-shell" id="filing-review-table">
             <div className="approval-table-head compact-review-header">
@@ -1068,30 +1096,46 @@ export function FilingReviewPage() {
                 <span><small>FTW match</small><strong>{filing.ftw_review?.schedule_a_match ? "Matched" : "Pending"}</strong></span>
               </div>
               <div className="compact-review-toolbar">
-              <ReviewPrimaryActions
-                approvalBlocked={approvalBlocked}
-                approvalReady={approvalReady}
-                bringForwardRequired={bringForwardRequired}
-                busy={reviewInteractionBusy}
-                decisionAction={decisionAction}
-                filingStatus={filing.status}
-                showFtwSendAction={showFtwSendAction}
-                ftwReadyToSend={ftwReadyToSend}
-                ftwSendBusy={ftwSendBusy}
-                queryBusy={ftwInteractionBusy}
-                retryBusy={retryBusy}
-                rulesBusy={rulesBusy}
-                xmlBusy={xmlBusy}
-                onApprove={handleApproveClick}
-                onOpenBringForward={openFtwBringForward}
-                onPreviewXml={rebuildXml}
-                onQuery={() => prepareFtw(true)}
-                onReEvaluate={reEvaluateWithLatestRules}
-                onReject={rejectDecision}
-                onRetryExtraction={retryFailedExtraction}
-                onSend={requestFtwSend}
-                onOpenTechnical={() => setShowTechnicalDrawer(true)}
-              />
+              {automationNeedsNoOperatorAction(filing) ? (
+                <span className="automation-no-action"><ShieldCheck size={16} /> No action required</span>
+              ) : automationRequiresOperatorAction(filing) ? (
+                <AutomationExceptionActions
+                  busy={reviewInteractionBusy}
+                  nextAction={filing.automation_next_action}
+                  onOpenBringForward={openFtwBringForward}
+                  onOpenTechnical={() => setShowTechnicalDrawer(true)}
+                  onResolve={() => {
+                    setActiveTab("NEEDS_DECISION");
+                    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                  }}
+                  onRetry={() => prepareFtw(true)}
+                />
+              ) : (
+                <ReviewPrimaryActions
+                  approvalBlocked={approvalBlocked}
+                  approvalReady={approvalReady}
+                  bringForwardRequired={bringForwardRequired}
+                  busy={reviewInteractionBusy}
+                  decisionAction={decisionAction}
+                  filingStatus={filing.status}
+                  showFtwSendAction={showFtwSendAction}
+                  ftwReadyToSend={ftwReadyToSend}
+                  ftwSendBusy={ftwSendBusy}
+                  queryBusy={ftwInteractionBusy}
+                  retryBusy={retryBusy}
+                  rulesBusy={rulesBusy}
+                  xmlBusy={xmlBusy}
+                  onApprove={handleApproveClick}
+                  onOpenBringForward={openFtwBringForward}
+                  onPreviewXml={rebuildXml}
+                  onQuery={() => prepareFtw(true)}
+                  onReEvaluate={reEvaluateWithLatestRules}
+                  onReject={rejectDecision}
+                  onRetryExtraction={retryFailedExtraction}
+                  onSend={requestFtwSend}
+                  onOpenTechnical={() => setShowTechnicalDrawer(true)}
+                />
+              )}
                 <button className="button secondary table-filter-button" onClick={resetFilters}><SlidersHorizontal size={14} /> Reset</button>
               </div>
             </div>
@@ -1367,6 +1411,166 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
   );
 }
 
+function automationNeedsNoOperatorAction(filing: FilingDetail) {
+  return ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND", "COMPLETED"].includes(
+    filing.automation_status || "DISABLED",
+  );
+}
+
+function automationRequiresOperatorAction(filing: FilingDetail) {
+  return filing.automation_status === "ACTION_NEEDED" || filing.automation_status === "FAILED";
+}
+
+function AutomationExceptionActions({
+  busy,
+  nextAction,
+  onOpenBringForward,
+  onOpenTechnical,
+  onResolve,
+  onRetry,
+}: {
+  busy: boolean;
+  nextAction?: string | null;
+  onOpenBringForward: () => void;
+  onOpenTechnical: () => void;
+  onResolve: () => void;
+  onRetry: () => void;
+}) {
+  if (nextAction === "MAP_FTW_BROWSER_PLAN") {
+    return <button className="button" type="button" disabled={busy} onClick={onOpenTechnical}><ShieldCheck size={16} /> Confirm FTW plan</button>;
+  }
+  if (nextAction === "LOGIN_TO_FTW" || nextAction === "MANUAL_BRING_FORWARD") {
+    return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Login to FTW</button>;
+  }
+  if (nextAction === "RETRY" || nextAction === "RETRY_AFTER_CURRENT_QUERY") {
+    return <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry</button>;
+  }
+  return <button className="button" type="button" disabled={busy} onClick={onResolve}><AlertTriangle size={16} /> Resolve & Continue</button>;
+}
+
+function AutomationWorkflowNotice({ filing }: { filing: FilingDetail }) {
+  const status = filing.automation_status;
+  if (!status || status === "DISABLED") return null;
+  const presentation = status === "COMPLETED"
+    ? { label: "Completed", title: "FT Williams update verified", tone: "ready" }
+    : status === "ACTION_NEEDED"
+      ? { label: "Action Needed", title: "One or more items need your decision", tone: "warn" }
+      : status === "FAILED"
+        ? { label: "Failed", title: "Automation stopped safely", tone: "fail" }
+        : { label: "Processing", title: "ERISAPros is handling this filing", tone: "info" };
+  const currentStep = automationCurrentStep(filing);
+  const reasons = filing.automation_reasons?.filter(Boolean) || [];
+  const showReasonList = status === "ACTION_NEEDED" || status === "FAILED";
+  return (
+    <section className={`automation-workflow-notice ${presentation.tone}`} aria-live="polite">
+      <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
+      <div className="automation-workflow-copy">
+        <strong>{presentation.title}</strong>
+        <p>
+          {showReasonList
+            ? "Automation paused safely. Resolve the items below and it will continue automatically."
+            : reasons[0] || "No manual action is required while the automated workflow is running."}
+        </p>
+        {showReasonList && reasons.length ? (
+          <ul className="automation-reason-list">
+            {filing.automation_reasons?.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}
+          </ul>
+        ) : null}
+      </div>
+      <ShieldCheck size={24} aria-hidden="true" />
+      <ol className="automation-progress" aria-label="Automated FT Williams workflow progress">
+        {AUTOMATION_WORKFLOW_STEPS.map((step, index) => {
+          const stepState = status === "COMPLETED"
+            ? "complete"
+            : index < currentStep
+              ? "complete"
+              : index === currentStep
+                ? status === "FAILED" ? "failed" : status === "ACTION_NEEDED" ? "attention" : "active"
+                : "pending";
+          return (
+            <li className={stepState} key={step.key} aria-current={stepState === "active" ? "step" : undefined}>
+              <span>{stepState === "complete" ? <Check size={13} /> : index + 1}</span>
+              <small>{step.label}</small>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="automation-workflow-meta">
+        <span><b>Next:</b> {automationNextActionLabel(filing.automation_next_action, status)}</span>
+        {filing.automation_policy_version ? <small>Policy {filing.automation_policy_version}</small> : null}
+      </div>
+    </section>
+  );
+}
+
+function automationCurrentStep(filing: FilingDetail) {
+  const nextAction = filing.automation_next_action || "";
+  if (nextAction === "QUERY_FTW_CURRENT" || nextAction === "RETRY_AFTER_CURRENT_QUERY") return 2;
+  if (["MAP_FTW_BROWSER_PLAN", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD"].includes(nextAction)) return 3;
+  if (nextAction === "RESOLVE_ISSUES") return 4;
+  if (nextAction === "AUTO_SEND") return 5;
+  if (nextAction === "VERIFY_FTW_UPDATE") return 6;
+  if (filing.automation_status === "COMPLETED") return AUTOMATION_WORKFLOW_STEPS.length - 1;
+  return filing.fields?.length ? 1 : 0;
+}
+
+function automationNextActionLabel(nextAction: string | null | undefined, status: FilingDetail["automation_status"]) {
+  if (status === "COMPLETED") return "No action required";
+  const labels: Record<string, string> = {
+    QUERY_FTW_CURRENT: "Query current FT Williams data",
+    RETRY_AFTER_CURRENT_QUERY: "Query FT Williams again",
+    MAP_FTW_BROWSER_PLAN: "Confirm the FT Williams plan once",
+    AUTOMATE_BRING_FORWARD: "Bring Forward automatically",
+    VERIFY_BRING_FORWARD: "Verify the brought-forward record",
+    MANUAL_BRING_FORWARD: "Complete Bring Forward in FT Williams",
+    RESOLVE_ISSUES: "Resolve the highlighted item",
+    AUTO_SEND: "Send automatically",
+    VERIFY_FTW_UPDATE: "Verify the FT Williams update",
+    LOGIN_TO_FTW: "Refresh the FT Williams login",
+    RETRY: "Retry the automated workflow",
+  };
+  return labels[nextAction || ""] || (status === "FAILED" ? "Review the failure and retry" : "Continue automatically");
+}
+
+function AutomationSimpleSummary({
+  filing,
+  foundCount,
+  onOpenAdvancedReview,
+  totalFields,
+  willUpdateCount,
+}: {
+  filing: FilingDetail;
+  foundCount: number;
+  onOpenAdvancedReview: () => void;
+  totalFields: number;
+  willUpdateCount: number;
+}) {
+  const completed = filing.automation_status === "COMPLETED";
+  const broughtForward = Boolean(filing.automation_bring_forward_submitted_at);
+  return (
+    <section className={`automation-simple-summary ${completed ? "complete" : "processing"}`}>
+      <div className="automation-simple-icon">{completed ? <CheckCircle2 size={28} /> : <Sparkles size={28} />}</div>
+      <div className="automation-simple-copy">
+        <span>{completed ? "Verified result" : "Straight-through processing"}</span>
+        <h2>{completed ? "This filing is complete" : "No review is required right now"}</h2>
+        <p>
+          {completed
+            ? "ERISAPros verified the saved FT Williams values. The detailed comparison remains available for audit purposes."
+            : "ERISAPros is matching, validating, sending, and verifying this filing automatically. You can leave this page."}
+        </p>
+      </div>
+      <dl className="automation-simple-metrics">
+        <div><dt>Fields found</dt><dd>{foundCount} / {totalFields || 61}</dd></div>
+        <div><dt>FTW changes</dt><dd>{willUpdateCount}</dd></div>
+        <div><dt>Bring Forward</dt><dd>{broughtForward ? "Used" : "Not needed"}</dd></div>
+      </dl>
+      <button className="button secondary automation-advanced-button" type="button" onClick={onOpenAdvancedReview}>
+        <Eye size={16} /> Open Advanced Review
+      </button>
+    </section>
+  );
+}
+
 function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined) {
   return Boolean(
     review
@@ -1484,8 +1688,8 @@ function hasUsableFtwCurrentValue(value: string | null | undefined) {
 function ftwPlanPageUrl(review: FTWilliamsReview | null) {
   const providedUrl = String(review?.ftw_plan_url || "").trim();
   if (providedUrl) return providedUrl;
-  const customerId = String(review?.ftw_customer_id || "").trim();
-  const planId = String(review?.ftw_plan_id || "").trim();
+  const customerId = String(review?.ftw_browser_customer_id || "").trim();
+  const planId = String(review?.ftw_browser_plan_id || "").trim();
   const year = String(review?.year || review?.comparison_year || "").trim();
   if (!customerId || !planId || !year) return "";
   const plan = `${encodeURIComponent(customerId)},${encodeURIComponent(planId)}`;
@@ -2489,7 +2693,7 @@ function TechnicalReviewDrawer({
   onQueryCurrent: () => void;
   onReEvaluate: () => void;
   onRetryExtraction: () => void;
-  onSaveManualMatch: (payload: { customer_id?: string; plan_id?: string; ftw_customer_id?: string; ftw_plan_id?: string; year?: string }) => void;
+  onSaveManualMatch: (payload: { customer_id?: string; plan_id?: string; ftw_customer_id?: string; ftw_plan_id?: string; ftw_browser_customer_id?: string; ftw_browser_plan_id?: string; ftw_plan_url?: string; year?: string }) => void;
   onSelectScheduleMatch: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string; create_new?: boolean; schedule_desc?: string }) => void;
   onSendUpdate: () => void;
   sendBusy: boolean;
@@ -3928,6 +4132,9 @@ function FTWilliamsComparisonPanel({
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   }) => void;
   onSelectScheduleMatch: (payload: {
@@ -3956,6 +4163,9 @@ function FTWilliamsComparisonPanel({
     plan_id: "",
     ftw_customer_id: "",
     ftw_plan_id: "",
+    ftw_browser_customer_id: "",
+    ftw_browser_plan_id: "",
+    ftw_plan_url: "",
     year: "",
   });
   const [scheduleSelection, setScheduleSelection] = useState({
@@ -3972,6 +4182,9 @@ function FTWilliamsComparisonPanel({
       plan_id: textValue(identity.plan_id) || textValue(review?.plan_id),
       ftw_customer_id: textValue(identity.ftw_customer_id) || textValue(review?.ftw_customer_id),
       ftw_plan_id: textValue(identity.ftw_plan_id) || textValue(review?.ftw_plan_id),
+      ftw_browser_customer_id: textValue(review?.ftw_browser_customer_id),
+      ftw_browser_plan_id: textValue(review?.ftw_browser_plan_id),
+      ftw_plan_url: "",
       year: textValue(lookup?.year) || textValue(review?.year),
     });
     setScheduleSelection({
@@ -3980,7 +4193,7 @@ function FTWilliamsComparisonPanel({
       carrier_ein: textValue(review?.schedule_a_match?.carrier_ein),
       contract: textValue(review?.schedule_a_match?.contract),
     });
-  }, [lookup?.matched_identity, lookup?.year, review?.customer_id, review?.ftw_customer_id, review?.ftw_plan_id, review?.ftw_seq_no, review?.id, review?.plan_id, review?.schedule_a_match, review?.updated_at, review?.year]);
+  }, [lookup?.matched_identity, lookup?.year, review?.customer_id, review?.ftw_browser_customer_id, review?.ftw_browser_plan_id, review?.ftw_customer_id, review?.ftw_plan_id, review?.ftw_seq_no, review?.id, review?.plan_id, review?.schedule_a_match, review?.updated_at, review?.year]);
 
   function submitManualMatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -4108,6 +4321,8 @@ function FTWilliamsComparisonPanel({
           <FTWMeta label="Current Query" value={review?.current_query_success ? "Successful" : review?.current_query_sent ? "Attempted" : "Not sent"} />
           <FTWMeta label="Customer / Plan" value={review?.customer_id && review?.plan_id ? `${review.customer_id} / ${review.plan_id}` : "Pending"} />
           <FTWMeta label="FTW IDs" value={review?.ftw_customer_id && review?.ftw_plan_id ? `${review.ftw_customer_id} / ${review.ftw_plan_id}` : "Pending"} />
+          <FTWMeta label="Browser IDs" value={review?.ftw_browser_customer_id && review?.ftw_browser_plan_id ? `${review.ftw_browser_customer_id} / ${review.ftw_browser_plan_id}` : "Pending"} />
+          <FTWMeta label="Plan Registry" value={review?.browser_mapping_confirmed ? "Confirmed" : "One-time mapping needed"} />
           <FTWMeta label="Schedule A Match" value={scheduleMatch} />
         </div>
 
@@ -4130,6 +4345,23 @@ function FTWilliamsComparisonPanel({
               <label>
                 <span>FTWPlanID</span>
                 <input className="input" value={manualMatch.ftw_plan_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_plan_id: event.target.value }))} />
+              </label>
+              <label>
+                <span>Browser Customer ID</span>
+                <input className="input" value={manualMatch.ftw_browser_customer_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_browser_customer_id: event.target.value }))} />
+              </label>
+              <label>
+                <span>Browser Plan ID</span>
+                <input className="input" value={manualMatch.ftw_browser_plan_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_browser_plan_id: event.target.value }))} />
+              </label>
+              <label className="ftw-plan-url-field">
+                <span>FT Williams Plan URL</span>
+                <input
+                  className="input"
+                  value={manualMatch.ftw_plan_url}
+                  placeholder="Paste the exact FT Williams plan page URL"
+                  onChange={(event) => setManualMatch((value) => ({ ...value, ftw_plan_url: event.target.value }))}
+                />
               </label>
               <label>
                 <span>Year</span>

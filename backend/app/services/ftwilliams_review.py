@@ -417,7 +417,24 @@ class FTWilliamsReviewService:
                 error_message,
                 "Schedule A broker rows need confirmation before FT Williams can be updated.",
             ]))
-        ftw_plan_url = self._ftw_plan_page_url(identity, identity.get("year")) if bring_forward_required else None
+        browser_customer_id = (
+            plan_lookup.ftw_browser_customer_id
+            or (existing_review.ftw_browser_customer_id if existing_review else None)
+        )
+        browser_plan_id = (
+            plan_lookup.ftw_browser_plan_id
+            or (existing_review.ftw_browser_plan_id if existing_review else None)
+        )
+        browser_mapping_confirmed = bool(
+            plan_lookup.browser_mapping_confirmed
+            or (existing_review.browser_mapping_confirmed if existing_review else False)
+        )
+        browser_identity = {
+            **identity,
+            "ftw_browser_customer_id": browser_customer_id,
+            "ftw_browser_plan_id": browser_plan_id,
+        }
+        ftw_plan_url = self._ftw_plan_page_url(browser_identity, identity.get("year")) if bring_forward_required else None
         payload_validation_issues: list[FTWFieldValidationIssue] = []
         try:
             update_xml_5500 = build_single_document_update_xml(
@@ -503,6 +520,9 @@ class FTWilliamsReviewService:
             ftw_signed_status=ftw_editability["signed_status"],
             ftw_filing_status=ftw_editability["filing_status"],
             ftw_plan_url=ftw_plan_url,
+            ftw_browser_customer_id=browser_customer_id,
+            ftw_browser_plan_id=browser_plan_id,
+            browser_mapping_confirmed=browser_mapping_confirmed,
             comparison_year=comparison_year,
             comparison_year_source=comparison_year_source,
             plan_year_conflict=plan_year_conflict,
@@ -693,12 +713,36 @@ class FTWilliamsReviewService:
         if not self._has_plan_identity(identity):
             raise ValueError("Enter CustomerID/PlanID or FTWCustomerID/FTWPlanID before saving the FT Williams match.")
 
+        plan_name_key = self._plan_name_key(identifiers.get("plan_name"))
+        existing_mapping = await repo.get_ftwilliams_plan_mapping(
+            company_employer_id,
+            plan_number,
+            plan_name_key,
+        )
+        browser_customer_id, browser_plan_id = self._manual_browser_identity(payload)
+        browser_mapping_confirmed_at = None
+        if browser_customer_id and browser_plan_id:
+            browser_mapping_confirmed = True
+            browser_mapping_confirmed_at = datetime.utcnow()
+        else:
+            browser_customer_id = existing_mapping.ftw_browser_customer_id if existing_mapping else None
+            browser_plan_id = existing_mapping.ftw_browser_plan_id if existing_mapping else None
+            browser_mapping_confirmed = bool(existing_mapping and existing_mapping.browser_mapping_confirmed)
+            browser_mapping_confirmed_at = (
+                existing_mapping.browser_mapping_confirmed_at if existing_mapping else None
+            )
+
         mapping = FTWilliamsPlanMapping(
             company_employer_id=company_employer_id,
             plan_number=plan_number,
             year=self._normalize_year(payload.year or identifiers.get("year")),
             plan_name=identifiers.get("plan_name"),
+            plan_name_key=plan_name_key,
             sponsor_name=identifiers.get("sponsor_name"),
+            ftw_browser_customer_id=browser_customer_id,
+            ftw_browser_plan_id=browser_plan_id,
+            browser_mapping_confirmed=browser_mapping_confirmed,
+            browser_mapping_confirmed_at=browser_mapping_confirmed_at,
             **identity,
         )
         await repo.upsert_ftwilliams_plan_mapping(mapping)
@@ -1416,12 +1460,19 @@ class FTWilliamsReviewService:
             lookup.error_message = "Plan lookup needs sponsor EIN and plan number before deriving FT Williams CustomerID/PlanID."
             return lookup
 
-        stored_mapping = await repo.get_ftwilliams_plan_mapping(lookup.company_employer_id, lookup.plan_number)
+        stored_mapping = await repo.get_ftwilliams_plan_mapping(
+            lookup.company_employer_id,
+            lookup.plan_number,
+            self._plan_name_key(lookup.plan_name),
+        )
         if stored_mapping:
             lookup.year = stored_mapping.year or lookup.year
             mapping_identity = self._identity_from_mapping(stored_mapping)
             lookup.matches = [self._mapping_match(stored_mapping)]
             lookup.matched_identity = {**derived_identity, **mapping_identity}
+            lookup.ftw_browser_customer_id = stored_mapping.ftw_browser_customer_id
+            lookup.ftw_browser_plan_id = stored_mapping.ftw_browser_plan_id
+            lookup.browser_mapping_confirmed = stored_mapping.browser_mapping_confirmed
             lookup.status = FTWilliamsPlanLookupStatus.MATCHED
             lookup.error_message = None
             return lookup
@@ -1964,14 +2015,37 @@ class FTWilliamsReviewService:
         return None
 
     async def _persist_plan_mapping(self, lookup: FTWilliamsPlanLookup, repo, match: dict[str, str], *, source: str) -> None:
+        plan_name = match.get("PlanLine1") or match.get("PlanName") or lookup.plan_name
+        plan_name_key = self._plan_name_key(plan_name)
+        existing = await repo.get_ftwilliams_plan_mapping(
+            lookup.company_employer_id,
+            lookup.plan_number,
+            plan_name_key,
+        )
         await repo.upsert_ftwilliams_plan_mapping(
             FTWilliamsPlanMapping(
                 company_employer_id=lookup.company_employer_id,
                 plan_number=lookup.plan_number,
                 year=lookup.year,
-                plan_name=match.get("PlanLine1") or match.get("PlanName") or lookup.plan_name,
+                plan_name=plan_name,
+                plan_name_key=plan_name_key,
                 sponsor_name=match.get("CompanyName") or lookup.sponsor_name,
                 source=source,
+                ftw_browser_customer_id=(
+                    lookup.ftw_browser_customer_id
+                    or (existing.ftw_browser_customer_id if existing else None)
+                ),
+                ftw_browser_plan_id=(
+                    lookup.ftw_browser_plan_id
+                    or (existing.ftw_browser_plan_id if existing else None)
+                ),
+                browser_mapping_confirmed=bool(
+                    lookup.browser_mapping_confirmed
+                    or (existing.browser_mapping_confirmed if existing else False)
+                ),
+                browser_mapping_confirmed_at=(
+                    existing.browser_mapping_confirmed_at if existing else None
+                ),
                 **(lookup.matched_identity or {}),
             )
         )
@@ -5632,6 +5706,9 @@ class FTWilliamsReviewService:
             "PlanNumber": mapping.plan_number,
             "PlanLine1": mapping.plan_name or "",
             "CompanyName": mapping.sponsor_name or "",
+            "FTWBrowserCustomerID": mapping.ftw_browser_customer_id or "",
+            "FTWBrowserPlanID": mapping.ftw_browser_plan_id or "",
+            "BrowserMappingConfirmed": "true" if mapping.browser_mapping_confirmed else "false",
             "Source": mapping.source,
         }
         return {key: value for key, value in values.items() if value}
@@ -5644,6 +5721,58 @@ class FTWilliamsReviewService:
             "ftw_plan_id": payload.ftw_plan_id,
         }
         return {key: value.strip() for key, value in values.items() if value and value.strip()}
+
+    def _manual_browser_identity(self, payload: FTWilliamsManualMatchRequest) -> tuple[str | None, str | None]:
+        browser_customer_id = self._clean_identifier(payload.ftw_browser_customer_id)
+        browser_plan_id = self._clean_identifier(payload.ftw_browser_plan_id)
+        plan_url = self._clean_identifier(payload.ftw_plan_url)
+
+        if plan_url:
+            try:
+                parsed = urlsplit(plan_url)
+            except ValueError as exc:
+                raise ValueError("Enter a valid FT Williams plan URL.") from exc
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if (
+                parsed.scheme != "https"
+                or not (host == "ftwilliam.com" or host.endswith(".ftwilliam.com"))
+                or parsed.username
+                or parsed.password
+                or parsed.port not in {None, 443}
+            ):
+                raise ValueError("The browser mapping URL must be a safe ftwilliam.com HTTPS plan URL.")
+
+            parameters = parse_qs(parsed.query)
+            parameters.update(parse_qs(parsed.fragment))
+            plan_values = parameters.get("plan") or parameters.get("Plan") or []
+            plan_parts = [part.strip() for part in str(plan_values[0] if plan_values else "").split(",")]
+            if len(plan_parts) != 2 or not all(plan_parts):
+                raise ValueError("The FT Williams plan URL must contain the browser customer and plan IDs.")
+            url_customer_id, url_plan_id = plan_parts
+            if browser_customer_id and browser_customer_id != url_customer_id:
+                raise ValueError("The entered browser customer ID does not match the FT Williams plan URL.")
+            if browser_plan_id and browser_plan_id != url_plan_id:
+                raise ValueError("The entered browser plan ID does not match the FT Williams plan URL.")
+            browser_customer_id, browser_plan_id = url_customer_id, url_plan_id
+
+            url_year_values = parameters.get("Year") or parameters.get("year") or []
+            url_year = self._normalize_year(url_year_values[0] if url_year_values else None)
+            requested_year = self._normalize_year(payload.year)
+            if url_year and requested_year and url_year != requested_year:
+                raise ValueError("The FT Williams plan URL year does not match the selected filing year.")
+
+        if bool(browser_customer_id) != bool(browser_plan_id):
+            raise ValueError("Enter both FT Williams browser IDs, or paste the complete FT Williams plan URL.")
+        return browser_customer_id, browser_plan_id
+
+    @staticmethod
+    def _clean_identifier(value: object) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _plan_name_key(value: object) -> str:
+        return normalize_compare_value(value)
 
     def _identity_from_review(self, review: FTWilliamsReview) -> dict[str, str]:
         identity = {
@@ -5799,10 +5928,10 @@ class FTWilliamsReviewService:
             or match.get("SCH_A_PLAN_NAME")
         )
         lookup_plan_name = normalize_compare_value(lookup.plan_name)
-        if lookup_plan_name and match_plan_name and (
-            lookup_plan_name in match_plan_name or match_plan_name in lookup_plan_name
-        ):
-            score += 1
+        if lookup_plan_name:
+            if not match_plan_name or match_plan_name != lookup_plan_name:
+                return -100
+            score += 3
 
         match_company_name = normalize_compare_value(
             match.get("CompanyName")
@@ -5822,7 +5951,21 @@ class FTWilliamsReviewService:
 
     def _plan_ids_probe_score(self, match: dict[str, str], lookup: FTWilliamsPlanLookup) -> int:
         """Rank batch identifiers using only metadata available before a plan query."""
-        score = self._plan_lookup_score(match, lookup)
+        candidate_plan_name = (
+            match.get("PlanLine1")
+            or match.get("PlanName")
+            or match.get("PLAN_NAME0")
+            or match.get("SCH_A_PLAN_NAME")
+        )
+        if candidate_plan_name:
+            score = self._plan_lookup_score(match, lookup)
+        else:
+            # Older PlanIDs_Batch responses expose only identifiers. Preserve
+            # their neutral ranking so a PlanData probe can fetch and verify
+            # the exact name; never accept them directly without that probe.
+            score = self._plan_lookup_score({**match, "PlanLine1": lookup.plan_name or ""}, lookup)
+            if lookup.plan_name:
+                score -= 3
         candidate_text = normalize_compare_value(
             " ".join(
                 str(match.get(key) or "")
@@ -5939,7 +6082,7 @@ class FTWilliamsReviewService:
         default_template = (
             "https://ftwilliam.com/cgi-bin/index.cgi?"
             "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-            "plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
+            "plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"
         )
         template = (get_settings().ftw_plan_page_url_template or default_template).strip()
         values = {
@@ -5947,19 +6090,21 @@ class FTWilliamsReviewService:
             "plan_id": quote(str(identity.get("plan_id") or ""), safe=""),
             "ftw_customer_id": quote(str(identity.get("ftw_customer_id") or ""), safe=""),
             "ftw_plan_id": quote(str(identity.get("ftw_plan_id") or ""), safe=""),
+            "ftw_browser_customer_id": quote(str(identity.get("ftw_browser_customer_id") or ""), safe=""),
+            "ftw_browser_plan_id": quote(str(identity.get("ftw_browser_plan_id") or ""), safe=""),
             "year": quote(str(target_year or identity.get("year") or ""), safe=""),
         }
-        required_placeholders = {"{ftw_customer_id}", "{ftw_plan_id}", "{year}"}
+        required_placeholders = {"{ftw_browser_customer_id}", "{ftw_browser_plan_id}", "{year}"}
         if not required_placeholders.issubset(set(re.findall(r"\{[^{}]+\}", template))):
             return ""
-        if not (values["ftw_customer_id"] and values["ftw_plan_id"] and values["year"]):
+        if not (values["ftw_browser_customer_id"] and values["ftw_browser_plan_id"] and values["year"]):
             return ""
         try:
             url = template.format(**values)
             parsed = urlsplit(url)
             host = (parsed.hostname or "").lower().rstrip(".")
             fragment = parse_qs(parsed.fragment, keep_blank_values=True)
-            expected_plan = f"{values['ftw_customer_id']},{values['ftw_plan_id']}"
+            expected_plan = f"{values['ftw_browser_customer_id']},{values['ftw_browser_plan_id']}"
             if (
                 parsed.scheme != "https"
                 or (host != "ftwilliam.com" and not host.endswith(".ftwilliam.com"))
@@ -5979,7 +6124,14 @@ class FTWilliamsReviewService:
             return ""
 
     def plan_page_url_for_review(self, review: FTWilliamsReview) -> str:
-        return self._ftw_plan_page_url(self._identity_from_review(review), review.year)
+        return self._ftw_plan_page_url(
+            {
+                **self._identity_from_review(review),
+                "ftw_browser_customer_id": review.ftw_browser_customer_id,
+                "ftw_browser_plan_id": review.ftw_browser_plan_id,
+            },
+            review.year,
+        )
 
     def _query_payload_base(self) -> dict:
         settings = get_settings()

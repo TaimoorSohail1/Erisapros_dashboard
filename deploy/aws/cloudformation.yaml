@@ -40,6 +40,21 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
+  FtwAutomationEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwAutomationBringForwardEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwAutomationAutoSendEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwAutomationAllowedTargetsJson:
+    Type: String
+    Default: "[]"
 
 Resources:
   FrontendBucket:
@@ -102,6 +117,14 @@ Resources:
     Properties:
       Description: ERISAPros production application credentials
       SecretString: "{}"
+
+  FTWBrowserSessionSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Dedicated Highland demo FT Williams Playwright session
+      SecretString: '{"FTW_BROWSER_STORAGE_STATE_JSON":""}'
 
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -199,7 +222,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref AppSecret
+                Resource:
+                  - !Ref AppSecret
+                  - !Ref FTWBrowserSessionSecret
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -375,6 +400,20 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: !Ref FtwScheduleAUpdatesEnabled
+            - Name: FTW_AUTOMATION_ENABLED
+              Value: !Ref FtwAutomationEnabled
+            - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED
+              Value: !Ref FtwAutomationBringForwardEnabled
+            - Name: FTW_AUTOMATION_AUTO_SEND_ENABLED
+              Value: !Ref FtwAutomationAutoSendEnabled
+            - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON
+              Value: !Ref FtwAutomationAllowedTargetsJson
+            - Name: FTW_AUTOMATION_LEASE_SECONDS
+              Value: "600"
+            - Name: FTW_BROWSER_HEADLESS
+              Value: "true"
+            - Name: FTW_BROWSER_AUDIT_DIRECTORY
+              Value: /tmp/ftw-automation
             - Name: FTW_SCHEMA_VALIDATION_ENABLED
               Value: !Ref FtwSchemaValidationEnabled
             - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED
@@ -384,7 +423,7 @@ Resources:
             - Name: FTW_PDF_AUDIT_ENABLED
               Value: !Ref FtwPdfAuditEnabled
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
-              Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
+              Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"
           Secrets:
             - Name: MONGODB_URI
               ValueFrom: !Sub "${AppSecret}:MONGODB_URI::"
@@ -408,6 +447,8 @@ Resources:
               ValueFrom: !Sub "${AppSecret}:SHAREFILE_INTAKE_FOLDER_PATH::"
             - Name: FTWLINK_KEY_ID
               ValueFrom: !Sub "${AppSecret}:FTWLINK_KEY_ID::"
+            - Name: FTW_BROWSER_STORAGE_STATE_JSON
+              ValueFrom: !Sub "${FTWBrowserSessionSecret}:FTW_BROWSER_STORAGE_STATE_JSON::"
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -455,7 +496,7 @@ Resources:
         - Name: sharefile-worker
           Image: !Sub "${ContainerRepository.RepositoryUri}:latest"
           Essential: true
-          Command: ["-m", "app.sharefile_worker"]
+          Command: ["python", "-m", "app.sharefile_worker"]
           Environment:
             - Name: APP_ENVIRONMENT
               Value: production
@@ -499,6 +540,20 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: !Ref FtwScheduleAUpdatesEnabled
+            - Name: FTW_AUTOMATION_ENABLED
+              Value: !Ref FtwAutomationEnabled
+            - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED
+              Value: !Ref FtwAutomationBringForwardEnabled
+            - Name: FTW_AUTOMATION_AUTO_SEND_ENABLED
+              Value: !Ref FtwAutomationAutoSendEnabled
+            - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON
+              Value: !Ref FtwAutomationAllowedTargetsJson
+            - Name: FTW_AUTOMATION_LEASE_SECONDS
+              Value: "600"
+            - Name: FTW_BROWSER_HEADLESS
+              Value: "true"
+            - Name: FTW_BROWSER_AUDIT_DIRECTORY
+              Value: /tmp/ftw-automation
             - Name: FTW_SCHEMA_VALIDATION_ENABLED
               Value: !Ref FtwSchemaValidationEnabled
             - Name: FTW_SCHEMA_ENFORCEMENT_ENABLED
@@ -508,7 +563,7 @@ Resources:
             - Name: FTW_PDF_AUDIT_ENABLED
               Value: !Ref FtwPdfAuditEnabled
             - Name: FTW_PLAN_PAGE_URL_TEMPLATE
-              Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
+              Value: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"
           Secrets:
             - Name: MONGODB_URI
               ValueFrom: !Sub "${AppSecret}:MONGODB_URI::"
@@ -532,6 +587,8 @@ Resources:
               ValueFrom: !Sub "${AppSecret}:SHAREFILE_INTAKE_FOLDER_PATH::"
             - Name: FTWLINK_KEY_ID
               ValueFrom: !Sub "${AppSecret}:FTWLINK_KEY_ID::"
+            - Name: FTW_BROWSER_STORAGE_STATE_JSON
+              ValueFrom: !Sub "${FTWBrowserSessionSecret}:FTW_BROWSER_STORAGE_STATE_JSON::"
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -753,6 +810,8 @@ Outputs:
     Value: !GetAtt ContainerRepository.RepositoryUri
   AppSecretArn:
     Value: !Ref AppSecret
+  FTWBrowserSessionSecretArn:
+    Value: !Ref FTWBrowserSessionSecret
   UserPoolId:
     Value: !Ref UserPool
   UserPoolClientId:

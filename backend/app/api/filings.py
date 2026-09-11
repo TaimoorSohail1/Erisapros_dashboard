@@ -4,6 +4,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from app.auth import require_field_rule_admin
+from app.config import get_settings
 from app.models import (
     ApproveRequest,
     AuditLog,
@@ -19,6 +20,7 @@ from app.models import (
     FTWilliamsScheduleABrokerRowsRequest,
     FTWilliamsPlanYearResolutionRequest,
     FTWilliamsPrepareReviewRequest,
+    FTWilliamsReview,
     FTWilliamsScheduleAContractTypeRequest,
     FTWilliamsScheduleAMatchRequest,
     FTWilliamsSendUpdateRequest,
@@ -41,6 +43,7 @@ from app.services.ftwilliams_contract import (
     ftw_expected_format,
     normalize_ftw_update_value,
 )
+from app.services.ftwilliams_automation import FTWAutomationService, automation_reset_values
 from app.services.ftwilliams_tags import resolve_ftw_update_tag
 from app.services.error_normalizer import normalize_client_error
 from app.services.schedule_a_classification import (
@@ -53,6 +56,29 @@ from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml, update_values_for_form
 
 router = APIRouter(prefix="/filings", tags=["filings"])
+
+
+async def continue_ftw_automation(
+    filing_id: str,
+    review: FTWilliamsReview | None,
+) -> FTWilliamsReview | None:
+    """Continue the optional workflow after a reviewer resolves one exception."""
+    settings = get_settings()
+    if not settings.ftw_automation_enabled or review is None:
+        return review
+    try:
+        await FTWAutomationService(settings=settings).run(filing_id, review=review)
+        return await get_repository().get_ftwilliams_review(filing_id) or review
+    except Exception as exc:
+        await get_repository().add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTW_AUTOMATION_FAILED",
+                message="Automation stopped after a reviewer decision; the manual workflow remains available.",
+                details={"error": str(exc)},
+            )
+        )
+        return review
 
 
 @router.get("")
@@ -382,6 +408,10 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
             "review_field_count": summary["review_field_count"],
             "found_field_count": summary["found_field_count"],
             "excluded_field_count": max(0, len(fields) - len(relevant_fields)),
+            **automation_reset_values(
+                get_settings(),
+                "A reviewer changed an extracted value; automation requires a fresh FT Williams comparison.",
+            ),
         },
     )
     field = next((item for item in fields if item.id == field_id), field)
@@ -395,6 +425,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
         )
     except ValueError:
         pass
+    ftw_review = await continue_ftw_automation(filing_id, ftw_review)
     await repo.add_event(
         ReviewEvent(
             filing_id=filing_id,
@@ -503,7 +534,7 @@ async def prepare_ftwilliams_review(filing_id: str, payload: FTWilliamsPrepareRe
         review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=payload.send_queries)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/bring-forward-link")
@@ -519,7 +550,7 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
     if not url:
         raise HTTPException(
             status_code=400,
-            detail="A plan-specific FT Williams URL cannot be created without FTW customer ID, plan ID, and year.",
+            detail="A plan-specific FT Williams URL cannot be created without the separate browser customer ID, browser plan ID, and year.",
         )
     try:
         parsed = urlsplit(url)
@@ -561,7 +592,7 @@ async def apply_manual_ftwilliams_match(filing_id: str, payload: FTWilliamsManua
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/schedule-a-match")
@@ -571,7 +602,7 @@ async def select_ftwilliams_schedule_a_match(filing_id: str, payload: FTWilliams
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/plan-year-resolution")
@@ -584,7 +615,7 @@ async def resolve_ftwilliams_plan_year_conflict(
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/schedule-a-broker-matches")
@@ -594,7 +625,7 @@ async def set_ftwilliams_schedule_a_broker_matches(filing_id: str, payload: FTWi
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.put("/{filing_id}/ftw/schedule-a-broker-rows")
@@ -607,7 +638,7 @@ async def update_ftwilliams_schedule_a_broker_rows(
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/schedule-a-contract-type")
@@ -617,7 +648,7 @@ async def set_ftwilliams_schedule_a_contract_type(filing_id: str, payload: FTWil
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.post("/{filing_id}/ftw/send-update")
@@ -636,7 +667,7 @@ async def send_approved_ftwilliams_update(filing_id: str, payload: FTWilliamsSen
         )
         detail = client_error.model_dump(mode="json") if client_error else str(exc)
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    return {"ftw_review": review}
+    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
 @router.get("/{filing_id}/ftw/audit-pdf")

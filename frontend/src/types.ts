@@ -24,6 +24,15 @@ export type ExtractionJobStatus =
   | "COMPLETED"
   | "FAILED";
 
+export type FTWAutomationStatus =
+  | "DISABLED"
+  | "PROCESSING"
+  | "ACTION_NEEDED"
+  | "BRING_FORWARD_REQUIRED"
+  | "SAFE_TO_SEND"
+  | "COMPLETED"
+  | "FAILED";
+
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";
 export type DocumentType = "SCHEDULE_A" | "PLAN_WORKSHEET" | "UNKNOWN";
 export type FormType = "SCHEDULE_A" | "FORM_5500";
@@ -105,6 +114,18 @@ export interface Filing {
   dashboard_plan_name?: string | null;
   intake_source?: "SHAREFILE" | "MANUAL" | string | null;
   status: FilingStatus;
+  automation_status?: FTWAutomationStatus;
+  automation_reasons?: string[];
+  automation_next_action?: string | null;
+  automation_policy_version?: string | null;
+  automation_last_evaluated_at?: string | null;
+  automation_completed_at?: string | null;
+  automation_run_id?: string | null;
+  automation_bring_forward_target_key?: string | null;
+  automation_bring_forward_submitted_at?: string | null;
+  automation_bring_forward_verified_at?: string | null;
+  automation_bring_forward_before_record_ids?: string[];
+  automation_bring_forward_new_record_ids?: string[];
   s3_key: string;
   s3_bucket?: string | null;
   storage_path?: string | null;
@@ -191,6 +212,9 @@ export interface FTWilliamsPlanLookup {
   error_message?: string | null;
   matches: Array<Record<string, unknown>>;
   matched_identity?: Record<string, unknown> | null;
+  ftw_browser_customer_id?: string | null;
+  ftw_browser_plan_id?: string | null;
+  browser_mapping_confirmed?: boolean;
 }
 
 export interface ClientRejectedField {
@@ -309,6 +333,9 @@ export interface FTWilliamsReview {
   year?: string | null;
   ftw_customer_id?: string | null;
   ftw_plan_id?: string | null;
+  ftw_browser_customer_id?: string | null;
+  ftw_browser_plan_id?: string | null;
+  browser_mapping_confirmed?: boolean;
   ftw_seq_no?: string | null;
   plan_lookup?: FTWilliamsPlanLookup | null;
   query_request_xml?: string | null;

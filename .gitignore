@@ -12,4 +12,7 @@ __pycache__
 *.tsbuildinfo
 .env
 .env.local
+*ftw*storage-state*.json
+*ftw*session*.json
+outputs/ftw-automation/
 .DS_Store

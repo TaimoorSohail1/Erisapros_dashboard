@@ -292,6 +292,9 @@ export async function saveManualFTWilliamsMatch(
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   },
 ): Promise<{ ftw_review: FTWilliamsReview }> {
