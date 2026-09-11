@@ -33,6 +33,8 @@ from app.models import (
     FTWLocalAgentPairResponse,
     FTWLocalAgentPairingCodeResponse,
     FTWLocalAgentStatusResponse,
+    FTWClientWorkspace,
+    FTWClientWorkspaceCreateRequest,
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
@@ -77,6 +79,35 @@ async def status():
 @router.get("/local-agent/status", response_model=FTWLocalAgentStatusResponse)
 async def local_agent_status(claims: dict = Depends(require_field_rule_admin)):
     return await FTWLocalAgentService().status(paired_by=_local_agent_owner(claims))
+
+
+@router.get("/local-agent/workspaces")
+async def list_local_agent_workspaces(_claims: dict = Depends(require_field_rule_admin)):
+    workspaces = await get_repository().list_ftw_client_workspaces()
+    return {"workspaces": [workspace.model_dump(mode="json") for workspace in workspaces]}
+
+
+@router.post("/local-agent/workspaces")
+async def create_local_agent_workspace(
+    payload: FTWClientWorkspaceCreateRequest,
+    _claims: dict = Depends(require_field_rule_admin),
+):
+    name = payload.name.strip()
+    slug = payload.slug.strip().casefold()
+    account = payload.expected_account.strip()
+    if not name or not slug or not account:
+        raise HTTPException(status_code=400, detail="Workspace name, slug, and FT Williams account are required.")
+    if any(workspace.slug == slug for workspace in await get_repository().list_ftw_client_workspaces()):
+        raise HTTPException(status_code=409, detail="A client workspace already uses this slug.")
+    workspace = await get_repository().create_ftw_client_workspace(
+        FTWClientWorkspace(
+            name=name[:160],
+            slug=slug[:80],
+            expected_account=account[:160],
+            admin_subjects=sorted({item.strip().casefold() for item in payload.admin_subjects if item.strip()}),
+        )
+    )
+    return workspace.model_dump(mode="json")
 
 
 @router.post("/local-agent/pairing-codes", response_model=FTWLocalAgentPairingCodeResponse)

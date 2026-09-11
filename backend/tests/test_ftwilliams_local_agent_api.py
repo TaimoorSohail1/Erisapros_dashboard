@@ -101,3 +101,28 @@ def test_local_agent_status_and_device_list_are_scoped_to_pairing_owner():
         assert client.post(f"/api/ftwilliams/local-agent/devices/{other_device.id}/revoke").status_code == 404
     finally:
         repositories._repository = None
+
+
+def test_client_workspaces_have_unique_slugs_for_future_agent_routing():
+    repositories._repository = repositories.MemoryRepository()
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/ftwilliams/local-agent/workspaces",
+            json={
+                "name": "HighlandTech Demo",
+                "slug": "highlandtech-demo",
+                "expected_account": "HighlandTech",
+                "admin_subjects": ["demo-admin@example.com"],
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["slug"] == "highlandtech-demo"
+        assert client.get("/api/ftwilliams/local-agent/workspaces").json()["workspaces"][0]["name"] == "HighlandTech Demo"
+        duplicate = client.post(
+            "/api/ftwilliams/local-agent/workspaces",
+            json={"name": "Duplicate", "slug": "highlandtech-demo", "expected_account": "HighlandTech"},
+        )
+        assert duplicate.status_code == 409
+    finally:
+        repositories._repository = None

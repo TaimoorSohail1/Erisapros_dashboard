@@ -24,6 +24,7 @@ from app.models import (
     FTWilliamsSchemaSnapshot,
     FTWilliamsPlanMapping,
     FTWLocalAgentDevice,
+    FTWClientWorkspace,
     FTWLocalAgentJob,
     FTWLocalAgentJobStatus,
     FTWLocalAgentPairingCode,
@@ -259,6 +260,9 @@ class Repository:
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
     async def get_sharefile_suppression(self, item_id: str) -> dict | None: ...
     async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict: ...
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace: ...
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]: ...
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None: ...
     async def create_ftw_local_agent_pairing_code(self, record: FTWLocalAgentPairingCode) -> FTWLocalAgentPairingCode: ...
     async def consume_ftw_local_agent_pairing_code(self, code_hash: str, now: datetime) -> FTWLocalAgentPairingCode | None: ...
     async def create_ftw_local_agent_device(self, device: FTWLocalAgentDevice) -> FTWLocalAgentDevice: ...
@@ -1135,6 +1139,22 @@ class MongoRepository(Repository):
         )
         return self._plain_mongo_doc(doc)
 
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
+        record = workspace.model_copy(deep=True)
+        result = await self.db.ftw_client_workspaces.insert_one(to_mongo_bson(record))
+        record.id = str(result.inserted_id)
+        return record
+
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]:
+        docs = await self.db.ftw_client_workspaces.find().sort("created_at", -1).to_list(500)
+        return [from_mongo(doc, FTWClientWorkspace) for doc in docs]
+
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None:
+        if not ObjectId.is_valid(workspace_id):
+            return None
+        doc = await self.db.ftw_client_workspaces.find_one({"_id": ObjectId(workspace_id)})
+        return from_mongo(doc, FTWClientWorkspace) if doc else None
+
     async def create_ftw_local_agent_pairing_code(
         self,
         record: FTWLocalAgentPairingCode,
@@ -1327,6 +1347,7 @@ class MemoryRepository(Repository):
         self.sharefile_suppressions: dict[str, dict] = {}
         self.field_rule_versions: dict[str, FieldRule] = {}
         self.ftw_local_agent_pairing_codes: dict[str, FTWLocalAgentPairingCode] = {}
+        self.ftw_client_workspaces: dict[str, FTWClientWorkspace] = {}
         self.ftw_local_agent_devices: dict[str, FTWLocalAgentDevice] = {}
         self.ftw_local_agent_jobs: dict[str, FTWLocalAgentJob] = {}
 
@@ -1770,6 +1791,22 @@ class MemoryRepository(Repository):
         record.setdefault("id", str(uuid4()))
         self.sharefile_suppressions[item_id] = record
         return dict(record)
+
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
+        stored = workspace.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_client_workspaces[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(self.ftw_client_workspaces.values(), key=lambda value: value.created_at, reverse=True)
+        ]
+
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None:
+        workspace = self.ftw_client_workspaces.get(workspace_id)
+        return workspace.model_copy(deep=True) if workspace else None
 
     async def create_ftw_local_agent_pairing_code(
         self,

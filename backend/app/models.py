@@ -137,12 +137,33 @@ class FTWLocalAgentJobStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
+class FTWClientWorkspace(BaseModel):
+    """A client security boundary for local FT Williams agents."""
+
+    id: str | None = None
+    name: str
+    slug: str
+    expected_account: str
+    admin_subjects: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWClientWorkspaceCreateRequest(BaseModel):
+    name: str
+    slug: str
+    expected_account: str
+    admin_subjects: list[str] = Field(default_factory=list)
+
+
 class FTWLocalAgentDevice(BaseModel):
     id: str | None = None
     name: str
     token_hash: str
     token_prefix: str
     expected_account: str
+    workspace_id: str | None = None
     status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
     agent_version: str | None = None
     browser_ready: bool = False
@@ -159,6 +180,7 @@ class FTWLocalAgentPairingCode(BaseModel):
     code_hash: str
     code_prefix: str
     expected_account: str
+    workspace_id: str | None = None
     created_by: str | None = None
     expires_at: datetime
     used_at: datetime | None = None
@@ -177,6 +199,8 @@ class FTWLocalAgentJob(BaseModel):
     expected_ein: str
     expected_plan_number: str
     expected_year: str
+    workspace_id: str | None = None
+    assigned_device_id: str | None = None
     before_record_ids: list[str] = Field(default_factory=list)
     device_id: str | None = None
     claim_token_hash: str | None = None

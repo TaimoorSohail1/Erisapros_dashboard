@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     # Optional client-local Bring Forward agent. Disabled by default so the
     # established cloud/manual workflow is unchanged until device QA passes.
     ftw_local_agent_enabled: bool = False
+    # Keep the legacy demo canary unchanged until its mappings are migrated.
+    ftw_local_agent_workspace_routing_enabled: bool = False
     ftw_local_agent_expected_account: str = "HighlandTech"
     ftw_local_agent_pairing_ttl_seconds: int = 600
     ftw_local_agent_heartbeat_ttl_seconds: int = 90
