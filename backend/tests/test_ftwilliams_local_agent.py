@@ -429,6 +429,29 @@ def test_login_required_job_is_automatically_reclaimed_after_login():
     assert reclaimed.completed_at is None
 
 
+def test_verified_job_is_requeued_when_fresh_query_still_requires_bring_forward():
+    repo, service, filing, job = _submitted_job_fixture(FailingPostBringForwardReviewService())
+    run_async(repo.update_ftw_local_agent_job(str(job.id), {
+        "status": FTWLocalAgentJobStatus.VERIFIED,
+        "result_state": "SUBMITTED",
+        "result_message": "Previously verified",
+        "completed_at": datetime.utcnow(),
+    }))
+
+    review = run_async(repo.get_ftwilliams_review(str(filing.id)))
+    retried = run_async(service.enqueue_bring_forward(
+        filing,
+        review,
+        run_id="run-2",
+        before_record_ids=[],
+    ))
+
+    assert retried.id == job.id
+    assert retried.status == FTWLocalAgentJobStatus.QUEUED
+    assert retried.run_id == "run-2"
+    assert retried.result_state is None
+
+
 def test_device_cannot_claim_a_job_for_another_ftw_account():
     repo = MemoryRepository()
     service = FTWLocalAgentService(

@@ -420,6 +420,21 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.next_action, "AUTOMATE_BRING_FORWARD")
 
+    def test_verified_marker_does_not_block_retry_when_current_year_is_still_missing(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        settings.ftw_automation_bring_forward_enabled = True
+        settings.ftw_automation_auto_bring_forward_enabled = True
+        filing.automation_bring_forward_target_key = FTWAutomationPolicy.bring_forward_target_key(review)
+        filing.automation_bring_forward_submitted_at = datetime.utcnow()
+        filing.automation_bring_forward_verified_at = datetime.utcnow()
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.BRING_FORWARD_REQUIRED)
+        self.assertEqual(decision.next_action, "AUTOMATE_BRING_FORWARD")
+
     def test_confirmation_endpoint_records_target_bound_approval_and_audit(self):
         filing, review, _extracted, settings = self.safe_case()
         review.current_year_exists = False

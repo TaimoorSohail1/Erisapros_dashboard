@@ -328,6 +328,7 @@ class FTWLocalAgentService:
             FTWLocalAgentJobStatus.ACTION_NEEDED,
             FTWLocalAgentJobStatus.FAILED,
             FTWLocalAgentJobStatus.EXPIRED,
+            FTWLocalAgentJobStatus.VERIFIED,
         }:
             refreshed = await self.repo.update_ftw_local_agent_job(
                 str(job.id),
@@ -349,6 +350,7 @@ class FTWLocalAgentService:
                     "claim_expires_at": None,
                     "result_state": None,
                     "result_message": None,
+                    "completed_at": None,
                     "expires_at": now + timedelta(seconds=max(60, self.settings.ftw_local_agent_job_ttl_seconds)),
                 },
             )

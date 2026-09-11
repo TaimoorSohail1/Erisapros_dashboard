@@ -136,6 +136,7 @@ class FTWAutomationPolicy:
             if (
                 filing.automation_bring_forward_submitted_at
                 and filing.automation_bring_forward_target_key == target_key
+                and filing.automation_bring_forward_verified_at is None
             ):
                 return self._action_needed(
                     "Bring Forward was submitted, but the current-year Schedule A is not visible through ftwLink yet. Re-query current data before attempting another browser action.",
