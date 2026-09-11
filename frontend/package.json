@@ -12,6 +12,7 @@
     "test:dashboard-ui": "node scripts/test-dashboard-responsive-layout.mjs && node scripts/test-dashboard-company-groups.mjs",
     "test:field-rules-ui": "node scripts/test-field-rule-client-creation.mjs",
     "test:sharefile-ui": "node scripts/test-sharefile-sync-control.mjs",
+    "test:ftw-agent-ui": "node scripts/test-ftw-agent-settings.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

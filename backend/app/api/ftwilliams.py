@@ -53,6 +53,11 @@ from app.services.ftwilliams_local_agent_jobs import (
 router = APIRouter(prefix="/ftwilliams", tags=["ftwilliams"])
 
 
+def _local_agent_owner(claims: dict | None) -> str:
+    claims = claims or {}
+    return str(claims.get("email") or claims.get("cognito:username") or claims.get("sub") or "local-admin").strip() or "local-admin"
+
+
 async def require_local_agent_device(request: Request) -> FTWLocalAgentDevice:
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
@@ -70,15 +75,15 @@ async def status():
 
 
 @router.get("/local-agent/status", response_model=FTWLocalAgentStatusResponse)
-async def local_agent_status():
-    return await FTWLocalAgentService().status()
+async def local_agent_status(claims: dict = Depends(require_field_rule_admin)):
+    return await FTWLocalAgentService().status(paired_by=_local_agent_owner(claims))
 
 
 @router.post("/local-agent/pairing-codes", response_model=FTWLocalAgentPairingCodeResponse)
 async def create_local_agent_pairing_code(
     claims: dict = Depends(require_field_rule_admin),
 ):
-    created_by = str(claims.get("email") or claims.get("sub") or "").strip() or None
+    created_by = _local_agent_owner(claims)
     return await FTWLocalAgentService().create_pairing_code(created_by=created_by)
 
 
@@ -91,8 +96,9 @@ async def pair_local_agent(payload: FTWLocalAgentPairRequest):
 
 
 @router.get("/local-agent/devices")
-async def list_local_agent_devices(_claims: dict = Depends(require_field_rule_admin)):
-    devices = await get_repository().list_ftw_local_agent_devices()
+async def list_local_agent_devices(claims: dict = Depends(require_field_rule_admin)):
+    owner = _local_agent_owner(claims)
+    devices = [device for device in await get_repository().list_ftw_local_agent_devices() if device.paired_by == owner]
     return {
         "devices": [
             {
@@ -115,8 +121,12 @@ async def list_local_agent_devices(_claims: dict = Depends(require_field_rule_ad
 @router.post("/local-agent/devices/{device_id}/revoke")
 async def revoke_local_agent_device(
     device_id: str,
-    _claims: dict = Depends(require_field_rule_admin),
+    claims: dict = Depends(require_field_rule_admin),
 ):
+    owner = _local_agent_owner(claims)
+    owned = [device for device in await get_repository().list_ftw_local_agent_devices() if device.id == device_id and device.paired_by == owner]
+    if not owned:
+        raise HTTPException(status_code=404, detail="Local-agent device not found.")
     try:
         device = await FTWLocalAgentService().revoke(device_id)
     except ValueError as exc:

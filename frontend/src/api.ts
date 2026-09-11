@@ -12,6 +12,8 @@ import type {
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
   FTWLocalAgentStatus,
+  FTWLocalAgentDevice,
+  FTWLocalAgentPairingCodeResponse,
   FTWilliamsReview,
   ClientFacingError,
   ScheduleABrokerRow,
@@ -179,6 +181,19 @@ export async function listFTWilliamsFailureNotifications(): Promise<FTWilliamsFa
 
 export async function getFTWLocalAgentStatus(): Promise<FTWLocalAgentStatus> {
   return requestWithTimeout<FTWLocalAgentStatus>("/ftwilliams/local-agent/status", {}, 5_000);
+}
+
+export async function createFTWLocalAgentPairingCode(): Promise<FTWLocalAgentPairingCodeResponse> {
+  return request<FTWLocalAgentPairingCodeResponse>("/ftwilliams/local-agent/pairing-codes", { method: "POST" });
+}
+
+export async function listFTWLocalAgentDevices(): Promise<FTWLocalAgentDevice[]> {
+  const payload = await request<{ devices: FTWLocalAgentDevice[] }>("/ftwilliams/local-agent/devices");
+  return payload.devices;
+}
+
+export async function revokeFTWLocalAgentDevice(deviceId: string): Promise<{ device_id: string; status: string }> {
+  return request(`/ftwilliams/local-agent/devices/${encodeURIComponent(deviceId)}/revoke`, { method: "POST" });
 }
 
 export async function listFTWilliamsFailureQueue(options: {

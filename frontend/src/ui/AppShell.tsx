@@ -1,4 +1,4 @@
-import { Columns3, FolderSync, LayoutDashboard, ListChecks, ShieldCheck } from "lucide-react";
+import { Columns3, FolderSync, LayoutDashboard, ListChecks, MonitorCog, ShieldCheck } from "lucide-react";
 import { NavLink } from "../router";
 import { FTWilliamsNotifications } from "./FTWilliamsNotifications";
 import { authenticationEnabled, signOut } from "../auth";
@@ -22,6 +22,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {filingReviewPath ? <NavLink to={filingReviewPath}><Columns3 size={18} /> FTW Review</NavLink> : null}
           <NavLink to="/field-rules"><ListChecks size={18} /> Field Rules</NavLink>
           <NavLink to="/sharefile"><FolderSync size={18} /> ShareFile Intake</NavLink>
+          <NavLink to="/settings/ftw-agent"><MonitorCog size={18} /> FTW Agent</NavLink>
         </nav>
         <div className="topbar-actions">
           <FTWilliamsNotifications />

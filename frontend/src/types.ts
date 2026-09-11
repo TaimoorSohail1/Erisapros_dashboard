@@ -44,6 +44,28 @@ export interface FTWLocalAgentStatus {
   last_error?: string | null;
 }
 
+export interface FTWLocalAgentDevice {
+  id: string;
+  name: string;
+  expected_account: string;
+  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED";
+  agent_version?: string | null;
+  browser_ready: boolean;
+  last_error?: string | null;
+  last_seen_at?: string | null;
+  revoked_at?: string | null;
+  created_at: string;
+}
+
+export interface FTWLocalAgentDevicesResponse {
+  devices: FTWLocalAgentDevice[];
+}
+
+export interface FTWLocalAgentPairingCodeResponse {
+  pairing_code: string;
+  expires_at: string;
+}
+
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";
 export type DocumentType = "SCHEDULE_A" | "PLAN_WORKSHEET" | "UNKNOWN";
 export type FormType = "SCHEDULE_A" | "FORM_5500";

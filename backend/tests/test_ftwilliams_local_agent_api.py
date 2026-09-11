@@ -1,7 +1,10 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 import app.repositories as repositories
 from app.main import app
+from app.models import FTWLocalAgentDevice
 
 
 def test_local_agent_pairing_heartbeat_and_revocation_do_not_expose_device_tokens():
@@ -65,5 +68,36 @@ def test_pairing_code_cannot_be_reused_through_the_api():
         second = client.post("/api/ftwilliams/local-agent/pair", json=payload)
         assert second.status_code == 400
         assert "already used" in second.json()["detail"]
+    finally:
+        repositories._repository = None
+
+
+def test_local_agent_status_and_device_list_are_scoped_to_pairing_owner():
+    repo = repositories.MemoryRepository()
+    repositories._repository = repo
+    client = TestClient(app)
+    try:
+        first_code = client.post("/api/ftwilliams/local-agent/pairing-codes").json()["pairing_code"]
+        first = client.post(
+            "/api/ftwilliams/local-agent/pair",
+            json={"pairing_code": first_code, "device_name": "Owned computer", "agent_version": "0.1.0"},
+        )
+        assert first.status_code == 200
+
+        # An administrator cannot manage a device that was paired by a different
+        # account. This protects future client self-service screens from showing
+        # or revoking another client's local computer.
+        other_device = asyncio.run(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+            name="Other client computer",
+            token_hash="other-token-hash",
+            token_prefix="other-",
+            expected_account="AnotherAccount",
+            paired_by="another-client@example.com",
+        )))
+
+        devices = client.get("/api/ftwilliams/local-agent/devices")
+        assert devices.status_code == 200
+        assert [item["name"] for item in devices.json()["devices"]] == ["Owned computer"]
+        assert client.post(f"/api/ftwilliams/local-agent/devices/{other_device.id}/revoke").status_code == 404
     finally:
         repositories._repository = None

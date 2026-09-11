@@ -136,13 +136,14 @@ class FTWLocalAgentService:
             raise ValueError("Local-agent device not found.")
         return updated
 
-    async def status(self) -> FTWLocalAgentStatusResponse:
+    async def status(self, *, paired_by: str | None = None) -> FTWLocalAgentStatusResponse:
         if not self.settings.ftw_local_agent_enabled:
             return FTWLocalAgentStatusResponse(enabled=False, connected=False)
         devices = [
             device
             for device in await self.repo.list_ftw_local_agent_devices()
             if not device.revoked_at and device.status != FTWLocalAgentDeviceStatus.REVOKED
+            and (not paired_by or device.paired_by == paired_by)
         ]
         if not devices:
             return FTWLocalAgentStatusResponse(enabled=True, connected=False)
