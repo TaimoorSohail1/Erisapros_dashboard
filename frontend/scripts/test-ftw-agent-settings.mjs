@@ -14,5 +14,6 @@ assert.match(page, /disableFTWWorkspacePlanMapping/, "Administrators must be abl
 assert.match(page, /revokeFTWLocalAgentDevice/, "Administrators must be able to revoke a lost or replaced computer.");
 assert.match(page, /Do not send the code by email or chat/, "The setup screen must warn users not to share the one-time pairing code.");
 assert.match(page, /Connecting a computer does not enable automatic updates or sending/, "Pairing a computer must not imply unsafe automatic sending.");
+assert.match(page, /parseApiDateTime/, "UTC API timestamps must be normalized before pairing expiry and display checks.");
 
 console.log("FT Williams Agent settings UI passed.");

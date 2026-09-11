@@ -100,7 +100,7 @@ export function FTWilliamsAgentSettingsPage() {
   }, [workspaceId]);
 
   const pairingExpired = useMemo(() => (
-    pairing ? new Date(pairing.expires_at).getTime() <= Date.now() : false
+    pairing ? parseApiDateTime(pairing.expires_at).getTime() <= Date.now() : false
   ), [pairing]);
 
   const createCode = async () => {
@@ -371,9 +371,17 @@ function deviceStateLabel(device: FTWLocalAgentDevice) {
 }
 
 function formatDateTime(value: string) {
-  const date = new Date(value);
+  const date = parseApiDateTime(value);
   if (Number.isNaN(date.getTime())) return "soon";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function parseApiDateTime(value: string) {
+  // The API currently serializes UTC datetimes without a timezone suffix.
+  // Treat those values as UTC so client timezone differences cannot expire a
+  // valid pairing code early or display an incorrect last-seen time.
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value);
+  return new Date(hasTimezone ? value : `${value}Z`);
 }
 
 function workspaceName(workspaceId: string | null | undefined, workspaces: FTWClientWorkspace[]) {
