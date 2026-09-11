@@ -7,6 +7,7 @@ disk encryption and restrict filesystem access to the service account.
 
 import argparse
 import asyncio
+import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -22,6 +23,11 @@ def parse_args() -> argparse.Namespace:
         "--expected-account",
         default="HighlandTech",
         help="Account label that must be visible before the session is saved.",
+    )
+    parser.add_argument(
+        "--hold-open",
+        action="store_true",
+        help="Keep the authenticated browser open after saving so the captured session can be verified.",
     )
     parser.add_argument("--storage-state", required=True, help="Absolute output path outside the repository.")
     return parser.parse_args()
@@ -75,11 +81,39 @@ async def main() -> None:
                 f"FT Williams session was not saved because account {args.expected_account!r} "
                 "was not verified in this browser window."
             )
-        await context.storage_state(path=str(output))
+        state = await context.storage_state(indexed_db=True)
+        session_storage: dict[str, list[dict[str, str]]] = {}
+        for frame in page.frames:
+            try:
+                frame_url = urlsplit(str(frame.url))
+                frame_host = (frame_url.hostname or "").lower().rstrip(".")
+            except ValueError:
+                continue
+            if frame_url.scheme != "https" or not (
+                frame_host == "ftwilliam.com" or frame_host.endswith(".ftwilliam.com")
+            ):
+                continue
+            origin = f"{frame_url.scheme}://{frame_url.netloc}"
+            try:
+                entries = await frame.evaluate(
+                    "Object.entries(window.sessionStorage).map(([name, value]) => ({name, value}))"
+                )
+            except Exception:
+                continue
+            if isinstance(entries, list):
+                session_storage[origin] = entries
+        state["_erisapros_session_storage"] = session_storage
+        state["_erisapros_user_agent"] = str(await page.evaluate("navigator.userAgent"))
+        output.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
         output.chmod(0o600)
+        print(f"Saved FT Williams browser session to {output}", flush=True)
+        if args.hold_open:
+            await asyncio.to_thread(
+                input,
+                "Session saved. Keep this browser open while verification runs; press Enter only when told: ",
+            )
         await context.close()
         await browser.close()
-    print(f"Saved FT Williams browser session to {output}")
 
 
 if __name__ == "__main__":

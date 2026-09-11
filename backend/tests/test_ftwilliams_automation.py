@@ -653,18 +653,57 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         }
 
         class Context:
-            async def storage_state(self):
+            kwargs = None
+
+            async def storage_state(self, **kwargs):
+                self.kwargs = kwargs
                 return refreshed
 
         PlaywrightFTWBringForwardAgent._runtime_storage_state = None
+        context = Context()
         try:
-            run_async(PlaywrightFTWBringForwardAgent(settings)._remember_storage_state(Context()))
+            run_async(PlaywrightFTWBringForwardAgent(settings)._remember_storage_state(context))
             storage_state, error = PlaywrightFTWBringForwardAgent(settings)._load_storage_state()
         finally:
             PlaywrightFTWBringForwardAgent._runtime_storage_state = None
 
         self.assertEqual(storage_state, refreshed)
         self.assertIsNone(error)
+        self.assertEqual(context.kwargs, {"indexed_db": True})
+
+    def test_browser_worker_restores_ftw_session_storage_before_navigation(self):
+        _filing, _review, _extracted, settings = self.safe_case()
+        agent = PlaywrightFTWBringForwardAgent(settings)
+        saved = {
+            "cookies": [],
+            "origins": [],
+            "_erisapros_user_agent": "Mozilla/5.0 Chrome/151.0.0.0",
+            "_erisapros_session_storage": {
+                "https://www.ftwilliam.com": [{"name": "ftw-session", "value": "demo-token"}],
+            },
+        }
+
+        browser_state, session_storage, user_agent = agent._split_storage_state(saved)
+
+        self.assertEqual(browser_state, {"cookies": [], "origins": []})
+        self.assertEqual(
+            session_storage,
+            {"https://www.ftwilliam.com": [{"name": "ftw-session", "value": "demo-token"}]},
+        )
+        self.assertEqual(user_agent, "Mozilla/5.0 Chrome/151.0.0.0")
+
+        class Context:
+            scripts: list[str] = []
+
+            async def add_init_script(self, script):
+                self.scripts.append(script)
+
+        context = Context()
+        run_async(agent._restore_session_storage(context, session_storage))
+
+        self.assertEqual(len(context.scripts), 1)
+        self.assertIn("sessionStorage.setItem", context.scripts[0])
+        self.assertIn("https://www.ftwilliam.com", context.scripts[0])
 
     def test_browser_login_detection_recognizes_ftw_badpage_session_failure(self):
         self.assertIsNotNone(PlaywrightFTWBringForwardAgent._LOGIN_TEXT.search("badpage(error);"))
@@ -764,6 +803,28 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertIsNone(identity_error)
         self.assertFalse(login_required)
         self.assertEqual(page.waits, 1)
+
+    def test_browser_identity_reads_legacy_ftw_input_values(self):
+        class Locator:
+            def __init__(self, selector):
+                self.selector = selector
+
+            async def inner_text(self, **_kwargs):
+                return "Details: EIN: 27-1486827 • PN: 501\n5500 - 2025"
+
+            async def evaluate_all(self, _script):
+                return ["AMERICAN SECURITIES LLC HEALTH AND WELFARE PLAN"]
+
+        class Frame:
+            def locator(self, selector):
+                return Locator(selector)
+
+        class Page:
+            frames = [Frame()]
+
+        page_text = run_async(PlaywrightFTWBringForwardAgent._page_text(Page()))
+
+        self.assertIn("AMERICAN SECURITIES LLC HEALTH AND WELFARE PLAN", page_text)
 
     def test_zero_identity_candidates_are_automatically_added_as_new(self):
         filing, review, extracted, settings = self.safe_case()

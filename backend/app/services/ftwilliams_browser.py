@@ -35,6 +35,8 @@ class PlaywrightFTWBringForwardAgent:
     # the refreshed state in the long-running API/worker process so a later
     # filing does not reuse the stale deployment-secret snapshot.
     _runtime_storage_state: dict | None = None
+    _SESSION_STORAGE_KEY = "_erisapros_session_storage"
+    _USER_AGENT_KEY = "_erisapros_user_agent"
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -72,7 +74,12 @@ class PlaywrightFTWBringForwardAgent:
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(headless=self.settings.ftw_browser_headless)
-                context = await browser.new_context(storage_state=storage_state)
+                browser_state, session_storage, user_agent = self._split_storage_state(storage_state)
+                context_options = {"storage_state": browser_state}
+                if user_agent:
+                    context_options["user_agent"] = user_agent
+                context = await browser.new_context(**context_options)
+                await self._restore_session_storage(context, session_storage)
                 page = await context.new_page()
                 page.set_default_timeout(timeout_ms)
                 page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
@@ -89,7 +96,7 @@ class PlaywrightFTWBringForwardAgent:
                         timeout_ms=identity_timeout_ms,
                     )
                     if not login_required:
-                        await self._remember_storage_state(context)
+                        await self._remember_storage_state(context, page)
                     await page.screenshot(path=str(before_path), full_page=True)
                     if login_required:
                         return FTWBringForwardResult(
@@ -115,7 +122,7 @@ class PlaywrightFTWBringForwardAgent:
                         )
                     await locator.click(timeout=timeout_ms)
                     await page.wait_for_timeout(1_000)
-                    await self._remember_storage_state(context)
+                    await self._remember_storage_state(context, page)
                     await page.screenshot(path=str(after_path), full_page=True)
                     if await self._visible_failure(page):
                         return FTWBringForwardResult(
@@ -184,16 +191,104 @@ class PlaywrightFTWBringForwardAgent:
         path_value = str(self.settings.ftw_browser_storage_state_path or "").strip()
         storage_path = Path(path_value).expanduser() if path_value else None
         if storage_path and storage_path.is_file():
-            return str(storage_path), None
+            try:
+                parsed = json.loads(storage_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                return None, "The saved FT Williams demo login session is invalid and must be refreshed."
+            if not isinstance(parsed, dict):
+                return None, "The saved FT Williams demo login session has an invalid format."
+            return parsed, None
         return None, "A saved FT Williams login session is required for the dedicated demo account."
 
-    async def _remember_storage_state(self, context) -> None:
-        state = await context.storage_state()
+    @classmethod
+    def _split_storage_state(
+        cls,
+        storage_state: dict,
+    ) -> tuple[dict, dict[str, list[dict[str, str]]], str | None]:
+        browser_state = dict(storage_state)
+        raw_session_storage = browser_state.pop(cls._SESSION_STORAGE_KEY, {})
+        raw_user_agent = browser_state.pop(cls._USER_AGENT_KEY, None)
+        user_agent = str(raw_user_agent or "").strip()
+        if not user_agent or len(user_agent) > 512 or "\n" in user_agent or "\r" in user_agent:
+            user_agent = None
+        session_storage: dict[str, list[dict[str, str]]] = {}
+        if isinstance(raw_session_storage, dict):
+            for origin, entries in raw_session_storage.items():
+                try:
+                    parsed = urlsplit(str(origin))
+                    host = (parsed.hostname or "").lower().rstrip(".")
+                except ValueError:
+                    continue
+                if parsed.scheme != "https" or not (host == "ftwilliam.com" or host.endswith(".ftwilliam.com")):
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                safe_entries = [
+                    {"name": str(entry["name"]), "value": str(entry["value"])}
+                    for entry in entries
+                    if isinstance(entry, dict) and "name" in entry and "value" in entry
+                ]
+                session_storage[str(origin)] = safe_entries
+        return browser_state, session_storage, user_agent
+
+    @staticmethod
+    async def _restore_session_storage(context, session_storage: dict[str, list[dict[str, str]]]) -> None:
+        if not session_storage:
+            return
+        payload = json.dumps(session_storage, separators=(",", ":"))
+        await context.add_init_script(
+            """
+            (() => {
+              const saved = %s;
+              const entries = saved[window.location.origin] || [];
+              for (const entry of entries) {
+                window.sessionStorage.setItem(entry.name, entry.value);
+              }
+            })();
+            """ % payload
+        )
+
+    @staticmethod
+    async def _capture_session_storage(page) -> dict[str, list[dict[str, str]]]:
+        captured: dict[str, list[dict[str, str]]] = {}
+        for frame in page.frames:
+            try:
+                parsed = urlsplit(str(frame.url))
+                host = (parsed.hostname or "").lower().rstrip(".")
+            except ValueError:
+                continue
+            if parsed.scheme != "https" or not (host == "ftwilliam.com" or host.endswith(".ftwilliam.com")):
+                continue
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            try:
+                values = await frame.evaluate(
+                    "Object.entries(window.sessionStorage).map(([name, value]) => ({name, value}))"
+                )
+            except Exception:
+                continue
+            if isinstance(values, list):
+                captured[origin] = [
+                    {"name": str(entry["name"]), "value": str(entry["value"])}
+                    for entry in values
+                    if isinstance(entry, dict) and "name" in entry and "value" in entry
+                ]
+        return captured
+
+    async def _remember_storage_state(self, context, page=None) -> None:
+        state = await context.storage_state(indexed_db=True)
         if (
             isinstance(state, dict)
             and isinstance(state.get("cookies", []), list)
             and isinstance(state.get("origins", []), list)
         ):
+            if page is not None:
+                state[self._SESSION_STORAGE_KEY] = await self._capture_session_storage(page)
+                try:
+                    user_agent = str(await page.evaluate("navigator.userAgent") or "").strip()
+                except Exception:
+                    user_agent = ""
+                if user_agent:
+                    state[self._USER_AGENT_KEY] = user_agent
             type(self)._runtime_storage_state = state
 
     async def _bring_forward_locator(self, page):
@@ -251,6 +346,19 @@ class PlaywrightFTWBringForwardAgent:
                 text = await PlaywrightFTWBringForwardAgent._frame_body_text(frame)
                 if text:
                     texts.append(text)
+                form_values = await frame.locator(
+                    "input:not([type='password']), textarea, select"
+                ).evaluate_all(
+                    """
+                    elements => elements.flatMap(element => {
+                      if (element.tagName === "SELECT") {
+                        return [element.value, ...Array.from(element.selectedOptions).map(option => option.text)];
+                      }
+                      return [element.value];
+                    }).filter(value => typeof value === "string" && value.trim())
+                    """
+                )
+                texts.extend(str(value) for value in form_values if str(value).strip())
             except Exception:
                 continue
         return "\n".join(texts)
