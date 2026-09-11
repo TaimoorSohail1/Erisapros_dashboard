@@ -40,6 +40,10 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
+  FtwScheduleASingleRecordOnly:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
   FtwAutomationEnabled:
     Type: String
     Default: "false"
@@ -407,6 +411,8 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: !Ref FtwScheduleAUpdatesEnabled
+            - Name: FTWLINK_SCHEDULE_A_SINGLE_RECORD_ONLY
+              Value: !Ref FtwScheduleASingleRecordOnly
             - Name: FTW_AUTOMATION_ENABLED
               Value: !Ref FtwAutomationEnabled
             - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED
@@ -551,6 +557,8 @@ Resources:
               Value: https://www.ftwilliam.com/cgi-bin/ICmkKdJDZincjf9goHWVUbID/ftwLink/ftwLink.cgi
             - Name: FTWLINK_SCHEDULE_A_UPDATES_ENABLED
               Value: !Ref FtwScheduleAUpdatesEnabled
+            - Name: FTWLINK_SCHEDULE_A_SINGLE_RECORD_ONLY
+              Value: !Ref FtwScheduleASingleRecordOnly
             - Name: FTW_AUTOMATION_ENABLED
               Value: !Ref FtwAutomationEnabled
             - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED

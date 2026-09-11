@@ -42,6 +42,21 @@ assert.match(
 );
 assert.match(
   source,
+  /nextAction === "CONFIRM_BRING_FORWARD"[\s\S]*?Confirm Bring Forward/,
+  "Automated Bring Forward must stop for explicit user confirmation.",
+);
+assert.match(
+  source,
+  /function BringForwardConfirmationModal[\s\S]*?Confirm this plan and year/,
+  "Bring Forward confirmation must show the exact target before automation starts.",
+);
+assert.match(
+  api,
+  /export async function confirmFTWilliamsBringForward[\s\S]*?\/ftw\/confirm-bring-forward/,
+  "The client must record target-bound Bring Forward confirmation through the API.",
+);
+assert.match(
+  source,
   /Local FT Williams agent:[\s\S]*?Connected[\s\S]*?Login required[\s\S]*?Offline/,
   "The automated workflow should show a concise local-agent connection state.",
 );
@@ -290,6 +305,26 @@ assert.match(
   source,
   /if \(row\.extractedField\?\.status === "EDITED"\) return false;/,
   "A reviewer-confirmed field must immediately leave the Action Required count.",
+);
+assert.match(
+  source,
+  /comparison\.extraction_status === "LOW_CONFIDENCE"[\s\S]*?comparison\.changed && comparison\.update_included \? "LOW_CONFIDENCE" : "SAME"/,
+  "Low-confidence values that do not change FT Williams must not ask for a human decision.",
+);
+assert.match(
+  source,
+  /const brokerActionRequiredIndexes = new Set\([\s\S]*?scheduleABrokerMatches\.filter\(\(match\) => !match\.resolved\)/,
+  "Unresolved broker matches must be included in the Action Required count.",
+);
+assert.match(
+  source,
+  /No field decisions are required\. Complete the workflow action above to continue\./,
+  "A workflow-only blocker must not present an empty field table as an unexplained error.",
+);
+assert.match(
+  source,
+  /activeTab === "ALL" \|\| \(activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0\)/,
+  "Broker rows must appear by default only when they require a human decision.",
 );
 assert.match(
   source,

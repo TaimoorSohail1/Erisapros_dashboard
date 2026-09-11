@@ -15,6 +15,8 @@ import type {
   FTWLocalAgentDevice,
   FTWLocalAgentPairingCodeResponse,
   FTWClientWorkspace,
+  FTWWorkspacePlanMapping,
+  FTWWorkspacePlanMappingInput,
   FTWilliamsReview,
   ClientFacingError,
   ScheduleABrokerRow,
@@ -196,6 +198,34 @@ export async function listFTWClientWorkspaces(): Promise<FTWClientWorkspace[]> {
   return payload.workspaces;
 }
 
+export async function listFTWWorkspacePlanMappings(workspaceId: string): Promise<FTWWorkspacePlanMapping[]> {
+  const payload = await request<{ mappings: FTWWorkspacePlanMapping[] }>(
+    `/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings`,
+  );
+  return payload.mappings;
+}
+
+export async function verifyFTWWorkspacePlanMapping(
+  workspaceId: string,
+  mapping: FTWWorkspacePlanMappingInput,
+): Promise<FTWWorkspacePlanMapping> {
+  return request(`/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mapping),
+  });
+}
+
+export async function disableFTWWorkspacePlanMapping(
+  workspaceId: string,
+  mappingId: string,
+): Promise<FTWWorkspacePlanMapping> {
+  return request(
+    `/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings/${encodeURIComponent(mappingId)}/disable`,
+    { method: "POST" },
+  );
+}
+
 export async function listFTWLocalAgentDevices(): Promise<FTWLocalAgentDevice[]> {
   const payload = await request<{ devices: FTWLocalAgentDevice[] }>("/ftwilliams/local-agent/devices");
   return payload.devices;
@@ -313,6 +343,14 @@ export async function getFTWilliamsBringForwardLink(filingId: string): Promise<{
   plan_specific?: boolean;
 }> {
   return request("/filings/" + filingId + "/ftw/bring-forward-link", { method: "POST" });
+}
+
+export async function confirmFTWilliamsBringForward(filingId: string): Promise<{
+  ftw_review: FTWilliamsReview;
+  automation_status: string;
+  automation_next_action?: string | null;
+}> {
+  return request("/filings/" + filingId + "/ftw/confirm-bring-forward", { method: "POST" });
 }
 
 export async function saveManualFTWilliamsMatch(

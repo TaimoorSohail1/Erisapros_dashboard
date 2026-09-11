@@ -21,6 +21,7 @@ from app.models import (
     FTWLocalAgentPairingCode,
     FTWLocalAgentPairingCodeResponse,
     FTWLocalAgentStatusResponse,
+    FTWWorkspacePlanMapping,
 )
 from app.repositories import Repository, get_repository
 from app.services.ftwilliams_local_agent import LocalFTWTarget
@@ -45,6 +46,79 @@ class FTWLocalAgentService:
     @staticmethod
     def _hash_token(value: str) -> str:
         return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _identity(value: str | None) -> str:
+        return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+    @staticmethod
+    def _canonical_ein(value: str | None) -> str:
+        digits = "".join(character for character in str(value or "") if character.isdigit())
+        return f"{digits[:2]}-{digits[2:]}" if len(digits) == 9 else str(value or "").strip()
+
+    @staticmethod
+    def _canonical_plan_number(value: str | None) -> str:
+        text = str(value or "").strip()
+        return text.zfill(3) if text.isdigit() and len(text) <= 3 else text
+
+    def _device_is_ready(self, device: FTWLocalAgentDevice, now: datetime) -> bool:
+        fresh_after = now - timedelta(seconds=max(15, self.settings.ftw_local_agent_heartbeat_ttl_seconds))
+        return bool(
+            not device.revoked_at
+            and device.status == FTWLocalAgentDeviceStatus.CONNECTED
+            and device.browser_ready
+            and device.last_seen_at
+            and device.last_seen_at >= fresh_after
+        )
+
+    async def _resolve_workspace_route(
+        self,
+        filing: Filing,
+        review: FTWilliamsReview,
+    ) -> tuple[str, FTWWorkspacePlanMapping, FTWLocalAgentDevice]:
+        workspace_id = str(filing.workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("Assign this filing to a client workspace before Bring Forward can run.")
+        workspace = await self.repo.get_ftw_client_workspace(workspace_id)
+        if not workspace or not workspace.enabled:
+            raise ValueError("The filing's client workspace is missing or disabled.")
+        lookup = review.plan_lookup
+        if not lookup:
+            raise ValueError("A confirmed FT Williams plan lookup is required for the local agent.")
+        ein = self._canonical_ein(lookup.company_employer_id)
+        plan_number = self._canonical_plan_number(lookup.plan_number)
+        year = str(review.year or lookup.year or "").strip()
+        mapping = await self.repo.get_verified_ftw_workspace_plan_mapping(
+            workspace_id,
+            ein,
+            plan_number,
+            year,
+        )
+        if not mapping:
+            raise ValueError("A verified FT Williams plan mapping is required for this workspace, plan, and year.")
+        expected_pairs = (
+            (mapping.expected_account, workspace.expected_account, "account"),
+            (mapping.plan_name, lookup.plan_name, "plan name"),
+            (mapping.ftw_customer_id, review.ftw_customer_id or review.customer_id, "ftwLink customer ID"),
+            (mapping.ftw_plan_id, review.ftw_plan_id or review.plan_id, "ftwLink plan ID"),
+            (mapping.ftw_browser_customer_id, review.ftw_browser_customer_id, "browser customer ID"),
+            (mapping.ftw_browser_plan_id, review.ftw_browser_plan_id, "browser plan ID"),
+        )
+        for expected, actual, label in expected_pairs:
+            if not actual or self._identity(expected) != self._identity(actual):
+                raise ValueError(f"The verified workspace mapping does not match the current {label}.")
+        now = datetime.utcnow()
+        devices = [
+            device
+            for device in await self.repo.list_ftw_local_agent_devices()
+            if device.workspace_id == workspace_id
+            and self._identity(device.expected_account) == self._identity(workspace.expected_account)
+            and self._device_is_ready(device, now)
+        ]
+        if not devices:
+            raise ValueError("No connected, signed-in FT Williams computer is available for this client workspace.")
+        devices.sort(key=lambda item: item.last_seen_at or datetime.min, reverse=True)
+        return workspace_id, mapping, devices[0]
 
     async def create_pairing_code(
         self,
@@ -149,7 +223,12 @@ class FTWLocalAgentService:
             raise ValueError("Local-agent device not found.")
         return updated
 
-    async def status(self, *, paired_by: str | None = None) -> FTWLocalAgentStatusResponse:
+    async def status(
+        self,
+        *,
+        paired_by: str | None = None,
+        workspace_ids: set[str] | None = None,
+    ) -> FTWLocalAgentStatusResponse:
         if not self.settings.ftw_local_agent_enabled:
             return FTWLocalAgentStatusResponse(enabled=False, connected=False)
         devices = [
@@ -157,6 +236,7 @@ class FTWLocalAgentService:
             for device in await self.repo.list_ftw_local_agent_devices()
             if not device.revoked_at and device.status != FTWLocalAgentDeviceStatus.REVOKED
             and (not paired_by or device.paired_by == paired_by)
+            and (workspace_ids is None or device.workspace_id in workspace_ids)
         ]
         if not devices:
             return FTWLocalAgentStatusResponse(enabled=True, connected=False)
@@ -194,10 +274,23 @@ class FTWLocalAgentService:
         lookup = review.plan_lookup
         if not lookup:
             raise ValueError("A confirmed FT Williams plan lookup is required for the local agent.")
+        workspace_id = None
+        mapping = None
+        assigned_device = None
+        expected_account = self.settings.ftw_local_agent_expected_account
+        target_url = review.ftw_plan_url
+        if self.settings.ftw_local_agent_workspace_routing_enabled:
+            workspace_id, mapping, assigned_device = await self._resolve_workspace_route(filing, review)
+            expected_account = mapping.expected_account
+            target_url = self.settings.ftw_plan_page_url_template.format(
+                ftw_browser_customer_id=mapping.ftw_browser_customer_id,
+                ftw_browser_plan_id=mapping.ftw_browser_plan_id,
+                year=mapping.year,
+            )
         target = LocalFTWTarget.from_dict(
             {
                 "label": filing.file_name,
-                "url": review.ftw_plan_url,
+                "url": target_url,
                 "plan_name": lookup.plan_name,
                 "ein": lookup.company_employer_id,
                 "plan_number": lookup.plan_number,
@@ -207,22 +300,26 @@ class FTWLocalAgentService:
         now = datetime.utcnow()
         target_key = "|".join(
             [
-                str(review.ftw_browser_customer_id or "").strip().casefold(),
-                str(review.ftw_browser_plan_id or "").strip().casefold(),
+                str((mapping.ftw_browser_customer_id if mapping else review.ftw_browser_customer_id) or "").strip().casefold(),
+                str((mapping.ftw_browser_plan_id if mapping else review.ftw_browser_plan_id) or "").strip().casefold(),
                 target.year,
             ]
         )
+        idempotency_prefix = f"{workspace_id}|{mapping.id}|" if workspace_id and mapping else ""
         job = await self.repo.create_or_get_ftw_local_agent_job(
             FTWLocalAgentJob(
                 filing_id=str(filing.id),
                 run_id=run_id,
-                idempotency_key=f"{filing.id}|{target_key}",
+                idempotency_key=f"{idempotency_prefix}{filing.id}|{target_key}",
                 target_url=target.url,
-                expected_account=self.settings.ftw_local_agent_expected_account,
+                expected_account=expected_account,
                 expected_plan_name=target.plan_name,
                 expected_ein=target.ein,
                 expected_plan_number=target.plan_number,
                 expected_year=target.year,
+                workspace_id=workspace_id,
+                mapping_id=str(mapping.id) if mapping else None,
+                assigned_device_id=str(assigned_device.id) if assigned_device else None,
                 before_record_ids=before_record_ids,
                 expires_at=now + timedelta(seconds=max(60, self.settings.ftw_local_agent_job_ttl_seconds)),
             )
@@ -238,11 +335,14 @@ class FTWLocalAgentService:
                     "status": FTWLocalAgentJobStatus.QUEUED,
                     "run_id": run_id,
                     "target_url": target.url,
-                    "expected_account": self.settings.ftw_local_agent_expected_account,
+                    "expected_account": expected_account,
                     "expected_plan_name": target.plan_name,
                     "expected_ein": target.ein,
                     "expected_plan_number": target.plan_number,
                     "expected_year": target.year,
+                    "workspace_id": workspace_id,
+                    "mapping_id": str(mapping.id) if mapping else None,
+                    "assigned_device_id": str(assigned_device.id) if assigned_device else None,
                     "before_record_ids": before_record_ids,
                     "device_id": None,
                     "claim_token_hash": None,
@@ -257,6 +357,9 @@ class FTWLocalAgentService:
         return job
 
     async def claim(self, device: FTWLocalAgentDevice) -> FTWLocalAgentClaimResponse:
+        if self.settings.ftw_local_agent_workspace_routing_enabled:
+            if not device.workspace_id or not self._device_is_ready(device, datetime.utcnow()):
+                return FTWLocalAgentClaimResponse()
         job = None
         claim_token = None
         for _ in range(10):
@@ -268,6 +371,7 @@ class FTWLocalAgentService:
                 self._hash_token(candidate_token),
                 now,
                 now + timedelta(seconds=max(30, self.settings.ftw_local_agent_claim_ttl_seconds)),
+                workspace_id=device.workspace_id if self.settings.ftw_local_agent_workspace_routing_enabled else None,
             )
             if not candidate:
                 break
@@ -297,6 +401,8 @@ class FTWLocalAgentService:
                 expected_ein=job.expected_ein,
                 expected_plan_number=job.expected_plan_number,
                 expected_year=job.expected_year,
+                workspace_id=job.workspace_id,
+                mapping_id=job.mapping_id,
                 expires_at=job.expires_at,
             )
             if job

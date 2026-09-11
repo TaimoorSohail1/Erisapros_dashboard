@@ -120,6 +120,36 @@ def test_agent_completion_allows_server_readback_within_cloudfront_limit():
     assert observed["read"] == 115.0
 
 
+def test_agent_can_revoke_its_own_device_during_uninstall():
+    observed = {}
+
+    async def handler(request):
+        observed["method"] = request.method
+        observed["path"] = request.url.path
+        observed["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"status": "REVOKED"})
+
+    async def exercise():
+        client = LocalAgentApiClient(
+            "https://dashboard.example.com",
+            "device-token",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            return await client.revoke_self()
+        finally:
+            await client.close()
+
+    result = run_async(exercise())
+
+    assert result["status"] == "REVOKED"
+    assert observed == {
+        "method": "POST",
+        "path": "/api/ftwilliams/local-agent/agent/revoke",
+        "authorization": "Bearer device-token",
+    }
+
+
 def test_browser_rejects_a_different_account_job_before_navigation():
     browser = PersistentFTWBrowser("unused-profile", expected_account="HighlandTech")
 

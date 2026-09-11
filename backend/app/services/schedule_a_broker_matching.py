@@ -211,13 +211,49 @@ def resolved_schedule_a_broker_rows(
 def current_schedule_a_broker_rows(record: dict | None) -> list[dict[str, str]]:
     rows = list((((record or {}).get("query_subparts") or {}).get("Broker") or []))
     if rows:
-        return _trim_trailing_empty_broker_rows(rows)
+        return _trim_trailing_empty_broker_rows(normalize_schedule_a_broker_subparts(rows))
     grouped: dict[int, dict[str, str]] = {}
     for tag, value in ((record or {}).get("query_results") or {}).items():
         parsed = _tag_index(str(tag))
         if parsed is not None and str(value or "").strip():
             grouped.setdefault(parsed, {})[str(tag)] = str(value)
     return _trim_trailing_empty_broker_rows([grouped[index] for index in sorted(grouped)])
+
+
+def normalize_schedule_a_broker_subparts(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Normalize both FT Williams broker response shapes into business rows.
+
+    Most responses return one ``Broker`` element containing all fields for a
+    business row. Some responses return one ``Broker`` element per field and
+    use the numeric suffix to identify the business row. Coalesce only that
+    unambiguous singleton-fragment shape; repeated row-local suffixes remain
+    separate rows.
+    """
+    cleaned = [
+        {str(tag): str(value or "").strip() for tag, value in row.items() if str(value or "").strip()}
+        for row in rows or []
+    ]
+    cleaned = [row for row in cleaned if row]
+    if len(cleaned) < 2 or any(len(row) != 1 for row in cleaned):
+        return cleaned
+
+    indexed: list[tuple[int, str, str]] = []
+    for row in cleaned:
+        tag, value = next(iter(row.items()))
+        index = _tag_index(tag)
+        if index is None:
+            return cleaned
+        indexed.append((index, tag, value))
+    if len({index for index, _, _ in indexed}) < 2:
+        return cleaned
+
+    grouped: dict[int, dict[str, str]] = {}
+    for index, tag, value in indexed:
+        target = grouped.setdefault(index, {})
+        if tag in target and target[tag] != value:
+            return cleaned
+        target[tag] = value
+    return [grouped[index] for index in sorted(grouped)]
 
 
 def _trim_trailing_empty_broker_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:

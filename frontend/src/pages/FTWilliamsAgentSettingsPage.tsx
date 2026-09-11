@@ -6,27 +6,53 @@ import {
   Link2,
   LoaderCircle,
   MonitorCog,
+  Plus,
   RefreshCw,
   ShieldCheck,
   Unplug,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   createFTWLocalAgentPairingCode,
   getFTWLocalAgentStatus,
   listFTWClientWorkspaces,
   listFTWLocalAgentDevices,
+  listFTWWorkspacePlanMappings,
   revokeFTWLocalAgentDevice,
+  disableFTWWorkspacePlanMapping,
+  verifyFTWWorkspacePlanMapping,
 } from "../api";
-import type { FTWClientWorkspace, FTWLocalAgentDevice, FTWLocalAgentPairingCodeResponse, FTWLocalAgentStatus } from "../types";
+import type {
+  FTWClientWorkspace,
+  FTWLocalAgentDevice,
+  FTWLocalAgentPairingCodeResponse,
+  FTWLocalAgentStatus,
+  FTWWorkspacePlanMapping,
+  FTWWorkspacePlanMappingInput,
+} from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
 type LoadState = "loading" | "ready" | "error";
+
+const emptyMapping: FTWWorkspacePlanMappingInput = {
+  company_employer_id: "",
+  plan_number: "",
+  year: "",
+  plan_name: "",
+  ftw_customer_id: "",
+  ftw_plan_id: "",
+  ftw_browser_customer_id: "",
+  ftw_browser_plan_id: "",
+  verification_evidence: "",
+};
 
 export function FTWilliamsAgentSettingsPage() {
   const [status, setStatus] = useState<FTWLocalAgentStatus | null>(null);
   const [devices, setDevices] = useState<FTWLocalAgentDevice[]>([]);
   const [workspaces, setWorkspaces] = useState<FTWClientWorkspace[]>([]);
+  const [mappings, setMappings] = useState<FTWWorkspacePlanMapping[]>([]);
+  const [mappingInput, setMappingInput] = useState<FTWWorkspacePlanMappingInput>(emptyMapping);
+  const [mappingBusy, setMappingBusy] = useState(false);
   const [workspaceId, setWorkspaceId] = useState("");
   const [state, setState] = useState<LoadState>("loading");
   const [message, setMessage] = useState("");
@@ -62,6 +88,16 @@ export function FTWilliamsAgentSettingsPage() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      setMappings([]);
+      return;
+    }
+    void listFTWWorkspacePlanMappings(workspaceId)
+      .then(setMappings)
+      .catch((error) => setMessage(errorMessage(error, "Verified plan mappings could not be loaded.")));
+  }, [workspaceId]);
 
   const pairingExpired = useMemo(() => (
     pairing ? new Date(pairing.expires_at).getTime() <= Date.now() : false
@@ -104,6 +140,40 @@ export function FTWilliamsAgentSettingsPage() {
     } finally {
       setRevokingId("");
     }
+  };
+
+  const saveMapping = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!workspaceId) return;
+    setMappingBusy(true);
+    setMessage("");
+    try {
+      await verifyFTWWorkspacePlanMapping(workspaceId, mappingInput);
+      setMappings(await listFTWWorkspacePlanMappings(workspaceId));
+      setMappingInput(emptyMapping);
+    } catch (error) {
+      setMessage(errorMessage(error, "The plan mapping could not be verified."));
+    } finally {
+      setMappingBusy(false);
+    }
+  };
+
+  const disableMapping = async (mapping: FTWWorkspacePlanMapping) => {
+    if (!window.confirm(`Disable the verified mapping for ${mapping.plan_name} (${mapping.year})?`)) return;
+    setMappingBusy(true);
+    setMessage("");
+    try {
+      await disableFTWWorkspacePlanMapping(mapping.workspace_id, mapping.id);
+      setMappings(await listFTWWorkspacePlanMappings(mapping.workspace_id));
+    } catch (error) {
+      setMessage(errorMessage(error, "The plan mapping could not be disabled."));
+    } finally {
+      setMappingBusy(false);
+    }
+  };
+
+  const setMappingField = (field: keyof FTWWorkspacePlanMappingInput, value: string) => {
+    setMappingInput((current) => ({ ...current, [field]: value }));
   };
 
   return (
@@ -184,6 +254,52 @@ export function FTWilliamsAgentSettingsPage() {
               <li><span>3</span><div><strong>Sign in to FT Williams</strong><small>The agent opens a dedicated FT Williams browser. Complete any required MFA there; ERISAPros never receives the password or browser cookies.</small></div></li>
               <li><span>4</span><div><strong>Confirm Connected</strong><small>Return here and refresh. Plan mapping and automation are enabled separately after verification.</small></div></li>
             </ol>
+          </section>
+
+          <section className="agent-devices-card card">
+            <div className="agent-section-heading">
+              <div>
+                <span className="eyebrow">Verified routing</span>
+                <h2>Plan mappings</h2>
+                <p>Only a verified client, plan, year, and FT Williams ID set can receive an automated Bring Forward job.</p>
+              </div>
+            </div>
+            {mappings.length ? (
+              <div className="agent-device-list">
+                {mappings.map((mapping) => (
+                  <article className="agent-device-row" key={mapping.id}>
+                    <span className={`agent-device-state ${mapping.status === "VERIFIED" ? "connected" : "offline"}`}><ShieldCheck size={18} /></span>
+                    <div className="agent-device-name">
+                      <strong>{mapping.plan_name}</strong>
+                      <small>EIN {mapping.company_employer_id} · Plan {mapping.plan_number} · {mapping.year}</small>
+                    </div>
+                    <div className="agent-device-detail">
+                      <span className={`agent-device-badge ${mapping.status === "VERIFIED" ? "connected" : "offline"}`}>{mapping.status.replaceAll("_", " ")}</span>
+                      <small>Verified {formatDateTime(mapping.verified_at)}</small>
+                    </div>
+                    {mapping.status === "VERIFIED" ? <button className="button danger agent-revoke-button" type="button" disabled={mappingBusy} onClick={() => void disableMapping(mapping)}>Disable</button> : null}
+                  </article>
+                ))}
+              </div>
+            ) : <div className="agent-empty-state"><ShieldCheck size={22} /><strong>No verified plan mappings</strong><span>Bring Forward stays blocked until the first plan is checked and recorded below.</span></div>}
+
+            {workspaceId ? (
+              <details className="agent-mapping-form-wrap">
+                <summary><Plus size={15} /> Add verified plan mapping</summary>
+                <form className="agent-mapping-form" onSubmit={(event) => void saveMapping(event)}>
+                  <label>Plan name<input required value={mappingInput.plan_name} onChange={(event) => setMappingField("plan_name", event.target.value)} /></label>
+                  <label>EIN<input required value={mappingInput.company_employer_id} onChange={(event) => setMappingField("company_employer_id", event.target.value)} /></label>
+                  <label>Plan number<input required value={mappingInput.plan_number} onChange={(event) => setMappingField("plan_number", event.target.value)} /></label>
+                  <label>Plan year<input required inputMode="numeric" maxLength={4} value={mappingInput.year} onChange={(event) => setMappingField("year", event.target.value)} /></label>
+                  <label>ftwLink customer ID<input required value={mappingInput.ftw_customer_id} onChange={(event) => setMappingField("ftw_customer_id", event.target.value)} /></label>
+                  <label>ftwLink plan ID<input required value={mappingInput.ftw_plan_id} onChange={(event) => setMappingField("ftw_plan_id", event.target.value)} /></label>
+                  <label>Browser customer ID<input required value={mappingInput.ftw_browser_customer_id} onChange={(event) => setMappingField("ftw_browser_customer_id", event.target.value)} /></label>
+                  <label>Browser plan ID<input required value={mappingInput.ftw_browser_plan_id} onChange={(event) => setMappingField("ftw_browser_plan_id", event.target.value)} /></label>
+                  <label className="agent-mapping-evidence">Verification evidence<input required placeholder="Example: checked in Highland demo on Sep 11" value={mappingInput.verification_evidence} onChange={(event) => setMappingField("verification_evidence", event.target.value)} /></label>
+                  <button className="button" type="submit" disabled={mappingBusy}>{mappingBusy ? <InlineLoader label="Saving" /> : "Save verified mapping"}</button>
+                </form>
+              </details>
+            ) : null}
           </section>
 
           <section className="agent-devices-card card">

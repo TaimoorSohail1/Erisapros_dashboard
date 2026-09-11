@@ -18,6 +18,7 @@ from app.services.ftwilliams_tags import (
     resolve_ftw_update_tag,
     values_meaningfully_different,
 )
+from app.services.schedule_a_broker_matching import normalize_schedule_a_broker_subparts
 
 
 FTW_DATE_TAGS = {
@@ -381,6 +382,15 @@ def _schedule_a_record_document_xml(
     }
     for tag in field_broker_overrides:
         values.pop(tag, None)
+    # QueryResults is intentionally flattened for comparison, so nested broker
+    # leaves also appear in current_values. Never echo vendor-only broker fields
+    # as top-level Schedule A fields; they belong only inside DOLSubPartData.
+    # Known editable broker fields were captured above as authoritative
+    # reviewer overrides before being removed from the top level.
+    for rows in (query_subparts or {}).values():
+        for row in rows:
+            for tag in row:
+                values.pop(str(tag), None)
     broker_overrides: dict[str, str] = {}
     if schedule_a_broker_rows:
         broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
@@ -728,7 +738,10 @@ def schedule_a_broker_multipart_rows(
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    source_rows = list((query_subparts or {}).get("Broker") or [])
+    source_rows = normalize_schedule_a_broker_subparts(
+        list((query_subparts or {}).get("Broker") or [])
+    )
+    source_rows_are_vendor_subparts = bool(source_rows)
     if not source_rows:
         source_rows = _broker_rows_from_flat_values(current_values)
 
@@ -736,12 +749,24 @@ def schedule_a_broker_multipart_rows(
     for index, source in enumerate(source_rows, start=1):
         multipart: dict[str, str] = {}
         for tag, value in source.items():
-            parsed = _schedule_a_broker_tag_index(tag)
             text = str(value or "").strip()
-            if not parsed or not text:
+            if not text:
+                continue
+            parsed = _schedule_a_broker_tag_index(tag)
+            if source_rows_are_vendor_subparts:
+                # A type-2 Schedule A update replaces the complete schedule.
+                # Preserve every broker field returned by FT Williams, even
+                # when a newer vendor field is not yet in our editable map.
+                multipart[_schedule_a_vendor_multipart_tag(tag)] = text
+                continue
+            if not parsed:
                 continue
             _, field_index = parsed
-            if field_index != index:
+            # FT's nested Broker records restart their field suffixes inside
+            # every row (for example every row may contain Name1). Flat legacy
+            # values use the suffix as the row number and still require the
+            # strict consistency check.
+            if not source_rows_are_vendor_subparts and field_index != index:
                 raise ValueError(
                     f"FT Williams broker field {tag} belongs to row {field_index}, not row {index}."
                 )
@@ -882,6 +907,25 @@ def _schedule_a_broker_multipart_tag(tag: object) -> str:
         raise ValueError(f"Unsupported FT Williams Schedule A broker field: {tag}")
     base, _ = parsed
     return f"{base}XX"
+
+
+def _schedule_a_vendor_multipart_tag(tag: object) -> str:
+    """Convert a vendor-returned nested Broker tag to FT's XX wire format.
+
+    The query schema can gain fields before our editable broker map does. A
+    replacement must preserve those fields instead of silently deleting them.
+    """
+    text = str(tag or "").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*XX", text):
+        return text
+    parsed = _schedule_a_broker_tag_index(text)
+    if parsed:
+        base, _ = parsed
+        return f"{base}XX"
+    match = re.fullmatch(r"(?P<base>[A-Za-z_][A-Za-z0-9_.-]*?)(?P<suffix>\d{1,2})", text)
+    if match and int(match.group("suffix")) > 0:
+        return f"{match.group('base')}XX"
+    raise ValueError(f"FT Williams returned an unsupported Schedule A broker field: {text or tag}")
 
 
 def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:

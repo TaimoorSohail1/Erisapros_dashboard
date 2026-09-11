@@ -75,6 +75,11 @@ class LocalAgentApiClient:
         response.raise_for_status()
         return response.json()
 
+    async def revoke_self(self) -> dict:
+        response = await self._client.post("api/ftwilliams/local-agent/agent/revoke")
+        response.raise_for_status()
+        return response.json()
+
     async def complete(self, job_id: str, claim_token: str, result: LocalAgentActionResult) -> dict:
         response = await self._client.post(
             f"api/ftwilliams/local-agent/agent/jobs/{job_id}/complete",

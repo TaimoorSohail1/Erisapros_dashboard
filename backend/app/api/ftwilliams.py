@@ -36,6 +36,9 @@ from app.models import (
     FTWLocalAgentStatusResponse,
     FTWClientWorkspace,
     FTWClientWorkspaceCreateRequest,
+    FTWWorkspacePlanMapping,
+    FTWWorkspacePlanMappingRequest,
+    FTWWorkspacePlanMappingStatus,
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
@@ -75,6 +78,23 @@ async def _get_owned_workspace(workspace_id: str, owner: str) -> FTWClientWorksp
     return workspace
 
 
+def _canonical_ein(value: str) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return f"{digits[:2]}-{digits[2:]}" if len(digits) == 9 else str(value or "").strip()
+
+
+def _canonical_plan_number(value: str) -> str:
+    text = str(value or "").strip()
+    return text.zfill(3) if text.isdigit() and len(text) <= 3 else text
+
+
+def _required_mapping_value(value: str, label: str, maximum: int = 200) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{label} is required to verify a plan mapping.")
+    return text[:maximum]
+
+
 async def require_local_agent_device(request: Request) -> FTWLocalAgentDevice:
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
@@ -93,7 +113,16 @@ async def status():
 
 @router.get("/local-agent/status", response_model=FTWLocalAgentStatusResponse)
 async def local_agent_status(claims: dict = Depends(require_field_rule_admin)):
-    return await FTWLocalAgentService().status(paired_by=_local_agent_owner(claims))
+    owner = _local_agent_owner(claims)
+    service = FTWLocalAgentService()
+    workspace_ids = None
+    if service.settings.ftw_local_agent_workspace_routing_enabled:
+        workspace_ids = {
+            str(workspace.id)
+            for workspace in await get_repository().list_ftw_client_workspaces()
+            if workspace.enabled and _workspace_allows_owner(workspace, owner)
+        }
+    return await service.status(paired_by=owner, workspace_ids=workspace_ids)
 
 
 @router.get("/local-agent/workspaces")
@@ -134,6 +163,83 @@ async def create_local_agent_workspace(
     return workspace.model_dump(mode="json")
 
 
+@router.get("/local-agent/workspaces/{workspace_id}/plan-mappings")
+async def list_workspace_plan_mappings(
+    workspace_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    owner = _local_agent_owner(claims)
+    await _get_owned_workspace(workspace_id, owner)
+    mappings = await get_repository().list_ftw_workspace_plan_mappings(workspace_id)
+    return {"mappings": [mapping.model_dump(mode="json") for mapping in mappings]}
+
+
+@router.post("/local-agent/workspaces/{workspace_id}/plan-mappings")
+async def verify_workspace_plan_mapping(
+    workspace_id: str,
+    payload: FTWWorkspacePlanMappingRequest,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    owner = _local_agent_owner(claims)
+    workspace = await _get_owned_workspace(workspace_id, owner)
+    year = _required_mapping_value(payload.year, "Plan year", 4)
+    if len(year) != 4 or not year.isdigit():
+        raise HTTPException(status_code=400, detail="Plan year must contain four digits.")
+    mapping = await get_repository().upsert_ftw_workspace_plan_mapping(
+        FTWWorkspacePlanMapping(
+            workspace_id=str(workspace.id),
+            expected_account=workspace.expected_account,
+            company_employer_id=_canonical_ein(_required_mapping_value(payload.company_employer_id, "EIN", 20)),
+            plan_number=_canonical_plan_number(_required_mapping_value(payload.plan_number, "Plan number", 20)),
+            year=year,
+            plan_name=_required_mapping_value(payload.plan_name, "Plan name"),
+            ftw_customer_id=_required_mapping_value(payload.ftw_customer_id, "ftwLink customer ID", 120),
+            ftw_plan_id=_required_mapping_value(payload.ftw_plan_id, "ftwLink plan ID", 120),
+            ftw_browser_customer_id=_required_mapping_value(payload.ftw_browser_customer_id, "Browser customer ID", 120),
+            ftw_browser_plan_id=_required_mapping_value(payload.ftw_browser_plan_id, "Browser plan ID", 120),
+            verification_evidence=_required_mapping_value(payload.verification_evidence, "Verification evidence", 500),
+            verified_by=owner,
+        )
+    )
+    return mapping.model_dump(mode="json")
+
+
+@router.post("/local-agent/workspaces/{workspace_id}/plan-mappings/{mapping_id}/disable")
+async def disable_workspace_plan_mapping(
+    workspace_id: str,
+    mapping_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    owner = _local_agent_owner(claims)
+    await _get_owned_workspace(workspace_id, owner)
+    mappings = await get_repository().list_ftw_workspace_plan_mappings(workspace_id)
+    mapping = next((item for item in mappings if item.id == mapping_id), None)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Verified plan mapping not found.")
+    mapping.status = FTWWorkspacePlanMappingStatus.DISABLED
+    mapping.verified_by = owner
+    mapping.updated_at = datetime.utcnow()
+    updated = await get_repository().upsert_ftw_workspace_plan_mapping(mapping)
+    return updated.model_dump(mode="json")
+
+
+@router.post("/local-agent/workspaces/{workspace_id}/filings/{filing_id}/assign")
+async def assign_filing_to_workspace(
+    workspace_id: str,
+    filing_id: str,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    owner = _local_agent_owner(claims)
+    await _get_owned_workspace(workspace_id, owner)
+    filing = await get_repository().get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found.")
+    if filing.workspace_id and filing.workspace_id != workspace_id:
+        raise HTTPException(status_code=409, detail="The filing already belongs to another client workspace.")
+    updated = await get_repository().update_filing(filing_id, {"workspace_id": workspace_id})
+    return {"filing_id": filing_id, "workspace_id": updated.workspace_id}
+
+
 @router.post("/local-agent/pairing-codes", response_model=FTWLocalAgentPairingCodeResponse)
 async def create_local_agent_pairing_code(
     payload: FTWLocalAgentPairingCodeRequest | None = None,
@@ -165,7 +271,21 @@ async def pair_local_agent(payload: FTWLocalAgentPairRequest):
 @router.get("/local-agent/devices")
 async def list_local_agent_devices(claims: dict = Depends(require_field_rule_admin)):
     owner = _local_agent_owner(claims)
-    devices = [device for device in await get_repository().list_ftw_local_agent_devices() if device.paired_by == owner]
+    service = FTWLocalAgentService()
+    owned_workspace_ids = {
+        str(workspace.id)
+        for workspace in await get_repository().list_ftw_client_workspaces()
+        if workspace.enabled and _workspace_allows_owner(workspace, owner)
+    }
+    devices = [
+        device
+        for device in await get_repository().list_ftw_local_agent_devices()
+        if device.paired_by == owner
+        and (
+            not service.settings.ftw_local_agent_workspace_routing_enabled
+            or device.workspace_id in owned_workspace_ids
+        )
+    ]
     return {
         "devices": [
             {
@@ -192,7 +312,22 @@ async def revoke_local_agent_device(
     claims: dict = Depends(require_field_rule_admin),
 ):
     owner = _local_agent_owner(claims)
-    owned = [device for device in await get_repository().list_ftw_local_agent_devices() if device.id == device_id and device.paired_by == owner]
+    service = FTWLocalAgentService()
+    owned_workspace_ids = {
+        str(workspace.id)
+        for workspace in await get_repository().list_ftw_client_workspaces()
+        if workspace.enabled and _workspace_allows_owner(workspace, owner)
+    }
+    owned = [
+        device
+        for device in await get_repository().list_ftw_local_agent_devices()
+        if device.id == device_id
+        and device.paired_by == owner
+        and (
+            not service.settings.ftw_local_agent_workspace_routing_enabled
+            or device.workspace_id in owned_workspace_ids
+        )
+    ]
     if not owned:
         raise HTTPException(status_code=404, detail="Local-agent device not found.")
     try:
@@ -209,6 +344,14 @@ async def local_agent_heartbeat(
 ):
     updated = await FTWLocalAgentService().heartbeat(device, payload)
     return {"device_id": updated.id, "status": updated.status, "server_time": datetime.utcnow()}
+
+
+@router.post("/local-agent/agent/revoke")
+async def revoke_current_local_agent(
+    device: FTWLocalAgentDevice = Depends(require_local_agent_device),
+):
+    revoked = await FTWLocalAgentService().revoke(str(device.id))
+    return {"device_id": revoked.id, "status": revoked.status}
 
 
 @router.post("/local-agent/agent/jobs/claim", response_model=FTWLocalAgentClaimResponse)

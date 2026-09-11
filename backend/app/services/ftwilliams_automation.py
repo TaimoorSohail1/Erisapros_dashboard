@@ -42,6 +42,8 @@ def automation_reset_values(settings: Settings, reason: str) -> dict:
         "automation_last_evaluated_at": None,
         "automation_completed_at": None,
         "automation_run_id": None,
+        "automation_bring_forward_approved_target_key": None,
+        "automation_bring_forward_approved_at": None,
     }
 
 
@@ -140,6 +142,14 @@ class FTWAutomationPolicy:
                     "RETRY_AFTER_CURRENT_QUERY",
                 )
             if self.settings.ftw_automation_bring_forward_enabled:
+                if (
+                    filing.automation_bring_forward_approved_target_key != target_key
+                    or filing.automation_bring_forward_approved_at is None
+                ):
+                    return self._action_needed(
+                        "Confirm the exact FT Williams plan and year before Bring Forward runs.",
+                        "CONFIRM_BRING_FORWARD",
+                    )
                 return self._decision(
                     FTWAutomationStatus.BRING_FORWARD_REQUIRED,
                     True,
@@ -178,15 +188,21 @@ class FTWAutomationPolicy:
         for comparison in review.fields:
             if comparison.validation_blocking:
                 reasons.append(f"{comparison.label} has a blocking validation error.")
-            if comparison.priority != FieldPriority.HIGH:
-                continue
-            if comparison.extraction_status in {
-                ExtractedFieldStatus.MISSING,
-                ExtractedFieldStatus.LOW_CONFIDENCE,
-                ExtractedFieldStatus.UNMAPPED,
-            }:
+            if (
+                comparison.changed
+                and comparison.update_included
+                and comparison.extraction_status in {
+                    ExtractedFieldStatus.LOW_CONFIDENCE,
+                    ExtractedFieldStatus.UNMAPPED,
+                }
+            ):
                 reasons.append(f"{comparison.label} requires review.")
-            if comparison.confidence < threshold:
+            if (
+                comparison.priority == FieldPriority.HIGH
+                and comparison.extraction_status == ExtractedFieldStatus.MISSING
+            ):
+                reasons.append(f"{comparison.label} requires review.")
+            if comparison.changed and comparison.update_included and comparison.confidence < threshold:
                 reasons.append(
                     f"{comparison.label} confidence {comparison.confidence:.0%} is below the {threshold:.0%} automation threshold."
                 )
@@ -204,14 +220,38 @@ class FTWAutomationPolicy:
             reasons.append("The safe Form 5500 update payload was not generated.")
         if FormType.SCHEDULE_A in changed_forms and not review.update_xml_schedule_a:
             reasons.append("The safe Schedule A replacement payload was not generated.")
+        if FormType.SCHEDULE_A in changed_forms and not self.settings.ftwlink_schedule_a_updates_enabled:
+            reasons.append(
+                "Automatic Schedule A updates are disabled until full replacement preservation is verified."
+            )
+        if (
+            FormType.SCHEDULE_A in changed_forms
+            and self.settings.ftwlink_schedule_a_single_record_only
+            and len(
+                {
+                    str(record.get("ftw_seq_no") or "").strip()
+                    for record in review.schedule_a_records or []
+                    if str(record.get("ftw_seq_no") or "").strip() and record.get("query_results")
+                }
+            ) != 1
+        ):
+            reasons.append(
+                "Automatic Schedule A updates currently require exactly one current Schedule A record."
+            )
 
         reasons = list(dict.fromkeys(reasons))
         if reasons:
+            next_action = (
+                "MANUAL_SCHEDULE_A_UPDATE"
+                if FormType.SCHEDULE_A in changed_forms
+                and not self.settings.ftwlink_schedule_a_updates_enabled
+                else "RESOLVE_ISSUES"
+            )
             return self._decision(
                 FTWAutomationStatus.ACTION_NEEDED,
                 False,
                 reasons,
-                "RESOLVE_ISSUES",
+                next_action,
             )
         if not changed_fields:
             return self._decision(
@@ -433,7 +473,12 @@ class FTWAutomationService:
                             run_id=run_id,
                             before_record_ids=before_record_ids,
                         )
-                        agent_status = await self.local_agent_service.status()
+                        job_workspace_id = getattr(job, "workspace_id", None)
+                        agent_status = (
+                            await self.local_agent_service.status(workspace_ids={job_workspace_id})
+                            if job_workspace_id
+                            else await self.local_agent_service.status()
+                        )
                     except Exception as exc:
                         return await self._stop_safely(
                             filing_id,

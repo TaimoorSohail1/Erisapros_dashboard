@@ -76,6 +76,36 @@ export interface FTWClientWorkspace {
   enabled: boolean;
 }
 
+export interface FTWWorkspacePlanMapping {
+  id: string;
+  workspace_id: string;
+  expected_account: string;
+  company_employer_id: string;
+  plan_number: string;
+  year: string;
+  plan_name: string;
+  ftw_customer_id: string;
+  ftw_plan_id: string;
+  ftw_browser_customer_id: string;
+  ftw_browser_plan_id: string;
+  verification_evidence: string;
+  status: "PENDING_VERIFICATION" | "VERIFIED" | "DISABLED" | "NEEDS_REVIEW";
+  verified_by: string;
+  verified_at: string;
+}
+
+export type FTWWorkspacePlanMappingInput = Pick<FTWWorkspacePlanMapping,
+  | "company_employer_id"
+  | "plan_number"
+  | "year"
+  | "plan_name"
+  | "ftw_customer_id"
+  | "ftw_plan_id"
+  | "ftw_browser_customer_id"
+  | "ftw_browser_plan_id"
+  | "verification_evidence"
+>;
+
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";
 export type DocumentType = "SCHEDULE_A" | "PLAN_WORKSHEET" | "UNKNOWN";
 export type FormType = "SCHEDULE_A" | "FORM_5500";
@@ -164,6 +194,8 @@ export interface Filing {
   automation_last_evaluated_at?: string | null;
   automation_completed_at?: string | null;
   automation_run_id?: string | null;
+  automation_bring_forward_approved_target_key?: string | null;
+  automation_bring_forward_approved_at?: string | null;
   automation_bring_forward_target_key?: string | null;
   automation_bring_forward_submitted_at?: string | null;
   automation_bring_forward_verified_at?: string | null;

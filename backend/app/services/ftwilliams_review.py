@@ -396,7 +396,7 @@ class FTWilliamsReviewService:
         include_5500_update = not bring_forward_required and self._should_build_update_payload(send_queries, form_5500_current)
         include_schedule_a_update = not bring_forward_required and (
             self._should_build_update_payload(send_queries, schedule_a_current) or (
-                create_new_schedule_a and send_queries and bool(schedule_a_records)
+                create_new_schedule_a and send_queries
             )
         )
         existing_identity = self._identity_from_review(existing_review) if existing_review else {}
@@ -1012,7 +1012,7 @@ class FTWilliamsReviewService:
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
         include_5500_update = self._should_build_update_payload(review.current_query_sent, form_5500_current)
         include_schedule_a_update = self._should_build_update_payload(review.current_query_sent, schedule_a_current) or (
-            payload.create_new and review.current_query_sent and bool(schedule_a_records)
+            payload.create_new and review.current_query_sent
         )
         payload_validation_issues: list[FTWFieldValidationIssue] = []
         try:
@@ -1475,6 +1475,60 @@ class FTWilliamsReviewService:
             lookup.browser_mapping_confirmed = stored_mapping.browser_mapping_confirmed
             lookup.status = FTWilliamsPlanLookupStatus.MATCHED
             lookup.error_message = None
+            if not send_queries:
+                return lookup
+            if not configured:
+                lookup.status = FTWilliamsPlanLookupStatus.FAILED
+                lookup.error_message = "FT Williams endpoint and KeyID must be configured before validating the saved plan mapping."
+                return lookup
+
+            # A saved mapping can become stale when FT Williams copies plans,
+            # rotates an account, or exposes different browser and ftwLink IDs.
+            # Revalidate it before current-data queries so an invalid API pair
+            # cannot be mistaken for a missing current-year Schedule A.
+            validation_payload = FTWilliamsQueryRequest(
+                operation="query_plan",
+                send=True,
+                **mapping_identity,
+            )
+            try:
+                validation_response = await self.ftwilliams.run_query(validation_payload)
+            except (OSError, ValueError) as exc:
+                validation_response = None
+                validation_error = str(exc)
+            else:
+                validation_error = (
+                    validation_response.error
+                    or self._status_error(validation_response.statuses)
+                    or "The saved FT Williams plan mapping is no longer valid."
+                )
+                lookup.request_xml = validation_response.request_xml
+                lookup.response_xml = validation_response.raw_response
+
+            if validation_response and validation_response.success and validation_response.statuses:
+                successful_status = next(
+                    (status for status in validation_response.statuses if str(status.error_code or "") == "0"),
+                    validation_response.statuses[0],
+                )
+                validated_match = self._plan_status_match(successful_status, lookup, derived_identity)
+                validated_identity = {
+                    **derived_identity,
+                    **mapping_identity,
+                    **self._identity_from_status(successful_status),
+                }
+                lookup.matches = [validated_match]
+                lookup.matched_identity = validated_identity
+                lookup.status = FTWilliamsPlanLookupStatus.MATCHED
+                lookup.error_message = None
+                await self._persist_plan_mapping(lookup, repo, validated_match, source=stored_mapping.source)
+                return lookup
+
+            batch_error = await self._try_plan_ids_batch_lookup(lookup, repo)
+            if lookup.status == FTWilliamsPlanLookupStatus.MATCHED:
+                return lookup
+            if lookup.status != FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES:
+                lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
+            lookup.error_message = "; ".join(filter(None, [validation_error, batch_error]))
             return lookup
 
         payload = FTWilliamsQueryRequest(
@@ -3262,7 +3316,10 @@ class FTWilliamsReviewService:
             statuses, schedule_requests, schedule_responses, schedule_error = await self._query_schedule_a_readback(
                 review,
                 identity,
-                require_full_scan=len(schedule_documents) > len(review.schedule_a_records or []),
+                # Transaction type 2 replaces the complete Schedule A set.
+                # Always scan the full set so added, duplicated, or leftover
+                # records cannot pass verification unnoticed.
+                require_full_scan=True,
             )
             request_xmls.extend(schedule_requests)
             response_xmls.extend(schedule_responses)
@@ -3288,6 +3345,17 @@ class FTWilliamsReviewService:
                         matched.query_results,
                         actual_subparts=matched.query_subparts,
                     )
+                )
+            if unused_statuses:
+                mismatches.append(
+                    {
+                        "form": "DOLScheduleAData",
+                        "tag": "DOLScheduleAData",
+                        "category": "STRUCTURE",
+                        "expected": len(schedule_documents),
+                        "actual": len(statuses),
+                        "reason": "FT Williams returned additional Schedule A records after replacement.",
+                    }
                 )
 
         if not form_documents and not schedule_documents:
@@ -4808,7 +4876,10 @@ class FTWilliamsReviewService:
                 text = str(value or "").strip()
                 if text:
                     trusted.add((str(tag), text))
-            for broker in schedule_a_broker_multipart_rows(current_values):
+            for broker in schedule_a_broker_multipart_rows(
+                current_values,
+                query_subparts=record.get("query_subparts") or {},
+            ):
                 for tag, value in broker.items():
                     text = str(value or "").strip()
                     if text:
@@ -5251,8 +5322,6 @@ class FTWilliamsReviewService:
         if schedule_update_blocked:
             return ""
         if add_new_schedule_a:
-            if not schedule_a_records:
-                return ""
             return build_schedule_a_records_update_xml(
                 schedule_a_records,
                 None,
@@ -5313,6 +5382,20 @@ class FTWilliamsReviewService:
         if missing:
             action = "add" if is_new_schedule else "send"
             return f"Cannot safely {action} Schedule A because existing FT Williams Schedule A records were not fully fetched: {', '.join(missing)}."
+        single_record_only = bool(
+            getattr(get_settings(), "ftwlink_schedule_a_single_record_only", False)
+        )
+        if single_record_only:
+            if is_new_schedule and record_seqs:
+                return (
+                    "Cannot safely add a new Schedule A in single-record mode because the plan must have "
+                    "no current Schedule A records."
+                )
+            if not is_new_schedule and len(record_seqs) != 1:
+                return (
+                    "Cannot safely update Schedule A in single-record mode because exactly one current "
+                    f"Schedule A is required; FT Williams returned {len(record_seqs)}."
+                )
         xml_schedule_count = str(review.update_xml_schedule_a or "").count("<DOLScheduleAData>")
         expected_schedule_count = len(record_seqs) + (1 if is_new_schedule else 0)
         if xml_schedule_count != expected_schedule_count:

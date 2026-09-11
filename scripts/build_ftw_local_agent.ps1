@@ -50,4 +50,17 @@ if ($SigningCertificateThumbprint) {
     Write-Warning "Created an unsigned development build. Production distribution requires -RequireSignature and a signing certificate."
 }
 
+$hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
+$signature = Get-AuthenticodeSignature -LiteralPath $executable
+$manifest = [ordered]@{
+    product = "ERISAPros FT Williams Agent"
+    executable = [System.IO.Path]::GetFileName($executable)
+    sha256 = $hash
+    signature_status = [string]$signature.Status
+    built_at_utc = [DateTime]::UtcNow.ToString("o")
+}
+$manifestPath = Join-Path $outputDirectory "release-manifest.json"
+$manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
 Write-Output $executable
+Write-Output $manifestPath

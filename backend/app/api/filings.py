@@ -43,7 +43,11 @@ from app.services.ftwilliams_contract import (
     ftw_expected_format,
     normalize_ftw_update_value,
 )
-from app.services.ftwilliams_automation import FTWAutomationService, automation_reset_values
+from app.services.ftwilliams_automation import (
+    FTWAutomationPolicy,
+    FTWAutomationService,
+    automation_reset_values,
+)
 from app.services.ftwilliams_tags import resolve_ftw_update_tag
 from app.services.error_normalizer import normalize_client_error
 from app.services.schedule_a_classification import (
@@ -585,6 +589,65 @@ async def get_ftwilliams_bring_forward_link(filing_id: str):
         "target_year": review.year,
         "prior_year": review.comparison_year,
         "plan_specific": plan_specific,
+    }
+
+
+@router.post("/{filing_id}/ftw/confirm-bring-forward")
+async def confirm_ftwilliams_bring_forward(filing_id: str):
+    """Record an explicit, target-bound approval before browser automation."""
+    repo = get_repository()
+    filing = await repo.get_filing(filing_id)
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    review = await repo.get_ftwilliams_review(filing_id)
+    if not review or not (review.bring_forward_required or not review.current_year_exists):
+        raise HTTPException(status_code=409, detail="FT Williams Bring Forward is not required for this filing.")
+
+    settings = get_settings()
+    if not settings.ftw_automation_enabled or not settings.ftw_automation_bring_forward_enabled:
+        raise HTTPException(status_code=409, detail="Automatic Bring Forward is disabled.")
+    if (
+        not review.browser_mapping_confirmed
+        or not str(review.ftw_browser_customer_id or "").strip()
+        or not str(review.ftw_browser_plan_id or "").strip()
+    ):
+        raise HTTPException(status_code=409, detail="Confirm the FT Williams browser plan mapping first.")
+
+    policy = FTWAutomationPolicy(settings)
+    target_error = policy._test_target_error(review)
+    if target_error:
+        raise HTTPException(status_code=403, detail=target_error)
+
+    target_key = policy.bring_forward_target_key(review)
+    approved_at = datetime.utcnow()
+    await repo.update_filing(
+        filing_id,
+        {
+            "automation_bring_forward_approved_target_key": target_key,
+            "automation_bring_forward_approved_at": approved_at,
+        },
+    )
+    await repo.add_audit(
+        AuditLog(
+            filing_id=filing_id,
+            event="FTW_AUTOMATION_BRING_FORWARD_APPROVED",
+            message="Reviewer confirmed the exact demo plan and year for Bring Forward.",
+            details={
+                "target_year": review.year,
+                "plan_name": review.plan_lookup.plan_name if review.plan_lookup else None,
+                "plan_number": filing.dashboard_plan_number,
+                "approved_at": approved_at.isoformat(),
+            },
+        )
+    )
+    decision = await FTWAutomationService(repo=repo, settings=settings).run(
+        filing_id,
+        review=review,
+    )
+    return {
+        "ftw_review": await repo.get_ftwilliams_review(filing_id) or review,
+        "automation_status": decision.status,
+        "automation_next_action": decision.next_action,
     }
 
 

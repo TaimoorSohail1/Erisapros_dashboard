@@ -14,16 +14,20 @@ from app.services.ftwilliams_local_agent import (
 from app.config import Settings
 from app.models import (
     Filing,
+    FTWClientWorkspace,
     FTWAutomationStatus,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
     FTWilliamsReview,
     FTWLocalAgentCompleteRequest,
+    FTWLocalAgentDevice,
+    FTWLocalAgentDeviceStatus,
     FTWLocalAgentHeartbeatRequest,
     FTWLocalAgentJob,
     FTWLocalAgentJobStatus,
     FTWLocalAgentPairingCode,
     FTWLocalAgentPairRequest,
+    FTWWorkspacePlanMapping,
 )
 from app.repositories import MemoryRepository, to_mongo_bson
 from app.services.ftwilliams_local_agent_jobs import FTWLocalAgentService
@@ -495,3 +499,153 @@ def test_claim_cancels_a_queued_job_after_manual_bring_forward_completed():
     assert claim.job is None
     assert cancelled.status == FTWLocalAgentJobStatus.EXPIRED
     assert cancelled.result_state == "NO_LONGER_REQUIRED"
+
+
+def _workspace_routing_fixture():
+    repo = MemoryRepository()
+    settings = Settings(
+        ftw_local_agent_enabled=True,
+        ftw_local_agent_workspace_routing_enabled=True,
+        ftw_local_agent_heartbeat_ttl_seconds=90,
+    )
+    service = FTWLocalAgentService(repo=repo, settings=settings)
+    workspace = run_async(repo.create_ftw_client_workspace(FTWClientWorkspace(
+        name="Client A",
+        slug="client-a",
+        expected_account="Shared Account",
+        admin_subjects=["admin@example.com"],
+    )))
+    filing = run_async(repo.create_filing(Filing(
+        file_name="schedule-a.pdf",
+        content_type="application/pdf",
+        file_size=100,
+        s3_key="schedule-a.pdf",
+        workspace_id=str(workspace.id),
+    )))
+    review = FTWilliamsReview(
+        filing_id=str(filing.id),
+        current_year_exists=False,
+        bring_forward_required=True,
+        year="2025",
+        ftw_customer_id="link-customer-a",
+        ftw_plan_id="link-plan-a",
+        ftw_browser_customer_id="browser-customer-a",
+        ftw_browser_plan_id="browser-plan-a",
+        browser_mapping_confirmed=True,
+        plan_lookup=FTWilliamsPlanLookup(
+            status=FTWilliamsPlanLookupStatus.MATCHED,
+            company_employer_id="12-3456789",
+            plan_number="501",
+            plan_name="Client A Health Plan",
+            year="2025",
+        ),
+    )
+    run_async(repo.upsert_ftwilliams_review(review))
+    return repo, service, workspace, filing, review
+
+
+def test_workspace_routing_requires_a_verified_plan_mapping():
+    _repo, service, _workspace, filing, review = _workspace_routing_fixture()
+
+    with pytest.raises(ValueError, match="verified FT Williams plan mapping"):
+        run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
+
+
+def test_workspace_job_is_assigned_to_one_ready_device_and_cannot_cross_workspace():
+    repo, service, workspace, filing, review = _workspace_routing_fixture()
+    mapping = run_async(repo.upsert_ftw_workspace_plan_mapping(FTWWorkspacePlanMapping(
+        workspace_id=str(workspace.id),
+        expected_account="Shared Account",
+        company_employer_id="12-3456789",
+        plan_number="501",
+        year="2025",
+        plan_name="Client A Health Plan",
+        ftw_customer_id="link-customer-a",
+        ftw_plan_id="link-plan-a",
+        ftw_browser_customer_id="browser-customer-a",
+        ftw_browser_plan_id="browser-plan-a",
+        verification_evidence="Verified against demo account on 2026-09-11",
+        verified_by="admin@example.com",
+    )))
+    now = datetime.utcnow()
+    assigned = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Client A computer",
+        token_hash="assigned-token",
+        token_prefix="assign",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now,
+    )))
+    other_workspace = run_async(repo.create_ftw_client_workspace(FTWClientWorkspace(
+        name="Client B",
+        slug="client-b",
+        expected_account="Shared Account",
+        admin_subjects=["admin-b@example.com"],
+    )))
+    other = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Client B computer",
+        token_hash="other-token",
+        token_prefix="other-",
+        expected_account="Shared Account",
+        workspace_id=str(other_workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now,
+    )))
+
+    job = run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
+
+    assert job.workspace_id == workspace.id
+    assert job.mapping_id == mapping.id
+    assert job.assigned_device_id == assigned.id
+    assert run_async(service.claim(other)).job is None
+    claim = run_async(service.claim(assigned))
+    assert claim.job is not None
+    assert claim.job.workspace_id == workspace.id
+    assert claim.job.mapping_id == mapping.id
+
+
+def test_workspace_job_cannot_be_claimed_by_an_unassigned_device_in_same_workspace():
+    repo, service, workspace, filing, review = _workspace_routing_fixture()
+    run_async(repo.upsert_ftw_workspace_plan_mapping(FTWWorkspacePlanMapping(
+        workspace_id=str(workspace.id),
+        expected_account="Shared Account",
+        company_employer_id="12-3456789",
+        plan_number="501",
+        year="2025",
+        plan_name="Client A Health Plan",
+        ftw_customer_id="link-customer-a",
+        ftw_plan_id="link-plan-a",
+        ftw_browser_customer_id="browser-customer-a",
+        ftw_browser_plan_id="browser-plan-a",
+        verification_evidence="Verified",
+        verified_by="admin@example.com",
+    )))
+    now = datetime.utcnow()
+    first = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Most recent computer",
+        token_hash="first-token",
+        token_prefix="first-",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now,
+    )))
+    second = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Older computer",
+        token_hash="second-token",
+        token_prefix="second",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now - timedelta(seconds=1),
+    )))
+    job = run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
+
+    assert job.assigned_device_id == first.id
+    assert run_async(service.claim(second)).job is None
+    assert run_async(service.claim(first)).job is not None

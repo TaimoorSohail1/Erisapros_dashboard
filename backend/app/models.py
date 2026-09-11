@@ -137,6 +137,13 @@ class FTWLocalAgentJobStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
+class FTWWorkspacePlanMappingStatus(str, Enum):
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"
+    VERIFIED = "VERIFIED"
+    DISABLED = "DISABLED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
 class FTWClientWorkspace(BaseModel):
     """A client security boundary for local FT Williams agents."""
 
@@ -155,6 +162,40 @@ class FTWClientWorkspaceCreateRequest(BaseModel):
     slug: str
     expected_account: str
     admin_subjects: list[str] = Field(default_factory=list)
+
+
+class FTWWorkspacePlanMapping(BaseModel):
+    """A manually verified plan identity within one client workspace."""
+
+    id: str | None = None
+    workspace_id: str
+    expected_account: str
+    company_employer_id: str
+    plan_number: str
+    year: str
+    plan_name: str
+    ftw_customer_id: str
+    ftw_plan_id: str
+    ftw_browser_customer_id: str
+    ftw_browser_plan_id: str
+    verification_evidence: str
+    status: FTWWorkspacePlanMappingStatus = FTWWorkspacePlanMappingStatus.VERIFIED
+    verified_by: str
+    verified_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWWorkspacePlanMappingRequest(BaseModel):
+    company_employer_id: str
+    plan_number: str
+    year: str
+    plan_name: str
+    ftw_customer_id: str
+    ftw_plan_id: str
+    ftw_browser_customer_id: str
+    ftw_browser_plan_id: str
+    verification_evidence: str
 
 
 class FTWLocalAgentPairingCodeRequest(BaseModel):
@@ -206,6 +247,7 @@ class FTWLocalAgentJob(BaseModel):
     expected_plan_number: str
     expected_year: str
     workspace_id: str | None = None
+    mapping_id: str | None = None
     assigned_device_id: str | None = None
     before_record_ids: list[str] = Field(default_factory=list)
     device_id: str | None = None
@@ -267,6 +309,8 @@ class FTWLocalAgentJobPayload(BaseModel):
     expected_ein: str
     expected_plan_number: str
     expected_year: str
+    workspace_id: str | None = None
+    mapping_id: str | None = None
     expires_at: datetime
 
 
@@ -521,6 +565,7 @@ class Filing(BaseModel):
     s3_bucket: str | None = None
     storage_path: str | None = None
     package_documents: list[dict] = Field(default_factory=list)
+    workspace_id: str | None = None
     dashboard_client_name: str | None = None
     dashboard_ein: str | None = None
     dashboard_plan_number: str | None = None
@@ -558,6 +603,8 @@ class Filing(BaseModel):
     automation_last_evaluated_at: datetime | None = None
     automation_completed_at: datetime | None = None
     automation_run_id: str | None = None
+    automation_bring_forward_approved_target_key: str | None = None
+    automation_bring_forward_approved_at: datetime | None = None
     automation_bring_forward_target_key: str | None = None
     automation_bring_forward_submitted_at: datetime | None = None
     automation_bring_forward_verified_at: datetime | None = None

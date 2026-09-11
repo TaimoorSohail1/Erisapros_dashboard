@@ -1,10 +1,12 @@
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import app.repositories as repositories
+from app.api.filings import confirm_ftwilliams_bring_forward
 from app.repositories import MemoryRepository
 
 from app.config import Settings
@@ -16,6 +18,7 @@ from app.models import (
     FilingStatus,
     FormType,
     FTWAutomationStatus,
+    FTWAutomationDecision,
     FTWilliamsComparisonField,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
@@ -202,11 +205,17 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         settings = Settings(
             ftw_automation_enabled=True,
             ftw_automation_auto_send_enabled=True,
+            ftwlink_schedule_a_updates_enabled=True,
             ftwlink_sandbox_ftw_customer_id="highland-demo",
             ftwlink_sandbox_ftw_plan_id="001",
             ftwlink_sandbox_year_end="2025",
         )
         return filing, review, extracted, settings
+
+    @staticmethod
+    def approve_bring_forward_target(filing: Filing, review: FTWilliamsReview) -> None:
+        filing.automation_bring_forward_approved_target_key = FTWAutomationPolicy.bring_forward_target_key(review)
+        filing.automation_bring_forward_approved_at = datetime.utcnow()
 
     def test_automation_requires_confirmed_browser_plan_mapping(self):
         filing, review, extracted, settings = self.safe_case()
@@ -244,6 +253,8 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(values["automation_next_action"], "QUERY_FTW_CURRENT")
         self.assertIsNone(values["automation_completed_at"])
         self.assertIsNone(values["automation_run_id"])
+        self.assertIsNone(values["automation_bring_forward_approved_target_key"])
+        self.assertIsNone(values["automation_bring_forward_approved_at"])
 
     def test_repository_automation_lease_prevents_parallel_workers(self):
         repo = MemoryRepository()
@@ -266,10 +277,35 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.reasons, [])
 
+    def test_single_record_release_stops_automation_for_multiple_schedule_as(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.schedule_a_records.append(
+            {"ftw_seq_no": "2", "query_results": {"InsContractNum": "OTHER-2"}}
+        )
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertFalse(decision.eligible)
+        self.assertTrue(any("exactly one current Schedule A" in reason for reason in decision.reasons))
+
     def test_low_confidence_required_field_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.confidence = 0.90
         review.fields[0].confidence = 0.90
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertFalse(decision.eligible)
+        self.assertTrue(any("95%" in reason for reason in decision.reasons))
+
+    def test_low_confidence_changed_medium_priority_field_stops_automatic_send(self):
+        filing, review, extracted, settings = self.safe_case()
+        extracted.priority = FieldPriority.MEDIUM
+        extracted.confidence = 0.80
+        review.fields[0].priority = FieldPriority.MEDIUM
+        review.fields[0].confidence = 0.80
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
@@ -329,6 +365,70 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertEqual(decision.next_action, "MANUAL_BRING_FORWARD")
+
+    def test_missing_current_year_requires_exact_target_confirmation_before_automation(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        settings.ftw_automation_bring_forward_enabled = True
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.next_action, "CONFIRM_BRING_FORWARD")
+
+        filing.automation_bring_forward_approved_target_key = FTWAutomationPolicy.bring_forward_target_key(review)
+        filing.automation_bring_forward_approved_at = datetime.utcnow()
+        confirmed = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+        self.assertEqual(confirmed.status, FTWAutomationStatus.BRING_FORWARD_REQUIRED)
+        self.assertTrue(confirmed.eligible)
+
+    def test_confirmation_endpoint_records_target_bound_approval_and_audit(self):
+        filing, review, _extracted, settings = self.safe_case()
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        settings.ftw_automation_bring_forward_enabled = True
+        repo = MemoryRepository()
+        repositories._repository = repo
+        try:
+            saved = run_async(repo.create_filing(filing))
+            review.filing_id = str(saved.id)
+            run_async(repo.upsert_ftwilliams_review(review))
+            queued = FTWAutomationDecision(
+                status=FTWAutomationStatus.PROCESSING,
+                eligible=True,
+                reasons=["Queued safely."],
+                next_action="WAIT_FOR_LOCAL_AGENT",
+                policy_version=settings.ftw_automation_policy_version,
+            )
+            with (
+                patch("app.api.filings.get_settings", return_value=settings),
+                patch("app.api.filings.FTWAutomationService.run", new=AsyncMock(return_value=queued)),
+            ):
+                result = run_async(confirm_ftwilliams_bring_forward(str(saved.id)))
+
+            updated = run_async(repo.get_filing(str(saved.id)))
+            self.assertEqual(
+                updated.automation_bring_forward_approved_target_key,
+                FTWAutomationPolicy.bring_forward_target_key(review),
+            )
+            self.assertIsNotNone(updated.automation_bring_forward_approved_at)
+            audits = run_async(repo.list_audit_logs(str(saved.id)))
+            self.assertTrue(any(audit.event == "FTW_AUTOMATION_BRING_FORWARD_APPROVED" for audit in audits))
+            self.assertEqual(result["automation_next_action"], "WAIT_FOR_LOCAL_AGENT")
+        finally:
+            repositories._repository = None
+
+    def test_schedule_a_automation_stays_manual_while_replacement_updates_are_disabled(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftwlink_schedule_a_updates_enabled = False
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.next_action, "MANUAL_SCHEDULE_A_UPDATE")
 
     def test_filing_outside_demo_allowlist_stays_on_existing_manual_workflow(self):
         filing, review, extracted, settings = self.safe_case()
@@ -474,6 +574,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
             plan_name="Demo Health and Welfare Plan",
             year="2025",
         )
+        self.approve_bring_forward_target(filing, review)
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
         review.filing_id = str(saved_filing.id)
@@ -504,6 +605,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         review.bring_forward_required = True
         review.schedule_a_records = []
         review.fields = []
+        self.approve_bring_forward_target(filing, review)
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
         review.filing_id = str(saved_filing.id)
@@ -532,6 +634,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         missing_review.schedule_a_candidates = []
         missing_review.schedule_a_records = []
         missing_review.fields = []
+        self.approve_bring_forward_target(filing, missing_review)
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
         extracted.filing_id = saved_filing.id
@@ -580,6 +683,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         missing_review.schedule_a_candidates = []
         missing_review.schedule_a_records = []
         missing_review.fields = []
+        self.approve_bring_forward_target(filing, missing_review)
 
         refreshed_review = safe_review.model_copy(deep=True)
         refreshed_review.schedule_a_match = None
@@ -628,6 +732,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         missing_review.schedule_a_candidates = []
         missing_review.schedule_a_records = []
         missing_review.fields = []
+        self.approve_bring_forward_target(filing, missing_review)
 
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
@@ -663,6 +768,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         missing_review.schedule_a_candidates = []
         missing_review.schedule_a_records = []
         missing_review.fields = []
+        self.approve_bring_forward_target(filing, missing_review)
 
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
@@ -693,6 +799,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         missing_review.schedule_a_candidates = []
         missing_review.schedule_a_records = []
         missing_review.fields = []
+        self.approve_bring_forward_target(filing, missing_review)
 
         repo = MemoryRepository()
         saved_filing = run_async(repo.create_filing(filing))
@@ -1031,6 +1138,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
     def test_zero_identity_candidates_are_automatically_added_as_new(self):
         filing, review, extracted, settings = self.safe_case()
         settings.ftw_automation_auto_send_enabled = False
+        settings.ftwlink_schedule_a_single_record_only = False
         extracted.source_field_name = "Carrier name"
         extracted.normalized_field_name = "carrier_name"
         extracted.xml_tag = "InsCarrierName"

@@ -34,6 +34,9 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--profile-dir", required=True)
     run.add_argument("--poll-seconds", type=float, default=10.0)
     run.add_argument("--once", action="store_true", help="Run one heartbeat/job-poll cycle")
+
+    unpair = subcommands.add_parser("unpair", help="Revoke this computer and remove its local pairing")
+    unpair.add_argument("--credential-file", required=True)
     return parser.parse_args()
 
 
@@ -55,6 +58,14 @@ async def main() -> int:
 
     credentials = load_secret_json(args.credential_file)
     api = LocalAgentApiClient(credentials["server_url"], credentials["device_token"])
+    if args.command == "unpair":
+        try:
+            await api.revoke_self()
+        finally:
+            await api.close()
+        Path(args.credential_file).unlink(missing_ok=True)
+        print("This computer was disconnected from ERISAPros.")
+        return 0
     browser = PersistentFTWBrowser(
         args.profile_dir,
         expected_account=credentials["expected_account"],

@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # independently switchable so production can fail closed if FT returns an
     # ambiguous response or demonstrates destructive behavior.
     ftwlink_schedule_a_updates_enabled: bool = False
+    # The first live release supports only a single current Schedule A. FT
+    # replaces the complete Schedule A set, so plans with multiple records
+    # must fail closed until their preservation flow is independently proven.
+    ftwlink_schedule_a_single_record_only: bool = True
     # Live checklist schemas are cached for one day. DOL Schedule A writes use
     # the separately published, versioned DOL contract until FT exposes an
     # equivalent live schema endpoint for DOL forms.

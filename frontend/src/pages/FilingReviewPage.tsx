@@ -28,6 +28,7 @@ import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   ApiRequestError,
   approveFiling,
+  confirmFTWilliamsBringForward,
   getFiling,
   getFTWLocalAgentStatus,
   getFTWilliamsBringForwardLink,
@@ -203,6 +204,7 @@ export function FilingReviewPage() {
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const [showFtwSendConfirm, setShowFtwSendConfirm] = useState(false);
+  const [showBringForwardConfirm, setShowBringForwardConfirm] = useState(false);
   const [showAdvancedReview, setShowAdvancedReview] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState<FTWLocalAgentStatus | null>(null);
   const previousFilingRef = useRef<FilingDetail | null>(null);
@@ -352,8 +354,19 @@ export function FilingReviewPage() {
   const brokerValidationIssues = scheduleABrokerRows.flatMap((row, index) =>
     brokerRowValidationIssues(row).map((message) => ({ index, message })),
   );
+  const brokerActionRequiredIndexes = new Set([
+    ...brokerValidationIssues.map((issue) => issue.index),
+    ...(
+      ftwReview?.current_query_success
+      && ftwReview.current_year_exists
+      && !ftwReview.bring_forward_required
+        ? scheduleABrokerMatches.filter((match) => !match.resolved).map((match) => match.extracted_index)
+        : []
+    ),
+  ]);
+  const brokerActionRequiredCount = brokerActionRequiredIndexes.size;
   const hardValidationBlockerCount = fieldValidationBlockerRows.length + brokerValidationIssues.length;
-  const actionRequiredCount = actionRequiredRows.length + brokerValidationIssues.length + (planYearConflictRequired ? 1 : 0);
+  const actionRequiredCount = actionRequiredRows.length + brokerActionRequiredCount + (planYearConflictRequired ? 1 : 0);
   const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
   const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
@@ -822,6 +835,33 @@ export function FilingReviewPage() {
     }
   }
 
+  async function confirmAutomatedBringForward() {
+    if (!id) return;
+    setShowBringForwardConfirm(false);
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await confirmFTWilliamsBringForward(id);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Bring Forward confirmed",
+        message: "The local agent will use only the confirmed FT Williams plan and year.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Bring Forward was not started",
+        message: error instanceof Error ? error.message : "The confirmed plan could not be queued safely.",
+        sticky: true,
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function resolvePlanYearConflict(resolution: "USE_WORKSHEET" | "KEEP_FTW") {
     if (!id) return;
     setFtwBusy(true);
@@ -1126,6 +1166,7 @@ export function FilingReviewPage() {
                   busy={reviewInteractionBusy}
                   nextAction={filing.automation_next_action}
                   onOpenBringForward={openFtwBringForward}
+                  onConfirmBringForward={() => setShowBringForwardConfirm(true)}
                   onOpenTechnical={() => setShowTechnicalDrawer(true)}
                   onResolve={() => {
                     setActiveTab("NEEDS_DECISION");
@@ -1258,7 +1299,12 @@ export function FilingReviewPage() {
             </div>
 
             {!displayRows.length ? (
-              <div className="empty-state"><SearchX size={18} /> No fields match this view.</div>
+              <div className="empty-state">
+                <SearchX size={18} />
+                {activeTab === "NEEDS_DECISION" && automationRequiresOperatorAction(filing)
+                  ? "No field decisions are required. Complete the workflow action above to continue."
+                  : "No fields match this view."}
+              </div>
             ) : null}
 
             <div className="approval-preview-footer">
@@ -1277,13 +1323,15 @@ export function FilingReviewPage() {
               ) : null}
             </div>
 
-            <ScheduleABrokerRowsPanel
-              busy={ftwBusy}
-              matches={scheduleABrokerMatches}
-              onConfirm={saveScheduleABrokerMatch}
-              onSaveRows={saveScheduleABrokerRows}
-              rows={scheduleABrokerRows}
-            />
+            {activeTab === "ALL" || (activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0) ? (
+              <ScheduleABrokerRowsPanel
+                busy={ftwBusy}
+                matches={scheduleABrokerMatches}
+                onConfirm={saveScheduleABrokerMatch}
+                onSaveRows={saveScheduleABrokerRows}
+                rows={scheduleABrokerRows}
+              />
+            ) : null}
           </section>
         )}
 
@@ -1347,6 +1395,18 @@ export function FilingReviewPage() {
             setActiveTab("WILL_UPDATE");
             window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
           }}
+        />
+      ) : null}
+
+      {showBringForwardConfirm && filing && ftwReview ? (
+        <BringForwardConfirmationModal
+          busy={ftwBusy}
+          clientName={filing.dashboard_client_name || "Not provided"}
+          planName={filing.dashboard_plan_name || ftwReview.plan_lookup?.plan_name || "Not provided"}
+          planNumber={filing.dashboard_plan_number || "Not provided"}
+          targetYear={ftwReview.year || "Not provided"}
+          onClose={() => setShowBringForwardConfirm(false)}
+          onConfirm={() => void confirmAutomatedBringForward()}
         />
       ) : null}
 
@@ -1447,6 +1507,7 @@ function automationRequiresOperatorAction(filing: FilingDetail) {
 function AutomationExceptionActions({
   busy,
   nextAction,
+  onConfirmBringForward,
   onOpenBringForward,
   onOpenTechnical,
   onResolve,
@@ -1454,11 +1515,15 @@ function AutomationExceptionActions({
 }: {
   busy: boolean;
   nextAction?: string | null;
+  onConfirmBringForward: () => void;
   onOpenBringForward: () => void;
   onOpenTechnical: () => void;
   onResolve: () => void;
   onRetry: () => void;
 }) {
+  if (nextAction === "CONFIRM_BRING_FORWARD") {
+    return <button className="button" type="button" disabled={busy} onClick={onConfirmBringForward}><ShieldCheck size={16} /> Confirm Bring Forward</button>;
+  }
   if (nextAction === "MAP_FTW_BROWSER_PLAN") {
     return <button className="button" type="button" disabled={busy} onClick={onOpenTechnical}><ShieldCheck size={16} /> Confirm FTW plan</button>;
   }
@@ -1480,6 +1545,9 @@ function AutomationExceptionActions({
   }
   if (nextAction === "MANUAL_BRING_FORWARD") {
     return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW Bring Forward</button>;
+  }
+  if (nextAction === "MANUAL_SCHEDULE_A_UPDATE") {
+    return <button className="button" type="button" disabled={busy} onClick={onResolve}><AlertTriangle size={16} /> Review Schedule A</button>;
   }
   if (nextAction === "RETRY" || nextAction === "RETRY_AFTER_CURRENT_QUERY") {
     return <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry</button>;
@@ -1557,7 +1625,7 @@ function AutomationWorkflowNotice({
 function automationCurrentStep(filing: FilingDetail) {
   const nextAction = filing.automation_next_action || "";
   if (nextAction === "QUERY_FTW_CURRENT" || nextAction === "RETRY_AFTER_CURRENT_QUERY") return 2;
-  if (["MAP_FTW_BROWSER_PLAN", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD", "WAIT_FOR_LOCAL_AGENT", "START_LOCAL_AGENT"].includes(nextAction)) return 3;
+  if (["MAP_FTW_BROWSER_PLAN", "CONFIRM_BRING_FORWARD", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD", "WAIT_FOR_LOCAL_AGENT", "START_LOCAL_AGENT"].includes(nextAction)) return 3;
   if (nextAction === "RESOLVE_ISSUES") return 4;
   if (nextAction === "AUTO_SEND") return 5;
   if (nextAction === "VERIFY_FTW_UPDATE") return 6;
@@ -1571,9 +1639,11 @@ function automationNextActionLabel(nextAction: string | null | undefined, status
     QUERY_FTW_CURRENT: "Query current FT Williams data",
     RETRY_AFTER_CURRENT_QUERY: "Query FT Williams again",
     MAP_FTW_BROWSER_PLAN: "Confirm the FT Williams plan once",
+    CONFIRM_BRING_FORWARD: "Confirm the exact plan and year",
     AUTOMATE_BRING_FORWARD: "Bring Forward automatically",
     VERIFY_BRING_FORWARD: "Verify the brought-forward record",
     MANUAL_BRING_FORWARD: "Complete Bring Forward in FT Williams",
+    MANUAL_SCHEDULE_A_UPDATE: "Review and update Schedule A manually",
     RESOLVE_ISSUES: "Resolve the highlighted item",
     AUTO_SEND: "Send automatically",
     VERIFY_FTW_UPDATE: "Verify the FT Williams update",
@@ -3460,6 +3530,62 @@ function clientErrorFromRaw(message: string, source: string): ClientFacingError 
   return null;
 }
 
+function BringForwardConfirmationModal({
+  busy,
+  clientName,
+  onClose,
+  onConfirm,
+  planName,
+  planNumber,
+  targetYear,
+}: {
+  busy: boolean;
+  clientName: string;
+  onClose: () => void;
+  onConfirm: () => void;
+  planName: string;
+  planNumber: string;
+  targetYear: string;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
+  return (
+    <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="bring-forward-confirm-title">
+        <header className="approve-confirm-header">
+          <div>
+            <span className="eyebrow">Required confirmation</span>
+            <h2 id="bring-forward-confirm-title">Confirm Bring Forward</h2>
+            <p>The local agent will open only this FT Williams plan and bring prior-year data into the target year.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close Bring Forward confirmation"><X size={18} /></button>
+        </header>
+        <div className="approve-confirm-body">
+          <div className="approve-confirm-stats">
+            <ApprovalModalStat label="Client" value={clientName} tone="info" />
+            <ApprovalModalStat label="Plan" value={planName} tone="info" />
+            <ApprovalModalStat label="Plan number" value={planNumber} tone="info" />
+            <ApprovalModalStat label="Target year" value={targetYear} tone="warn" />
+          </div>
+          <div className="approve-confirm-warning ready">
+            <ShieldCheck size={18} />
+            <span>
+              <strong>Target-bound safety check</strong>
+              <small>If the plan or year changes, this approval expires and confirmation is required again.</small>
+            </span>
+          </div>
+        </div>
+        <footer className="approve-confirm-actions">
+          <button className="button secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="button" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? <InlineLoader label="Starting Bring Forward" /> : <><ShieldCheck size={16} /> Confirm this plan and year</>}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function FTWilliamsSendConfirmationModal({
   blockingIssueCount,
   brokerRowCount,
@@ -3777,7 +3903,7 @@ function UnapproveConfirmationModal({
   );
 }
 
-function ApprovalModalStat({ label, tone, value }: { label: string; tone: "danger" | "info" | "ready" | "warn"; value: number }) {
+function ApprovalModalStat({ label, tone, value }: { label: string; tone: "danger" | "info" | "ready" | "warn"; value: ReactNode }) {
   return (
     <div className={`approve-confirm-stat stat-${tone}`}>
       <span>{label}</span>
@@ -4684,7 +4810,9 @@ function groupForComparison(comparison: FTWilliamsComparisonField, field?: Extra
   if (comparison.validation_blocking) return "NEEDS_DECISION";
   if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
-  if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") return "LOW_CONFIDENCE";
+  if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") {
+    return comparison.changed && comparison.update_included ? "LOW_CONFIDENCE" : "SAME";
+  }
   if (comparison.extraction_status === "UNMAPPED" || field?.status === "UNMAPPED") return "NEEDS_DECISION";
   if (comparison.changed && comparison.update_included) return "WILL_UPDATE";
   if (comparison.changed) return "NEEDS_DECISION";

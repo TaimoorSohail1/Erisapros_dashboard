@@ -1281,6 +1281,32 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("CommPdAmtXX"), "250")
         self.assertEqual(broker.findtext("AddressLine1XX"), "100 Main Street")
 
+    def test_schedule_a_replace_accepts_vendor_subpart_rows_that_restart_field_numbers(self):
+        records = [{
+            "ftw_seq_no": "7",
+            "query_results": {"InsCarrierName": "Hartford"},
+            "query_subparts": {
+                "Broker": [
+                    {"Name1": f"Broker {index}", "CommPdAmt01": str(index * 100)}
+                    for index in range(1, 9)
+                ]
+            },
+        }]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "7",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2024",
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual(len(brokers), 8)
+        self.assertEqual(brokers[7].findtext("NameXX"), "Broker 8")
+        self.assertEqual(brokers[7].findtext("CommPdAmtXX"), "800")
+
     def test_schedule_a_reviewer_field_edits_override_stale_extracted_broker_rows(self):
         fields = [
             ExtractedField(
@@ -1365,6 +1391,74 @@ class XmlBuilderTests(unittest.TestCase):
 
         self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
         self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
+
+    def test_schedule_a_replace_preserves_vendor_broker_fields_outside_editable_map(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "Cigna"},
+                "query_subparts": {
+                    "Broker": [
+                        {
+                            "Name1": "First Broker",
+                            "CommPdAmt01": "100",
+                            "VendorFutureField1": "KEEP ME",
+                        }
+                    ]
+                },
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+        )
+
+        root = ET.fromstring(xml)
+        broker = root.find(".//DOLScheduleAData/DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("VendorFutureFieldXX"), "KEEP ME")
+        self.assertIsNone(root.find(".//DOLScheduleAData/VendorFutureField1"))
+
+    def test_schedule_a_replace_coalesces_fragmented_vendor_broker_fields(self):
+        records = [{
+            "ftw_seq_no": "1",
+            "query_results": {
+                "InsCarrierName": "Cigna",
+                "Name1": "First Broker",
+                "CommPdAmt01": "100",
+                "Name2": "Second Broker",
+                "CommPdAmt02": "200",
+            },
+            "query_subparts": {
+                "Broker": [
+                    {"Name1": "First Broker"},
+                    {"CommPdAmt01": "100"},
+                    {"Name2": "Second Broker"},
+                    {"CommPdAmt02": "200"},
+                ]
+            },
+        }]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual(len(brokers), 2)
+        self.assertEqual(brokers[0].findtext("NameXX"), "First Broker")
+        self.assertEqual(brokers[0].findtext("CommPdAmtXX"), "100")
+        self.assertEqual(brokers[1].findtext("NameXX"), "Second Broker")
+        self.assertEqual(brokers[1].findtext("CommPdAmtXX"), "200")
 
     def test_schedule_a_replace_preflight_rejects_changed_sibling_values(self):
         records = [

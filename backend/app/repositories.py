@@ -25,6 +25,8 @@ from app.models import (
     FTWilliamsPlanMapping,
     FTWLocalAgentDevice,
     FTWClientWorkspace,
+    FTWWorkspacePlanMapping,
+    FTWWorkspacePlanMappingStatus,
     FTWLocalAgentJob,
     FTWLocalAgentJobStatus,
     FTWLocalAgentPairingCode,
@@ -263,6 +265,15 @@ class Repository:
     async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace: ...
     async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]: ...
     async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None: ...
+    async def upsert_ftw_workspace_plan_mapping(self, mapping: FTWWorkspacePlanMapping) -> FTWWorkspacePlanMapping: ...
+    async def list_ftw_workspace_plan_mappings(self, workspace_id: str) -> list[FTWWorkspacePlanMapping]: ...
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None: ...
     async def create_ftw_local_agent_pairing_code(self, record: FTWLocalAgentPairingCode) -> FTWLocalAgentPairingCode: ...
     async def consume_ftw_local_agent_pairing_code(self, code_hash: str, now: datetime) -> FTWLocalAgentPairingCode | None: ...
     async def create_ftw_local_agent_device(self, device: FTWLocalAgentDevice) -> FTWLocalAgentDevice: ...
@@ -270,7 +281,7 @@ class Repository:
     async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]: ...
     async def update_ftw_local_agent_device(self, device_id: str, values: dict) -> FTWLocalAgentDevice | None: ...
     async def create_or_get_ftw_local_agent_job(self, job: FTWLocalAgentJob) -> FTWLocalAgentJob: ...
-    async def claim_ftw_local_agent_job(self, device_id: str, expected_account: str, claim_token_hash: str, now: datetime, claim_expires_at: datetime) -> FTWLocalAgentJob | None: ...
+    async def claim_ftw_local_agent_job(self, device_id: str, expected_account: str, claim_token_hash: str, now: datetime, claim_expires_at: datetime, workspace_id: str | None = None) -> FTWLocalAgentJob | None: ...
     async def complete_ftw_local_agent_job(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime, values: dict) -> FTWLocalAgentJob | None: ...
     async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None: ...
     async def update_ftw_local_agent_job(self, job_id: str, values: dict) -> FTWLocalAgentJob | None: ...
@@ -406,6 +417,20 @@ class MongoRepository(Repository):
         await self.db.ftw_local_agent_jobs.create_index(
             [("status", 1), ("expires_at", 1), ("created_at", 1)],
             name="ftw_local_agent_job_claim_idx",
+        )
+        await self.db.ftw_client_workspaces.create_index(
+            "slug",
+            name="ftw_client_workspace_slug_idx",
+            unique=True,
+        )
+        await self.db.ftw_workspace_plan_mappings.create_index(
+            [("workspace_id", 1), ("company_employer_id", 1), ("plan_number", 1), ("year", 1)],
+            name="ftw_workspace_plan_mapping_identity_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            [("workspace_id", 1), ("assigned_device_id", 1), ("status", 1), ("expires_at", 1)],
+            name="ftw_local_agent_workspace_job_claim_idx",
         )
 
     async def create_filing(self, filing: Filing) -> Filing:
@@ -1155,6 +1180,53 @@ class MongoRepository(Repository):
         doc = await self.db.ftw_client_workspaces.find_one({"_id": ObjectId(workspace_id)})
         return from_mongo(doc, FTWClientWorkspace) if doc else None
 
+    async def upsert_ftw_workspace_plan_mapping(
+        self,
+        mapping: FTWWorkspacePlanMapping,
+    ) -> FTWWorkspacePlanMapping:
+        payload = to_mongo_bson(mapping)
+        payload.pop("created_at", None)
+        payload["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_workspace_plan_mappings.find_one_and_update(
+            {
+                "workspace_id": mapping.workspace_id,
+                "company_employer_id": mapping.company_employer_id,
+                "plan_number": mapping.plan_number,
+                "year": mapping.year,
+            },
+            {"$set": payload, "$setOnInsert": {"created_at": mapping.created_at}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWWorkspacePlanMapping)
+
+    async def list_ftw_workspace_plan_mappings(
+        self,
+        workspace_id: str,
+    ) -> list[FTWWorkspacePlanMapping]:
+        docs = await self.db.ftw_workspace_plan_mappings.find(
+            {"workspace_id": workspace_id}
+        ).sort("updated_at", -1).to_list(500)
+        return [from_mongo(doc, FTWWorkspacePlanMapping) for doc in docs]
+
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None:
+        doc = await self.db.ftw_workspace_plan_mappings.find_one(
+            {
+                "workspace_id": workspace_id,
+                "company_employer_id": company_employer_id,
+                "plan_number": plan_number,
+                "year": year,
+                "status": FTWWorkspacePlanMappingStatus.VERIFIED.value,
+            }
+        )
+        return from_mongo(doc, FTWWorkspacePlanMapping) if doc else None
+
     async def create_ftw_local_agent_pairing_code(
         self,
         record: FTWLocalAgentPairingCode,
@@ -1233,11 +1305,17 @@ class MongoRepository(Repository):
         claim_token_hash: str,
         now: datetime,
         claim_expires_at: datetime,
+        workspace_id: str | None = None,
     ) -> FTWLocalAgentJob | None:
+        scope_filter = (
+            {"workspace_id": workspace_id, "assigned_device_id": device_id}
+            if workspace_id
+            else {"expected_account": expected_account}
+        )
         doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
             {
                 "expires_at": {"$gt": now},
-                "expected_account": expected_account,
+                **scope_filter,
                 "$or": [
                     {"status": FTWLocalAgentJobStatus.QUEUED.value},
                     {
@@ -1348,6 +1426,7 @@ class MemoryRepository(Repository):
         self.field_rule_versions: dict[str, FieldRule] = {}
         self.ftw_local_agent_pairing_codes: dict[str, FTWLocalAgentPairingCode] = {}
         self.ftw_client_workspaces: dict[str, FTWClientWorkspace] = {}
+        self.ftw_workspace_plan_mappings: dict[str, FTWWorkspacePlanMapping] = {}
         self.ftw_local_agent_devices: dict[str, FTWLocalAgentDevice] = {}
         self.ftw_local_agent_jobs: dict[str, FTWLocalAgentJob] = {}
 
@@ -1808,6 +1887,59 @@ class MemoryRepository(Repository):
         workspace = self.ftw_client_workspaces.get(workspace_id)
         return workspace.model_copy(deep=True) if workspace else None
 
+    async def upsert_ftw_workspace_plan_mapping(
+        self,
+        mapping: FTWWorkspacePlanMapping,
+    ) -> FTWWorkspacePlanMapping:
+        for existing in self.ftw_workspace_plan_mappings.values():
+            if (
+                existing.workspace_id == mapping.workspace_id
+                and existing.company_employer_id == mapping.company_employer_id
+                and existing.plan_number == mapping.plan_number
+                and existing.year == mapping.year
+            ):
+                stored = mapping.model_copy(deep=True)
+                stored.id = existing.id
+                stored.created_at = existing.created_at
+                stored.updated_at = datetime.utcnow()
+                self.ftw_workspace_plan_mappings[str(stored.id)] = stored
+                return stored.model_copy(deep=True)
+        stored = mapping.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_workspace_plan_mappings[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_ftw_workspace_plan_mappings(
+        self,
+        workspace_id: str,
+    ) -> list[FTWWorkspacePlanMapping]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(
+                (value for value in self.ftw_workspace_plan_mappings.values() if value.workspace_id == workspace_id),
+                key=lambda value: value.updated_at,
+                reverse=True,
+            )
+        ]
+
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None:
+        for mapping in self.ftw_workspace_plan_mappings.values():
+            if (
+                mapping.workspace_id == workspace_id
+                and mapping.company_employer_id == company_employer_id
+                and mapping.plan_number == plan_number
+                and mapping.year == year
+                and mapping.status == FTWWorkspacePlanMappingStatus.VERIFIED
+            ):
+                return mapping.model_copy(deep=True)
+        return None
+
     async def create_ftw_local_agent_pairing_code(
         self,
         record: FTWLocalAgentPairingCode,
@@ -1888,6 +2020,7 @@ class MemoryRepository(Repository):
         claim_token_hash: str,
         now: datetime,
         claim_expires_at: datetime,
+        workspace_id: str | None = None,
     ) -> FTWLocalAgentJob | None:
         candidates = sorted(self.ftw_local_agent_jobs.values(), key=lambda value: value.created_at)
         for job in candidates:
@@ -1896,7 +2029,13 @@ class MemoryRepository(Repository):
                 and job.claim_expires_at is not None
                 and job.claim_expires_at <= now
             )
-            if not available or job.expires_at <= now or job.expected_account != expected_account:
+            legacy_scope_matches = not workspace_id and job.expected_account == expected_account
+            workspace_scope_matches = bool(
+                workspace_id
+                and job.workspace_id == workspace_id
+                and job.assigned_device_id == device_id
+            )
+            if not available or job.expires_at <= now or not (legacy_scope_matches or workspace_scope_matches):
                 continue
             job.status = FTWLocalAgentJobStatus.CLAIMED
             job.device_id = device_id

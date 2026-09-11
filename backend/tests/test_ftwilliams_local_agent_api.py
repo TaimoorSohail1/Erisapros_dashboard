@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 import app.repositories as repositories
 from app.main import app
 from app.config import get_settings
-from app.models import FTWClientWorkspace, FTWLocalAgentDevice
+from app.models import Filing, FTWClientWorkspace, FTWLocalAgentDevice
 
 
 def test_local_agent_pairing_heartbeat_and_revocation_do_not_expose_device_tokens():
@@ -193,3 +193,87 @@ def test_workspace_routing_rejects_unscoped_pairing_codes_when_enabled(monkeypat
     finally:
         repositories._repository = None
         get_settings.cache_clear()
+
+
+def test_device_can_revoke_itself_for_clean_uninstall():
+    repositories._repository = repositories.MemoryRepository()
+    client = TestClient(app)
+    try:
+        pairing_code = client.post("/api/ftwilliams/local-agent/pairing-codes").json()["pairing_code"]
+        paired = client.post(
+            "/api/ftwilliams/local-agent/pair",
+            json={"pairing_code": pairing_code, "device_name": "Pilot computer", "agent_version": "0.1.0"},
+        ).json()
+        revoked = client.post(
+            "/api/ftwilliams/local-agent/agent/revoke",
+            headers={"Authorization": f"Bearer {paired['device_token']}"},
+        )
+        assert revoked.status_code == 200
+        assert revoked.json()["status"] == "REVOKED"
+        assert client.post(
+            "/api/ftwilliams/local-agent/agent/heartbeat",
+            headers={"Authorization": f"Bearer {paired['device_token']}"},
+            json={"agent_version": "0.1.0", "browser_ready": True},
+        ).status_code == 401
+    finally:
+        repositories._repository = None
+
+
+def test_verified_plan_mapping_and_filing_assignment_are_workspace_scoped():
+    repo = repositories.MemoryRepository()
+    repositories._repository = repo
+    client = TestClient(app)
+    try:
+        workspace = client.post(
+            "/api/ftwilliams/local-agent/workspaces",
+            json={"name": "Client A", "slug": "client-a", "expected_account": "ClientA"},
+        ).json()
+        other = asyncio.run(repo.create_ftw_client_workspace(FTWClientWorkspace(
+            name="Client B",
+            slug="client-b",
+            expected_account="ClientB",
+            admin_subjects=["other@example.com"],
+        )))
+        payload = {
+            "company_employer_id": "123456789",
+            "plan_number": "1",
+            "year": "2025",
+            "plan_name": "Client A Health Plan",
+            "ftw_customer_id": "link-customer",
+            "ftw_plan_id": "link-plan",
+            "ftw_browser_customer_id": "browser-customer",
+            "ftw_browser_plan_id": "browser-plan",
+            "verification_evidence": "Compared with the Highland demo account on 2026-09-11",
+        }
+        created = client.post(
+            f"/api/ftwilliams/local-agent/workspaces/{workspace['id']}/plan-mappings",
+            json=payload,
+        )
+        assert created.status_code == 200
+        assert created.json()["status"] == "VERIFIED"
+        assert created.json()["company_employer_id"] == "12-3456789"
+        assert created.json()["plan_number"] == "001"
+        listed = client.get(
+            f"/api/ftwilliams/local-agent/workspaces/{workspace['id']}/plan-mappings"
+        )
+        assert [item["id"] for item in listed.json()["mappings"]] == [created.json()["id"]]
+        assert client.get(
+            f"/api/ftwilliams/local-agent/workspaces/{other.id}/plan-mappings"
+        ).status_code == 404
+
+        filing = asyncio.run(repo.create_filing(Filing(
+            file_name="schedule-a.pdf",
+            content_type="application/pdf",
+            file_size=100,
+            s3_key="schedule-a.pdf",
+        )))
+        assigned = client.post(
+            f"/api/ftwilliams/local-agent/workspaces/{workspace['id']}/filings/{filing.id}/assign"
+        )
+        assert assigned.status_code == 200
+        assert asyncio.run(repo.get_filing(str(filing.id))).workspace_id == workspace["id"]
+        assert client.post(
+            f"/api/ftwilliams/local-agent/workspaces/{other.id}/filings/{filing.id}/assign"
+        ).status_code == 404
+    finally:
+        repositories._repository = None

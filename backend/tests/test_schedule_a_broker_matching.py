@@ -5,6 +5,7 @@ from app.models import ScheduleABrokerRow
 from app.services.schedule_a_broker_matching import (
     current_schedule_a_broker_rows,
     match_schedule_a_brokers,
+    normalize_schedule_a_broker_subparts,
     resolved_schedule_a_broker_rows,
 )
 from app.services.xml_builder import build_schedule_a_records_update_xml, schedule_a_replacement_data_gaps
@@ -31,6 +32,29 @@ def current(index: int, name: str, address: str = "", zip_code: str = "", commis
 
 
 class ScheduleABrokerMatchingTests(unittest.TestCase):
+    def test_fragmented_vendor_subparts_are_grouped_by_business_row(self):
+        rows = [
+            {"Name1": "First Broker"},
+            {"CommPdAmt01": "100"},
+            {"Name2": "Second Broker"},
+            {"CommPdAmt02": "200"},
+        ]
+
+        normalized = normalize_schedule_a_broker_subparts(rows)
+
+        self.assertEqual(normalized, [
+            {"Name1": "First Broker", "CommPdAmt01": "100"},
+            {"Name2": "Second Broker", "CommPdAmt02": "200"},
+        ])
+
+    def test_row_local_vendor_subparts_are_not_merged(self):
+        rows = [
+            {"Name1": "First Broker", "CommPdAmt01": "100"},
+            {"Name1": "Second Broker", "CommPdAmt01": "200"},
+        ]
+
+        self.assertEqual(normalize_schedule_a_broker_subparts(rows), rows)
+
     def test_trailing_control_only_ft_rows_are_not_broker_candidates(self):
         record = {
             "query_results": {

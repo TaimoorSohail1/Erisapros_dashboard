@@ -146,6 +146,8 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
                 "extraction_jobs",
                 "ftwilliams_reviews",
                 "ftwilliams_plan_mappings",
+                "ftw_workspace_plan_mappings",
+                "ftw_client_workspaces",
                 "field_rule_versions",
                 "ftw_local_agent_pairing_codes",
                 "ftw_local_agent_devices",
@@ -178,12 +180,15 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         self.assertIn("ftw_review_failure_type_date_idx", indexes["ftwilliams_reviews"])
         self.assertIn("ftwilliams_schema_cache_key_idx", indexes["ftwilliams_schemas"])
         self.assertIn("ftw_plan_mapping_identity_idx", indexes["ftwilliams_plan_mappings"])
+        self.assertIn("ftw_workspace_plan_mapping_identity_idx", indexes["ftw_workspace_plan_mappings"])
+        self.assertIn("ftw_client_workspace_slug_idx", indexes["ftw_client_workspaces"])
         self.assertIn("field_rule_key_version_idx", indexes["field_rule_versions"])
         self.assertIn("ftw_local_agent_pairing_code_idx", indexes["ftw_local_agent_pairing_codes"])
         self.assertIn("ftw_local_agent_pairing_expiry_idx", indexes["ftw_local_agent_pairing_codes"])
         self.assertIn("ftw_local_agent_device_token_idx", indexes["ftw_local_agent_devices"])
         self.assertIn("ftw_local_agent_job_idempotency_idx", indexes["ftw_local_agent_jobs"])
         self.assertIn("ftw_local_agent_job_claim_idx", indexes["ftw_local_agent_jobs"])
+        self.assertIn("ftw_local_agent_workspace_job_claim_idx", indexes["ftw_local_agent_jobs"])
 
     def test_client_has_bounded_network_and_pool_wait_timeouts(self):
         with patch("app.repositories.AsyncIOMotorClient") as client:
