@@ -701,6 +701,48 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertIsNone(agent._page_identity_error(review, correct_page))
         self.assertIn("plan name", agent._page_identity_error(review, wrong_page).lower())
 
+    def test_browser_waits_for_delayed_ftw_plan_frame_before_rejecting_identity(self):
+        _filing, review, _extracted, settings = self.safe_case()
+        review.bring_forward_required = True
+        review.year = "2025"
+        review.plan_lookup = FTWilliamsPlanLookup(
+            status=FTWilliamsPlanLookupStatus.MATCHED,
+            plan_name="American Securities LLC Health And Welfare Plan",
+            company_employer_id="27-1486827",
+            plan_number="501",
+            year="2025",
+        )
+        loading_page = "HighlandTech Loading..."
+        verified_page = (
+            "American Securities LLC Health And Welfare Plan\n"
+            "Details: EIN: 27-1486827 • PN: 501\n"
+            "5500 - 2025\n"
+            "Bring forward 2024 data to 2025 for this plan only"
+        )
+
+        class DelayedPage:
+            def __init__(self):
+                self.waits = 0
+
+            async def wait_for_timeout(self, _milliseconds):
+                self.waits += 1
+
+        page = DelayedPage()
+        agent = PlaywrightFTWBringForwardAgent(settings)
+        with patch.object(agent, "_login_required", return_value=False), patch.object(
+            agent,
+            "_page_text",
+            side_effect=[loading_page, verified_page],
+        ):
+            page_text, identity_error, login_required = run_async(
+                agent._wait_for_verified_target(page, review, timeout_ms=2_000)
+            )
+
+        self.assertEqual(page_text, verified_page)
+        self.assertIsNone(identity_error)
+        self.assertFalse(login_required)
+        self.assertEqual(page.waits, 1)
+
     def test_zero_identity_candidates_are_automatically_added_as_new(self):
         filing, review, extracted, settings = self.safe_case()
         settings.ftw_automation_auto_send_enabled = False

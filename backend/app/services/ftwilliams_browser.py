@@ -73,17 +73,25 @@ class PlaywrightFTWBringForwardAgent:
                 page.set_default_timeout(timeout_ms)
                 page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
                 try:
+                    navigation_started = asyncio.get_running_loop().time()
                     await page.goto(str(review.ftw_plan_url), wait_until="domcontentloaded", timeout=timeout_ms)
+                    navigation_elapsed_ms = int(
+                        (asyncio.get_running_loop().time() - navigation_started) * 1_000
+                    )
+                    identity_timeout_ms = max(1_000, timeout_ms - navigation_elapsed_ms)
+                    page_text, identity_error, login_required = await self._wait_for_verified_target(
+                        page,
+                        review,
+                        timeout_ms=identity_timeout_ms,
+                    )
                     await page.screenshot(path=str(before_path), full_page=True)
-                    if await self._login_required(page):
+                    if login_required:
                         return FTWBringForwardResult(
                             False,
                             "LOGIN_REQUIRED",
                             "The saved FT Williams demo login session has expired or requires MFA.",
                             str(before_path),
                         )
-                    page_text = await self._page_text(page)
-                    identity_error = self._page_identity_error(review, page_text)
                     if identity_error:
                         return FTWBringForwardResult(
                             False,
@@ -125,6 +133,31 @@ class PlaywrightFTWBringForwardAgent:
                 f"FT Williams Bring Forward stopped safely: {type(exc).__name__}: {exc}",
                 str(before_path) if before_path.exists() else None,
             )
+
+    async def _wait_for_verified_target(
+        self,
+        page,
+        review: FTWilliamsReview,
+        *,
+        timeout_ms: int,
+    ) -> tuple[str, str | None, bool]:
+        """Wait for FTW's delayed legacy plan frame before checking identity."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(1_000, timeout_ms) / 1_000
+        page_text = ""
+        identity_error: str | None = None
+        while True:
+            if await self._login_required(page):
+                return page_text, None, True
+            page_text = await self._page_text(page)
+            identity_error = self._page_identity_error(review, page_text)
+            if identity_error is None:
+                return page_text, None, False
+            remaining_ms = int((deadline - loop.time()) * 1_000)
+            if remaining_ms <= 0:
+                return page_text, identity_error, False
+            await page.wait_for_timeout(min(500, remaining_ms))
 
     def _load_storage_state(self) -> tuple[str | dict | None, str | None]:
         inline_state = str(self.settings.ftw_browser_storage_state_json or "").strip()
