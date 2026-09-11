@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import httpx
 
 from app.services.ftwilliams_local_agent_runtime import (
     FTWLocalAgentRunner,
@@ -90,6 +91,33 @@ def test_agent_api_rejects_plain_http_except_localhost():
         LocalAgentApiClient("http://dashboard.example.com", "token")
     with pytest.raises(ValueError, match="HTTPS"):
         LocalAgentApiClient("http://localhost.evil.example", "token")
+
+
+def test_agent_completion_allows_server_readback_within_cloudfront_limit():
+    observed = {}
+
+    async def handler(request):
+        observed.update(request.extensions["timeout"])
+        return httpx.Response(200, json={"status": "SUBMITTED"})
+
+    async def exercise():
+        client = LocalAgentApiClient(
+            "https://dashboard.example.com",
+            "token",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            await client.complete(
+                "job-1",
+                "claim-token",
+                LocalAgentActionResult("SUBMITTED", "Submitted"),
+            )
+        finally:
+            await client.close()
+
+    run_async(exercise())
+
+    assert observed["read"] == 115.0
 
 
 def test_browser_rejects_a_different_account_job_before_navigation():

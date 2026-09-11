@@ -112,7 +112,12 @@ class FTWAutomationPolicy:
 
         target_error = self._test_target_error(review)
         if target_error:
-            return self._action_needed(target_error)
+            return self._decision(
+                FTWAutomationStatus.DISABLED,
+                False,
+                [f"{target_error} The established manual workflow remains active."],
+                "MANUAL_REVIEW",
+            )
 
         if (
             not review.browser_mapping_confirmed

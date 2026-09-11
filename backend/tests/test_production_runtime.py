@@ -47,9 +47,13 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertIn("FtwAutomationBringForwardEnabled:", contents)
         self.assertIn("FtwAutomationAutoSendEnabled:", contents)
         self.assertIn("FtwAutomationAllowedTargetsJson:", contents)
-        self.assertGreaterEqual(contents.count('Default: "false"'), 3)
+        self.assertIn("FtwLocalAgentEnabled:", contents)
+        self.assertIn("FtwLocalAgentExpectedAccount:", contents)
+        self.assertGreaterEqual(contents.count('Default: "false"'), 4)
         self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ENABLED"), 2)
         self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON"), 2)
+        self.assertEqual(contents.count("- Name: FTW_LOCAL_AGENT_ENABLED"), 2)
+        self.assertEqual(contents.count("- Name: FTW_LOCAL_AGENT_EXPECTED_ACCOUNT"), 2)
 
     def test_production_injects_ftw_browser_session_from_a_dedicated_secret(self):
         template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"

@@ -330,15 +330,16 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertEqual(decision.next_action, "MANUAL_BRING_FORWARD")
 
-    def test_filing_outside_demo_allowlist_never_sends(self):
+    def test_filing_outside_demo_allowlist_stays_on_existing_manual_workflow(self):
         filing, review, extracted, settings = self.safe_case()
         review.ftw_customer_id = "production-customer"
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
         self.assertFalse(decision.eligible)
         self.assertIn("outside", decision.reasons[0].lower())
+        self.assertEqual(decision.next_action, "MANUAL_REVIEW")
 
     def test_json_allowlist_supports_multiple_demo_plans(self):
         filing, review, extracted, settings = self.safe_case()
@@ -364,8 +365,9 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
         self.assertIn("allowlist", decision.reasons[0].lower())
+        self.assertEqual(decision.next_action, "MANUAL_REVIEW")
 
     def test_safe_demo_filing_uses_guarded_sender_and_completes_after_readback(self):
         filing, review, extracted, settings = self.safe_case()

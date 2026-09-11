@@ -55,6 +55,13 @@ Parameters:
   FtwAutomationAllowedTargetsJson:
     Type: String
     Default: "[]"
+  FtwLocalAgentEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  FtwLocalAgentExpectedAccount:
+    Type: String
+    Default: HighlandTech
 
 Resources:
   FrontendBucket:
@@ -408,6 +415,10 @@ Resources:
               Value: !Ref FtwAutomationAutoSendEnabled
             - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON
               Value: !Ref FtwAutomationAllowedTargetsJson
+            - Name: FTW_LOCAL_AGENT_ENABLED
+              Value: !Ref FtwLocalAgentEnabled
+            - Name: FTW_LOCAL_AGENT_EXPECTED_ACCOUNT
+              Value: !Ref FtwLocalAgentExpectedAccount
             - Name: FTW_AUTOMATION_LEASE_SECONDS
               Value: "600"
             - Name: FTW_BROWSER_HEADLESS
@@ -548,6 +559,10 @@ Resources:
               Value: !Ref FtwAutomationAutoSendEnabled
             - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON
               Value: !Ref FtwAutomationAllowedTargetsJson
+            - Name: FTW_LOCAL_AGENT_ENABLED
+              Value: !Ref FtwLocalAgentEnabled
+            - Name: FTW_LOCAL_AGENT_EXPECTED_ACCOUNT
+              Value: !Ref FtwLocalAgentExpectedAccount
             - Name: FTW_AUTOMATION_LEASE_SECONDS
               Value: "600"
             - Name: FTW_BROWSER_HEADLESS

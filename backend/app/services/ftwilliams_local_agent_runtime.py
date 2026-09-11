@@ -83,6 +83,10 @@ class LocalAgentApiClient:
                 "state": result.state,
                 "message": result.message,
             },
+            # Completion performs the authoritative ftwLink re-query/read-back.
+            # Keep this below CloudFront's 120-second origin timeout while
+            # allowing more time than ordinary agent API calls.
+            timeout=httpx.Timeout(115.0),
         )
         response.raise_for_status()
         return response.json()
