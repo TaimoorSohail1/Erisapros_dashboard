@@ -2,7 +2,7 @@ import asyncio
 import math
 from datetime import datetime, timedelta
 from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth import require_field_rule_admin
 
@@ -24,6 +24,15 @@ from app.models import (
     FTWilliamsReview,
     FTWilliamsReviewStatus,
     FTWilliamsSchemaSnapshot,
+    FTWLocalAgentClaimResponse,
+    FTWLocalAgentCompleteRequest,
+    FTWLocalAgentDevice,
+    FTWLocalAgentHeartbeatRequest,
+    FTWLocalAgentJobResultResponse,
+    FTWLocalAgentPairRequest,
+    FTWLocalAgentPairResponse,
+    FTWLocalAgentPairingCodeResponse,
+    FTWLocalAgentStatusResponse,
 )
 from app.repositories import get_repository, retry_repository_read
 from app.services.ftwilliams import FTWilliamsService
@@ -35,14 +44,123 @@ from app.services.ftwilliams_failures import (
     short_failure_reason,
 )
 from app.services.ftwilliams_schema import FTWilliamsSchemaService
+from app.services.ftwilliams_local_agent_jobs import (
+    FTWLocalAgentAuthenticationError,
+    FTWLocalAgentService,
+)
 
 
 router = APIRouter(prefix="/ftwilliams", tags=["ftwilliams"])
 
 
+async def require_local_agent_device(request: Request) -> FTWLocalAgentDevice:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="A local-agent device token is required.")
+    try:
+        return await FTWLocalAgentService().authenticate(token)
+    except FTWLocalAgentAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
 @router.get("/status")
 async def status():
     return FTWilliamsService().status()
+
+
+@router.get("/local-agent/status", response_model=FTWLocalAgentStatusResponse)
+async def local_agent_status():
+    return await FTWLocalAgentService().status()
+
+
+@router.post("/local-agent/pairing-codes", response_model=FTWLocalAgentPairingCodeResponse)
+async def create_local_agent_pairing_code(
+    claims: dict = Depends(require_field_rule_admin),
+):
+    created_by = str(claims.get("email") or claims.get("sub") or "").strip() or None
+    return await FTWLocalAgentService().create_pairing_code(created_by=created_by)
+
+
+@router.post("/local-agent/pair", response_model=FTWLocalAgentPairResponse)
+async def pair_local_agent(payload: FTWLocalAgentPairRequest):
+    try:
+        return await FTWLocalAgentService().pair(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/local-agent/devices")
+async def list_local_agent_devices(_claims: dict = Depends(require_field_rule_admin)):
+    devices = await get_repository().list_ftw_local_agent_devices()
+    return {
+        "devices": [
+            {
+                "id": device.id,
+                "name": device.name,
+                "expected_account": device.expected_account,
+                "status": device.status,
+                "agent_version": device.agent_version,
+                "browser_ready": device.browser_ready,
+                "last_error": device.last_error,
+                "last_seen_at": device.last_seen_at,
+                "revoked_at": device.revoked_at,
+                "created_at": device.created_at,
+            }
+            for device in devices
+        ]
+    }
+
+
+@router.post("/local-agent/devices/{device_id}/revoke")
+async def revoke_local_agent_device(
+    device_id: str,
+    _claims: dict = Depends(require_field_rule_admin),
+):
+    try:
+        device = await FTWLocalAgentService().revoke(device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"device_id": device.id, "status": device.status}
+
+
+@router.post("/local-agent/agent/heartbeat")
+async def local_agent_heartbeat(
+    payload: FTWLocalAgentHeartbeatRequest,
+    device: FTWLocalAgentDevice = Depends(require_local_agent_device),
+):
+    updated = await FTWLocalAgentService().heartbeat(device, payload)
+    return {"device_id": updated.id, "status": updated.status, "server_time": datetime.utcnow()}
+
+
+@router.post("/local-agent/agent/jobs/claim", response_model=FTWLocalAgentClaimResponse)
+async def claim_local_agent_job(
+    device: FTWLocalAgentDevice = Depends(require_local_agent_device),
+):
+    return await FTWLocalAgentService().claim(device)
+
+
+@router.post(
+    "/local-agent/agent/jobs/{job_id}/complete",
+    response_model=FTWLocalAgentJobResultResponse,
+)
+async def complete_local_agent_job(
+    job_id: str,
+    payload: FTWLocalAgentCompleteRequest,
+    device: FTWLocalAgentDevice = Depends(require_local_agent_device),
+):
+    service = FTWLocalAgentService()
+    try:
+        job = await service.complete(device, job_id, payload)
+        job = await service.continue_after_completion(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return FTWLocalAgentJobResultResponse(
+        job_id=str(job.id),
+        status=job.status,
+        result_state=job.result_state,
+        message=job.result_message,
+    )
 
 
 @router.post("/query", response_model=FTWilliamsQueryResponse)

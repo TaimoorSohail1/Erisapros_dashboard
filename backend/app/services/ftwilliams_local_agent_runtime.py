@@ -1,0 +1,351 @@
+"""Client-local FT Williams agent runtime.
+
+The browser click is only a submitted action. The dashboard remains responsible
+for proving success through a fresh ftwLink query and record-ID comparison.
+"""
+
+import asyncio
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit
+import httpx
+
+from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
+
+
+AGENT_VERSION = "0.1.0"
+_BRING_FORWARD_TEXT = re.compile(
+    r"bring\s+forward\s+(?:prior[-\s]*year|\d{4})\s+data(?:\s+to\s+\d{4})?\s+for\s+this\s+plan\s+only",
+    re.IGNORECASE,
+)
+_FAILURE_TEXT = re.compile(
+    r"(?:bring\s+forward.{0,120}(?:error|unable|failed|not\s+permitted)|"
+    r"(?:error|unable|failed|not\s+permitted).{0,120}bring\s+forward)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+@dataclass(frozen=True)
+class LocalAgentActionResult:
+    state: str
+    message: str
+
+
+class LocalAgentApiClient:
+    def __init__(
+        self,
+        server_url: str,
+        device_token: str,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        base = _validated_server_base(server_url)
+        self._client = httpx.AsyncClient(
+            base_url=base,
+            headers={"Authorization": f"Bearer {device_token}"},
+            timeout=httpx.Timeout(45.0),
+            transport=transport,
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def heartbeat(
+        self,
+        *,
+        browser_ready: bool,
+        login_required: bool = False,
+        last_error: str | None = None,
+    ) -> dict:
+        response = await self._client.post(
+            "api/ftwilliams/local-agent/agent/heartbeat",
+            json={
+                "agent_version": AGENT_VERSION,
+                "browser_ready": browser_ready,
+                "login_required": login_required,
+                "last_error": last_error,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def claim(self) -> dict:
+        response = await self._client.post("api/ftwilliams/local-agent/agent/jobs/claim")
+        response.raise_for_status()
+        return response.json()
+
+    async def complete(self, job_id: str, claim_token: str, result: LocalAgentActionResult) -> dict:
+        response = await self._client.post(
+            f"api/ftwilliams/local-agent/agent/jobs/{job_id}/complete",
+            json={
+                "claim_token": claim_token,
+                "state": result.state,
+                "message": result.message,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+class PersistentFTWBrowser:
+    def __init__(
+        self,
+        profile_dir: str | Path,
+        *,
+        expected_account: str,
+        timeout_ms: int = 45_000,
+    ):
+        self.profile_dir = Path(profile_dir).expanduser().resolve()
+        self.expected_account = str(expected_account or "").strip()
+        self.timeout_ms = max(5_000, timeout_ms)
+        self._playwright = None
+        self._context = None
+        self._page = None
+
+    async def start(self) -> None:
+        if self._context is not None:
+            return
+        from playwright.async_api import async_playwright
+
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self._playwright = await async_playwright().start()
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                headless=False,
+                args=["--start-minimized"],
+            )
+            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            self._page.set_default_timeout(self.timeout_ms)
+            self._page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
+        except Exception:
+            await self.close()
+            raise
+
+    async def close(self) -> None:
+        context, playwright = self._context, self._playwright
+        self._context = None
+        self._page = None
+        self._playwright = None
+        try:
+            if context is not None:
+                await context.close()
+        finally:
+            if playwright is not None:
+                await playwright.stop()
+
+    async def session_ready(self) -> bool:
+        await self.start()
+        await self._page.goto(
+            "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home",
+            wait_until="domcontentloaded",
+            timeout=self.timeout_ms,
+        )
+        deadline = asyncio.get_running_loop().time() + self.timeout_ms / 1_000
+        while asyncio.get_running_loop().time() < deadline:
+            text, password_visible = await self._page_text()
+            if password_visible:
+                return False
+            normalized = re.sub(r"\s+", " ", text.casefold())
+            if self.expected_account.casefold() in normalized:
+                return True
+            await self._page.wait_for_timeout(500)
+        return False
+
+    async def execute(self, job: dict) -> LocalAgentActionResult:
+        if str(job.get("expected_account") or "").strip().casefold() != self.expected_account.casefold():
+            return LocalAgentActionResult(
+                "INVALID_TARGET",
+                "The job belongs to a different FT Williams account; no navigation or click was attempted.",
+            )
+        target = LocalFTWTarget.from_dict(
+            {
+                "label": str(job.get("filing_id") or job.get("id") or "FT Williams job"),
+                "url": job.get("target_url"),
+                "plan_name": job.get("expected_plan_name"),
+                "ein": job.get("expected_ein"),
+                "plan_number": job.get("expected_plan_number"),
+                "year": job.get("expected_year"),
+            }
+        )
+        await self.start()
+        await self._page.goto(target.url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        verification = await self._wait_for_identity(target)
+        if not verification.success:
+            return LocalAgentActionResult(verification.state, verification.message)
+
+        candidate = await self._single_bring_forward_candidate()
+        if candidate is None:
+            return LocalAgentActionResult(
+                "PAGE_LAYOUT_CHANGED",
+                "The single expected FT Williams Bring Forward action was not found; no click was attempted.",
+            )
+        await candidate.click(timeout=self.timeout_ms)
+        await self._page.wait_for_timeout(1_000)
+        text, _ = await self._page_text()
+        if _FAILURE_TEXT.search(text[:20_000]):
+            return LocalAgentActionResult(
+                "FAILED",
+                "FT Williams displayed a Bring Forward error; the dashboard will not assume success.",
+            )
+        return LocalAgentActionResult(
+            "SUBMITTED",
+            "Bring Forward was submitted from the client computer; ftwLink verification is required.",
+        )
+
+    async def _wait_for_identity(self, target: LocalFTWTarget):
+        deadline = asyncio.get_running_loop().time() + self.timeout_ms / 1_000
+        last_result = None
+        while asyncio.get_running_loop().time() < deadline:
+            text, password_visible = await self._page_text()
+            last_result = verify_local_ftw_identity(
+                target,
+                text,
+                expected_account=self.expected_account,
+                password_visible=password_visible,
+            )
+            if last_result.success or last_result.state in {"LOGIN_REQUIRED", "WRONG_ACCOUNT"}:
+                return last_result
+            await self._page.wait_for_timeout(500)
+        return last_result
+
+    async def _single_bring_forward_candidate(self):
+        matches = []
+        for frame in self._page.frames:
+            elements = frame.locator("a, button, input[type='button'], input[type='submit']")
+            try:
+                values = await elements.evaluate_all(
+                    """
+                    nodes => nodes.map((node, index) => ({
+                      index,
+                      text: (node.innerText || node.value || node.textContent || '').trim(),
+                      visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
+                    }))
+                    """
+                )
+            except Exception:
+                continue
+            for value in values:
+                if value.get("visible") and _BRING_FORWARD_TEXT.fullmatch(str(value.get("text") or "").strip()):
+                    matches.append(elements.nth(int(value["index"])))
+        return matches[0] if len(matches) == 1 else None
+
+    async def _page_text(self) -> tuple[str, bool]:
+        texts: list[str] = []
+        password_visible = False
+        for frame in self._page.frames:
+            try:
+                password_visible = password_visible or bool(
+                    await frame.locator("input[type='password']").count()
+                )
+                texts.append((await frame.locator("body").inner_text(timeout=5_000)) or "")
+                values = await frame.locator(
+                    "input:not([type='password']), textarea, select"
+                ).evaluate_all(
+                    """
+                    elements => elements.flatMap(element => {
+                      if (element.tagName === 'SELECT') {
+                        return [element.value, ...Array.from(element.selectedOptions).map(option => option.text)];
+                      }
+                      return [element.value];
+                    }).filter(value => typeof value === 'string' && value.trim())
+                    """
+                )
+                texts.extend(str(value) for value in values if str(value).strip())
+            except Exception:
+                continue
+        return "\n".join(texts), password_visible
+
+
+class FTWLocalAgentRunner:
+    def __init__(self, api: LocalAgentApiClient, browser: PersistentFTWBrowser):
+        self.api = api
+        self.browser = browser
+
+    async def run_once(self) -> bool:
+        try:
+            ready = await self.browser.session_ready()
+        except Exception as exc:
+            await self.api.heartbeat(browser_ready=False, last_error=f"Browser unavailable: {type(exc).__name__}")
+            return False
+        if not ready:
+            await self.api.heartbeat(
+                browser_ready=False,
+                login_required=True,
+                last_error="Sign in to FT Williams in the dedicated ERISAPros browser window.",
+            )
+            return False
+
+        await self.api.heartbeat(browser_ready=True)
+        claim = await self.api.claim()
+        job = claim.get("job")
+        token = claim.get("claim_token")
+        if not job or not token:
+            return False
+        try:
+            result = await self.browser.execute(job)
+        except Exception as exc:
+            result = LocalAgentActionResult(
+                "FAILED",
+                f"The local browser stopped safely before completion: {type(exc).__name__}",
+            )
+        await self.api.complete(str(job["id"]), str(token), result)
+        return True
+
+    async def run_forever(self, *, poll_seconds: float = 10.0) -> None:
+        delay = max(2.0, poll_seconds)
+        while True:
+            try:
+                await self.run_once()
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(min(60.0, delay * 2))
+
+    async def close(self) -> None:
+        await self.browser.close()
+        await self.api.close()
+
+
+async def pair_device(
+    server_url: str,
+    pairing_code: str,
+    device_name: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict:
+    base = _validated_server_base(server_url)
+    async with httpx.AsyncClient(base_url=base, timeout=45.0, transport=transport) as client:
+        response = await client.post(
+            "api/ftwilliams/local-agent/pair",
+            json={
+                "pairing_code": pairing_code,
+                "device_name": device_name,
+                "agent_version": AGENT_VERSION,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def _validated_server_base(server_url: str) -> str:
+    value = str(server_url or "").strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise ValueError("The local agent server URL is invalid.") from exc
+    host = (parsed.hostname or "").lower().rstrip(".")
+    local_http = parsed.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}
+    if (
+        not host
+        or (parsed.scheme != "https" and not local_http)
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError("The local agent requires an HTTPS server origin (localhost is allowed for testing).")
+    return value.rstrip("/") + "/"

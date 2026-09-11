@@ -23,6 +23,10 @@ from app.models import (
     FTWilliamsFailureType,
     FTWilliamsSchemaSnapshot,
     FTWilliamsPlanMapping,
+    FTWLocalAgentDevice,
+    FTWLocalAgentJob,
+    FTWLocalAgentJobStatus,
+    FTWLocalAgentPairingCode,
     RawExtraction,
     Filing,
     FilingStatus,
@@ -243,6 +247,17 @@ class Repository:
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
     async def get_sharefile_suppression(self, item_id: str) -> dict | None: ...
     async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict: ...
+    async def create_ftw_local_agent_pairing_code(self, record: FTWLocalAgentPairingCode) -> FTWLocalAgentPairingCode: ...
+    async def consume_ftw_local_agent_pairing_code(self, code_hash: str, now: datetime) -> FTWLocalAgentPairingCode | None: ...
+    async def create_ftw_local_agent_device(self, device: FTWLocalAgentDevice) -> FTWLocalAgentDevice: ...
+    async def get_ftw_local_agent_device_by_token_hash(self, token_hash: str) -> FTWLocalAgentDevice | None: ...
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]: ...
+    async def update_ftw_local_agent_device(self, device_id: str, values: dict) -> FTWLocalAgentDevice | None: ...
+    async def create_or_get_ftw_local_agent_job(self, job: FTWLocalAgentJob) -> FTWLocalAgentJob: ...
+    async def claim_ftw_local_agent_job(self, device_id: str, expected_account: str, claim_token_hash: str, now: datetime, claim_expires_at: datetime) -> FTWLocalAgentJob | None: ...
+    async def complete_ftw_local_agent_job(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime, values: dict) -> FTWLocalAgentJob | None: ...
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None: ...
+    async def update_ftw_local_agent_job(self, job_id: str, values: dict) -> FTWLocalAgentJob | None: ...
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
     async def save_field_rule_version(self, rule: FieldRule) -> FieldRule: ...
 
@@ -351,6 +366,30 @@ class MongoRepository(Repository):
         await self.db.field_rule_versions.create_index(
             [("key", 1), ("version", -1), ("created_at", -1)],
             name="field_rule_key_version_idx",
+        )
+        await self.db.ftw_local_agent_pairing_codes.create_index(
+            "code_hash",
+            name="ftw_local_agent_pairing_code_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_pairing_codes.create_index(
+            "expires_at",
+            name="ftw_local_agent_pairing_expiry_idx",
+            expireAfterSeconds=0,
+        )
+        await self.db.ftw_local_agent_devices.create_index(
+            "token_hash",
+            name="ftw_local_agent_device_token_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            "idempotency_key",
+            name="ftw_local_agent_job_idempotency_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            [("status", 1), ("expires_at", 1), ("created_at", 1)],
+            name="ftw_local_agent_job_claim_idx",
         )
 
     async def create_filing(self, filing: Filing) -> Filing:
@@ -1084,6 +1123,160 @@ class MongoRepository(Repository):
         )
         return self._plain_mongo_doc(doc)
 
+    async def create_ftw_local_agent_pairing_code(
+        self,
+        record: FTWLocalAgentPairingCode,
+    ) -> FTWLocalAgentPairingCode:
+        result = await self.db.ftw_local_agent_pairing_codes.insert_one(to_mongo(record))
+        record.id = str(result.inserted_id)
+        return record
+
+    async def consume_ftw_local_agent_pairing_code(
+        self,
+        code_hash: str,
+        now: datetime,
+    ) -> FTWLocalAgentPairingCode | None:
+        doc = await self.db.ftw_local_agent_pairing_codes.find_one_and_update(
+            {
+                "code_hash": code_hash,
+                "used_at": None,
+                "expires_at": {"$gt": now},
+            },
+            {"$set": {"used_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentPairingCode) if doc else None
+
+    async def create_ftw_local_agent_device(
+        self,
+        device: FTWLocalAgentDevice,
+    ) -> FTWLocalAgentDevice:
+        result = await self.db.ftw_local_agent_devices.insert_one(to_mongo(device))
+        device.id = str(result.inserted_id)
+        return device
+
+    async def get_ftw_local_agent_device_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> FTWLocalAgentDevice | None:
+        doc = await self.db.ftw_local_agent_devices.find_one({"token_hash": token_hash})
+        return from_mongo(doc, FTWLocalAgentDevice) if doc else None
+
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]:
+        docs = await self.db.ftw_local_agent_devices.find().sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentDevice) for doc in docs]
+
+    async def update_ftw_local_agent_device(
+        self,
+        device_id: str,
+        values: dict,
+    ) -> FTWLocalAgentDevice | None:
+        if not ObjectId.is_valid(device_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_devices.find_one_and_update(
+            {"_id": ObjectId(device_id)},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentDevice) if doc else None
+
+    async def create_or_get_ftw_local_agent_job(
+        self,
+        job: FTWLocalAgentJob,
+    ) -> FTWLocalAgentJob:
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"idempotency_key": job.idempotency_key},
+            {"$setOnInsert": to_mongo(job)},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob)
+
+    async def claim_ftw_local_agent_job(
+        self,
+        device_id: str,
+        expected_account: str,
+        claim_token_hash: str,
+        now: datetime,
+        claim_expires_at: datetime,
+    ) -> FTWLocalAgentJob | None:
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {
+                "expires_at": {"$gt": now},
+                "expected_account": expected_account,
+                "$or": [
+                    {"status": FTWLocalAgentJobStatus.QUEUED.value},
+                    {
+                        "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                        "claim_expires_at": {"$lte": now},
+                    },
+                ],
+            },
+            {
+                "$set": {
+                    "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                    "device_id": device_id,
+                    "claim_token_hash": claim_token_hash,
+                    "claim_expires_at": claim_expires_at,
+                    "claimed_at": now,
+                    "updated_at": now,
+                },
+                "$inc": {"attempts": 1},
+            },
+            sort=[("created_at", 1)],
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def complete_ftw_local_agent_job(
+        self,
+        job_id: str,
+        device_id: str,
+        claim_token_hash: str,
+        now: datetime,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {
+                "_id": ObjectId(job_id),
+                "device_id": device_id,
+                "claim_token_hash": claim_token_hash,
+                "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                "claim_expires_at": {"$gt": now},
+            },
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        doc = await self.db.ftw_local_agent_jobs.find_one({"_id": ObjectId(job_id)})
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def update_ftw_local_agent_job(
+        self,
+        job_id: str,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"_id": ObjectId(job_id)},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
     def _plain_mongo_doc(self, doc: dict) -> dict:
         payload = dict(doc)
         payload["id"] = str(payload.pop("_id"))
@@ -1121,6 +1314,9 @@ class MemoryRepository(Repository):
         self.sharefile_sync_state: dict[str, dict] = {}
         self.sharefile_suppressions: dict[str, dict] = {}
         self.field_rule_versions: dict[str, FieldRule] = {}
+        self.ftw_local_agent_pairing_codes: dict[str, FTWLocalAgentPairingCode] = {}
+        self.ftw_local_agent_devices: dict[str, FTWLocalAgentDevice] = {}
+        self.ftw_local_agent_jobs: dict[str, FTWLocalAgentJob] = {}
 
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
         rules = [rule for rule in self.field_rule_versions.values() if key is None or rule.key == key]
@@ -1562,6 +1758,146 @@ class MemoryRepository(Repository):
         record.setdefault("id", str(uuid4()))
         self.sharefile_suppressions[item_id] = record
         return dict(record)
+
+    async def create_ftw_local_agent_pairing_code(
+        self,
+        record: FTWLocalAgentPairingCode,
+    ) -> FTWLocalAgentPairingCode:
+        stored = record.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_pairing_codes[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def consume_ftw_local_agent_pairing_code(
+        self,
+        code_hash: str,
+        now: datetime,
+    ) -> FTWLocalAgentPairingCode | None:
+        for record in self.ftw_local_agent_pairing_codes.values():
+            if record.code_hash == code_hash and record.used_at is None and record.expires_at > now:
+                record.used_at = now
+                return record.model_copy(deep=True)
+        return None
+
+    async def create_ftw_local_agent_device(
+        self,
+        device: FTWLocalAgentDevice,
+    ) -> FTWLocalAgentDevice:
+        stored = device.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_devices[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def get_ftw_local_agent_device_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> FTWLocalAgentDevice | None:
+        for device in self.ftw_local_agent_devices.values():
+            if device.token_hash == token_hash:
+                return device.model_copy(deep=True)
+        return None
+
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(
+                self.ftw_local_agent_devices.values(),
+                key=lambda value: value.created_at,
+                reverse=True,
+            )
+        ]
+
+    async def update_ftw_local_agent_device(
+        self,
+        device_id: str,
+        values: dict,
+    ) -> FTWLocalAgentDevice | None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if not device:
+            return None
+        for key, value in values.items():
+            setattr(device, key, value)
+        device.updated_at = datetime.utcnow()
+        return device.model_copy(deep=True)
+
+    async def create_or_get_ftw_local_agent_job(
+        self,
+        job: FTWLocalAgentJob,
+    ) -> FTWLocalAgentJob:
+        for existing in self.ftw_local_agent_jobs.values():
+            if existing.idempotency_key == job.idempotency_key:
+                return existing.model_copy(deep=True)
+        stored = job.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_jobs[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def claim_ftw_local_agent_job(
+        self,
+        device_id: str,
+        expected_account: str,
+        claim_token_hash: str,
+        now: datetime,
+        claim_expires_at: datetime,
+    ) -> FTWLocalAgentJob | None:
+        candidates = sorted(self.ftw_local_agent_jobs.values(), key=lambda value: value.created_at)
+        for job in candidates:
+            available = job.status == FTWLocalAgentJobStatus.QUEUED or (
+                job.status == FTWLocalAgentJobStatus.CLAIMED
+                and job.claim_expires_at is not None
+                and job.claim_expires_at <= now
+            )
+            if not available or job.expires_at <= now or job.expected_account != expected_account:
+                continue
+            job.status = FTWLocalAgentJobStatus.CLAIMED
+            job.device_id = device_id
+            job.claim_token_hash = claim_token_hash
+            job.claim_expires_at = claim_expires_at
+            job.claimed_at = now
+            job.attempts += 1
+            job.updated_at = now
+            return job.model_copy(deep=True)
+        return None
+
+    async def complete_ftw_local_agent_job(
+        self,
+        job_id: str,
+        device_id: str,
+        claim_token_hash: str,
+        now: datetime,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if (
+            not job
+            or job.device_id != device_id
+            or job.claim_token_hash != claim_token_hash
+            or job.status != FTWLocalAgentJobStatus.CLAIMED
+            or job.claim_expires_at is None
+            or job.claim_expires_at <= now
+        ):
+            return None
+        for key, value in values.items():
+            setattr(job, key, value)
+        job.updated_at = datetime.utcnow()
+        return job.model_copy(deep=True)
+
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        return job.model_copy(deep=True) if job else None
+
+    async def update_ftw_local_agent_job(
+        self,
+        job_id: str,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if not job:
+            return None
+        for key, value in values.items():
+            setattr(job, key, value)
+        job.updated_at = datetime.utcnow()
+        return job.model_copy(deep=True)
 
 
 _repository: Repository | None = None

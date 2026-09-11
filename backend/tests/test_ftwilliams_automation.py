@@ -22,6 +22,8 @@ from app.models import (
     FTWilliamsQueryState,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
+    FTWLocalAgentDeviceStatus,
+    FTWLocalAgentStatusResponse,
 )
 from app.services.ftwilliams_automation import (
     FTWAutomationPolicy,
@@ -101,6 +103,27 @@ class RaisingBringForwardAgent:
 class RaisingRequeryReviewService(FakeAutomationReviewService):
     async def prepare_review(self, filing_id: str, send_queries: bool = False, **kwargs):
         raise RuntimeError("ftwLink re-query timed out after Bring Forward.")
+
+
+class FakeLocalAgentService:
+    def __init__(self, *, connected: bool):
+        self.connected = connected
+        self.enqueue_calls: list[dict] = []
+
+    async def enqueue_bring_forward(self, filing, review, **kwargs):
+        self.enqueue_calls.append({"filing": filing, "review": review, **kwargs})
+        return type("LocalJob", (), {"id": "local-job-1"})()
+
+    async def status(self):
+        return FTWLocalAgentStatusResponse(
+            enabled=True,
+            connected=self.connected,
+            status=(
+                FTWLocalAgentDeviceStatus.CONNECTED
+                if self.connected
+                else FTWLocalAgentDeviceStatus.OFFLINE
+            ),
+        )
 
 
 class FTWAutomationPolicyTests(unittest.TestCase):
@@ -409,6 +432,75 @@ class FTWAutomationPolicyTests(unittest.TestCase):
             self.assertEqual(review_service.send_calls, [])
         finally:
             repositories._repository = None
+
+    def test_missing_schedule_a_queues_client_local_agent_without_using_cloud_browser(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftw_automation_bring_forward_enabled = True
+        settings.ftw_automation_auto_send_enabled = False
+        settings.ftw_local_agent_enabled = True
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        review.schedule_a_match = None
+        review.schedule_a_candidates = []
+        review.schedule_a_records = []
+        review.fields = []
+        review.ftw_plan_url = (
+            "https://www.ftwilliam.com/cgi-bin/index.cgi#go=iframe&"
+            "plan=highland-demo,001&Year=2025"
+        )
+        review.plan_lookup = FTWilliamsPlanLookup(
+            status=FTWilliamsPlanLookupStatus.MATCHED,
+            company_employer_id="12-3456789",
+            plan_number="501",
+            plan_name="Demo Health and Welfare Plan",
+            year="2025",
+        )
+        repo = MemoryRepository()
+        saved_filing = run_async(repo.create_filing(filing))
+        review.filing_id = str(saved_filing.id)
+        local_agent = FakeLocalAgentService(connected=True)
+        browser_agent = FakeBringForwardAgent(
+            FTWBringForwardResult(success=True, state="SUBMITTED", message="must not run")
+        )
+        service = FTWAutomationService(
+            repo=repo,
+            review_service=FakeAutomationReviewService(review),
+            local_agent_service=local_agent,
+            bring_forward_agent=browser_agent,
+            settings=settings,
+        )
+
+        decision = run_async(service.run(str(saved_filing.id), review=review))
+
+        self.assertEqual(decision.status, FTWAutomationStatus.PROCESSING)
+        self.assertEqual(decision.next_action, "WAIT_FOR_LOCAL_AGENT")
+        self.assertEqual(len(local_agent.enqueue_calls), 1)
+        self.assertEqual(browser_agent.calls, [])
+
+    def test_offline_client_local_agent_preserves_manual_bring_forward_fallback(self):
+        filing, review, _extracted, settings = self.safe_case()
+        settings.ftw_automation_bring_forward_enabled = True
+        settings.ftw_local_agent_enabled = True
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        review.schedule_a_records = []
+        review.fields = []
+        repo = MemoryRepository()
+        saved_filing = run_async(repo.create_filing(filing))
+        review.filing_id = str(saved_filing.id)
+        local_agent = FakeLocalAgentService(connected=False)
+        service = FTWAutomationService(
+            repo=repo,
+            review_service=FakeAutomationReviewService(review),
+            local_agent_service=local_agent,
+            settings=settings,
+        )
+
+        decision = run_async(service.run(str(saved_filing.id), review=review))
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertEqual(decision.next_action, "START_LOCAL_AGENT")
+        self.assertIn("manual Bring Forward remains available", decision.reasons[0])
 
     def test_bring_forward_success_requeries_before_continuing(self):
         filing, safe_review, extracted, settings = self.safe_case()

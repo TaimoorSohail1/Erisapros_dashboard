@@ -108,7 +108,15 @@ PUBLIC_PATHS = {
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     settings = get_settings()
-    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+    local_agent_path = request.url.path.startswith("/api/ftwilliams/local-agent/agent/")
+    local_agent_pair_path = request.url.path == "/api/ftwilliams/local-agent/pair"
+    if (
+        not settings.auth_enabled
+        or request.method == "OPTIONS"
+        or request.url.path in PUBLIC_PATHS
+        or local_agent_path
+        or local_agent_pair_path
+    ):
         return await call_next(request)
 
     authorization = request.headers.get("authorization", "")

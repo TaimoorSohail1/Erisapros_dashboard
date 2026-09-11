@@ -11,6 +11,7 @@ import type {
   FTWilliamsFailureType,
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
+  FTWLocalAgentStatus,
   FTWilliamsReview,
   ClientFacingError,
   ScheduleABrokerRow,
@@ -174,6 +175,10 @@ export async function listFTWilliamsHistory(range: FTWilliamsHistoryRange): Prom
 
 export async function listFTWilliamsFailureNotifications(): Promise<FTWilliamsFailureNotificationResponse> {
   return requestWithTimeout<FTWilliamsFailureNotificationResponse>("/ftwilliams/failure-notifications");
+}
+
+export async function getFTWLocalAgentStatus(): Promise<FTWLocalAgentStatus> {
+  return requestWithTimeout<FTWLocalAgentStatus>("/ftwilliams/local-agent/status", {}, 5_000);
 }
 
 export async function listFTWilliamsFailureQueue(options: {

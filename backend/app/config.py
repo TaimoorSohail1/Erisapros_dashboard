@@ -109,6 +109,14 @@ class Settings(BaseSettings):
     ftw_automation_policy_version: str = "2026-09-11-v2"
     ftw_automation_allowed_targets_json: str = "[]"
     ftw_automation_lease_seconds: int = 600
+    # Optional client-local Bring Forward agent. Disabled by default so the
+    # established cloud/manual workflow is unchanged until device QA passes.
+    ftw_local_agent_enabled: bool = False
+    ftw_local_agent_expected_account: str = "HighlandTech"
+    ftw_local_agent_pairing_ttl_seconds: int = 600
+    ftw_local_agent_heartbeat_ttl_seconds: int = 90
+    ftw_local_agent_job_ttl_seconds: int = 900
+    ftw_local_agent_claim_ttl_seconds: int = 180
     # Browser credentials are never stored in application configuration. A
     # designated operator signs into the FT Williams demo account once and saves a
     # Playwright storage-state file outside source control.

@@ -120,6 +120,142 @@ class FTWAutomationDecision(BaseModel):
     evaluated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class FTWLocalAgentDeviceStatus(str, Enum):
+    CONNECTED = "CONNECTED"
+    OFFLINE = "OFFLINE"
+    LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    REVOKED = "REVOKED"
+
+
+class FTWLocalAgentJobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    CLAIMED = "CLAIMED"
+    SUBMITTED = "SUBMITTED"
+    VERIFIED = "VERIFIED"
+    ACTION_NEEDED = "ACTION_NEEDED"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+
+
+class FTWLocalAgentDevice(BaseModel):
+    id: str | None = None
+    name: str
+    token_hash: str
+    token_prefix: str
+    expected_account: str
+    status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
+    agent_version: str | None = None
+    browser_ready: bool = False
+    last_error: str | None = None
+    last_seen_at: datetime | None = None
+    paired_by: str | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentPairingCode(BaseModel):
+    id: str | None = None
+    code_hash: str
+    code_prefix: str
+    expected_account: str
+    created_by: str | None = None
+    expires_at: datetime
+    used_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentJob(BaseModel):
+    id: str | None = None
+    filing_id: str
+    run_id: str
+    idempotency_key: str
+    status: FTWLocalAgentJobStatus = FTWLocalAgentJobStatus.QUEUED
+    target_url: str
+    expected_account: str
+    expected_plan_name: str
+    expected_ein: str
+    expected_plan_number: str
+    expected_year: str
+    before_record_ids: list[str] = Field(default_factory=list)
+    device_id: str | None = None
+    claim_token_hash: str | None = None
+    claim_expires_at: datetime | None = None
+    claimed_at: datetime | None = None
+    completed_at: datetime | None = None
+    result_state: str | None = None
+    result_message: str | None = None
+    attempts: int = 0
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentPairingCodeResponse(BaseModel):
+    pairing_code: str
+    expires_at: datetime
+
+
+class FTWLocalAgentPairRequest(BaseModel):
+    pairing_code: str
+    device_name: str
+    agent_version: str
+
+
+class FTWLocalAgentPairResponse(BaseModel):
+    device_id: str
+    device_token: str
+    expected_account: str
+
+
+class FTWLocalAgentHeartbeatRequest(BaseModel):
+    agent_version: str
+    browser_ready: bool
+    login_required: bool = False
+    last_error: str | None = None
+
+
+class FTWLocalAgentStatusResponse(BaseModel):
+    enabled: bool
+    connected: bool
+    device_count: int = 0
+    status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
+    device_name: str | None = None
+    agent_version: str | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+
+
+class FTWLocalAgentJobPayload(BaseModel):
+    id: str
+    filing_id: str
+    target_url: str
+    expected_account: str
+    expected_plan_name: str
+    expected_ein: str
+    expected_plan_number: str
+    expected_year: str
+    expires_at: datetime
+
+
+class FTWLocalAgentClaimResponse(BaseModel):
+    job: FTWLocalAgentJobPayload | None = None
+    claim_token: str | None = None
+
+
+class FTWLocalAgentCompleteRequest(BaseModel):
+    claim_token: str
+    state: Literal["SUBMITTED", "LOGIN_REQUIRED", "INVALID_TARGET", "PAGE_LAYOUT_CHANGED", "FAILED"]
+    message: str
+
+
+class FTWLocalAgentJobResultResponse(BaseModel):
+    job_id: str
+    status: FTWLocalAgentJobStatus
+    result_state: str | None = None
+    message: str | None = None
+
+
 class FTWilliamsFailureType(str, Enum):
     NEEDS_RETRY = "NEEDS_RETRY"
     NEEDS_DATA_FIX = "NEEDS_DATA_FIX"

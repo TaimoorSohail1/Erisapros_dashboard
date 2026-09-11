@@ -35,6 +35,21 @@ assert.match(
   /automationRequiresOperatorAction\(filing\)[\s\S]*?<AutomationExceptionActions[\s\S]*?Resolve & Continue/,
   "Action Needed should replace the legacy multi-button toolbar with one contextual action.",
 );
+assert.match(
+  source,
+  /START_LOCAL_AGENT[\s\S]*?Check local agent[\s\S]*?Manual Bring Forward/,
+  "An offline client-local agent must keep the manual Bring Forward fallback visible.",
+);
+assert.match(
+  source,
+  /Local FT Williams agent:[\s\S]*?Connected[\s\S]*?Login required[\s\S]*?Offline/,
+  "The automated workflow should show a concise local-agent connection state.",
+);
+assert.match(
+  api,
+  /export async function getFTWLocalAgentStatus[\s\S]*?\/ftwilliams\/local-agent\/status/,
+  "The review workspace must query the local-agent heartbeat status.",
+);
 
 assert.match(
   api,

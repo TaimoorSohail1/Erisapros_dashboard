@@ -330,13 +330,23 @@ class FTWAutomationService:
         repo: Repository | None = None,
         review_service: FTWilliamsReviewService | None = None,
         bring_forward_agent=None,
+        local_agent_service=None,
         settings: Settings | None = None,
     ):
         self.repo = repo or get_repository()
         self.settings = settings or get_settings()
         self.policy = FTWAutomationPolicy(self.settings)
         self.review_service = review_service or FTWilliamsReviewService()
-        if bring_forward_agent is None and self.settings.ftw_automation_bring_forward_enabled:
+        if local_agent_service is None and self.settings.ftw_local_agent_enabled:
+            from app.services.ftwilliams_local_agent_jobs import FTWLocalAgentService
+
+            local_agent_service = FTWLocalAgentService(repo=self.repo, settings=self.settings)
+        self.local_agent_service = local_agent_service
+        if (
+            bring_forward_agent is None
+            and self.settings.ftw_automation_bring_forward_enabled
+            and not self.settings.ftw_local_agent_enabled
+        ):
             from app.services.ftwilliams_browser import PlaywrightFTWBringForwardAgent
 
             bring_forward_agent = PlaywrightFTWBringForwardAgent(self.settings)
@@ -404,6 +414,54 @@ class FTWAutomationService:
             )
 
             if decision.status == FTWAutomationStatus.BRING_FORWARD_REQUIRED:
+                if self.settings.ftw_local_agent_enabled and self.local_agent_service is not None:
+                    before_record_ids = self._schedule_a_record_ids(active_review)
+                    try:
+                        job = await self.local_agent_service.enqueue_bring_forward(
+                            filing,
+                            active_review,
+                            run_id=run_id,
+                            before_record_ids=before_record_ids,
+                        )
+                        agent_status = await self.local_agent_service.status()
+                    except Exception as exc:
+                        return await self._stop_safely(
+                            filing_id,
+                            run_id=run_id,
+                            reason=f"The local FT Williams agent job could not be created: {exc}",
+                            next_action="MANUAL_BRING_FORWARD",
+                            audit_event="FTW_LOCAL_AGENT_JOB_FAILED",
+                        )
+                    waiting = FTWAutomationDecision(
+                        status=(
+                            FTWAutomationStatus.PROCESSING
+                            if agent_status.connected
+                            else FTWAutomationStatus.ACTION_NEEDED
+                        ),
+                        eligible=agent_status.connected,
+                        reasons=[
+                            "The local FT Williams agent is processing Bring Forward."
+                            if agent_status.connected
+                            else "Start or sign in to the local FT Williams agent; manual Bring Forward remains available."
+                        ],
+                        next_action=("WAIT_FOR_LOCAL_AGENT" if agent_status.connected else "START_LOCAL_AGENT"),
+                        policy_version=self.settings.ftw_automation_policy_version,
+                    )
+                    await self._persist_decision(filing_id, waiting, run_id=run_id)
+                    await self.repo.add_audit(
+                        AuditLog(
+                            filing_id=filing_id,
+                            event="FTW_LOCAL_AGENT_JOB_QUEUED",
+                            message="Bring Forward was queued for the paired client-local FT Williams agent.",
+                            details={
+                                "job_id": job.id,
+                                "run_id": run_id,
+                                "agent_connected": agent_status.connected,
+                                "before_record_ids": before_record_ids,
+                            },
+                        )
+                    )
+                    return waiting
                 if self.bring_forward_agent is None:
                     unavailable = FTWAutomationDecision(
                         status=FTWAutomationStatus.ACTION_NEEDED,

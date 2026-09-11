@@ -37,6 +37,8 @@ Run the native FT Williams Bring Forward action from the client's Windows comput
 
 ## Delivery slices
 
+Implementation status on 2026-09-11: slices 1-3 are implemented on the feature branch and verified locally without a new FT Williams mutation. Slice 4 production hardening remains gated as listed below.
+
 ### Slice 1 — profile proof of concept
 
 - Launch a dedicated persistent browser profile locally.
@@ -51,11 +53,15 @@ Run the native FT Williams Bring Forward action from the client's Windows comput
 - Add a pull-only Bring Forward job queue and one-time job claims.
 - Package the agent as a signed Windows installer with automatic startup.
 
+Implemented: pairing, revocation, DPAPI token storage, heartbeat/status, account-routed pull jobs, build script, and automatic-start installation script. A production signing certificate is still required to produce the signed distribution artifact.
+
 ### Slice 3 — guarded Bring Forward
 
 - Reuse the proven identity checks and click logic locally.
 - Report sanitized evidence and failure states.
 - Re-query ftwLink in the dashboard and verify record IDs before continuing.
+
+Implemented and covered by local integration tests. A submitted click becomes **Action Needed** unless ftwLink proves at least one new current-year Schedule A record ID.
 
 ### Slice 4 — production hardening
 

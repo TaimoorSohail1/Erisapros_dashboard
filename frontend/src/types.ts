@@ -33,6 +33,17 @@ export type FTWAutomationStatus =
   | "COMPLETED"
   | "FAILED";
 
+export interface FTWLocalAgentStatus {
+  enabled: boolean;
+  connected: boolean;
+  device_count: number;
+  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED";
+  device_name?: string | null;
+  agent_version?: string | null;
+  last_seen_at?: string | null;
+  last_error?: string | null;
+}
+
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";
 export type DocumentType = "SCHEDULE_A" | "PLAN_WORKSHEET" | "UNKNOWN";
 export type FormType = "SCHEDULE_A" | "FORM_5500";

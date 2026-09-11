@@ -29,6 +29,7 @@ import {
   ApiRequestError,
   approveFiling,
   getFiling,
+  getFTWLocalAgentStatus,
   getFTWilliamsBringForwardLink,
   openFTWilliamsAuditPDF,
   prepareFTWilliamsReview,
@@ -45,7 +46,7 @@ import {
   updateField,
   updateFTWilliamsScheduleABrokerRows,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
@@ -203,6 +204,7 @@ export function FilingReviewPage() {
   const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const [showFtwSendConfirm, setShowFtwSendConfirm] = useState(false);
   const [showAdvancedReview, setShowAdvancedReview] = useState(false);
+  const [localAgentStatus, setLocalAgentStatus] = useState<FTWLocalAgentStatus | null>(null);
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
   const ftwSendInFlightRef = useRef(false);
@@ -213,6 +215,25 @@ export function FilingReviewPage() {
   );
 
   useEffect(() => setShowAdvancedReview(false), [id]);
+
+  useEffect(() => {
+    if (!filing?.automation_status || filing.automation_status === "DISABLED") return;
+    let active = true;
+    async function loadLocalAgentStatus() {
+      try {
+        const result = await getFTWLocalAgentStatus();
+        if (active) setLocalAgentStatus(result);
+      } catch {
+        if (active) setLocalAgentStatus(null);
+      }
+    }
+    loadLocalAgentStatus();
+    const interval = window.setInterval(loadLocalAgentStatus, REVIEW_POLL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [filing?.automation_status]);
 
   useEffect(() => {
     if (!id) return;
@@ -1063,7 +1084,7 @@ export function FilingReviewPage() {
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
 
       <main className="approval-workspace">
-        <AutomationWorkflowNotice filing={filing} />
+        <AutomationWorkflowNotice filing={filing} localAgentStatus={localAgentStatus} />
 
         <WorkflowStepper
           filing={filing}
@@ -1449,6 +1470,14 @@ function AutomationExceptionActions({
       </>
     );
   }
+  if (nextAction === "START_LOCAL_AGENT") {
+    return (
+      <>
+        <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Check local agent</button>
+        <button className="button secondary" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Manual Bring Forward</button>
+      </>
+    );
+  }
   if (nextAction === "MANUAL_BRING_FORWARD") {
     return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW Bring Forward</button>;
   }
@@ -1458,7 +1487,13 @@ function AutomationExceptionActions({
   return <button className="button" type="button" disabled={busy} onClick={onResolve}><AlertTriangle size={16} /> Resolve & Continue</button>;
 }
 
-function AutomationWorkflowNotice({ filing }: { filing: FilingDetail }) {
+function AutomationWorkflowNotice({
+  filing,
+  localAgentStatus,
+}: {
+  filing: FilingDetail;
+  localAgentStatus: FTWLocalAgentStatus | null;
+}) {
   const status = filing.automation_status;
   if (!status || status === "DISABLED") return null;
   const presentation = status === "COMPLETED"
@@ -1485,6 +1520,12 @@ function AutomationWorkflowNotice({ filing }: { filing: FilingDetail }) {
           <ul className="automation-reason-list">
             {filing.automation_reasons?.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}
           </ul>
+        ) : null}
+        {localAgentStatus?.enabled ? (
+          <span className={`local-agent-status ${localAgentStatus.connected ? "connected" : "attention"}`}>
+            <i aria-hidden="true" />
+            Local FT Williams agent: {localAgentStatus.connected ? "Connected" : localAgentStatus.status === "LOGIN_REQUIRED" ? "Login required" : "Offline"}
+          </span>
         ) : null}
       </div>
       <ShieldCheck size={24} aria-hidden="true" />
@@ -1516,7 +1557,7 @@ function AutomationWorkflowNotice({ filing }: { filing: FilingDetail }) {
 function automationCurrentStep(filing: FilingDetail) {
   const nextAction = filing.automation_next_action || "";
   if (nextAction === "QUERY_FTW_CURRENT" || nextAction === "RETRY_AFTER_CURRENT_QUERY") return 2;
-  if (["MAP_FTW_BROWSER_PLAN", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD"].includes(nextAction)) return 3;
+  if (["MAP_FTW_BROWSER_PLAN", "AUTOMATE_BRING_FORWARD", "VERIFY_BRING_FORWARD", "MANUAL_BRING_FORWARD", "WAIT_FOR_LOCAL_AGENT", "START_LOCAL_AGENT"].includes(nextAction)) return 3;
   if (nextAction === "RESOLVE_ISSUES") return 4;
   if (nextAction === "AUTO_SEND") return 5;
   if (nextAction === "VERIFY_FTW_UPDATE") return 6;
@@ -1537,6 +1578,8 @@ function automationNextActionLabel(nextAction: string | null | undefined, status
     AUTO_SEND: "Send automatically",
     VERIFY_FTW_UPDATE: "Verify the FT Williams update",
     LOGIN_TO_FTW: "Refresh the FT Williams login",
+    WAIT_FOR_LOCAL_AGENT: "Wait for the local FT Williams agent",
+    START_LOCAL_AGENT: "Start or sign in to the local FT Williams agent",
     RETRY: "Retry the automated workflow",
   };
   return labels[nextAction || ""] || (status === "FAILED" ? "Review the failure and retry" : "Continue automatically");
