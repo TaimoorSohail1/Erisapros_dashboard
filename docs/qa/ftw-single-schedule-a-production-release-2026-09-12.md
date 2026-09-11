@@ -1,6 +1,6 @@
 # FT Williams Single Schedule A Production Release Report
 
-Date: 2026-09-12  
+Date: 2026-09-12
 Environment: ERISAPros production application connected only to the HighlandTech FT Williams demo account
 
 ## Release decision
