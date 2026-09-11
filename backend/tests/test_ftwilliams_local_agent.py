@@ -22,9 +22,10 @@ from app.models import (
     FTWLocalAgentHeartbeatRequest,
     FTWLocalAgentJob,
     FTWLocalAgentJobStatus,
+    FTWLocalAgentPairingCode,
     FTWLocalAgentPairRequest,
 )
-from app.repositories import MemoryRepository
+from app.repositories import MemoryRepository, to_mongo_bson
 from app.services.ftwilliams_local_agent_jobs import FTWLocalAgentService
 
 
@@ -144,6 +145,22 @@ def test_pairing_code_is_single_use_and_device_token_is_never_stored_plaintext()
     assert run_async(service.authenticate(paired.device_token)).id == paired.device_id
     with pytest.raises(ValueError, match="already used"):
         run_async(service.pair(payload))
+
+
+def test_mongo_local_agent_expiry_fields_are_stored_as_native_datetimes():
+    now = datetime.utcnow()
+
+    payload = to_mongo_bson(
+        FTWLocalAgentPairingCode(
+            code_hash="hash",
+            code_prefix="code",
+            expected_account="HighlandTech",
+            expires_at=now + timedelta(minutes=10),
+        )
+    )
+
+    assert isinstance(payload["expires_at"], datetime)
+    assert isinstance(payload["created_at"], datetime)
 
 
 def test_heartbeat_and_job_claim_are_pull_only_and_claim_token_is_one_time():

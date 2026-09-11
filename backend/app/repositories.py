@@ -156,6 +156,18 @@ def to_mongo(model):
     return data
 
 
+def to_mongo_bson(model):
+    """Serialize records that participate in Mongo date-range queries.
+
+    JSON-mode Pydantic dumps turn datetimes into strings. Mongo cannot compare
+    those strings with the native datetime values used by atomic expiry and
+    lease queries, so local-agent records must retain BSON datetimes.
+    """
+    data = model.model_dump(mode="python", by_alias=False)
+    data.pop("id", None)
+    return data
+
+
 def _mongo_update_value(value):
     """Convert nested API models into values the BSON encoder accepts."""
     if isinstance(value, BaseModel):
@@ -1127,7 +1139,7 @@ class MongoRepository(Repository):
         self,
         record: FTWLocalAgentPairingCode,
     ) -> FTWLocalAgentPairingCode:
-        result = await self.db.ftw_local_agent_pairing_codes.insert_one(to_mongo(record))
+        result = await self.db.ftw_local_agent_pairing_codes.insert_one(to_mongo_bson(record))
         record.id = str(result.inserted_id)
         return record
 
@@ -1151,7 +1163,7 @@ class MongoRepository(Repository):
         self,
         device: FTWLocalAgentDevice,
     ) -> FTWLocalAgentDevice:
-        result = await self.db.ftw_local_agent_devices.insert_one(to_mongo(device))
+        result = await self.db.ftw_local_agent_devices.insert_one(to_mongo_bson(device))
         device.id = str(result.inserted_id)
         return device
 
@@ -1188,7 +1200,7 @@ class MongoRepository(Repository):
     ) -> FTWLocalAgentJob:
         doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
             {"idempotency_key": job.idempotency_key},
-            {"$setOnInsert": to_mongo(job)},
+            {"$setOnInsert": to_mongo_bson(job)},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
