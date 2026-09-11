@@ -1446,13 +1446,31 @@ class FTWilliamsReviewService:
     ) -> FTWilliamsPlanLookup:
         identifiers = self._extract_plan_lookup_identifiers(fields, filing)
         lookup = FTWilliamsPlanLookup(**identifiers)
+        repo = get_repository()
+        recovered_mapping: FTWilliamsPlanMapping | None = None
 
         if not lookup.company_employer_id or not lookup.plan_number:
-            lookup.status = FTWilliamsPlanLookupStatus.MISSING_IDENTIFIERS
-            lookup.error_message = "Plan lookup needs sponsor EIN and plan number from Schedule A or the plan worksheet."
-            return lookup
+            saved_matches = await self._verified_saved_plan_mappings_for_lookup(lookup, repo)
+            if len(saved_matches) > 1:
+                lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+                lookup.matches = [self._mapping_match(mapping) for mapping in saved_matches]
+                lookup.error_message = (
+                    "More than one verified saved FT Williams plan matches this client and year. "
+                    "Choose the exact plan before continuing."
+                )
+                return lookup
+            if saved_matches:
+                recovered_mapping = saved_matches[0]
+                lookup.company_employer_id = recovered_mapping.company_employer_id
+                lookup.plan_number = recovered_mapping.plan_number
+                lookup.year = recovered_mapping.year or lookup.year
+                lookup.plan_name = lookup.plan_name or recovered_mapping.plan_name
+                lookup.sponsor_name = lookup.sponsor_name or recovered_mapping.sponsor_name
+            else:
+                lookup.status = FTWilliamsPlanLookupStatus.MISSING_IDENTIFIERS
+                lookup.error_message = "Plan lookup needs sponsor EIN and plan number from Schedule A or the plan worksheet."
+                return lookup
 
-        repo = get_repository()
         derived_identity = self._derived_customer_plan_identity(lookup)
         lookup.matched_identity = derived_identity or None
         if not derived_identity:
@@ -1460,7 +1478,7 @@ class FTWilliamsReviewService:
             lookup.error_message = "Plan lookup needs sponsor EIN and plan number before deriving FT Williams CustomerID/PlanID."
             return lookup
 
-        stored_mapping = await repo.get_ftwilliams_plan_mapping(
+        stored_mapping = recovered_mapping or await repo.get_ftwilliams_plan_mapping(
             lookup.company_employer_id,
             lookup.plan_number,
             self._plan_name_key(lookup.plan_name),
@@ -5677,6 +5695,80 @@ class FTWilliamsReviewService:
         if without_suffix and without_suffix not in variants:
             variants.append(without_suffix)
         return variants
+
+    def _saved_mapping_company_key(self, value: object) -> str:
+        cleaned = self._clean_company_name_candidate(value)
+        if not cleaned:
+            return ""
+        cleaned = re.sub(
+            r"\s+(?:test|demo|prod|production|sandbox|dev|development)\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        ignored = {
+            "the",
+            "llc",
+            "inc",
+            "incorporated",
+            "corp",
+            "corporation",
+            "co",
+            "company",
+            "employee",
+            "employees",
+            "benefit",
+            "benefits",
+            "plan",
+            "plans",
+            "health",
+            "welfare",
+            "group",
+        }
+        tokens = [token for token in re.findall(r"[a-z0-9]+", cleaned.casefold()) if token not in ignored]
+        return " ".join(tokens)
+
+    async def _verified_saved_plan_mappings_for_lookup(
+        self,
+        lookup: FTWilliamsPlanLookup,
+        repo,
+    ) -> list[FTWilliamsPlanMapping]:
+        candidate_keys = {
+            self._saved_mapping_company_key(value)
+            for value in [*lookup.company_name_candidates, lookup.sponsor_name, lookup.plan_name]
+        }
+        candidate_keys.discard("")
+        if not candidate_keys:
+            return []
+
+        mappings = await repo.list_ftwilliams_plan_mappings(self._normalize_year(lookup.year))
+        matches: list[FTWilliamsPlanMapping] = []
+        seen: set[tuple[str, str, str]] = set()
+        for mapping in mappings:
+            mapping_identity = self._identity_from_mapping(mapping)
+            if not (
+                mapping.browser_mapping_confirmed
+                and mapping.ftw_browser_customer_id
+                and mapping.ftw_browser_plan_id
+                and self._has_plan_identity(mapping_identity)
+            ):
+                continue
+            mapping_keys = {
+                self._saved_mapping_company_key(mapping.sponsor_name),
+                self._saved_mapping_company_key(mapping.plan_name),
+            }
+            mapping_keys.discard("")
+            if not candidate_keys.intersection(mapping_keys):
+                continue
+            identity = (
+                mapping.company_employer_id,
+                mapping.plan_number,
+                mapping.plan_name_key or "",
+            )
+            if identity not in seen:
+                seen.add(identity)
+                matches.append(mapping)
+        return matches
 
     def _filing_year_from_filing(self, filing) -> str | None:
         if not filing:

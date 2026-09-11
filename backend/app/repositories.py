@@ -240,6 +240,10 @@ class Repository:
         plan_number: str,
         plan_name_key: str | None = None,
     ) -> FTWilliamsPlanMapping | None: ...
+    async def list_ftwilliams_plan_mappings(
+        self,
+        year: str | None = None,
+    ) -> list[FTWilliamsPlanMapping]: ...
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping: ...
     async def create_extraction_job(self, job: ExtractionJob) -> ExtractionJob: ...
     async def update_extraction_job(self, job_id: str, values: dict) -> ExtractionJob | None: ...
@@ -389,6 +393,10 @@ class MongoRepository(Repository):
         await self.db.ftwilliams_plan_mappings.create_index(
             [("company_employer_id", 1), ("plan_number", 1), ("plan_name_key", 1)],
             name="ftw_plan_mapping_exact_identity_idx",
+        )
+        await self.db.ftwilliams_plan_mappings.create_index(
+            [("year", 1), ("updated_at", -1)],
+            name="ftw_plan_mapping_year_updated_idx",
         )
         await self.db.field_rule_versions.create_index(
             [("key", 1), ("version", -1), ("created_at", -1)],
@@ -940,6 +948,12 @@ class MongoRepository(Repository):
             query["plan_name_key"] = plan_name_key
         doc = await self.db.ftwilliams_plan_mappings.find_one(query)
         return from_mongo(doc, FTWilliamsPlanMapping) if doc else None
+
+    async def list_ftwilliams_plan_mappings(self, year: str | None = None) -> list[FTWilliamsPlanMapping]:
+        query = {"year": year} if year else {}
+        cursor = self.db.ftwilliams_plan_mappings.find(query).sort("updated_at", -1)
+        docs = await cursor.to_list(length=None)
+        return [from_mongo(doc, FTWilliamsPlanMapping) for doc in docs]
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
         values = to_mongo(mapping)
@@ -1698,6 +1712,14 @@ class MemoryRepository(Repository):
             ),
             None,
         )
+
+    async def list_ftwilliams_plan_mappings(self, year: str | None = None) -> list[FTWilliamsPlanMapping]:
+        mappings = [
+            mapping
+            for mapping in self.ftwilliams_plan_mappings.values()
+            if year is None or mapping.year == year
+        ]
+        return sorted(mappings, key=lambda item: item.updated_at, reverse=True)
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
         key = (mapping.company_employer_id, mapping.plan_number, mapping.plan_name_key or "")

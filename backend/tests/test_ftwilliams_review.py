@@ -1595,6 +1595,134 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         clear_ftw_current_snapshot_cache()
         repositories._repository = None
 
+    def test_plan_lookup_reuses_one_verified_saved_mapping_when_document_identifiers_are_missing(self):
+        class VerifiedMappingFTWilliamsService(FTWilliamsService):
+            def __init__(self):
+                self.calls = []
+
+            def status(self) -> dict:
+                return {"configured": True}
+
+            async def run_query(self, payload):
+                self.calls.append(payload)
+                return FTWilliamsQueryResponse(
+                    operation=payload.operation,
+                    configured=True,
+                    sent=True,
+                    request_xml="<query_plan />",
+                    success=True,
+                    raw_response="<ftwLinkResponse />",
+                    statuses=[
+                        FTWilliamsStatusItem(
+                            type="Plan",
+                            error_code="0",
+                            customer_id="32-0561094",
+                            plan_id="501",
+                            ftw_customer_id="1870755347",
+                            ftw_plan_id="2262415502",
+                            query_results={
+                                "PlanNumber": "501",
+                                "PlanLine1": "Fgf,Llc Employee Benefits Plan",
+                            },
+                        )
+                    ],
+                )
+
+        run_async(
+            repositories._repository.upsert_ftwilliams_plan_mapping(
+                FTWilliamsPlanMapping(
+                    company_employer_id="32-0561094",
+                    plan_number="501",
+                    year="2025",
+                    plan_name="Fgf,Llc Employee Benefits Plan",
+                    plan_name_key="fgf llc employee benefits plan",
+                    sponsor_name="FGF, LLC EMPLOYEE BENEFITS PLAN",
+                    customer_id="32-0561094",
+                    plan_id="501",
+                    ftw_customer_id="1870755347",
+                    ftw_plan_id="2262415502",
+                    ftw_browser_customer_id="2429100964",
+                    ftw_browser_plan_id="2986383641",
+                    browser_mapping_confirmed=True,
+                )
+            )
+        )
+        filing = sample_filing()
+        filing.package_documents = [{"client_name": "FGF LLC TEST", "filing_year": "2025"}]
+        ftwilliams = VerifiedMappingFTWilliamsService()
+        service = FTWilliamsReviewService(ftwilliams=ftwilliams)
+
+        lookup = run_async(
+            service._prepare_plan_lookup(filing, [], send_queries=True, configured=True)
+        )
+
+        self.assertEqual(lookup.status, FTWilliamsPlanLookupStatus.MATCHED)
+        self.assertEqual(lookup.company_employer_id, "32-0561094")
+        self.assertEqual(lookup.plan_number, "501")
+        self.assertEqual(lookup.ftw_browser_customer_id, "2429100964")
+        self.assertEqual(lookup.ftw_browser_plan_id, "2986383641")
+        self.assertEqual([call.operation for call in ftwilliams.calls], ["query_plan"])
+
+    def test_plan_lookup_requires_human_choice_when_saved_company_mapping_is_ambiguous(self):
+        for plan_number, plan_id in [("501", "2986383641"), ("502", "2986383642")]:
+            run_async(
+                repositories._repository.upsert_ftwilliams_plan_mapping(
+                    FTWilliamsPlanMapping(
+                        company_employer_id="32-0561094",
+                        plan_number=plan_number,
+                        year="2025",
+                        plan_name=f"Fgf,Llc Employee Benefits Plan {plan_number}",
+                        sponsor_name="FGF, LLC EMPLOYEE BENEFITS PLAN",
+                        customer_id="32-0561094",
+                        plan_id=plan_number,
+                        ftw_customer_id="1870755347",
+                        ftw_plan_id=f"2262415{plan_number}",
+                        ftw_browser_customer_id="2429100964",
+                        ftw_browser_plan_id=plan_id,
+                        browser_mapping_confirmed=True,
+                    )
+                )
+            )
+        filing = sample_filing()
+        filing.package_documents = [{"client_name": "FGF LLC TEST", "filing_year": "2025"}]
+        ftwilliams = FakeFTWilliamsService()
+        service = FTWilliamsReviewService(ftwilliams=ftwilliams)
+
+        lookup = run_async(
+            service._prepare_plan_lookup(filing, [], send_queries=True, configured=True)
+        )
+
+        self.assertEqual(lookup.status, FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES)
+        self.assertEqual(len(lookup.matches), 2)
+        self.assertEqual(ftwilliams.calls, [])
+
+    def test_plan_lookup_does_not_reuse_an_unverified_saved_mapping(self):
+        run_async(
+            repositories._repository.upsert_ftwilliams_plan_mapping(
+                FTWilliamsPlanMapping(
+                    company_employer_id="32-0561094",
+                    plan_number="501",
+                    year="2025",
+                    plan_name="Fgf,Llc Employee Benefits Plan",
+                    sponsor_name="FGF, LLC EMPLOYEE BENEFITS PLAN",
+                    customer_id="32-0561094",
+                    plan_id="501",
+                    ftw_customer_id="1870755347",
+                    ftw_plan_id="2262415502",
+                    browser_mapping_confirmed=False,
+                )
+            )
+        )
+        filing = sample_filing()
+        filing.package_documents = [{"client_name": "FGF LLC TEST", "filing_year": "2025"}]
+        service = FTWilliamsReviewService(ftwilliams=FakeFTWilliamsService())
+
+        lookup = run_async(
+            service._prepare_plan_lookup(filing, [], send_queries=True, configured=True)
+        )
+
+        self.assertEqual(lookup.status, FTWilliamsPlanLookupStatus.MISSING_IDENTIFIERS)
+
     def test_resolves_dashboard_rules_to_real_ftw_tags(self):
         schedule_field = ExtractedField(
             filing_id="filing",
