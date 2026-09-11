@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     ftw_automation_bring_forward_enabled: bool = False
     ftw_automation_auto_send_enabled: bool = False
     ftw_automation_confidence_threshold: float = 0.95
-    ftw_automation_policy_version: str = "2026-09-11-v2"
+    ftw_automation_policy_version: str = "2026-09-12-v3"
     ftw_automation_allowed_targets_json: str = "[]"
     ftw_automation_lease_seconds: int = 600
     # Optional client-local Bring Forward agent. Disabled by default so the

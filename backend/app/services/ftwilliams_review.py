@@ -1615,7 +1615,8 @@ class FTWilliamsReviewService:
             return lookup
 
         success_status = next((status for status in response.statuses if str(status.error_code or "") == "0"), response.statuses[0])
-        lookup.matches = [self._plan_status_match(success_status, lookup, derived_identity)]
+        matched_plan = self._plan_status_match(success_status, lookup, derived_identity)
+        lookup.matches = [matched_plan]
         lookup.matched_identity = {
             **derived_identity,
             **self._identity_from_status(success_status),
@@ -1623,6 +1624,7 @@ class FTWilliamsReviewService:
         if self._has_plan_identity(lookup.matched_identity or {}):
             lookup.status = FTWilliamsPlanLookupStatus.MATCHED
             lookup.error_message = None
+            await self._persist_plan_mapping(lookup, repo, matched_plan, source="PLAN_DATA")
             return lookup
 
         lookup.status = FTWilliamsPlanLookupStatus.FOUND_NO_FTW_IDS
@@ -2076,6 +2078,25 @@ class FTWilliamsReviewService:
             lookup.plan_number,
             plan_name_key,
         )
+        existing_browser_mapping = bool(
+            existing
+            and existing.browser_mapping_confirmed
+            and existing.ftw_browser_customer_id
+            and existing.ftw_browser_plan_id
+        )
+        if existing_browser_mapping:
+            browser_customer_id = existing.ftw_browser_customer_id
+            browser_plan_id = existing.ftw_browser_plan_id
+            browser_mapping_confirmed_at = existing.browser_mapping_confirmed_at
+        else:
+            matched_identity = lookup.matched_identity or self._identity_from_lookup_match(match)
+            browser_customer_id = self._clean_identifier(matched_identity.get("ftw_customer_id"))
+            browser_plan_id = self._clean_identifier(matched_identity.get("ftw_plan_id"))
+            browser_mapping_confirmed_at = datetime.utcnow() if browser_customer_id and browser_plan_id else None
+
+        lookup.ftw_browser_customer_id = browser_customer_id
+        lookup.ftw_browser_plan_id = browser_plan_id
+        lookup.browser_mapping_confirmed = bool(browser_customer_id and browser_plan_id)
         await repo.upsert_ftwilliams_plan_mapping(
             FTWilliamsPlanMapping(
                 company_employer_id=lookup.company_employer_id,
@@ -2085,21 +2106,10 @@ class FTWilliamsReviewService:
                 plan_name_key=plan_name_key,
                 sponsor_name=match.get("CompanyName") or lookup.sponsor_name,
                 source=source,
-                ftw_browser_customer_id=(
-                    lookup.ftw_browser_customer_id
-                    or (existing.ftw_browser_customer_id if existing else None)
-                ),
-                ftw_browser_plan_id=(
-                    lookup.ftw_browser_plan_id
-                    or (existing.ftw_browser_plan_id if existing else None)
-                ),
-                browser_mapping_confirmed=bool(
-                    lookup.browser_mapping_confirmed
-                    or (existing.browser_mapping_confirmed if existing else False)
-                ),
-                browser_mapping_confirmed_at=(
-                    existing.browser_mapping_confirmed_at if existing else None
-                ),
+                ftw_browser_customer_id=browser_customer_id,
+                ftw_browser_plan_id=browser_plan_id,
+                browser_mapping_confirmed=lookup.browser_mapping_confirmed,
+                browser_mapping_confirmed_at=browser_mapping_confirmed_at,
                 **(lookup.matched_identity or {}),
             )
         )

@@ -296,6 +296,7 @@ class FTWAutomationPolicy:
     def _test_target_error(self, review: FTWilliamsReview) -> str | None:
         settings = self.settings
         configured_targets: list[tuple[str, str, str]] = []
+        account_scoped_targets: list[tuple[str, str]] = []
         try:
             allowed_targets = json.loads(settings.ftw_automation_allowed_targets_json or "[]")
         except (TypeError, ValueError):
@@ -306,6 +307,12 @@ class FTWAutomationPolicy:
                     continue
                 customer_id = str(target.get("ftw_customer_id") or "").strip()
                 plan_id = str(target.get("ftw_plan_id") or "").strip()
+                expected_account = str(target.get("expected_account") or "").strip()
+                if customer_id == "*" and plan_id == "*" and expected_account:
+                    account_scoped_targets.append(
+                        (expected_account, self._year(target.get("year")))
+                    )
+                    continue
                 if customer_id and plan_id:
                     configured_targets.append(
                         (customer_id, plan_id, self._year(target.get("year")))
@@ -326,8 +333,30 @@ class FTWAutomationPolicy:
                     self._year(settings.ftwlink_sandbox_year),
                 )
             )
-        if not configured_targets:
+        if not configured_targets and not account_scoped_targets:
             return "No FT Williams demo customer, plan, and year allowlist is configured."
+
+        review_year = self._year(review.year)
+        auto_verified_browser_mapping = bool(
+            settings.ftw_local_agent_enabled
+            and review.browser_mapping_confirmed
+            and review.plan_lookup
+            and review.plan_lookup.status == FTWilliamsPlanLookupStatus.MATCHED
+            and str(review.ftw_customer_id or "").strip()
+            and str(review.ftw_plan_id or "").strip()
+            and str(review.ftw_browser_customer_id or "").strip().casefold()
+            == str(review.ftw_customer_id or "").strip().casefold()
+            and str(review.ftw_browser_plan_id or "").strip().casefold()
+            == str(review.ftw_plan_id or "").strip().casefold()
+        )
+        if auto_verified_browser_mapping:
+            configured_account = str(settings.ftw_local_agent_expected_account or "").strip()
+            for expected_account, expected_year in account_scoped_targets:
+                if (
+                    configured_account.casefold() == expected_account.casefold()
+                    and (not expected_year or review_year == expected_year)
+                ):
+                    return None
 
         review_targets = [
             (str(review.ftw_customer_id or ""), str(review.ftw_plan_id or ""), self._year(review.year)),

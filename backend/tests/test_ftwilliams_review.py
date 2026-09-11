@@ -5911,6 +5911,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(mapping.plan_id, "OHIO-PLAN")
         self.assertEqual(mapping.ftw_customer_id, "387302687")
         self.assertEqual(mapping.ftw_plan_id, "987654321")
+        self.assertEqual(review.ftw_browser_customer_id, "387302687")
+        self.assertEqual(review.ftw_browser_plan_id, "987654321")
+        self.assertTrue(review.browser_mapping_confirmed)
+        self.assertEqual(mapping.ftw_browser_customer_id, "387302687")
+        self.assertEqual(mapping.ftw_browser_plan_id, "987654321")
+        self.assertTrue(mapping.browser_mapping_confirmed)
 
     def test_send_query_revalidates_and_repairs_a_stale_saved_plan_mapping(self):
         class StaleMappingFTWilliamsService(FTWilliamsService):
@@ -6596,7 +6602,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
         self.assertEqual(review.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
-        self.assertEqual(review.ftw_plan_url, "")
+        self.assertIn("plan=900000001,900000002", review.ftw_plan_url)
+        self.assertTrue(review.browser_mapping_confirmed)
         self.assertEqual(review.year, "2024")
         self.assertIsNone(review.comparison_year)
         self.assertIsNone(review.comparison_year_source)

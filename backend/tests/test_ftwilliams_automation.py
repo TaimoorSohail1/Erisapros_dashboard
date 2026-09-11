@@ -497,6 +497,83 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
 
+    def test_account_scoped_demo_allowlist_accepts_an_auto_verified_plan(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftwlink_sandbox_ftw_customer_id = None
+        settings.ftwlink_sandbox_ftw_plan_id = None
+        settings.ftw_local_agent_enabled = True
+        settings.ftw_automation_allowed_targets_json = """[
+            {
+              "expected_account":"HighlandTech",
+              "ftw_customer_id":"*",
+              "ftw_plan_id":"*",
+              "year":"2025"
+            }
+        ]"""
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+
+    def test_account_scoped_demo_allowlist_rejects_an_unconfirmed_mapping(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.browser_mapping_confirmed = False
+        settings.ftwlink_sandbox_ftw_customer_id = None
+        settings.ftwlink_sandbox_ftw_plan_id = None
+        settings.ftw_local_agent_enabled = True
+        settings.ftw_automation_allowed_targets_json = """[
+            {
+              "expected_account":"HighlandTech",
+              "ftw_customer_id":"*",
+              "ftw_plan_id":"*",
+              "year":"2025"
+            }
+        ]"""
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
+        self.assertIn("outside", decision.reasons[0].lower())
+
+    def test_account_scoped_demo_allowlist_rejects_another_expected_account(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftwlink_sandbox_ftw_customer_id = None
+        settings.ftwlink_sandbox_ftw_plan_id = None
+        settings.ftw_local_agent_enabled = True
+        settings.ftw_automation_allowed_targets_json = """[
+            {
+              "expected_account":"AnotherAccount",
+              "ftw_customer_id":"*",
+              "ftw_plan_id":"*",
+              "year":"2025"
+            }
+        ]"""
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
+        self.assertIn("outside", decision.reasons[0].lower())
+
+    def test_account_scoped_demo_allowlist_rejects_different_browser_ids(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.ftw_browser_plan_id = "different-browser-plan"
+        settings.ftwlink_sandbox_ftw_customer_id = None
+        settings.ftwlink_sandbox_ftw_plan_id = None
+        settings.ftw_local_agent_enabled = True
+        settings.ftw_automation_allowed_targets_json = """[
+            {
+              "expected_account":"HighlandTech",
+              "ftw_customer_id":"*",
+              "ftw_plan_id":"*",
+              "year":"2025"
+            }
+        ]"""
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
+        self.assertIn("outside", decision.reasons[0].lower())
+
     def test_invalid_json_allowlist_fails_closed(self):
         filing, review, extracted, settings = self.safe_case()
         settings.ftwlink_sandbox_ftw_customer_id = None
