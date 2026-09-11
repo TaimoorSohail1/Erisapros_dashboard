@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import (
     DocumentType,
     ExtractedField,
@@ -4808,12 +4808,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "request_xml": "<restore-query />",
             "response_xml": "<restored />",
         }
-        settings = SimpleNamespace(
+        settings = Settings(
             ftwlink_schedule_a_updates_enabled=True,
             ftw_schema_validation_enabled=False,
             ftw_schema_enforcement_enabled=False,
             ftw_auto_edit_checks_enabled=False,
             ftw_pdf_audit_enabled=False,
+            _env_file=None,
         )
 
         with (

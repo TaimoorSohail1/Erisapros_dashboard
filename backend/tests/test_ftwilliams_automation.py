@@ -277,7 +277,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.reasons, [])
 
-    def test_single_record_release_stops_automation_for_multiple_schedule_as(self):
+    def test_verified_multi_record_replacement_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
         review.schedule_a_records.append(
             {"ftw_seq_no": "2", "query_results": {"InsContractNum": "OTHER-2"}}
@@ -285,9 +285,9 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
-        self.assertFalse(decision.eligible)
-        self.assertTrue(any("exactly one current Schedule A" in reason for reason in decision.reasons))
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
 
     def test_low_confidence_required_field_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()

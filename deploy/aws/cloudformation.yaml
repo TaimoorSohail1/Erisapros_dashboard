@@ -42,7 +42,7 @@ Parameters:
     AllowedValues: ["true", "false"]
   FtwScheduleASingleRecordOnly:
     Type: String
-    Default: "true"
+    Default: "false"
     AllowedValues: ["true", "false"]
   FtwAutomationEnabled:
     Type: String
