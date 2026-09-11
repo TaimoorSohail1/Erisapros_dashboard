@@ -143,8 +143,11 @@ class FTWAutomationPolicy:
                 )
             if self.settings.ftw_automation_bring_forward_enabled:
                 if (
-                    filing.automation_bring_forward_approved_target_key != target_key
-                    or filing.automation_bring_forward_approved_at is None
+                    not self.settings.ftw_automation_auto_bring_forward_enabled
+                    and (
+                        filing.automation_bring_forward_approved_target_key != target_key
+                        or filing.automation_bring_forward_approved_at is None
+                    )
                 ):
                     return self._action_needed(
                         "Confirm the exact FT Williams plan and year before Bring Forward runs.",

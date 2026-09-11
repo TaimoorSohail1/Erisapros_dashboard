@@ -399,6 +399,36 @@ def test_expired_job_claim_cannot_be_completed():
     assert completed is None
 
 
+def test_login_required_job_is_automatically_reclaimed_after_login():
+    repo, service, filing, job = _submitted_job_fixture(FailingPostBringForwardReviewService())
+    now = datetime.utcnow()
+    job.status = FTWLocalAgentJobStatus.ACTION_NEEDED
+    job.result_state = "LOGIN_REQUIRED"
+    job.result_message = "Sign in to FT Williams."
+    job.completed_at = now - timedelta(seconds=10)
+    job.expires_at = now + timedelta(minutes=5)
+    repo.ftw_local_agent_jobs[str(job.id)] = job
+    device = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Highland workstation",
+        token_hash="device-token",
+        token_prefix="device",
+        expected_account="HighlandTech",
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now,
+    )))
+
+    claim = run_async(service.claim(device))
+
+    assert claim.job is not None
+    assert claim.job.id == job.id
+    reclaimed = run_async(repo.get_ftw_local_agent_job(str(job.id)))
+    assert reclaimed.status == FTWLocalAgentJobStatus.CLAIMED
+    assert reclaimed.result_state is None
+    assert reclaimed.result_message is None
+    assert reclaimed.completed_at is None
+
+
 def test_device_cannot_claim_a_job_for_another_ftw_account():
     repo = MemoryRepository()
     service = FTWLocalAgentService(

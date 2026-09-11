@@ -52,6 +52,10 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
+  FtwAutomationAutoBringForwardEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
   FtwAutomationAutoSendEnabled:
     Type: String
     Default: "false"
@@ -417,6 +421,8 @@ Resources:
               Value: !Ref FtwAutomationEnabled
             - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED
               Value: !Ref FtwAutomationBringForwardEnabled
+            - Name: FTW_AUTOMATION_AUTO_BRING_FORWARD_ENABLED
+              Value: !Ref FtwAutomationAutoBringForwardEnabled
             - Name: FTW_AUTOMATION_AUTO_SEND_ENABLED
               Value: !Ref FtwAutomationAutoSendEnabled
             - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON
@@ -563,6 +569,8 @@ Resources:
               Value: !Ref FtwAutomationEnabled
             - Name: FTW_AUTOMATION_BRING_FORWARD_ENABLED
               Value: !Ref FtwAutomationBringForwardEnabled
+            - Name: FTW_AUTOMATION_AUTO_BRING_FORWARD_ENABLED
+              Value: !Ref FtwAutomationAutoBringForwardEnabled
             - Name: FTW_AUTOMATION_AUTO_SEND_ENABLED
               Value: !Ref FtwAutomationAutoSendEnabled
             - Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON

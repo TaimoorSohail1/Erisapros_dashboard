@@ -407,6 +407,19 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(confirmed.status, FTWAutomationStatus.BRING_FORWARD_REQUIRED)
         self.assertTrue(confirmed.eligible)
 
+    def test_demo_auto_bring_forward_skips_confirmation_after_exact_target_checks(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.current_year_exists = False
+        review.bring_forward_required = True
+        settings.ftw_automation_bring_forward_enabled = True
+        settings.ftw_automation_auto_bring_forward_enabled = True
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.BRING_FORWARD_REQUIRED)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.next_action, "AUTOMATE_BRING_FORWARD")
+
     def test_confirmation_endpoint_records_target_bound_approval_and_audit(self):
         filing, review, _extracted, settings = self.safe_case()
         review.current_year_exists = False

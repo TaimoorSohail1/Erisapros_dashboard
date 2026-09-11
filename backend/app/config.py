@@ -108,9 +108,13 @@ class Settings(BaseSettings):
     # unchanged until a test-plan allowlist is configured explicitly.
     ftw_automation_enabled: bool = False
     ftw_automation_bring_forward_enabled: bool = False
+    # Demo-only convenience switch. Exact account, plan, EIN, plan number,
+    # year, browser mapping, and allowlist checks still run before a job is
+    # queued. Keep disabled everywhere except an isolated test workspace.
+    ftw_automation_auto_bring_forward_enabled: bool = False
     ftw_automation_auto_send_enabled: bool = False
     ftw_automation_confidence_threshold: float = 0.95
-    ftw_automation_policy_version: str = "2026-09-12-v3"
+    ftw_automation_policy_version: str = "2026-09-12-v4"
     ftw_automation_allowed_targets_json: str = "[]"
     ftw_automation_lease_seconds: int = 600
     # Optional client-local Bring Forward agent. Disabled by default so the

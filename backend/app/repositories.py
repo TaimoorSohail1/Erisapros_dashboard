@@ -1322,6 +1322,10 @@ class MongoRepository(Repository):
                         "status": FTWLocalAgentJobStatus.CLAIMED.value,
                         "claim_expires_at": {"$lte": now},
                     },
+                    {
+                        "status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                        "result_state": "LOGIN_REQUIRED",
+                    },
                 ],
             },
             {
@@ -1332,6 +1336,11 @@ class MongoRepository(Repository):
                     "claim_expires_at": claim_expires_at,
                     "claimed_at": now,
                     "updated_at": now,
+                },
+                "$unset": {
+                    "result_state": "",
+                    "result_message": "",
+                    "completed_at": "",
                 },
                 "$inc": {"attempts": 1},
             },
@@ -2028,6 +2037,9 @@ class MemoryRepository(Repository):
                 job.status == FTWLocalAgentJobStatus.CLAIMED
                 and job.claim_expires_at is not None
                 and job.claim_expires_at <= now
+            ) or (
+                job.status == FTWLocalAgentJobStatus.ACTION_NEEDED
+                and job.result_state == "LOGIN_REQUIRED"
             )
             legacy_scope_matches = not workspace_id and job.expected_account == expected_account
             workspace_scope_matches = bool(
@@ -2042,6 +2054,9 @@ class MemoryRepository(Repository):
             job.claim_token_hash = claim_token_hash
             job.claim_expires_at = claim_expires_at
             job.claimed_at = now
+            job.result_state = None
+            job.result_message = None
+            job.completed_at = None
             job.attempts += 1
             job.updated_at = now
             return job.model_copy(deep=True)
