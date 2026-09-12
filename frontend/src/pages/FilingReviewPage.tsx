@@ -416,6 +416,7 @@ export function FilingReviewPage() {
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
+  const scheduleAMatchLabel = scheduleAIsNew ? "New prepared" : ftwReview?.schedule_a_match ? "Matched" : "Pending";
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
   const scheduleABrokersReady = (
     (!scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false)
@@ -1161,7 +1162,7 @@ export function FilingReviewPage() {
               <div className="compact-review-meta" aria-label="Filing review summary">
                 <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
                 <span><small>{verifiedUpdateComplete ? "Review notes" : "Needs review"}</small><strong>{actionRequiredCount}</strong></span>
-                <span><small>FTW match</small><strong>{filing.ftw_review?.schedule_a_match ? "Matched" : "Pending"}</strong></span>
+                <span><small>FTW match</small><strong>{scheduleAMatchLabel}</strong></span>
               </div>
               <div className="compact-review-toolbar">
               {automationNeedsNoOperatorAction(filing) ? (
@@ -1919,12 +1920,13 @@ function WorkflowStepper({
   const ftwQuerying = filing.status === "QUERYING_FTW_CURRENT";
   const ftwLoaded = Boolean(filing.ftw_review?.current_query_success);
   const ftwScheduleMatch = Boolean(filing.ftw_review?.schedule_a_match);
+  const ftwScheduleIsNew = Boolean(filing.ftw_review?.schedule_a_match?.create_new);
   const ftwScheduleNeedsDecision = Boolean(
     ftwLoaded
     && !filing.ftw_review?.schedule_a_match
     && ((filing.ftw_review?.schedule_a_candidates || []).length || filing.ftw_review?.bring_forward_required),
   );
-  const ftwScheduleStatus = ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
+  const ftwScheduleStatus = ftwScheduleIsNew ? "New Schedule A prepared" : ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
   const approved = filing.status === "APPROVED";
   const updateSent = isVerifiedFTWilliamsUpdate(filing.ftw_review);
   const steps = [

@@ -278,8 +278,18 @@ assert.match(
 );
 assert.match(
   source,
-  /<small>FTW match<\/small><strong>\{filing\.ftw_review\?\.schedule_a_match \? "Matched" : "Pending"\}<\/strong>/,
+  /const ftwScheduleIsNew = Boolean\(filing\.ftw_review\?\.schedule_a_match\?\.create_new\);[\s\S]*?ftwScheduleIsNew \? "New Schedule A prepared" : ftwScheduleMatch \? "Best match selected"/,
+  "The compact workflow step must identify a prepared new Schedule A.",
+);
+assert.match(
+  source,
+  /<small>FTW match<\/small><strong>\{scheduleAMatchLabel\}<\/strong>/,
   "The filing summary must report a Schedule A match only when a specific Schedule A selection exists.",
+);
+assert.match(
+  source,
+  /const scheduleAMatchLabel = scheduleAIsNew \? "New prepared" : ftwReview\?\.schedule_a_match \? "Matched" : "Pending";/,
+  "The filing summary must identify a prepared new Schedule A instead of calling it an existing match.",
 );
 assert.doesNotMatch(
   source,
