@@ -2632,6 +2632,13 @@ class FTWilliamsReviewService:
         if schedule_a_required_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_required_error)
             raise ValueError(schedule_a_required_error)
+        if self._can_finalize_reconciled_noop(review, had_active_failure=had_active_failure):
+            return await self._record_reconciled_noop_success(
+                repo,
+                filing_id,
+                review,
+                reason=reason,
+            )
         if (
             review.update_xml_schedule_a
             and "DOLScheduleAData" in review.update_xml_schedule_a
@@ -3981,6 +3988,111 @@ class FTWilliamsReviewService:
                 },
             )
         )
+
+    @staticmethod
+    def _can_finalize_reconciled_noop(
+        review: FTWilliamsReview,
+        *,
+        had_active_failure: bool,
+    ) -> bool:
+        """Resolve a retry when a fresh read proves the prior accepted write is already present."""
+        has_outbound_payload = bool(
+            (review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500)
+            or (review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
+        )
+        return bool(
+            had_active_failure
+            and not has_outbound_payload
+            and review.current_query_success
+            and review.current_query_complete is not False
+            and review.update_attempted_count > 0
+            and review.update_remaining_count == 0
+            and review.update_verification_attempted
+            and review.update_verification_success is True
+            and (
+                not review.schedule_a_broker_rows
+                or review.schedule_a_broker_match_complete
+            )
+        )
+
+    async def _record_reconciled_noop_success(
+        self,
+        repo,
+        filing_id: str,
+        review: FTWilliamsReview,
+        *,
+        reason: str,
+    ) -> FTWilliamsReview:
+        """Close an accepted update failure without issuing a duplicate FT Williams write."""
+        review.status = FTWilliamsReviewStatus.UPDATE_SENT
+        review.error_message = None
+        review.client_error = None
+        review.query_access_verified = True
+        review.update_verification_attempted = True
+        review.update_verification_success = True
+        review.update_verification_mismatches = []
+        review.update_verification_request_xml = review.query_request_xml
+        review.update_verification_response_xml = review.query_response_xml
+        review.update_confirmed_count = review.update_attempted_count
+        review.update_remaining_count = 0
+        review.active_failure = False
+        review.active_failure_reason = None
+        review.active_failure_client_error = None
+        review.active_failure_type = None
+        review.active_failure_issue_count = None
+        review.active_failure_issue_groups = []
+        review.active_failure_at = None
+        review.failure_dismissed_at = None
+        review.failure_dismissed_reason = None
+
+        await repo.upsert_ftwilliams_review(review)
+        await repo.update_filing(
+            filing_id,
+            {
+                "status": FilingStatus.APPROVED,
+                "approved_at": datetime.utcnow(),
+                "error_message": None,
+            },
+        )
+        await repo.add_event(
+            ReviewEvent(
+                filing_id=filing_id,
+                type="FTWILLIAMS_UPDATE_RECONCILED",
+                reason=reason,
+            )
+        )
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_UPDATE_RECONCILED",
+                message=(
+                    "A fresh FT Williams read confirmed the previously accepted values; "
+                    "no duplicate update was sent."
+                ),
+                details={
+                    "updated_field_count": review.update_confirmed_count,
+                    "update_attempted_count": review.update_attempted_count,
+                    "update_confirmed_count": review.update_confirmed_count,
+                    "update_remaining_count": 0,
+                    "verification_attempted": True,
+                    "verification_success": True,
+                    "write_skipped": True,
+                    "query_access_verified": True,
+                },
+            )
+        )
+        await repo.add_audit(
+            AuditLog(
+                filing_id=filing_id,
+                event="FTWILLIAMS_UPDATE_FAILURE_RESOLVED",
+                message="Previous FT Williams update failure was resolved by fresh read-back verification.",
+                details={
+                    "updated_field_count": review.update_confirmed_count,
+                    "write_skipped": True,
+                },
+            )
+        )
+        return review
 
     async def _record_ambiguous_update(
         self,

@@ -3994,6 +3994,104 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(final_checks_failed.active_failure)
         self.assertIsNone(final_checks_failed.error_message)
 
+    def test_retry_reconciles_an_already_applied_update_without_sending_a_noop_payload(self):
+        class NoopRetryFTWilliamsService(FakeFTWilliamsService):
+            def __init__(self):
+                super().__init__()
+                self.send_calls = 0
+
+            async def run_query(self, payload):
+                response = await super().run_query(payload)
+                if payload.operation == "query_5500" and response.statuses:
+                    response.statuses[0].query_results.update(
+                        {
+                            "SponsDfePlanNum": "501",
+                            "PlanYearEndDate": "12/31/2025",
+                            "LockedStatus": "Unlocked",
+                        }
+                    )
+                return response
+
+            async def send_xml(self, operation, request_xml):
+                self.send_calls += 1
+                raise AssertionError(f"A reconciled no-op retry must not send {operation}")
+
+        repo = repositories.get_repository()
+        filing = run_async(repo.create_filing(sample_filing()))
+
+        def field(rule_key: str, label: str, value: str, form_type: FormType, document_type: DocumentType) -> ExtractedField:
+            return ExtractedField(
+                filing_id=filing.id,
+                source_field_name=label,
+                normalized_field_name=label.lower(),
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=form_type,
+                source_document_type=document_type,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+            )
+
+        run_async(
+            repo.add_fields(
+                [
+                    field("form_5500_part_i_1e_plan_sponsor_ein", "1e. Plan Sponsor EIN", "73-0759701", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_1b_plan_number_pn", "1b. Plan Number", "501", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("form_5500_part_i_7_plan_year_ending_date", "7. Plan Year Ending Date", "12/31/2025", FormType.FORM_5500, DocumentType.PLAN_WORKSHEET),
+                    field("schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "BlueCross BlueShield of Oklahoma", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. Insurance Carrier EIN", "36-1236610", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                    field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract", "Y00979", FormType.SCHEDULE_A, DocumentType.SCHEDULE_A),
+                ]
+            )
+        )
+
+        fake_ftw = NoopRetryFTWilliamsService()
+        service = FTWilliamsReviewService(fake_ftw)
+        failed = run_async(service.prepare_review(filing.id, send_queries=True))
+        carrier = next(item for item in failed.fields if item.ftw_tag == "InsCarrierName")
+        failed.status = FTWilliamsReviewStatus.UPDATE_FAILED
+        failed.active_failure = True
+        failed.active_failure_reason = "Earlier read-back verification used an ambiguous broker identity."
+        failed.update_access_status = "GRANTED"
+        failed.update_attempted_count = 1
+        failed.update_confirmed_count = 0
+        failed.update_remaining_count = 1
+        failed.update_verification_attempted = True
+        failed.update_verification_success = False
+        failed.update_verification_mismatches = [{"form": "DOLScheduleAData", "tag": "InsCarrierName"}]
+        failed.update_results = [
+            {
+                "field_id": carrier.field_id,
+                "tag": carrier.ftw_tag,
+                "label": carrier.label,
+                "form_type": carrier.form_type.value,
+                "sent_value": carrier.proposed_value,
+                "status": "NEEDS_CORRECTION",
+            }
+        ]
+        run_async(repo.upsert_ftwilliams_review(failed))
+        run_async(repo.update_filing(filing.id, {"status": FilingStatus.FAILED}))
+
+        reconciled = run_async(
+            service.approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=True,
+            )
+        )
+
+        self.assertEqual(fake_ftw.send_calls, 0)
+        self.assertEqual(reconciled.status, FTWilliamsReviewStatus.UPDATE_SENT)
+        self.assertTrue(reconciled.update_verification_attempted)
+        self.assertTrue(reconciled.update_verification_success)
+        self.assertEqual(reconciled.update_verification_mismatches, [])
+        self.assertEqual(reconciled.update_attempted_count, 1)
+        self.assertEqual(reconciled.update_confirmed_count, 1)
+        self.assertEqual(reconciled.update_remaining_count, 0)
+        self.assertFalse(reconciled.active_failure)
+        self.assertIsNone(reconciled.error_message)
+
     def test_ambiguous_ftw_update_preserves_last_valid_schedule_snapshot(self):
         class AmbiguousUpdateFTWilliamsService(FakeFTWilliamsService):
             def __init__(self):
