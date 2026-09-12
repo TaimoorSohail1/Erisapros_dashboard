@@ -6,11 +6,17 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import winreg
+except ImportError:  # pragma: no cover - the packaged agent runs on Windows
+    winreg = None
+
 from app.services.ftwilliams_local_agent_runtime import pair_device
 from app.services.windows_secret_store import save_secret_json
 
 
 TASK_NAME = "ERISAPros FT Williams Agent"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 @dataclass(frozen=True)
@@ -19,6 +25,7 @@ class InstalledAgent:
     executable: Path
     credential: Path
     profile: Path
+    launcher: Path
 
 
 def installation_paths(local_app_data: str | Path | None = None) -> InstalledAgent:
@@ -29,11 +36,14 @@ def installation_paths(local_app_data: str | Path | None = None) -> InstalledAge
         executable=root / "ERISAProsFTWAgent.exe",
         credential=root / "device.credential",
         profile=root / "BrowserProfile",
+        launcher=root / "start-agent.vbs",
     )
 
 
 def register_startup_task(installed: InstalledAgent) -> None:
-    task_command = subprocess.list2cmdline(
+    if winreg is None:
+        raise RuntimeError("Windows startup registration is only available on Windows.")
+    agent_command = subprocess.list2cmdline(
         [
             str(installed.executable),
             "run",
@@ -43,27 +53,23 @@ def register_startup_task(installed: InstalledAgent) -> None:
             str(installed.profile),
         ]
     )
-    subprocess.run(
-        [
-            "schtasks.exe",
-            "/Create",
-            "/TN",
-            TASK_NAME,
-            "/TR",
-            task_command,
-            "/SC",
-            "ONLOGON",
-            "/F",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    escaped_command = agent_command.replace('"', '""')
+    installed.launcher.write_text(
+        f'CreateObject("WScript.Shell").Run "{escaped_command}", 0, False\n',
+        encoding="utf-8",
     )
-    subprocess.run(
-        ["schtasks.exe", "/Run", "/TN", TASK_NAME],
-        check=True,
-        capture_output=True,
-        text=True,
+    windows_root = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    wscript = windows_root / "System32" / "wscript.exe"
+    startup_command = subprocess.list2cmdline([str(wscript), "//B", str(installed.launcher)])
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+        winreg.SetValueEx(key, TASK_NAME, 0, winreg.REG_SZ, startup_command)
+    subprocess.Popen(
+        [str(wscript), "//B", str(installed.launcher)],
+        creationflags=(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        ),
+        close_fds=True,
     )
 
 
@@ -85,14 +91,14 @@ async def install_agent(
 
     paired = await pair_device(server_url, code, device_name)
     installed = installation_paths(local_app_data)
-    if register_startup:
+    installed.profile.mkdir(parents=True, exist_ok=True)
+    if installed.executable.exists():
         subprocess.run(
-            ["schtasks.exe", "/End", "/TN", TASK_NAME],
+            ["taskkill.exe", "/IM", installed.executable.name, "/F"],
             check=False,
             capture_output=True,
             text=True,
         )
-    installed.profile.mkdir(parents=True, exist_ok=True)
     if source != installed.executable:
         shutil.copy2(source, installed.executable)
     save_secret_json(

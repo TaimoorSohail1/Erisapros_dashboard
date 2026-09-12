@@ -14,7 +14,7 @@ import httpx
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.2.1"
 _BRING_FORWARD_TEXT = re.compile(
     r"bring\s+forward\s+(?:prior[-\s]*year|\d{4})\s+data(?:\s+to\s+\d{4})?\s+for\s+this\s+plan\s+only",
     re.IGNORECASE,
@@ -133,7 +133,7 @@ class PersistentFTWBrowser:
             self._context = await self._playwright.chromium.launch_persistent_context(
                 str(self.profile_dir),
                 headless=False,
-                args=["--start-minimized"],
+                args=[],
             )
             self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             self._page.set_default_timeout(self.timeout_ms)

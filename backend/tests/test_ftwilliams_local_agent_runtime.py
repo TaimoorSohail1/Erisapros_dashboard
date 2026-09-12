@@ -98,8 +98,10 @@ class StubPlaywright:
         self.context = context
         self.chromium = self
         self.stopped = False
+        self.launch_kwargs = []
 
     async def launch_persistent_context(self, *_args, **_kwargs):
+        self.launch_kwargs.append(_kwargs)
         return self.context
 
     async def stop(self):
@@ -172,6 +174,7 @@ def test_persistent_browser_reopens_after_the_client_closes_its_window(tmp_path)
     assert old_context.closed is True
     assert old_playwright.stopped is True
     assert new_page.goto_calls == ["https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"]
+    assert "--start-minimized" not in new_playwright.launch_kwargs[0]["args"]
 
 
 def test_runner_resumes_automatically_on_the_first_cycle_after_login():

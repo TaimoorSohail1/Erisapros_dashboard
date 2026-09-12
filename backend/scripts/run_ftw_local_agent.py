@@ -66,13 +66,19 @@ async def main() -> int:
         if not getattr(sys, "frozen", False):
             print("Client setup must be run from the packaged ERISAPros installer.", file=sys.stderr)
             return 2
-        await install_agent(
-            server_url=args.server_url,
-            pairing_code=pairing_code,
-            device_name=args.device_name,
-            source_executable=sys.executable,
-            register_startup=not args.no_startup,
-        )
+        try:
+            await install_agent(
+                server_url=args.server_url,
+                pairing_code=pairing_code,
+                device_name=args.device_name,
+                source_executable=sys.executable,
+                register_startup=not args.no_startup,
+            )
+        except Exception as exc:
+            print(f"Setup could not finish: {exc}", file=sys.stderr)
+            if not args.pairing_code and sys.stdin.isatty():
+                input("Press Enter to close setup.")
+            return 1
         print("Connected successfully. Sign in in the FT Williams window, then return to ERISAPros and click Test connection.")
         if not args.pairing_code and sys.stdin.isatty():
             input("Press Enter to close setup.")
