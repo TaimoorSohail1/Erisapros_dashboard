@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   CheckCircle2,
   CircleAlert,
   Clipboard,
@@ -10,6 +11,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Unplug,
+  Wifi,
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
@@ -60,6 +62,8 @@ export function FTWilliamsAgentSettingsPage() {
   const [creatingCode, setCreatingCode] = useState(false);
   const [revokingId, setRevokingId] = useState("");
   const [copied, setCopied] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<{ tone: "success" | "attention"; message: string } | null>(null);
 
   const refresh = async (quiet = false) => {
     if (!quiet) setState("loading");
@@ -124,6 +128,47 @@ export function FTWilliamsAgentSettingsPage() {
       setCopied(true);
     } catch {
       setMessage("Copy the code manually. Your browser did not allow clipboard access.");
+    }
+  };
+
+  const testAgentConnection = async () => {
+    setTestingConnection(true);
+    setConnectionResult(null);
+    try {
+      const [nextStatus, nextDevices] = await Promise.all([
+        getFTWLocalAgentStatus(),
+        listFTWLocalAgentDevices(),
+      ]);
+      const activeDevices = nextDevices.filter((device) => (
+        !device.revoked_at && (!workspaceId || device.workspace_id === workspaceId)
+      ));
+      const readyDevice = activeDevices.find((device) => device.status === "CONNECTED" && device.browser_ready);
+      const loginDevice = activeDevices.find((device) => device.status === "LOGIN_REQUIRED");
+      setStatus(nextStatus);
+      setDevices(nextDevices.filter((device) => !device.revoked_at));
+      if (readyDevice) {
+        setConnectionResult({
+          tone: "success",
+          message: `Connection test passed. ${readyDevice.name} is connected and FT Williams is ready.`,
+        });
+      } else if (loginDevice) {
+        setConnectionResult({
+          tone: "attention",
+          message: `${loginDevice.name} is connected, but FT Williams needs login. Sign in there and test again; waiting work will resume automatically.`,
+        });
+      } else {
+        setConnectionResult({
+          tone: "attention",
+          message: "No active computer was found for this workspace. Start the FT Williams Agent, then test again.",
+        });
+      }
+    } catch (error) {
+      setConnectionResult({
+        tone: "attention",
+        message: errorMessage(error, "The connection test could not be completed."),
+      });
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -204,11 +249,23 @@ export function FTWilliamsAgentSettingsPage() {
               <h2>{status?.connected ? "Connected and ready" : status?.status === "LOGIN_REQUIRED" ? "FT Williams login needed" : "No connected computer"}</h2>
               <p>{agentStatusMessage(status)}</p>
             </div>
-            <div className="agent-status-meta">
-              <span>Connected computers</span>
-              <strong>{status?.device_count || 0}</strong>
+            <div className="agent-status-controls">
+              <div className="agent-status-meta">
+                <span>Connected computers</span>
+                <strong>{status?.device_count || 0}</strong>
+              </div>
+              <button className="button" type="button" onClick={() => void testAgentConnection()} disabled={testingConnection || !status?.enabled}>
+                {testingConnection ? <InlineLoader label="Testing" /> : <><Wifi size={16} /> Test connection</>}
+              </button>
             </div>
           </section>
+
+          {connectionResult ? (
+            <div className={`agent-connection-result ${connectionResult.tone}`} role="status" aria-live="polite">
+              {connectionResult.tone === "success" ? <CheckCircle2 size={18} /> : <CircleAlert size={18} />}
+              {connectionResult.message}
+            </div>
+          ) : null}
 
           <section className="agent-setup-card card">
             <div className="agent-section-heading">
@@ -226,9 +283,14 @@ export function FTWilliamsAgentSettingsPage() {
                   </label>
                 ) : null}
               </div>
-              <button className="button" type="button" onClick={() => void createCode()} disabled={creatingCode || !status?.enabled}>
-                {creatingCode ? <InlineLoader label="Creating code" /> : <><Link2 size={17} /> Connect this computer</>}
-              </button>
+              <div className="agent-setup-actions">
+                <a className="button secondary" href="/ftw-agent-setup-guide.html" target="_blank" rel="noreferrer">
+                  <BookOpen size={16} /> Open setup guide
+                </a>
+                <button className="button" type="button" onClick={() => void createCode()} disabled={creatingCode || !status?.enabled}>
+                  {creatingCode ? <InlineLoader label="Creating code" /> : <><Link2 size={17} /> Connect this computer</>}
+                </button>
+              </div>
             </div>
 
             {!status?.enabled ? (

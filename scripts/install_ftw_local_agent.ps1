@@ -1,13 +1,23 @@
 param(
-    [Parameter(Mandatory = $true)][string]$AgentExecutable,
-    [Parameter(Mandatory = $true)][string]$ServerUrl,
-    [Parameter(Mandatory = $true)][string]$PairingCode,
+    [string]$AgentExecutable = "",
+    [string]$ServerUrl = "https://d3axcdlq9aydpw.cloudfront.net",
+    [string]$PairingCode = "",
     [string]$TaskName = "ERISAPros FT Williams Agent",
     [string]$ExpectedSha256 = "",
     [switch]$RequireSignature
 )
 
 $ErrorActionPreference = "Stop"
+$defaultAgentExecutable = Join-Path $PSScriptRoot "ERISAProsFTWAgent.exe"
+if (-not $AgentExecutable.Trim()) {
+    $AgentExecutable = $defaultAgentExecutable
+}
+if (-not $PairingCode.Trim()) {
+    $PairingCode = Read-Host "Enter the one-time connection code from ERISAPros"
+}
+if (-not $PairingCode.Trim()) {
+    throw "A one-time ERISAPros connection code is required."
+}
 $agentPath = (Resolve-Path -LiteralPath $AgentExecutable).Path
 if ([System.IO.Path]::GetExtension($agentPath) -ne ".exe") {
     throw "The local agent must be a Windows executable."
@@ -47,3 +57,4 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Pr
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Output "The verified ERISAPros FT Williams agent is paired and starts automatically when this Windows user signs in."
+Write-Output "Open ERISAPros and click Test connection to confirm this computer is ready."

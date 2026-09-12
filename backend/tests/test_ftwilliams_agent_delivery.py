@@ -24,6 +24,17 @@ def test_installer_checks_release_integrity_and_uses_per_user_storage():
     assert "device.credential" in script
 
 
+def test_client_installer_needs_only_the_one_time_pairing_code():
+    script = (ROOT / "scripts" / "install_ftw_local_agent.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$AgentExecutable = ""' in script
+    assert '[string]$ServerUrl = "https://d3axcdlq9aydpw.cloudfront.net"' in script
+    assert '[string]$PairingCode = ""' in script
+    assert 'Join-Path $PSScriptRoot "ERISAProsFTWAgent.exe"' in script
+    assert 'Read-Host "Enter the one-time connection code from ERISAPros"' in script
+    assert "Open ERISAPros and click Test connection" in script
+
+
 def test_uninstaller_revokes_the_device_before_removing_local_state():
     script = (ROOT / "scripts" / "uninstall_ftw_local_agent.ps1").read_text(encoding="utf-8")
 

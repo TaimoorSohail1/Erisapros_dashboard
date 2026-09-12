@@ -6828,9 +6828,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .agent-status-meta { border-left: 1px solid #e5ebf1; display: grid; gap: 3px; min-width: 130px; padding-left: 22px; text-align: right; }
 .agent-status-meta span { color: #6c7b8f; font-size: 12px; }
 .agent-status-meta strong { color: #17253b; font-size: 26px; }
+.agent-status-controls { align-items: flex-end; display: flex; gap: 14px; }
+.agent-status-controls .button { white-space: nowrap; }
+.agent-connection-result { align-items: center; border: 1px solid; border-radius: 10px; display: flex; font-size: 13px; font-weight: 650; gap: 9px; line-height: 1.45; padding: 12px 14px; }
+.agent-connection-result.success { background: #eaf8f1; border-color: #b9e4cc; color: #116f48; }
+.agent-connection-result.attention { background: #fff7e6; border-color: #efd59c; color: #8a5312; }
+.agent-connection-result svg { flex: 0 0 auto; }
 .agent-setup-card, .agent-devices-card { padding: 22px; }
 .agent-section-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; }
 .agent-section-heading > div { max-width: 720px; }
+.agent-setup-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 9px; }
 .agent-workspace-select { display: grid; gap: 5px; margin-top: 14px; max-width: 430px; }
 .agent-workspace-select > span { color: #42536a; font-size: 12px; font-weight: 750; }
 .agent-workspace-select select { background: #fff; border: 1px solid #c9d5e2; border-radius: 8px; color: #26384f; font: inherit; min-height: 38px; padding: 7px 10px; }
@@ -6887,7 +6894,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .agent-settings-hero, .agent-section-heading, .agent-pairing-code { align-items: stretch; flex-direction: column; }
   .agent-settings-hero .button, .agent-section-heading .button, .agent-pairing-code .button { justify-content: center; }
   .agent-status-card { grid-template-columns: auto minmax(0, 1fr); }
-  .agent-status-meta { border-left: 0; border-top: 1px solid #e5ebf1; grid-column: 1 / -1; padding: 12px 0 0; text-align: left; }
+  .agent-status-controls { align-items: stretch; flex-direction: column; grid-column: 1 / -1; }
+  .agent-status-meta { border-left: 0; border-top: 1px solid #e5ebf1; padding: 12px 0 0; text-align: left; }
+  .agent-setup-actions { align-items: stretch; flex-direction: column; }
   .agent-device-row { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
   .agent-device-detail, .agent-revoke-button { grid-column: 2; }
   .agent-revoke-button { justify-self: start; }

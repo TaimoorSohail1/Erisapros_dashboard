@@ -113,8 +113,18 @@ class PersistentFTWBrowser:
         self._page = None
 
     async def start(self) -> None:
-        if self._context is not None:
+        page_is_open = bool(
+            self._context is not None
+            and self._page is not None
+            and not self._page.is_closed()
+        )
+        if page_is_open:
             return
+        if self._context is not None or self._playwright is not None or self._page is not None:
+            # A client may close the dedicated browser window while the agent
+            # keeps running. Dispose the stale Playwright objects so the next
+            # poll reopens the same persistent profile and resumes safely.
+            await self.close()
         from playwright.async_api import async_playwright
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)

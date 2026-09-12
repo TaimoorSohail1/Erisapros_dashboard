@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import httpx
@@ -55,6 +56,64 @@ class FakeAgentBrowser:
         return None
 
 
+class StubBrowserPage:
+    def __init__(self, *, closed=False):
+        self.closed = closed
+        self.goto_calls = []
+
+    def is_closed(self):
+        return self.closed
+
+    def set_default_timeout(self, _timeout):
+        return None
+
+    def on(self, _event, _handler):
+        return None
+
+    async def goto(self, url, **_kwargs):
+        if self.closed:
+            raise RuntimeError("Target page has been closed")
+        self.goto_calls.append(url)
+
+    async def wait_for_timeout(self, _timeout):
+        return None
+
+
+class StubBrowserContext:
+    def __init__(self, page):
+        self.pages = [page]
+        self.closed = False
+
+    async def new_page(self):
+        page = StubBrowserPage()
+        self.pages.append(page)
+        return page
+
+    async def close(self):
+        self.closed = True
+
+
+class StubPlaywright:
+    def __init__(self, context):
+        self.context = context
+        self.chromium = self
+        self.stopped = False
+
+    async def launch_persistent_context(self, *_args, **_kwargs):
+        return self.context
+
+    async def stop(self):
+        self.stopped = True
+
+
+class StubPlaywrightStarter:
+    def __init__(self, playwright):
+        self.playwright = playwright
+
+    async def start(self):
+        return self.playwright
+
+
 def test_runner_does_not_claim_a_job_until_ftw_login_is_ready():
     api = FakeAgentApi()
     browser = FakeAgentBrowser(ready=False)
@@ -84,6 +143,59 @@ def test_runner_executes_and_completes_one_claimed_job():
     assert browser.executions == [job]
     assert api.completions[0][0:2] == ("job-1", "one-time-token")
     assert api.completions[0][2].state == "SUBMITTED"
+
+
+def test_persistent_browser_reopens_after_the_client_closes_its_window(tmp_path):
+    old_page = StubBrowserPage(closed=True)
+    old_context = StubBrowserContext(old_page)
+    old_playwright = StubPlaywright(old_context)
+    new_page = StubBrowserPage()
+    new_context = StubBrowserContext(new_page)
+    new_playwright = StubPlaywright(new_context)
+
+    class ReadyBrowser(PersistentFTWBrowser):
+        async def _page_text(self):
+            return "HighlandTech", False
+
+    browser = ReadyBrowser(tmp_path / "profile", expected_account="HighlandTech")
+    browser._page = old_page
+    browser._context = old_context
+    browser._playwright = old_playwright
+
+    with patch(
+        "playwright.async_api.async_playwright",
+        return_value=StubPlaywrightStarter(new_playwright),
+    ):
+        ready = run_async(browser.session_ready())
+
+    assert ready is True
+    assert old_context.closed is True
+    assert old_playwright.stopped is True
+    assert new_page.goto_calls == ["https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"]
+
+
+def test_runner_resumes_automatically_on_the_first_cycle_after_login():
+    class LoginThenReadyBrowser(FakeAgentBrowser):
+        def __init__(self):
+            super().__init__()
+            self.readiness = iter([False, True])
+
+        async def session_ready(self):
+            return next(self.readiness)
+
+    job = {"id": "job-resume", "filing_id": "filing-resume"}
+    api = FakeAgentApi(claim={"job": job, "claim_token": "resume-token"})
+    browser = LoginThenReadyBrowser()
+    runner = FTWLocalAgentRunner(api, browser)
+
+    first = run_async(runner.run_once())
+    second = run_async(runner.run_once())
+
+    assert first is False
+    assert second is True
+    assert api.heartbeats[0]["login_required"] is True
+    assert api.heartbeats[1] == {"browser_ready": True}
+    assert [item[0] for item in api.completions] == ["job-resume"]
 
 
 def test_agent_api_rejects_plain_http_except_localhost():
