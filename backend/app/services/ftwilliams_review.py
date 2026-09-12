@@ -268,6 +268,12 @@ class FTWilliamsReviewService:
                 form_5500_current = query_result["form_5500_current"]
                 schedule_a_current = query_result["schedule_a_current"]
                 matched_schedule_a = query_result["matched_schedule_a"]
+                if create_new_schedule_a and matched_schedule_a:
+                    # FT Williams assigned a sequence to the record created by
+                    # an earlier accepted request. Continue with that record;
+                    # never append the same Schedule A again on retry.
+                    create_new_schedule_a = False
+                    new_schedule_desc = None
                 schedule_a_candidates = query_result["schedule_a_candidates"]
                 schedule_a_records = query_result["schedule_a_records"]
                 error_message = query_result["error_message"]
@@ -2207,11 +2213,25 @@ class FTWilliamsReviewService:
                 else ""
             )
             if existing_create_new:
-                # A reviewer explicitly chose to create a new Schedule A.  The
-                # existing set is still queried so it can be preserved in the
-                # complete update payload, but no existing sequence should be
-                # selected (or required) for the new record itself.
-                matched_schedule_a = None
+                created_record = self._matching_existing_schedule_a_for_create(
+                    fields,
+                    schedule_a_records,
+                )
+                created_sequence = str((created_record or {}).get("ftw_seq_no") or "").strip()
+                matched_schedule_a = next(
+                    (
+                        status
+                        for status in schedule_statuses
+                        if created_sequence
+                        and str(status.ftw_seq_no or "").strip() == created_sequence
+                        and status.query_results
+                    ),
+                    None,
+                )
+                # Before the first successful create, no matching sequence
+                # exists and the explicit create-new decision remains active.
+                # After FT Williams creates it, the exact contract + carrier
+                # identity safely reconciles the decision to the assigned row.
                 schedule_a_error = None
             elif manual_sequence:
                 # A reviewer-selected sequence is authoritative.  Refresh its
@@ -3661,6 +3681,12 @@ class FTWilliamsReviewService:
                     if self._broker_readback_identity(actual_rows[index])
                     == (expected_name, expected_address)
                 ]
+                if len(candidates) > 1:
+                    candidates = self._disambiguate_readback_broker_candidates(
+                        expected,
+                        actual_rows,
+                        candidates,
+                    )
             if expected_name:
                 if len(candidates) != 1:
                     candidates = [
@@ -3668,6 +3694,12 @@ class FTWilliamsReviewService:
                         for index in unused
                         if self._broker_readback_identity(actual_rows[index])[0] == expected_name
                     ]
+                    if len(candidates) > 1:
+                        candidates = self._disambiguate_readback_broker_candidates(
+                            expected,
+                            actual_rows,
+                            candidates,
+                        )
             if len(candidates) != 1 and expected_address:
                 address_candidates = [
                     index
@@ -3685,6 +3717,34 @@ class FTWilliamsReviewService:
             else:
                 matched.append({})
         return matched
+
+    def _disambiguate_readback_broker_candidates(
+        self,
+        expected: dict[str, str],
+        actual_rows: list[dict[str, str]],
+        candidates: list[int],
+    ) -> list[int]:
+        """Use the complete broker business row when name/address are duplicated."""
+        ranked: list[tuple[int, int, int]] = []
+        for index in candidates:
+            matches = 0
+            conflicts = 0
+            actual = actual_rows[index]
+            for tag, expected_value in expected.items():
+                actual_value = actual.get(tag)
+                if actual_value is None:
+                    continue
+                if self._readback_values_equal(expected_value, actual_value, tag=tag):
+                    matches += 1
+                else:
+                    conflicts += 1
+            ranked.append((conflicts, -matches, index))
+        ranked.sort()
+        if not ranked:
+            return []
+        best_key = ranked[0][:2]
+        best = [index for conflicts, negative_matches, index in ranked if (conflicts, negative_matches) == best_key]
+        return best if len(best) == 1 else candidates
 
     @staticmethod
     def _broker_readback_identity(row: dict[str, str]) -> tuple[str, str]:

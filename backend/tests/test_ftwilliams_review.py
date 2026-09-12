@@ -1291,6 +1291,74 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(mismatches, [])
 
+    def test_schedule_a_readback_disambiguates_same_broker_identity_by_business_values(self) -> None:
+        service = FTWilliamsReviewService()
+        expected = {
+            "__subparts__": {
+                "Broker": [
+                    {
+                        "NameXX": "NFP CORPORATE SERVICES NY LLC",
+                        "AddressLine1XX": "200 PARK AVENUE",
+                        "AddressLine2XX": "SUITE 3202",
+                        "CityXX": "NEW YORK",
+                        "StateXX": "NY",
+                        "ZipCodeXX": "10166",
+                        "CodeXX": "1",
+                        "CommPdAmtXX": "122729.2",
+                        "FeesPdAmtXX": "17582.3",
+                        "FeesPdTextXX": "GROUP INSURANCE COVERAGE(S) FOR ABOVE CONTRACT",
+                    },
+                    {
+                        "NameXX": "NFP CORPORATE SERVICES NY LLC",
+                        "AddressLine1XX": "200 PARK AVENUE SUITE 3202",
+                        "CityXX": "NEW YORK",
+                        "StateXX": "NY",
+                        "ZipCodeXX": "10166",
+                        "CodeXX": "3",
+                        "CommPdAmtXX": "122729.2",
+                        "FeesPdAmtXX": "17582.3",
+                        "FeesPdTextXX": "COMMISSIONS & FEES",
+                    },
+                ]
+            }
+        }
+        actual_subparts = {
+            "Broker": [
+                {
+                    "Name1": "NFP CORPORATE SERVICES NY LLC",
+                    "AddressLine101": "200 PARK AVENUE",
+                    "AddressLine201": "SUITE 3202",
+                    "City01": "NEW YORK",
+                    "State01": "NY",
+                    "ZipCode01": "10166",
+                    "Code01": "1",
+                    "CommPdAmt01": "122729",
+                    "FeesPdAmt01": "17582",
+                    "FeesPdText01": "GROUP INSURANCE COVERAGE(S) FOR ABOVE CONTRACT",
+                },
+                {
+                    "Name02": "NFP CORPORATE SERVICES NY LLC",
+                    "AddressLine102": "200 PARK AVENUE SUITE 3202",
+                    "City02": "NEW YORK",
+                    "State02": "NY",
+                    "ZipCode02": "10166",
+                    "Code02": "3",
+                    "CommPdAmt02": "122729",
+                    "FeesPdAmt02": "17582",
+                    "FeesPdText02": "COMMISSIONS & FEES",
+                },
+            ]
+        }
+
+        mismatches = service._compare_readback_document(
+            FormType.SCHEDULE_A,
+            expected,
+            {},
+            actual_subparts=actual_subparts,
+        )
+
+        self.assertEqual(mismatches, [])
+
     def test_form_5500_only_update_does_not_require_schedule_a_payload(self) -> None:
         service = FTWilliamsReviewService()
         review = FTWilliamsReview(
@@ -6503,6 +6571,91 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(result["schedule_a_current"], {})
         self.assertEqual({record["ftw_seq_no"] for record in result["schedule_a_records"]}, {"1"})
         self.assertNotIn("none safely matched", result["error_message"] or "")
+
+    def test_current_query_reconciles_created_schedule_a_instead_of_preparing_duplicate(self):
+        fields = [
+            ExtractedField(
+                filing_id="filing-created-schedule",
+                source_field_name="1a. Name of Insurance Company",
+                normalized_field_name="carrier",
+                mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+                mapped_label="1a. Name of Insurance Company",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="The Guardian Life Insurance Company of America",
+                proposed_value="The Guardian Life Insurance Company of America",
+            ),
+            ExtractedField(
+                filing_id="filing-created-schedule",
+                source_field_name="1b. Insurance Carrier EIN",
+                normalized_field_name="carrier_ein",
+                mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+                mapped_label="1b. Insurance Carrier EIN",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="13-5123390",
+                proposed_value="13-5123390",
+            ),
+            ExtractedField(
+                filing_id="filing-created-schedule",
+                source_field_name="1d. Contract / Policy Number",
+                normalized_field_name="contract",
+                mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+                mapped_label="1d. Contract / Policy Number",
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="000F5894",
+                proposed_value="000F5894",
+            ),
+        ]
+        existing_review = FTWilliamsReview(
+            filing_id="filing-created-schedule",
+            schedule_a_match={
+                "create_new": True,
+                "source": "NEW_SCHEDULE_A",
+                "carrier": "The Guardian Life Insurance Company of America",
+                "carrier_ein": "13-5123390",
+                "contract": "000F5894",
+                "schedule_desc": "THEGUARD",
+            },
+        )
+        created_status = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="8",
+            query_results={
+                "ScheduleDesc": "THEGUARD",
+                "InsCarrierName": "The Guardian Life Insurance Company of America",
+                "InsCarrierEIN": "13-5123390",
+                "InsContractNum": "000F5894",
+            },
+        )
+        snapshot = {
+            "query_request_xmls": ["<query />"],
+            "query_response_xmls": ["<response />"],
+            "form_5500_current": {},
+            "form_5500_error": None,
+            "form_5500_query_failed": False,
+            "schedule_statuses": [created_status],
+            "schedule_a_error": None,
+            "schedule_a_query_failed": False,
+        }
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+
+        with patch.object(service, "_current_data_snapshot", AsyncMock(return_value=snapshot)):
+            result = run_async(
+                service._run_current_queries_for_year(
+                    fields,
+                    {},
+                    existing_review,
+                )
+            )
+
+        self.assertEqual(result["matched_schedule_a"].ftw_seq_no, "8")
+        self.assertEqual(result["schedule_a_current"]["InsContractNum"], "000F5894")
 
     def test_new_schedule_a_selection_rejects_duplicate_existing_identity(self):
         repo = repositories.get_repository()
