@@ -779,8 +779,6 @@ class FTWAutomationService:
             or not review.schedule_a_records
         ):
             return review
-        if any(int(candidate.get("strong_matches") or 0) > 0 for candidate in review.schedule_a_candidates):
-            return review
         candidate_sequences = {
             str(candidate.get("ftw_seq_no") or "").strip()
             for candidate in review.schedule_a_candidates
@@ -795,30 +793,56 @@ class FTWAutomationService:
             return review
 
         threshold = min(1.0, max(0.0, self.settings.ftw_automation_confidence_threshold))
-        carrier_field = next(
-            (
-                field
-                for field in fields
-                if resolve_ftw_tag(field) == "InsCarrierName"
-                and field.confidence >= threshold
-                and field.status not in {
-                    ExtractedFieldStatus.MISSING,
-                    ExtractedFieldStatus.LOW_CONFIDENCE,
-                    ExtractedFieldStatus.UNMAPPED,
-                }
-                and (str(field.source_text or "").strip() or field.page is not None)
-                and str(field.proposed_value or field.value or "").strip()
-            ),
-            None,
-        )
+        carrier_field = self._trusted_identity_field(fields, "InsCarrierName", threshold)
         if carrier_field is None:
             return review
+        contract_field = self._trusted_identity_field(fields, "InsContractNum", threshold)
+        strong_candidates = [
+            candidate
+            for candidate in review.schedule_a_candidates
+            if int(candidate.get("strong_matches") or 0) > 0
+        ]
+        if strong_candidates:
+            if contract_field is None:
+                return review
+            extracted_contract = self._normalize_contract(
+                contract_field.proposed_value or contract_field.value
+            )
+            records_by_sequence = {
+                str(record.get("ftw_seq_no") or "").strip(): record
+                for record in review.schedule_a_records
+                if str(record.get("ftw_seq_no") or "").strip()
+            }
+            for candidate in strong_candidates:
+                sequence = str(candidate.get("ftw_seq_no") or "").strip()
+                record = records_by_sequence.get(sequence) or {}
+                current = record.get("query_results") or {}
+                current_contract = self._normalize_contract(
+                    current.get("InsContractNum")
+                    or current.get("INS_CONTRACT_NUM")
+                    or candidate.get("contract")
+                )
+                # Shared carrier EIN/NAIC identifies the insurer, not the
+                # insurance contract. Only prepare a new Schedule A when every
+                # otherwise-strong candidate has a known, different contract.
+                if not current_contract or current_contract == extracted_contract:
+                    return review
         carrier = str(carrier_field.proposed_value or carrier_field.value).strip()
+        contract = str(
+            (contract_field.proposed_value or contract_field.value) if contract_field else ""
+        ).strip()
+        carrier_ein_field = self._trusted_identity_field(fields, "InsCarrierEIN", threshold)
         selected = await self.review_service.select_schedule_a_match(
             filing_id,
             FTWilliamsScheduleAMatchRequest(
                 create_new=True,
                 carrier=carrier,
+                carrier_ein=(
+                    str(carrier_ein_field.proposed_value or carrier_ein_field.value).strip()
+                    if carrier_ein_field
+                    else None
+                ),
+                contract=contract or None,
                 schedule_desc=carrier,
             ),
         )
@@ -827,15 +851,48 @@ class FTWAutomationService:
             AuditLog(
                 filing_id=filing_id,
                 event="FTW_AUTOMATION_SCHEDULE_A_ADD_NEW_SELECTED",
-                message="Automation selected Add as new because no existing Schedule A had a strong identity match.",
+                message="Automation prepared a new Schedule A because no existing record matched the trusted contract identity.",
                 details={
                     "candidate_count": len(review.schedule_a_candidates),
                     "carrier": carrier,
+                    "contract": contract or None,
                     "policy_version": self.settings.ftw_automation_policy_version,
                 },
             )
         )
         return selected
+
+    @staticmethod
+    def _trusted_identity_field(
+        fields: list[ExtractedField],
+        tag: str,
+        threshold: float,
+    ) -> ExtractedField | None:
+        for field in fields:
+            if resolve_ftw_tag(field) != tag:
+                continue
+            if not str(field.proposed_value or field.value or "").strip():
+                continue
+            if field.status == ExtractedFieldStatus.EDITED:
+                return field
+            if (
+                field.confidence >= threshold
+                and field.status not in {
+                    ExtractedFieldStatus.MISSING,
+                    ExtractedFieldStatus.LOW_CONFIDENCE,
+                    ExtractedFieldStatus.UNMAPPED,
+                }
+                and (str(field.source_text or "").strip() or field.page is not None)
+            ):
+                return field
+        return None
+
+    @staticmethod
+    def _normalize_contract(value: object) -> str:
+        text = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+        if not text:
+            return ""
+        return re.sub(r"\d+", lambda match: match.group(0).lstrip("0") or "0", text)
 
     @staticmethod
     def _schedule_a_record_ids(review: FTWilliamsReview | None) -> list[str]:

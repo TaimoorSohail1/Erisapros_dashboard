@@ -1301,6 +1301,71 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(len(review_service.schedule_match_calls), 1)
         self.assertTrue(review_service.schedule_match_calls[0]["payload"].create_new)
 
+    def test_same_carrier_with_different_confirmed_contract_is_automatically_added_as_new(self):
+        filing, review, extracted, settings = self.safe_case()
+        settings.ftw_automation_auto_send_enabled = False
+        settings.ftwlink_schedule_a_single_record_only = False
+        extracted.xml_tag = "InsContractNum"
+        extracted.value = extracted.proposed_value = "000F5894"
+        extracted.confidence = 0.50
+        extracted.status = ExtractedFieldStatus.EDITED
+        extracted.status_reason = "Value confirmed by reviewer."
+        extracted.source_text = "Contract number 000F5894"
+        carrier = ExtractedField(
+            id="field-2",
+            filing_id="filing-1",
+            source_field_name="Carrier name",
+            normalized_field_name="carrier_name",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            priority=FieldPriority.HIGH,
+            value="The Guardian Life Insurance Company of America",
+            proposed_value="The Guardian Life Insurance Company of America",
+            confidence=0.99,
+            source_text="The Guardian Life Insurance Company of America",
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.MATCHED,
+            xml_tag="InsCarrierName",
+        )
+        review.schedule_a_match = None
+        review.schedule_a_candidates = [
+            {
+                "ftw_seq_no": "1",
+                "score": 19,
+                "strong_matches": 2,
+                "carrier": "THE GUARDIAN LIFE INSURANCE COMPANY OF AMERICA",
+                "contract": "00555179",
+            },
+        ]
+        review.schedule_a_records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "InsCarrierName": "THE GUARDIAN LIFE INSURANCE COMPANY OF AMERICA",
+                    "InsCarrierEIN": "13-5123390",
+                    "InsCarrierNAICCode": "64246",
+                    "InsContractNum": "00555179",
+                },
+            },
+        ]
+        repo = MemoryRepository()
+        saved_filing = run_async(repo.create_filing(filing))
+        extracted.filing_id = saved_filing.id
+        carrier.filing_id = saved_filing.id
+        review.filing_id = saved_filing.id
+        run_async(repo.add_fields([extracted, carrier]))
+        review.fields[0].field_id = extracted.id
+        review_service = FakeAutomationReviewService(review)
+        service = FTWAutomationService(repo=repo, review_service=review_service, settings=settings)
+
+        decision = run_async(service.run(saved_filing.id, review=review))
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertEqual(len(review_service.schedule_match_calls), 1)
+        payload = review_service.schedule_match_calls[0]["payload"]
+        self.assertTrue(payload.create_new)
+        self.assertEqual(payload.contract, "000F5894")
+        self.assertEqual(payload.carrier, "The Guardian Life Insurance Company of America")
+
     def test_partial_identity_candidate_is_never_automatically_added_as_new(self):
         filing, review, extracted, settings = self.safe_case()
         settings.ftw_automation_auto_send_enabled = False
