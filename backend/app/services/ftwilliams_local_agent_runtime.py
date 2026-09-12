@@ -14,7 +14,7 @@ import httpx
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 _BRING_FORWARD_TEXT = re.compile(
     r"bring\s+forward\s+(?:prior[-\s]*year|\d{4})\s+data(?:\s+to\s+\d{4})?\s+for\s+this\s+plan\s+only",
     re.IGNORECASE,

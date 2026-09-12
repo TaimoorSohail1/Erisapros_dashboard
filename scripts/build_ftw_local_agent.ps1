@@ -26,7 +26,7 @@ try {
         --noconfirm `
         --clean `
         --onefile `
-        --name ERISAProsFTWAgent `
+        --name ERISAProsFTWAgentSetup `
         --distpath $outputDirectory `
         --workpath (Join-Path $outputDirectory "build") `
         --specpath (Join-Path $outputDirectory "spec") `
@@ -37,7 +37,7 @@ try {
     Pop-Location
 }
 
-$executable = Join-Path $outputDirectory "ERISAProsFTWAgent.exe"
+$executable = Join-Path $outputDirectory "ERISAProsFTWAgentSetup.exe"
 if ($SigningCertificateThumbprint) {
     $signTool = Get-Command signtool.exe -ErrorAction Stop
     & $signTool.Source sign /sha1 $SigningCertificateThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $executable

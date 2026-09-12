@@ -16,12 +16,22 @@ from app.services.ftwilliams_local_agent_runtime import (
     PersistentFTWBrowser,
     pair_device,
 )
+from app.services.windows_agent_installation import install_agent
 from app.services.windows_secret_store import load_secret_json, save_secret_json
 
 
-def parse_args() -> argparse.Namespace:
+DEFAULT_SERVER_URL = "https://d3axcdlq9aydpw.cloudfront.net"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ERISAPros FT Williams local agent")
-    subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands = parser.add_subparsers(dest="command")
+
+    install = subcommands.add_parser("install", help="Install and connect this Windows computer")
+    install.add_argument("--server-url", default=DEFAULT_SERVER_URL)
+    install.add_argument("--pairing-code", default="")
+    install.add_argument("--device-name", default=socket.gethostname())
+    install.add_argument("--no-startup", action="store_true", help=argparse.SUPPRESS)
 
     pair = subcommands.add_parser("pair", help="Pair this Windows account with ERISAPros")
     pair.add_argument("--server-url", required=True)
@@ -37,11 +47,37 @@ def parse_args() -> argparse.Namespace:
 
     unpair = subcommands.add_parser("unpair", help="Revoke this computer and remove its local pairing")
     unpair.add_argument("--credential-file", required=True)
-    return parser.parse_args()
+    effective_argv = ["install"] if argv == [] else argv
+    if argv is None and len(sys.argv) == 1:
+        effective_argv = ["install"]
+    return parser.parse_args(effective_argv)
 
 
 async def main() -> int:
     args = parse_args()
+    if args.command == "install":
+        print("ERISAPros FT Williams Agent setup")
+        pairing_code = str(args.pairing_code or "").strip()
+        if not pairing_code:
+            pairing_code = input("Enter the one-time connection code from ERISAPros: ").strip()
+        if not pairing_code:
+            print("A one-time connection code is required.", file=sys.stderr)
+            return 2
+        if not getattr(sys, "frozen", False):
+            print("Client setup must be run from the packaged ERISAPros installer.", file=sys.stderr)
+            return 2
+        await install_agent(
+            server_url=args.server_url,
+            pairing_code=pairing_code,
+            device_name=args.device_name,
+            source_executable=sys.executable,
+            register_startup=not args.no_startup,
+        )
+        print("Connected successfully. Sign in in the FT Williams window, then return to ERISAPros and click Test connection.")
+        if not args.pairing_code and sys.stdin.isatty():
+            input("Press Enter to close setup.")
+        return 0
+
     if args.command == "pair":
         paired = await pair_device(args.server_url, args.pairing_code, args.device_name)
         save_secret_json(

@@ -12,6 +12,7 @@ def test_production_build_requires_and_verifies_a_code_signature():
     assert "verify /pa" in script
     assert "release-manifest.json" in script
     assert "Get-FileHash" in script
+    assert "--name ERISAProsFTWAgentSetup" in script
 
 
 def test_installer_checks_release_integrity_and_uses_per_user_storage():
@@ -30,7 +31,7 @@ def test_client_installer_needs_only_the_one_time_pairing_code():
     assert '[string]$AgentExecutable = ""' in script
     assert '[string]$ServerUrl = "https://d3axcdlq9aydpw.cloudfront.net"' in script
     assert '[string]$PairingCode = ""' in script
-    assert 'Join-Path $PSScriptRoot "ERISAProsFTWAgent.exe"' in script
+    assert 'Join-Path $PSScriptRoot "ERISAProsFTWAgentSetup.exe"' in script
     assert 'Read-Host "Enter the one-time connection code from ERISAPros"' in script
     assert "Open ERISAPros and click Test connection" in script
 

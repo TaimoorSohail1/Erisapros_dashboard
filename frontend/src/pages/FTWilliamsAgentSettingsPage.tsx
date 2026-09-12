@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Clipboard,
+  Download,
   Laptop,
   Link2,
   LoaderCircle,
@@ -35,6 +36,8 @@ import type {
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
 type LoadState = "loading" | "ready" | "error";
+
+const FTW_AGENT_DOWNLOAD_URL = "https://github.com/TaimoorSohail1/Erisapros_dashboard/releases/latest/download/ERISAProsFTWAgentSetup.exe";
 
 const emptyMapping: FTWWorkspacePlanMappingInput = {
   company_employer_id: "",
@@ -272,7 +275,7 @@ export function FTWilliamsAgentSettingsPage() {
               <div>
                 <span className="eyebrow">One-time setup</span>
                 <h2>Connect this computer</h2>
-                <p>Create a short-lived code, then enter it in the signed ERISAPros FT Williams Agent on the Windows computer that will run FT Williams.</p>
+                <p>Download the FT Williams Agent, then connect this trusted Windows computer with a short-lived code.</p>
                 {workspaces.length ? (
                   <label className="agent-workspace-select">
                     <span>Client workspace</span>
@@ -286,6 +289,9 @@ export function FTWilliamsAgentSettingsPage() {
               <div className="agent-setup-actions">
                 <a className="button secondary" href="/ftw-agent-setup-guide.html" target="_blank" rel="noreferrer">
                   <BookOpen size={16} /> Open setup guide
+                </a>
+                <a className="button secondary" href={FTW_AGENT_DOWNLOAD_URL}>
+                  <Download size={16} /> Download FTW Agent
                 </a>
                 <button className="button" type="button" onClick={() => void createCode()} disabled={creatingCode || !status?.enabled}>
                   {creatingCode ? <InlineLoader label="Creating code" /> : <><Link2 size={17} /> Connect this computer</>}
@@ -311,7 +317,7 @@ export function FTWilliamsAgentSettingsPage() {
             ) : null}
 
             <ol className="agent-setup-steps">
-              <li><span>1</span><div><strong>Install the signed agent</strong><small>Use the ERISAPros Agent installer supplied by your administrator on this Windows computer.</small></div></li>
+              <li><span>1</span><div><strong>Download and open the agent</strong><small>Use the download above, then double-click the setup file. Windows may show “Unknown publisher” for this pilot build.</small></div></li>
               <li><span>2</span><div><strong>Enter the one-time code</strong><small>The agent saves its device token locally with Windows protection. Do not send the code by email or chat.</small></div></li>
               <li><span>3</span><div><strong>Sign in to FT Williams</strong><small>The agent opens a dedicated FT Williams browser. Complete any required MFA there; ERISAPros never receives the password or browser cookies.</small></div></li>
               <li><span>4</span><div><strong>Confirm Connected</strong><small>Return here and refresh. Plan mapping and automation are enabled separately after verification.</small></div></li>

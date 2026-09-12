@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$defaultAgentExecutable = Join-Path $PSScriptRoot "ERISAProsFTWAgent.exe"
+$defaultAgentExecutable = Join-Path $PSScriptRoot "ERISAProsFTWAgentSetup.exe"
 if (-not $AgentExecutable.Trim()) {
     $AgentExecutable = $defaultAgentExecutable
 }

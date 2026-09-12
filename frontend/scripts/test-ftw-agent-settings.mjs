@@ -19,7 +19,9 @@ assert.match(page, /parseApiDateTime/, "UTC API timestamps must be normalized be
 assert.match(page, /Test connection/, "Clients must have one clear connection test after installation.");
 assert.match(page, /testAgentConnection/, "The connection test must refresh the live agent status.");
 assert.match(page, /ftw-agent-setup-guide\.html/, "The settings page must link to the one-page client setup guide.");
-assert.match(guide, /Install the FT Williams Agent/, "The client guide must explain installation.");
+assert.match(page, /Download FTW Agent/, "Clients must be able to download the one-file setup directly from the dashboard.");
+assert.match(page, /releases\/latest\/download\/ERISAProsFTWAgentSetup\.exe/, "The dashboard must use the stable latest-release installer URL.");
+assert.match(guide, /Download and open the FT Williams Agent/, "The client guide must explain installation.");
 assert.match(guide, /Enter your one-time connection code/, "The client guide must explain pairing.");
 assert.match(guide, /Test connection/, "The client guide must end with a connection test.");
 assert.match(guide, /Login required/, "The client guide must explain safe login recovery.");
