@@ -25,8 +25,19 @@ The setup executable pairs the computer with the selected ERISAPros workspace, s
 - File: `ERISAProsFTWAgentSetup.exe`
 - SHA-256: `78B1DEC994472B6FFA4966F8D999E3C8E0DE514B065BA12744364FD96B2A13A8`
 - Signature status: **Not signed**
+- Release: `https://github.com/TaimoorSohail1/Erisapros_dashboard/releases/tag/ftw-agent-v0.2.0`
 
 This pilot build may display a Windows **Unknown publisher** warning. A trusted code-signing certificate is still required before broad client distribution.
+
+## Production deployment verification
+
+- Dashboard: `https://d3axcdlq9aydpw.cloudfront.net/settings/ftw-agent`
+- CloudFront invalidation: `I1RL473D49ANBQXINU3WGLKH2P` — **Completed**.
+- Live asset: `/assets/index-DsgRoAJo.js` — **HTTP 200**.
+- Live bundle contains the `Download FTW Agent` action and release URL: **passed**.
+- Live one-page setup guide: **HTTP 200** and updated download step confirmed.
+- Public installer redirect: **HTTP 200**, `398,703,365` bytes.
+- No FT Williams filing data was read or changed during this frontend/installer deployment.
 
 ## Remaining pilot validation
 
