@@ -24,3 +24,9 @@ The automatic-login credentials were filled correctly, but Agent 0.3.0 submitted
 - SHA-256: `4B42E36654439F524F556AEC2235EB5B715134C750C943AF7DA8A670ABD8E9F5`
 - Size: `398,709,731` bytes
 - Signature: unsigned pilot build.
+
+## Live verification
+
+- GitHub release `ftw-agent-v0.3.1`: published from commit `7a219ae`.
+- Remote executable digest and size match the tested local artifact.
+- The dashboard's stable `releases/latest` URL resolves to `ftw-agent-v0.3.1` and returns HTTP 200.
