@@ -25,8 +25,15 @@ Agent `0.3.0` adds optional automatic FT Williams sign-in. During one-time setup
 - File: `ERISAProsFTWAgentSetup.exe`
 - Version: `0.3.0`
 - SHA-256: `73B665328CC03FB10576F72318C40D764404CE887C3A522D9250B72867209F34`
-- Size: approximately 399 MB
+- Size: `398,708,689` bytes
 - Signature: unsigned pilot build; Windows can show an Unknown publisher warning until a production code-signing certificate is supplied.
+
+## Production checks
+
+- GitHub release: `ftw-agent-v0.3.0`; the stable `releases/latest` download resolves to this release and returns HTTP 200.
+- Production setup guide: HTTP 200 and contains the automatic-login and FT Williams domain-boundary instructions.
+- Production dashboard bundle: HTTP 200 and contains the automatic-sign-in and safe-retry UI.
+- CloudFront invalidation: `I1XGKVKB1LMN2ZU873ISHSGY3Y` — completed.
 
 ## Live acceptance still requiring the client
 
