@@ -275,8 +275,9 @@ class PersistentFTWBrowser:
         if not isinstance(credentials, dict):
             return None
         normalized = {
-            key: str(credentials.get(key) or "").strip()
-            for key in ("company_code", "username", "password")
+            "company_code": str(credentials.get("company_code") or "").strip(),
+            "username": str(credentials.get("username") or "").strip(),
+            "password": str(credentials.get("password") or ""),
         }
         return normalized if all(normalized.values()) else None
 

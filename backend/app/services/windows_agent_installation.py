@@ -86,6 +86,7 @@ async def install_agent(
     local_app_data: str | Path | None = None,
     register_startup: bool = True,
     ftw_login_credentials: dict[str, str] | None = None,
+    clear_ftw_login_credentials: bool = False,
 ) -> InstalledAgent:
     source = Path(source_executable).expanduser().resolve()
     if not source.is_file():
@@ -117,6 +118,8 @@ async def install_agent(
     )
     if ftw_login_credentials is not None:
         save_secret_json(installed.login_credential, ftw_login_credentials)
+    elif clear_ftw_login_credentials:
+        installed.login_credential.unlink(missing_ok=True)
     if register_startup:
         register_startup_task(installed)
     return installed

@@ -15,8 +15,8 @@ Agent `0.3.0` adds optional automatic FT Williams sign-in. During one-time setup
 
 ## Verification
 
-- Focused automatic-login, DPAPI, pairing, browser-restart, retry, MFA, domain-boundary, and resume tests: **20 passed**.
-- Full backend regression suite: **676 passed, 2 skipped, 39 subtests passed**.
+- Focused automatic-login, DPAPI, pairing, browser-restart, retry, MFA, domain-boundary, credential-removal, and resume tests: **22 passed**.
+- Full backend regression suite: **678 passed, 2 skipped, 39 subtests passed**.
 - Frontend settings contract, review UI, polling performance, TypeScript, production build, and bundle smoke tests: **passed**.
 - Packaged Windows executable `--help` smoke test: **passed**.
 
@@ -24,8 +24,8 @@ Agent `0.3.0` adds optional automatic FT Williams sign-in. During one-time setup
 
 - File: `ERISAProsFTWAgentSetup.exe`
 - Version: `0.3.0`
-- SHA-256: `73B665328CC03FB10576F72318C40D764404CE887C3A522D9250B72867209F34`
-- Size: `398,708,689` bytes
+- SHA-256: `8514885CA8E45CF92D31D452A501576B5C4E4718E487EA6305E4C6DC7D7DA371`
+- Size: `398,708,301` bytes
 - Signature: unsigned pilot build; Windows can show an Unknown publisher warning until a production code-signing certificate is supplied.
 
 ## Production checks

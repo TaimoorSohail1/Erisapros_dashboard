@@ -186,3 +186,46 @@ def test_client_can_decline_local_auto_login():
     )
 
     assert result is None
+
+
+def test_client_password_is_not_modified_before_windows_encrypts_it():
+    answers = iter(["", "company-01", "client.user"])
+
+    result = collect_ftw_login_credentials(
+        input_func=lambda _prompt: next(answers),
+        password_func=lambda _prompt: " password with spaces ",
+    )
+
+    assert result["password"] == " password with spaces "
+
+
+def test_reinstall_can_remove_a_previously_saved_automatic_login(tmp_path, monkeypatch):
+    source = tmp_path / "ERISAProsFTWAgentSetup.exe"
+    source.write_bytes(b"agent executable")
+    installed = windows_agent_installation.installation_paths(tmp_path / "LocalAppData")
+    installed.root.mkdir(parents=True)
+    installed.login_credential.write_bytes(b"previous encrypted login")
+
+    async def fake_pair_device(*_args, **_kwargs):
+        return {
+            "device_id": "replacement-device",
+            "device_token": "replacement-token",
+            "expected_account": "HighlandTech",
+        }
+
+    monkeypatch.setattr(windows_agent_installation, "pair_device", fake_pair_device)
+    monkeypatch.setattr(windows_agent_installation.subprocess, "run", lambda *_args, **_kwargs: None)
+
+    asyncio.run(
+        install_agent(
+            server_url="https://dashboard.example.com",
+            pairing_code="replacement-code",
+            device_name="Client computer",
+            source_executable=source,
+            local_app_data=tmp_path / "LocalAppData",
+            register_startup=False,
+            clear_ftw_login_credentials=True,
+        )
+    )
+
+    assert not installed.login_credential.exists()

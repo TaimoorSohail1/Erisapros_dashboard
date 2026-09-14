@@ -29,17 +29,22 @@ def collect_ftw_login_credentials(*, input_func=input, password_func=getpass.get
     if choice in {"n", "no"}:
         return None
 
-    def required(prompt: str, reader) -> str:
+    def required(prompt: str, reader, *, trim: bool = True) -> str:
         while True:
-            value = reader(prompt).strip()
+            original = reader(prompt)
+            value = original.strip()
             if value:
-                return value
+                return value if trim else original
             print("This value is required.")
 
     return {
         "company_code": required("FT Williams company code: ", input_func),
         "username": required("FT Williams username: ", input_func),
-        "password": required("FT Williams password (stored only with Windows encryption): ", password_func),
+        "password": required(
+            "FT Williams password (stored only with Windows encryption): ",
+            password_func,
+            trim=False,
+        ),
     }
 
 
@@ -98,6 +103,7 @@ async def main() -> int:
                 source_executable=sys.executable,
                 register_startup=not args.no_startup,
                 ftw_login_credentials=ftw_login_credentials,
+                clear_ftw_login_credentials=not args.pairing_code and ftw_login_credentials is None,
             )
         except Exception as exc:
             print(f"Setup could not finish: {exc}", file=sys.stderr)
