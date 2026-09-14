@@ -29,4 +29,6 @@ Agent 0.3.1 correctly found the FT Williams **Log In** button, but it could stop
 
 ## Live verification
 
-Pending release publication.
+- GitHub release `ftw-agent-v0.3.2` was published from commit `b9153c7`.
+- The remote executable is `398,709,947` bytes and reports the tested SHA-256 digest.
+- The dashboard's stable `releases/latest` URL resolves to `ftw-agent-v0.3.2` and returns HTTP 200.
