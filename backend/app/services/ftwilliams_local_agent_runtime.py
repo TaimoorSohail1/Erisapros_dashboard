@@ -14,7 +14,7 @@ import httpx
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.3.1"
+AGENT_VERSION = "0.3.2"
 _FTW_HOME_URL = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
 _AUTOMATIC_LOGIN_RETRY_SECONDS = 300.0
 _AUTOMATIC_LOGIN_MAX_ATTEMPTS = 2
@@ -183,12 +183,8 @@ class PersistentFTWBrowser:
         while asyncio.get_running_loop().time() < deadline:
             text, password_visible = await self._page_text()
             normalized = re.sub(r"\s+", " ", text.casefold())
-            if self.expected_account.casefold() in normalized:
-                self._automatic_login_attempts = 0
-                self._next_automatic_login_at = 0.0
-                self._manual_verification_pending = False
-                self.login_required_message = ""
-                return True
+            # A visible login form is authoritative. Its prefilled username can
+            # contain the account name and must not be mistaken for a session.
             if password_visible:
                 self._manual_verification_pending = False
                 if not self.login_credentials:
@@ -223,6 +219,12 @@ class PersistentFTWBrowser:
                     "Complete the FT Williams verification prompt in the dedicated browser; work will resume automatically."
                 )
                 return False
+            if self.expected_account.casefold() in normalized:
+                self._automatic_login_attempts = 0
+                self._next_automatic_login_at = 0.0
+                self._manual_verification_pending = False
+                self.login_required_message = ""
+                return True
             await self._page.wait_for_timeout(500)
         self.login_required_message = (
             "FT Williams did not confirm the expected account. Complete login in the dedicated browser."
@@ -394,7 +396,7 @@ class PersistentFTWBrowser:
         for frame in self._page.frames:
             try:
                 password_visible = password_visible or bool(
-                    await frame.locator("input[type='password']").count()
+                    await frame.locator("input[type='password']:visible").count()
                 )
                 texts.append((await frame.locator("body").inner_text(timeout=5_000)) or "")
                 values = await frame.locator(
@@ -402,6 +404,10 @@ class PersistentFTWBrowser:
                 ).evaluate_all(
                     """
                     elements => elements.flatMap(element => {
+                      const visible = !!(
+                        element.offsetWidth || element.offsetHeight || element.getClientRects().length
+                      );
+                      if (!visible || element.type === 'hidden') return [];
                       if (element.tagName === 'SELECT') {
                         return [element.value, ...Array.from(element.selectedOptions).map(option => option.text)];
                       }

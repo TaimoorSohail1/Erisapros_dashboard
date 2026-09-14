@@ -385,7 +385,11 @@ def test_legacy_ft_williams_login_button_is_clicked_and_session_becomes_ready(tm
             return None
 
         async def _page_text(self):
-            return ("HighlandTech", False) if state["logged_in"] else ("Enter Login Information", True)
+            return (
+                ("HighlandTech", False)
+                if state["logged_in"]
+                else ("Enter Login Information\nhighlandtech.test", True)
+            )
 
     browser = LegacyLoginBrowser()
 
