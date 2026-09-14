@@ -14,7 +14,7 @@ import httpx
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.3.1"
 _FTW_HOME_URL = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
 _AUTOMATIC_LOGIN_RETRY_SECONDS = 300.0
 _AUTOMATIC_LOGIN_MAX_ATTEMPTS = 2
@@ -254,9 +254,33 @@ class PersistentFTWBrowser:
             await company.fill(self.login_credentials["company_code"])
             await username.fill(self.login_credentials["username"])
             await password.first.fill(self.login_credentials["password"])
-            await password.first.press("Enter")
+            if not await self._click_visible_login_control(frame):
+                await password.first.press("Enter")
             return
         raise RuntimeError("The FT Williams password field was not found.")
+
+    @staticmethod
+    async def _click_visible_login_control(frame) -> bool:
+        login_name = re.compile(r"^\s*log\s*in\s*$", re.IGNORECASE)
+        if hasattr(frame, "get_by_role"):
+            for role in ("button", "link"):
+                candidates = frame.get_by_role(role, name=login_name)
+                for index in range(await candidates.count()):
+                    candidate = candidates.nth(index)
+                    if await candidate.is_visible():
+                        await candidate.click()
+                        return True
+        candidates = frame.locator(
+            "input[type='submit'][value='Log In' i], "
+            "input[type='button'][value='Log In' i], "
+            "input[type='image'][alt='Log In' i]"
+        )
+        for index in range(await candidates.count()):
+            candidate = candidates.nth(index)
+            if await candidate.is_visible():
+                await candidate.click()
+                return True
+        return False
 
     @staticmethod
     async def _first_visible_locator(frame, selector: str, *, fallback_index: int):

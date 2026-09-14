@@ -309,6 +309,91 @@ def test_saved_login_is_typed_only_into_the_expected_ft_williams_fields(tmp_path
     assert password.keys == ["Enter"]
 
 
+def test_legacy_ft_williams_login_button_is_clicked_and_session_becomes_ready(tmp_path):
+    class Control:
+        def __init__(self, *, on_click=None):
+            self.value = ""
+            self.keys = []
+            self.clicks = 0
+            self.on_click = on_click
+
+        async def is_visible(self):
+            return True
+
+        async def fill(self, value):
+            self.value = value
+
+        async def press(self, key):
+            self.keys.append(key)
+
+        async def click(self):
+            self.clicks += 1
+            if self.on_click:
+                self.on_click()
+
+    class Locator:
+        def __init__(self, controls):
+            self.controls = controls
+
+        async def count(self):
+            return len(self.controls)
+
+        def nth(self, index):
+            return self.controls[index]
+
+        @property
+        def first(self):
+            return self.controls[0]
+
+    state = {"logged_in": False}
+    company, username, password = Control(), Control(), Control()
+    login = Control(on_click=lambda: state.__setitem__("logged_in", True))
+
+    class LegacyLoginFrame:
+        def locator(self, selector):
+            if "password" in selector:
+                return Locator([password])
+            if "company" in selector:
+                return Locator([company])
+            if "user" in selector:
+                return Locator([username])
+            return Locator([])
+
+        def get_by_role(self, role, **_kwargs):
+            return Locator([login] if role == "button" else [])
+
+    class LegacyLoginPage(StubBrowserPage):
+        def __init__(self):
+            super().__init__()
+            self.url = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
+            self.frames = [LegacyLoginFrame()]
+
+    class LegacyLoginBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(
+                tmp_path / "profile",
+                expected_account="HighlandTech",
+                login_credentials={
+                    "company_code": "highland01",
+                    "username": "highlandtech.test",
+                    "password": "client-password",
+                },
+            )
+            self._page = LegacyLoginPage()
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            return ("HighlandTech", False) if state["logged_in"] else ("Enter Login Information", True)
+
+    browser = LegacyLoginBrowser()
+
+    assert run_async(browser.session_ready()) is True
+    assert login.clicks == 1
+    assert password.keys == []
+
+
 def test_saved_login_is_blocked_outside_the_ft_williams_domain(tmp_path):
     browser = PersistentFTWBrowser(
         tmp_path / "profile",
