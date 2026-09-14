@@ -24,6 +24,7 @@ class InstalledAgent:
     root: Path
     executable: Path
     credential: Path
+    login_credential: Path
     profile: Path
     launcher: Path
 
@@ -35,6 +36,7 @@ def installation_paths(local_app_data: str | Path | None = None) -> InstalledAge
         root=root,
         executable=root / "ERISAProsFTWAgent.exe",
         credential=root / "device.credential",
+        login_credential=root / "ftw-login.credential",
         profile=root / "BrowserProfile",
         launcher=root / "start-agent.vbs",
     )
@@ -49,6 +51,8 @@ def register_startup_task(installed: InstalledAgent) -> None:
             "run",
             "--credential-file",
             str(installed.credential),
+            "--login-credential-file",
+            str(installed.login_credential),
             "--profile-dir",
             str(installed.profile),
         ]
@@ -81,6 +85,7 @@ async def install_agent(
     source_executable: str | Path,
     local_app_data: str | Path | None = None,
     register_startup: bool = True,
+    ftw_login_credentials: dict[str, str] | None = None,
 ) -> InstalledAgent:
     source = Path(source_executable).expanduser().resolve()
     if not source.is_file():
@@ -110,6 +115,8 @@ async def install_agent(
             "expected_account": paired["expected_account"],
         },
     )
+    if ftw_login_credentials is not None:
+        save_secret_json(installed.login_credential, ftw_login_credentials)
     if register_startup:
         register_startup_task(installed)
     return installed

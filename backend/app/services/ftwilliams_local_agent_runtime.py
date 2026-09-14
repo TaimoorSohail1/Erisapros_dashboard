@@ -14,7 +14,14 @@ import httpx
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.2.1"
+AGENT_VERSION = "0.3.0"
+_FTW_HOME_URL = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
+_AUTOMATIC_LOGIN_RETRY_SECONDS = 300.0
+_AUTOMATIC_LOGIN_MAX_ATTEMPTS = 2
+_MANUAL_VERIFICATION_TEXT = re.compile(
+    r"(?:multi[-\s]*factor|two[-\s]*factor|verification\s+code|security\s+code|captcha)",
+    re.IGNORECASE,
+)
 _BRING_FORWARD_TEXT = re.compile(
     r"bring\s+forward\s+(?:prior[-\s]*year|\d{4})\s+data(?:\s+to\s+\d{4})?\s+for\s+this\s+plan\s+only",
     re.IGNORECASE,
@@ -104,10 +111,16 @@ class PersistentFTWBrowser:
         *,
         expected_account: str,
         timeout_ms: int = 45_000,
+        login_credentials: dict[str, str] | None = None,
     ):
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         self.expected_account = str(expected_account or "").strip()
         self.timeout_ms = max(5_000, timeout_ms)
+        self.login_credentials = self._validated_login_credentials(login_credentials)
+        self.login_required_message = "Sign in to FT Williams in the dedicated ERISAPros browser window."
+        self._automatic_login_attempts = 0
+        self._next_automatic_login_at = 0.0
+        self._manual_verification_pending = False
         self._playwright = None
         self._context = None
         self._page = None
@@ -156,21 +169,121 @@ class PersistentFTWBrowser:
 
     async def session_ready(self) -> bool:
         await self.start()
-        await self._page.goto(
-            "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home",
-            wait_until="domcontentloaded",
-            timeout=self.timeout_ms,
+        preserve_verification_page = (
+            self._manual_verification_pending
+            and self._is_ftw_url(getattr(self._page, "url", ""))
         )
+        if not preserve_verification_page:
+            await self._page.goto(
+                _FTW_HOME_URL,
+                wait_until="domcontentloaded",
+                timeout=self.timeout_ms,
+            )
         deadline = asyncio.get_running_loop().time() + self.timeout_ms / 1_000
         while asyncio.get_running_loop().time() < deadline:
             text, password_visible = await self._page_text()
-            if password_visible:
-                return False
             normalized = re.sub(r"\s+", " ", text.casefold())
             if self.expected_account.casefold() in normalized:
+                self._automatic_login_attempts = 0
+                self._next_automatic_login_at = 0.0
+                self._manual_verification_pending = False
+                self.login_required_message = ""
                 return True
+            if password_visible:
+                self._manual_verification_pending = False
+                if not self.login_credentials:
+                    self.login_required_message = "Sign in to FT Williams in the dedicated ERISAPros browser window."
+                    return False
+                now = asyncio.get_running_loop().time()
+                if self._automatic_login_attempts >= _AUTOMATIC_LOGIN_MAX_ATTEMPTS:
+                    self.login_required_message = (
+                        "Automatic login was paused after repeated failures. Update the saved login or sign in manually."
+                    )
+                    return False
+                if now < self._next_automatic_login_at:
+                    self.login_required_message = (
+                        "Automatic login is waiting before another safe attempt. You can sign in manually now."
+                    )
+                    return False
+                self._automatic_login_attempts += 1
+                self._next_automatic_login_at = now + _AUTOMATIC_LOGIN_RETRY_SECONDS
+                self.login_required_message = "Automatic login is in progress."
+                try:
+                    await self._submit_saved_login()
+                except Exception:
+                    self.login_required_message = (
+                        "Automatic login could not use the current FT Williams page. Sign in manually; no password was sent elsewhere."
+                    )
+                    return False
+                await self._page.wait_for_timeout(1_000)
+                continue
+            if _MANUAL_VERIFICATION_TEXT.search(text[:20_000]):
+                self._manual_verification_pending = True
+                self.login_required_message = (
+                    "Complete the FT Williams verification prompt in the dedicated browser; work will resume automatically."
+                )
+                return False
             await self._page.wait_for_timeout(500)
+        self.login_required_message = (
+            "FT Williams did not confirm the expected account. Complete login in the dedicated browser."
+        )
         return False
+
+    async def _submit_saved_login(self) -> None:
+        if not self.login_credentials:
+            raise RuntimeError("No saved FT Williams login is available.")
+        if not self._is_ftw_url(str(self._page.url)):
+            raise RuntimeError("Saved login was blocked because the browser is not on FT Williams.")
+
+        for frame in self._page.frames:
+            password = frame.locator("input[type='password']:visible")
+            if not await password.count():
+                continue
+            company = await self._first_visible_locator(
+                frame,
+                "input[name*='company' i], input[id*='company' i]",
+                fallback_index=0,
+            )
+            username = await self._first_visible_locator(
+                frame,
+                "input[name*='user' i], input[id*='user' i]",
+                fallback_index=1,
+            )
+            if company is None or username is None:
+                raise RuntimeError("The FT Williams login page layout was not recognized.")
+            await company.fill(self.login_credentials["company_code"])
+            await username.fill(self.login_credentials["username"])
+            await password.first.fill(self.login_credentials["password"])
+            await password.first.press("Enter")
+            return
+        raise RuntimeError("The FT Williams password field was not found.")
+
+    @staticmethod
+    async def _first_visible_locator(frame, selector: str, *, fallback_index: int):
+        candidates = frame.locator(selector)
+        for index in range(await candidates.count()):
+            candidate = candidates.nth(index)
+            if await candidate.is_visible():
+                return candidate
+        fallback = frame.locator("input[type='text']:visible, input:not([type]):visible")
+        if await fallback.count() > fallback_index:
+            return fallback.nth(fallback_index)
+        return None
+
+    @staticmethod
+    def _validated_login_credentials(credentials: dict[str, str] | None) -> dict[str, str] | None:
+        if not isinstance(credentials, dict):
+            return None
+        normalized = {
+            key: str(credentials.get(key) or "").strip()
+            for key in ("company_code", "username", "password")
+        }
+        return normalized if all(normalized.values()) else None
+
+    @staticmethod
+    def _is_ftw_url(url: str) -> bool:
+        host = (urlsplit(str(url or "")).hostname or "").lower().rstrip(".")
+        return host == "ftwilliam.com" or host.endswith(".ftwilliam.com")
 
     async def execute(self, job: dict) -> LocalAgentActionResult:
         if str(job.get("expected_account") or "").strip().casefold() != self.expected_account.casefold():
@@ -292,7 +405,10 @@ class FTWLocalAgentRunner:
             await self.api.heartbeat(
                 browser_ready=False,
                 login_required=True,
-                last_error="Sign in to FT Williams in the dedicated ERISAPros browser window.",
+                last_error=(
+                    getattr(self.browser, "login_required_message", "")
+                    or "Sign in to FT Williams in the dedicated ERISAPros browser window."
+                ),
             )
             return False
 

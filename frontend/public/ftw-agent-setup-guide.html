@@ -39,7 +39,7 @@
         <div>
           <p class="eyebrow">Client setup guide</p>
           <h1>Connect your FT Williams computer</h1>
-          <p class="intro">Four simple steps. Your FT Williams password and browser session stay on your computer.</p>
+          <p class="intro">Four simple steps. Your FT Williams password and browser session stay encrypted on your computer.</p>
         </div>
       </header>
 
@@ -54,8 +54,8 @@
             <p>In ERISAPros, open <b>FTW Agent</b>, choose <b>Connect this computer</b>, and enter the code in the installer. The code expires after 10 minutes and works once.</p>
           </li>
           <li>
-            <strong>Sign in to FT Williams once</strong>
-            <p>The agent opens a dedicated FT Williams browser. Complete the normal login and any MFA prompt yourself.</p>
+            <strong>Enable automatic FT Williams sign-in</strong>
+            <p>Choose Yes in the installer and enter your company code, username, and password. Windows encrypts this login for your account. The agent types it only on ftwilliam.com; complete MFA yourself if requested.</p>
           </li>
           <li>
             <strong>Test connection</strong>
@@ -68,11 +68,11 @@
       <div class="help-grid">
         <section class="help">
           <h2>If you see “Login required”</h2>
-          <p>Sign in in the dedicated FT Williams window. Waiting work pauses safely and resumes automatically on the next agent check.</p>
+          <p>The agent retries the saved login with a safe delay. If FT Williams requests MFA or rejects the login, complete it in the dedicated window. Waiting work then resumes automatically.</p>
         </section>
         <section class="help">
           <h2>If the browser was closed</h2>
-          <p>The agent reopens the same dedicated profile. If FT Williams has ended the session, sign in again and click Test connection.</p>
+          <p>The agent reopens the same dedicated profile and signs in with the Windows-encrypted login. You only need to complete MFA if FT Williams requests it.</p>
         </section>
         <section class="help">
           <h2>If the computer is offline</h2>
@@ -86,7 +86,7 @@
 
       <aside class="safety">
         <strong>Safety:</strong>
-        <span>ERISAPros does not store or type your FT Williams password. Pairing is private to your workspace, and the agent verifies the account and filing target before any approved action.</span>
+        <span>Your FT Williams login never goes to ERISAPros servers. Windows encrypts it for the current user, and the local agent types it only after confirming the ftwilliam.com domain. Pairing remains private to your workspace.</span>
       </aside>
       <footer>Need help? Contact your ERISAPros administrator. Never send a pairing code, password, or MFA code by email or chat.</footer>
     </main>

@@ -6,7 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.services import windows_agent_installation
 from app.services.windows_agent_installation import InstalledAgent, install_agent
-from scripts.run_ftw_local_agent import parse_args
+from app.services.windows_secret_store import load_secret_json
+from scripts.run_ftw_local_agent import collect_ftw_login_credentials, parse_args
 
 
 def test_double_clicking_the_agent_defaults_to_client_setup():
@@ -42,6 +43,7 @@ def test_startup_registration_uses_current_user_registry_without_admin(tmp_path,
         root=tmp_path,
         executable=tmp_path / "ERISAProsFTWAgent.exe",
         credential=tmp_path / "device.credential",
+        login_credential=tmp_path / "ftw-login.credential",
         profile=tmp_path / "BrowserProfile",
         launcher=tmp_path / "start-agent.vbs",
     )
@@ -81,6 +83,7 @@ def test_startup_registration_uses_current_user_registry_without_admin(tmp_path,
     launcher_text = installed.launcher.read_text(encoding="utf-8")
     assert "ERISAProsFTWAgent.exe" in launcher_text
     assert "device.credential" in launcher_text
+    assert "ftw-login.credential" in launcher_text
     assert "BrowserProfile" in launcher_text
     assert "wscript.exe //B" in registry_values["ERISAPros FT Williams Agent"]
     assert "start-agent.vbs" in registry_values["ERISAPros FT Williams Agent"]
@@ -136,6 +139,11 @@ def test_one_file_setup_pairs_and_installs_into_the_windows_user_profile(tmp_pat
                 source_executable=source,
                 local_app_data=local_app_data,
                 register_startup=False,
+                ftw_login_credentials={
+                    "company_code": "test-company",
+                    "username": "test-user",
+                    "password": "local-password",
+                },
             )
         )
     finally:
@@ -146,4 +154,35 @@ def test_one_file_setup_pairs_and_installs_into_the_windows_user_profile(tmp_pat
     assert result.executable.read_bytes() == b"agent executable"
     assert result.credential.exists()
     assert b"secret-device-token" not in result.credential.read_bytes()
+    assert result.login_credential.exists()
+    assert b"local-password" not in result.login_credential.read_bytes()
+    assert load_secret_json(result.login_credential) == {
+        "company_code": "test-company",
+        "username": "test-user",
+        "password": "local-password",
+    }
     assert stopped_processes[0][0] == ["taskkill.exe", "/IM", "ERISAProsFTWAgent.exe", "/F"]
+
+
+def test_client_can_choose_and_enter_an_encrypted_local_auto_login():
+    answers = iter(["", "company-01", "client.user"])
+
+    result = collect_ftw_login_credentials(
+        input_func=lambda _prompt: next(answers),
+        password_func=lambda _prompt: "client-password",
+    )
+
+    assert result == {
+        "company_code": "company-01",
+        "username": "client.user",
+        "password": "client-password",
+    }
+
+
+def test_client_can_decline_local_auto_login():
+    result = collect_ftw_login_credentials(
+        input_func=lambda _prompt: "n",
+        password_func=lambda _prompt: (_ for _ in ()).throw(AssertionError("password prompt was unexpected")),
+    )
+
+    assert result is None

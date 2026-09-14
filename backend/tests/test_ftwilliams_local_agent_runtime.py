@@ -60,6 +60,7 @@ class StubBrowserPage:
     def __init__(self, *, closed=False):
         self.closed = closed
         self.goto_calls = []
+        self.url = "about:blank"
 
     def is_closed(self):
         return self.closed
@@ -74,6 +75,7 @@ class StubBrowserPage:
         if self.closed:
             raise RuntimeError("Target page has been closed")
         self.goto_calls.append(url)
+        self.url = url
 
     async def wait_for_timeout(self, _timeout):
         return None
@@ -175,6 +177,175 @@ def test_persistent_browser_reopens_after_the_client_closes_its_window(tmp_path)
     assert old_playwright.stopped is True
     assert new_page.goto_calls == ["https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"]
     assert "--start-minimized" not in new_playwright.launch_kwargs[0]["args"]
+
+
+def test_persistent_browser_automatically_logs_in_and_verifies_the_expected_account(tmp_path):
+    credentials = {
+        "company_code": "company-01",
+        "username": "client.user",
+        "password": "client-password",
+    }
+
+    class AutoLoginBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(
+                tmp_path / "profile",
+                expected_account="HighlandTech",
+                login_credentials=credentials,
+            )
+            self._page = StubBrowserPage()
+            self.responses = iter([("Enter Login Information", True), ("HighlandTech", False)])
+            self.submissions = []
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            return next(self.responses)
+
+        async def _submit_saved_login(self):
+            self.submissions.append(dict(self.login_credentials))
+
+    browser = AutoLoginBrowser()
+
+    ready = run_async(browser.session_ready())
+
+    assert ready is True
+    assert browser.submissions == [credentials]
+
+
+def test_failed_automatic_login_waits_before_retrying_to_protect_the_account(tmp_path):
+    class RejectedLoginBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(
+                tmp_path / "profile",
+                expected_account="HighlandTech",
+                login_credentials={
+                    "company_code": "company-01",
+                    "username": "client.user",
+                    "password": "wrong-password",
+                },
+            )
+            self._page = StubBrowserPage()
+            self.submissions = 0
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            return "Enter Login Information", True
+
+        async def _submit_saved_login(self):
+            self.submissions += 1
+
+    browser = RejectedLoginBrowser()
+
+    first = run_async(browser.session_ready())
+    second = run_async(browser.session_ready())
+
+    assert first is False
+    assert second is False
+    assert browser.submissions == 1
+    assert "Automatic login" in browser.login_required_message
+
+
+def test_saved_login_is_typed_only_into_the_expected_ft_williams_fields(tmp_path):
+    class Field:
+        def __init__(self):
+            self.value = ""
+            self.keys = []
+
+        async def is_visible(self):
+            return True
+
+        async def fill(self, value):
+            self.value = value
+
+        async def press(self, key):
+            self.keys.append(key)
+
+    class Locator:
+        def __init__(self, fields):
+            self.fields = fields
+
+        async def count(self):
+            return len(self.fields)
+
+        def nth(self, index):
+            return self.fields[index]
+
+        @property
+        def first(self):
+            return self.fields[0]
+
+    company, username, password = Field(), Field(), Field()
+
+    class LoginFrame:
+        def locator(self, selector):
+            if "password" in selector:
+                return Locator([password])
+            if "company" in selector:
+                return Locator([company])
+            if "user" in selector:
+                return Locator([username])
+            return Locator([])
+
+    browser = PersistentFTWBrowser(
+        tmp_path / "profile",
+        expected_account="HighlandTech",
+        login_credentials={
+            "company_code": "company-01",
+            "username": "client.user",
+            "password": "client-password",
+        },
+    )
+    browser._page = type("LoginPage", (), {"url": "https://www.ftwilliam.com/cgi-bin/index.cgi", "frames": [LoginFrame()]})()
+
+    run_async(browser._submit_saved_login())
+
+    assert company.value == "company-01"
+    assert username.value == "client.user"
+    assert password.value == "client-password"
+    assert password.keys == ["Enter"]
+
+
+def test_saved_login_is_blocked_outside_the_ft_williams_domain(tmp_path):
+    browser = PersistentFTWBrowser(
+        tmp_path / "profile",
+        expected_account="HighlandTech",
+        login_credentials={
+            "company_code": "company-01",
+            "username": "client.user",
+            "password": "client-password",
+        },
+    )
+    browser._page = type("WrongPage", (), {"url": "https://example.com/login", "frames": []})()
+
+    with pytest.raises(RuntimeError, match="not on FT Williams"):
+        run_async(browser._submit_saved_login())
+
+
+def test_mfa_page_is_preserved_until_the_client_completes_it(tmp_path):
+    class MfaBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(tmp_path / "profile", expected_account="HighlandTech")
+            self._page = StubBrowserPage()
+            self.responses = iter([
+                ("Enter verification code", False),
+                ("HighlandTech", False),
+            ])
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            return next(self.responses)
+
+    browser = MfaBrowser()
+
+    assert run_async(browser.session_ready()) is False
+    assert run_async(browser.session_ready()) is True
+    assert browser._page.goto_calls == ["https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"]
 
 
 def test_runner_resumes_automatically_on_the_first_cycle_after_login():

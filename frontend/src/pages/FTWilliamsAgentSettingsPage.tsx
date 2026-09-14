@@ -319,7 +319,7 @@ export function FTWilliamsAgentSettingsPage() {
             <ol className="agent-setup-steps">
               <li><span>1</span><div><strong>Download and open the agent</strong><small>Use the download above, then double-click the setup file. Windows may show “Unknown publisher” for this pilot build.</small></div></li>
               <li><span>2</span><div><strong>Enter the one-time code</strong><small>The agent saves its device token locally with Windows protection. Do not send the code by email or chat.</small></div></li>
-              <li><span>3</span><div><strong>Sign in to FT Williams</strong><small>The agent opens a dedicated FT Williams browser. Complete any required MFA there; ERISAPros never receives the password or browser cookies.</small></div></li>
+              <li><span>3</span><div><strong>Enable automatic sign-in</strong><small>Enter the FT Williams login in the installer. Windows encrypts it on this computer; the agent uses it only on ftwilliam.com. Complete MFA manually if requested.</small></div></li>
               <li><span>4</span><div><strong>Confirm Connected</strong><small>Return here and refresh. Plan mapping and automation are enabled separately after verification.</small></div></li>
             </ol>
           </section>
@@ -422,8 +422,8 @@ function AgentSettingsSkeleton() {
 function agentStatusMessage(status: FTWLocalAgentStatus | null) {
   if (!status?.enabled) return "The local agent rollout is currently disabled for this environment.";
   if (status.connected) return `${status.device_name || "A trusted computer"} is signed in and ready for verified FT Williams work.`;
-  if (status.status === "LOGIN_REQUIRED") return "Open the ERISAPros Agent on the connected computer and sign in to FT Williams again.";
-  return "Connect a trusted Windows computer, then sign in to FT Williams once in its dedicated browser.";
+  if (status.status === "LOGIN_REQUIRED") return "Open the dedicated FT Williams browser. Automatic sign-in will retry safely; complete MFA or sign in manually if requested.";
+  return "Connect a trusted Windows computer and optionally save its FT Williams login with Windows encryption.";
 }
 
 function deviceStateClass(device: FTWLocalAgentDevice) {

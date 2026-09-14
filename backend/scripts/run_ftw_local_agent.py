@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import getpass
 import socket
 import sys
 from pathlib import Path
@@ -23,6 +24,25 @@ from app.services.windows_secret_store import load_secret_json, save_secret_json
 DEFAULT_SERVER_URL = "https://d3axcdlq9aydpw.cloudfront.net"
 
 
+def collect_ftw_login_credentials(*, input_func=input, password_func=getpass.getpass) -> dict[str, str] | None:
+    choice = input_func("Save FT Williams login on this computer for automatic sign-in? [Y/n]: ").strip().lower()
+    if choice in {"n", "no"}:
+        return None
+
+    def required(prompt: str, reader) -> str:
+        while True:
+            value = reader(prompt).strip()
+            if value:
+                return value
+            print("This value is required.")
+
+    return {
+        "company_code": required("FT Williams company code: ", input_func),
+        "username": required("FT Williams username: ", input_func),
+        "password": required("FT Williams password (stored only with Windows encryption): ", password_func),
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ERISAPros FT Williams local agent")
     subcommands = parser.add_subparsers(dest="command")
@@ -41,6 +61,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     run = subcommands.add_parser("run", help="Run the persistent local agent")
     run.add_argument("--credential-file", required=True)
+    run.add_argument("--login-credential-file", default="")
     run.add_argument("--profile-dir", required=True)
     run.add_argument("--poll-seconds", type=float, default=10.0)
     run.add_argument("--once", action="store_true", help="Run one heartbeat/job-poll cycle")
@@ -66,6 +87,9 @@ async def main() -> int:
         if not getattr(sys, "frozen", False):
             print("Client setup must be run from the packaged ERISAPros installer.", file=sys.stderr)
             return 2
+        ftw_login_credentials = None
+        if not args.pairing_code:
+            ftw_login_credentials = collect_ftw_login_credentials()
         try:
             await install_agent(
                 server_url=args.server_url,
@@ -73,13 +97,17 @@ async def main() -> int:
                 device_name=args.device_name,
                 source_executable=sys.executable,
                 register_startup=not args.no_startup,
+                ftw_login_credentials=ftw_login_credentials,
             )
         except Exception as exc:
             print(f"Setup could not finish: {exc}", file=sys.stderr)
             if not args.pairing_code and sys.stdin.isatty():
                 input("Press Enter to close setup.")
             return 1
-        print("Connected successfully. Sign in in the FT Williams window, then return to ERISAPros and click Test connection.")
+        if ftw_login_credentials:
+            print("Connected successfully. FT Williams will open and sign in automatically. Complete MFA if requested, then click Test connection in ERISAPros.")
+        else:
+            print("Connected successfully. Sign in in the FT Williams window, then return to ERISAPros and click Test connection.")
         if not args.pairing_code and sys.stdin.isatty():
             input("Press Enter to close setup.")
         return 0
@@ -111,6 +139,11 @@ async def main() -> int:
     browser = PersistentFTWBrowser(
         args.profile_dir,
         expected_account=credentials["expected_account"],
+        login_credentials=(
+            load_secret_json(args.login_credential_file)
+            if args.login_credential_file and Path(args.login_credential_file).is_file()
+            else None
+        ),
     )
     runner = FTWLocalAgentRunner(api, browser)
     try:
