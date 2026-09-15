@@ -73,6 +73,22 @@ class ShareFileRegressionTests(unittest.TestCase):
 
         self.assertEqual([root["id"] for root in roots], ["fo79bf37-43d1-40f3-8e15-c26d1e4736b9"])
 
+    def test_nested_navigation_placeholder_is_not_a_folder(self):
+        self.assertFalse(
+            self.service._is_folder(
+                {"Id": "na06778b-04db-f10d-d243-105ebde7c1bd", "Name": "Navigation", "ItemType": "Folder"}
+            )
+        )
+
+    def test_webhook_roots_exclude_virtual_navigation_ids(self):
+        virtual_root = {"id": "na06778b-04db-f10d-d243-105ebde7c1bd"}
+        real_root = {"id": "fo79bf37-43d1-40f3-8e15-c26d1e4736b9"}
+        self.service._discover_relevant_webhook_roots_for_root = AsyncMock(return_value=[virtual_root, real_root])
+
+        roots = run_async(self.service._discover_relevant_webhook_roots(None, None, [real_root]))
+
+        self.assertEqual(roots, [real_root])
+
     def test_scan_status_reports_webhook_registration_health(self):
         repo = repositories.get_repository()
         run_async(

@@ -2344,7 +2344,7 @@ class ShareFileService:
         seen: set[str] = set()
         for root in roots:
             root_id = str(root.get("id") or "")
-            if not root_id or root_id in seen:
+            if not root_id or root_id in seen or self._is_shared_navigation_placeholder_id(root_id):
                 continue
             seen.add(root_id)
             deduped.append(root)
@@ -3556,6 +3556,8 @@ class ShareFileService:
         return {"Authorization": f"Bearer {token.access_token}"}
 
     def _is_folder(self, item: dict) -> bool:
+        if self._is_shared_navigation_placeholder_id(item.get("Id") or item.get("id") or ""):
+            return False
         item_type = str(item.get("ItemType") or item.get("Type") or item.get("__type") or item.get("odata.type") or "").lower()
         if "folder" in item_type:
             return True
