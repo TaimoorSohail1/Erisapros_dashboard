@@ -3272,9 +3272,15 @@ class ShareFileService:
         for item in children:
             item_id = item.get("Id")
             name = item.get("Name") or item.get("FileName") or item_id
-            if item_id and name and self._is_folder(item):
+            if item_id and name and self._is_folder(item) and not self._is_shared_navigation_placeholder_id(item_id):
                 roots.append(self._scan_root(item_id, "ShareFile allshared", [name]))
         return roots
+
+    def _is_shared_navigation_placeholder_id(self, item_id: str) -> bool:
+        # ShareFile's allshared listing also returns virtual navigation nodes.
+        # They can look like folders, but their n-prefixed IDs are not valid
+        # webhook resources (the subscription API responds HTTP 404).
+        return bool(re.fullmatch(r"n[0-9a-f]{7}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(item_id), re.I))
 
     def _scan_root(self, folder_id: str, source: str, path_parts: list[str] | None = None) -> dict:
         cleaned_path = [part for part in (path_parts or []) if part]

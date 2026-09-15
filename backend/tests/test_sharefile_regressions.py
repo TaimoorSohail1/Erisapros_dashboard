@@ -61,6 +61,18 @@ class ShareFileRegressionTests(unittest.TestCase):
     def tearDown(self):
         repositories._repository = None
 
+    def test_shared_folder_discovery_ignores_navigation_placeholders(self):
+        self.service._list_folder = AsyncMock(
+            return_value=[
+                {"Id": "nff2670f-e942-90f7-6dc0-8c029db3ec2c", "Name": "Virtual navigation", "ItemType": "Folder"},
+                {"Id": "fo79bf37-43d1-40f3-8e15-c26d1e4736b9", "Name": "Ohio Valley Test", "ItemType": "Folder"},
+            ]
+        )
+
+        roots = run_async(self.service._discover_shared_folder_roots(None, None))
+
+        self.assertEqual([root["id"] for root in roots], ["fo79bf37-43d1-40f3-8e15-c26d1e4736b9"])
+
     def test_scan_status_reports_webhook_registration_health(self):
         repo = repositories.get_repository()
         run_async(
