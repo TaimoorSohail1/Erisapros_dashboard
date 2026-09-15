@@ -22,6 +22,7 @@ MAX_SHAREFILE_SCAN_DEPTH = 8
 # booklets, scans, or templates that would make the scan take minutes each.
 MAX_CONTENT_SNIFF_BYTES = 10 * 1024 * 1024
 SHAREFILE_INCREMENTAL_STATE_KEY = "sharefile_incremental_scan"
+SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY = "sharefile_webhook_registration"
 # A deep scan walks every folder of every client - on a large ShareFile
 # account that is thousands of folder listings and takes the best part of an
 # hour. Running it every few minutes keeps the account permanently busy and
@@ -235,6 +236,18 @@ class ShareFileService:
                 webhook_roots,
                 existing,
             )
+
+        attempted_at = datetime.utcnow()
+        registration_state = {
+            "last_attempt_at": attempted_at,
+            "webhook_roots": len(webhook_roots),
+            "registered": len(registered),
+            "skipped": len(skipped),
+            "failed": len(failed),
+        }
+        if not failed:
+            registration_state["last_success_at"] = attempted_at
+        await repo.upsert_sharefile_state(SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY, registration_state)
 
         await repo.add_audit(
             AuditLog(
@@ -680,7 +693,16 @@ class ShareFileService:
     async def scan_status(self) -> dict:
         """Visibility into the background scan so nobody has to guess whether
         scans are running, finishing, or failing."""
-        state = await get_repository().get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+        repo = get_repository()
+        state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+        registration = await repo.get_sharefile_state(SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY) or {}
+        registration_health = bool(
+            registration.get("last_attempt_at")
+            and registration.get("webhook_roots")
+            and not registration.get("failed")
+            and int(registration.get("registered") or 0) + int(registration.get("skipped") or 0)
+            >= int(registration.get("webhook_roots") or 0)
+        )
         started = state.get("last_scan_started_at")
         completed = state.get("last_scan_completed_at") or state.get("last_scan_at")
         running = bool(started and (not completed or completed < started))
@@ -705,6 +727,15 @@ class ShareFileService:
             "last_quick_scan_at": state.get("last_quick_scan_at"),
             "known_folder_count": len(state.get("known_folder_ids") or []),
             "deep_scan_interval_hours": get_settings().sharefile_deep_scan_interval_hours,
+            "webhook_registration": {
+                "healthy": registration_health,
+                "last_attempt_at": registration.get("last_attempt_at"),
+                "last_success_at": registration.get("last_success_at"),
+                "webhook_roots": registration.get("webhook_roots"),
+                "registered": registration.get("registered"),
+                "skipped": registration.get("skipped"),
+                "failed": registration.get("failed"),
+            },
             "upload_finality": await self._upload_finality_status(),
         }
 

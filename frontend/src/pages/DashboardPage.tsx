@@ -34,7 +34,7 @@ type DashboardToast = {
 } | null;
 const DASHBOARD_REVIEW_FIELD_TOTAL = 61;
 const DASHBOARD_ACTIVE_POLL_MS = 15_000;
-const DASHBOARD_IDLE_POLL_MS = 120_000;
+const DASHBOARD_IDLE_POLL_MS = 30_000;
 const DASHBOARD_EXPANDED_GROUPS_KEY = "erisapros.dashboard.expanded-company-groups";
 
 type DashboardCompanyGroup = {
@@ -859,7 +859,7 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
   }
   if (filing.status === "UPLOADED" || filing.status === "QUEUED") {
     return {
-      detail: "Both files found. Extraction is queued.",
+      detail: "Schedule A received. Extraction is queued.",
       pendingMetrics: true,
       tone: "info",
     };

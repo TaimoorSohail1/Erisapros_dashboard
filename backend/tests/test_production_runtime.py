@@ -10,6 +10,13 @@ from app.services.storage import StorageService
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def test_production_worker_auto_registers_sharefile_webhooks(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+        worker = contents.split("WorkerTaskDefinition:", 1)[1].split("WorkerService:", 1)[0]
+
+        self.assertIn('- Name: SHAREFILE_WEBHOOK_AUTO_REGISTER_ENABLED\n              Value: "true"', worker)
+
     def test_production_enables_authoritative_schedule_a_semantic_validation(self):
         template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
         contents = template.read_text(encoding="utf-8")

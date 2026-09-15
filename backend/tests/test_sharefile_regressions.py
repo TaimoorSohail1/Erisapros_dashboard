@@ -10,7 +10,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken
+from app.models import DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.services.extractor import (
     SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
     parse_schedule_a_text,
@@ -60,6 +60,49 @@ class ShareFileRegressionTests(unittest.TestCase):
 
     def tearDown(self):
         repositories._repository = None
+
+    def test_scan_status_reports_webhook_registration_health(self):
+        repo = repositories.get_repository()
+        run_async(
+            repo.upsert_sharefile_state(
+                "sharefile_webhook_registration",
+                {
+                    "last_attempt_at": datetime(2026, 9, 15, 12, 0),
+                    "registered": 3,
+                    "skipped": 7,
+                    "failed": 1,
+                    "webhook_roots": 11,
+                },
+            )
+        )
+
+        result = run_async(self.service.scan_status())
+
+        self.assertEqual(result["webhook_registration"]["registered"], 3)
+        self.assertEqual(result["webhook_registration"]["failed"], 1)
+        self.assertFalse(result["webhook_registration"]["healthy"])
+
+    def test_auto_registration_saves_successful_folder_coverage(self):
+        repo = repositories.get_repository()
+        run_async(repo.upsert_sharefile_token(ShareFileOAuthToken(subdomain="erisapros", access_token="test")))
+        self.service.status = AsyncMock(return_value=ShareFileStatus(configured=True, message="Ready"))
+        self.service._webhook_callback_url = lambda: "https://example.test/api/sharefile/webhook"
+        self.service._ensure_access_token = AsyncMock(side_effect=lambda client, token: token)
+        self.service._resolve_scan_roots = AsyncMock(return_value=[{"id": "root"}])
+        self.service._discover_relevant_webhook_roots = AsyncMock(return_value=[{"id": "folder-1"}, {"id": "folder-2"}])
+        self.service._list_webhook_subscriptions = AsyncMock(return_value=[])
+        self.service._register_missing_webhook_roots = AsyncMock(
+            return_value=([{"id": "folder-1"}], [{"id": "folder-2"}], [])
+        )
+
+        result = run_async(self.service.auto_register_relevant_webhooks())
+        state = run_async(repo.get_sharefile_state("sharefile_webhook_registration"))
+
+        self.assertEqual(result["webhook_roots"], 2)
+        self.assertEqual(state["registered"], 1)
+        self.assertEqual(state["skipped"], 1)
+        self.assertEqual(state["failed"], 0)
+        self.assertEqual(state["last_success_at"], state["last_attempt_at"])
 
     def stub_package_creation(self):
         async def fake_create_filing_package(client, token, package_key, package_files):
@@ -413,6 +456,83 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(filings[0].package_document_count, 1)
         self.assertIn("Housing Life Schedule A.pdf", filings[0].file_name)
         self.assertEqual(len(background_tasks.tasks), 1)
+
+    def test_four_schedule_a_files_keep_distinct_source_item_ids(self):
+        files = []
+        for index, client_name in enumerate(("Same Client", "Same Client", "Other Client", "Fourth Client"), 1):
+            name = f"Policy {index} Schedule A.pdf"
+            item = sharefile_file(
+                f"schedule-a-{index}",
+                name,
+                [client_name, "5500 Filing", "2025 Filing", "Schedule A's", name],
+                DocumentType.SCHEDULE_A,
+                f"2026-09-15T12:0{index}:00Z",
+            )
+            files.append(item)
+
+        async def no_root_siblings(client, token, package_root):
+            return []
+
+        self.stub_package_creation()
+        self.service._scan_package_root = no_root_siblings
+        result = run_async(
+            self.service._process_changed_sharefile_files(
+                client=None,
+                token=None,
+                scanned_files=files,
+                background_tasks=DummyBackgroundTasks(),
+                first_scan=False,
+                process_new_files=True,
+                source="TEST_BATCH",
+            )
+        )
+        filings = run_async(repositories.get_repository().list_filings())
+
+        self.assertEqual(result["synced"], 4)
+        self.assertEqual(len(filings), 4)
+        self.assertEqual({filing.sharefile_item_id for filing in filings}, {f"schedule-a-{index}" for index in range(1, 5)})
+
+    def test_new_renamed_schedule_a_webhook_keeps_separate_filing(self):
+        repo = repositories.get_repository()
+        run_async(repo.upsert_sharefile_token(ShareFileOAuthToken(subdomain="erisapros", access_token="test")))
+        old = sharefile_file(
+            "old-item",
+            "OVSA Hartford Schedule A.pdf",
+            ["Ohio Valley Test", "5500 Filing", "2025 Filing", "Schedule A's", "OVSA Hartford Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        newer = sharefile_file(
+            "new-item",
+            "OVSA Hartford Schedule A (1).pdf",
+            ["Ohio Valley Test", "5500 Filing", "2025 Filing", "Schedule A's", "OVSA Hartford Schedule A (1).pdf"],
+            DocumentType.SCHEDULE_A,
+            "2026-09-15T12:13:00Z",
+        )
+        items = {old["id"]: old, newer["id"]: newer}
+
+        async def no_root_siblings(client, token, package_root):
+            return []
+
+        self.stub_package_creation()
+        self.service._scan_package_root = no_root_siblings
+        self.service.status = AsyncMock(return_value=ShareFileStatus(configured=True, message="Ready"))
+        self.service._ensure_access_token = AsyncMock(side_effect=lambda client, token: token)
+        self.service._get_item = AsyncMock(side_effect=lambda client, token, item_id: {"Id": item_id})
+        self.service._is_folder = lambda item: False
+        self.service._normalize_sharefile_item = AsyncMock(side_effect=lambda client, token, item: items[item["Id"]])
+
+        for item_id in ("old-item", "new-item"):
+            result = run_async(
+                self.service.handle_webhook(
+                    {"EventType": "FileUploaded", "ItemId": item_id},
+                    DummyBackgroundTasks(),
+                )
+            )
+            self.assertEqual(result["synced"], 1)
+
+        filings = run_async(repo.list_filings())
+        self.assertEqual(len(filings), 2)
+        self.assertEqual({filing.sharefile_item_id for filing in filings}, {"old-item", "new-item"})
 
     def test_scan_status_reports_each_schedule_a_upload_finality_by_unique_item_id(self):
         repo = repositories.get_repository()

@@ -556,6 +556,19 @@ export async function getShareFileStatus(): Promise<{
   return request("/sharefile/status");
 }
 
+export async function getShareFileScanStatus(): Promise<{
+  webhook_registration: {
+    healthy: boolean;
+    last_attempt_at?: string | null;
+    webhook_roots?: number | null;
+    registered?: number | null;
+    skipped?: number | null;
+    failed?: number | null;
+  };
+}> {
+  return request("/sharefile/scan-status");
+}
+
 export async function getShareFileAuthorizationUrl(): Promise<{ configured: boolean; authorization_url?: string; redirect_uri?: string; message?: string }> {
   return request("/sharefile/oauth/start");
 }

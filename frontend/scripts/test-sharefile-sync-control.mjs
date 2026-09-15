@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/pages/ShareFilePage.tsx", import.meta.url), "utf8");
 
+assert.match(source, /getShareFileScanStatus/, "Intake screen should fetch live webhook registration health.");
+assert.match(source, /Real-time upload detection/, "Intake screen should show whether webhook delivery is ready.");
+
 assert.match(
   source,
   /disabled=\{syncing \|\| !status\.connected\}/,

@@ -6,6 +6,17 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 
 assert.match(
   page,
+  /const DASHBOARD_IDLE_POLL_MS = 30_000;/,
+  "New ShareFile uploads should appear without a two-minute idle dashboard delay.",
+);
+assert.match(
+  page,
+  /Schedule A received\. Extraction is queued\./,
+  "Queued Schedule A rows should not claim a worksheet is required.",
+);
+
+assert.match(
+  page,
   /groupFilingsByCompany\(filteredFilings\)/,
   "Filtered filings should be grouped by company before pagination.",
 );

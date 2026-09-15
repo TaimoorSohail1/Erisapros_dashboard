@@ -556,7 +556,7 @@ Resources:
             - Name: SHAREFILE_POLL_ENABLED
               Value: "false"
             - Name: SHAREFILE_WEBHOOK_AUTO_REGISTER_ENABLED
-              Value: "false"
+              Value: "true"
             - Name: SHAREFILE_WORK_QUEUE_URL
               Value: !Ref ShareFileWorkQueue
             - Name: FTWLINK_ENDPOINT_URL
