@@ -53,6 +53,7 @@ from app.services.extractor import (
     extract_fields_from_document_text,
     is_obvious_template_placeholder,
     merge_schedule_a_fields,
+    merge_schedule_a_broker_rows,
     parse_schedule_a_text,
     schedule_a_broker_compensation_fields,
 )
@@ -1025,6 +1026,40 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[1].fee_total, "0")
         self.assertEqual(rows[2].fee_total, "299")
         self.assertEqual(rows[3].fee_total, "2")
+
+    def test_schedule_a_parser_reads_metlife_address_and_split_state_zip(self):
+        text = """
+        (a) Name and address of the agents, brokers or other persons to whom commissions or fees were paid
+        Name: GALLAGHER BENEFIT SERVICES INC
+        Address: PO BOX 3009 City: ARLINGTON
+        HEIGHTS ST: IL ZIP: 60006-3009
+        Commissions Paid Fees Paid Organization
+        codeCoverage Amount Purpose Coverage Amount Purpose
+        Health 978 Base Commissions Multiple 107 Non-Monetary
+        Compensation 03
+        978 Sub-total 107 Sub-total
+        """
+        rows = extract_schedule_a_broker_rows(text)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].address_line_1, "PO BOX 3009")
+        self.assertEqual(rows[0].city, "ARLINGTON HEIGHTS")
+        self.assertEqual(rows[0].state, "IL")
+        self.assertEqual(rows[0].zip_code, "60006-3009")
+        self.assertEqual(rows[0].organization_code, "03")
+        self.assertEqual(rows[0].commission_total, "978")
+        self.assertEqual(rows[0].fee_total, "107")
+
+    def test_broker_fragment_joins_only_same_name_and_zip(self):
+        rows = merge_schedule_a_broker_rows(
+            [
+                ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", address_line_1="PO BOX 3009", city="ARLINGTON HEIGHTS", state="IL", zip_code="60006-3009", commission_total="978", fee_total="107"),
+                ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", address_line_1="PO BOX 95287", city="CHICAGO", state="IL", zip_code="60690-7219", commission_total="0", fee_total="121"),
+            ],
+            [ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", city="ARLINGTON HEIGHTS ST: IL ZIP: 60006-3009", fee_total="3")],
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].address_line_1, "PO BOX 3009")
+        self.assertEqual(rows[1].address_line_1, "PO BOX 95287")
 
     def test_schedule_a_parser_stops_last_broker_before_part_iii(self):
         text = """

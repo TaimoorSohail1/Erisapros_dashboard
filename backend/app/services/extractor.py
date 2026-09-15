@@ -879,7 +879,16 @@ def merge_schedule_a_broker_rows(
         # fragment has no independent address identity and must enrich, never
         # duplicate, the one complete row for the same broker.
         same_name_keys = [key for key in order if key[0] == identity[0]]
-        if _broker_row_is_parser_fragment(row) and len(same_name_keys) == 1:
+        fragment_zip = re.search(r"\bZIP\s*:\s*(\d{5}(?:-\d{4})?)\b", str(row.city or ""), re.IGNORECASE)
+        matching_fragment_keys = [
+            key for key in same_name_keys
+            if fragment_zip and fragment_zip.group(1) in (
+                str(merged[key].zip_code or "") + " " + str(merged[key].address_line_1 or "")
+            )
+        ]
+        if _broker_row_is_parser_fragment(row) and len(matching_fragment_keys) == 1:
+            identity = matching_fragment_keys[0]
+        elif _broker_row_is_parser_fragment(row) and len(same_name_keys) == 1:
             identity = same_name_keys[0]
         elif len(same_name_keys) == 1 and _broker_row_is_parser_fragment(merged[same_name_keys[0]]):
             identity = same_name_keys[0]
@@ -6042,6 +6051,11 @@ def extract_schedule_a_broker_rows(text: str, page: int | None = None) -> list[S
         block = block.strip()
         if not block:
             continue
+        # MetLife's compact broker table labels the same fields as Address,
+        # ST and ZIP; normalise them before the shared labelled-row parser.
+        block = re.sub(r"\bAddress\s*:", "Address Line 1:", block, flags=re.IGNORECASE)
+        block = re.sub(r"\bST\s*:", "State:", block, flags=re.IGNORECASE)
+        block = re.sub(r"\bZIP\s*:", "Zip Code:", block, flags=re.IGNORECASE)
         block = re.sub(
             r"(?<=[A-Za-z0-9])(?=(?:Address\s+Line\s+1|Address\s+Line\s+2|City|State|Zip\s+Code|Organization\s+code|Commissions\s+Paid|Fees\s+Paid)\s*:?)",
             " ",
@@ -6080,6 +6094,19 @@ def extract_schedule_a_broker_rows(text: str, page: int | None = None) -> list[S
         fee_section = _schedule_a_section_between(block, "Fees Paid", None)
         commission_money_rows, commission_total = _schedule_a_money_rows(commission_section)
         fee_money_rows, fee_total = _schedule_a_money_rows(fee_section)
+        if re.search(r"Commissions\s+Paid\s+Fees\s+Paid\s+Organization", block, re.IGNORECASE):
+            # A compact three-column MetLife row prints the organization code
+            # immediately before both subtotal amounts; the generic section
+            # parser otherwise mistakes code 03 for a $3 fee.
+            compact_totals = re.search(
+                r"\b(0?[1-9])\s+([\d,]+)\s+Sub-?total\s+([\d,]+)\s+Sub-?total\b",
+                block,
+                re.IGNORECASE,
+            )
+            if compact_totals:
+                organization_code, commission_total, fee_total = compact_totals.groups()
+                commission_money_rows = []
+                fee_money_rows = []
         row = ScheduleABrokerRow(
             name=name,
             address_line_1=address_line_1,

@@ -47,6 +47,15 @@ function isClientFacingError(value: unknown): value is ClientFacingError {
 function clientErrorForHttpStatus(status: number, detail?: string): ClientFacingError {
   const receivedDetail = detail?.trim();
   switch (status) {
+    case 400:
+      return {
+        title: "Check the entered value",
+        message: receivedDetail || "The value is not valid for this action.",
+        reason: receivedDetail || "The server returned HTTP 400 Bad Request.",
+        next_action: "Correct the highlighted value and save it again.",
+        code: "HTTP_400",
+        source: "ERISAPros",
+      };
     case 401:
       return {
         title: "Your session has expired",

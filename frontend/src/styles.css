@@ -11367,6 +11367,19 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   overflow: auto;
 }
 
+@media (max-height: 1200px) and (min-width: 821px) {
+  .shell:has(.approval-workspace-page) .main { overflow-y: auto; }
+  .approval-workspace-page,
+  .approval-workspace-page .approval-workspace { height: auto; overflow: visible; }
+  .approval-workspace-page .approval-preview-shell { flex: 0 0 auto; min-height: 0; overflow: visible; }
+  .approval-workspace-page .approval-table-wrap {
+    flex: 0 0 auto;
+    min-height: 360px;
+    max-height: min(50dvh, 520px);
+    overflow: auto;
+  }
+}
+
 .approval-workspace-page .approval-decision-table {
   min-width: 980px;
   table-layout: fixed;

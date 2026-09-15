@@ -6,6 +6,17 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
 
 assert.match(
+  styles,
+  /@media \(max-height:\s*1200px\) and \(min-width:\s*821px\)[\s\S]*?\.approval-workspace-page \.approval-table-wrap\s*\{[^}]*min-height:\s*360px;/,
+  "Short desktop viewports must keep the field rows visible above the broker editor.",
+);
+assert.match(
+  api,
+  /case 400:[\s\S]*?message:\s*receivedDetail\s*\|\|/,
+  "Broker-save validation errors must show the server's useful field detail.",
+);
+
+assert.match(
   source,
   /automationNeedsNoOperatorAction\(filing\)[\s\S]*?No action required/,
   "Approve and send controls should disappear while automation owns a safe filing.",
