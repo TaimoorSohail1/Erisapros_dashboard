@@ -61,6 +61,21 @@ assert.match(filingReview, /sendValidationNoticeFromError\([^,]+, allReviewRows\
 assert.match(filingReview, /function focusValidationIssue[\s\S]*?setSearch\(""\)[\s\S]*?setShowExcludedFields/, "Fix issue must clear filters and reveal the affected field before focusing it.");
 assert.match(filingReview, /function FTWQueryStatusBanner/, "An attempted FT Williams query must have a persistent status banner.");
 assert.match(filingReview, /query_state === "PLAN_MATCH_REQUIRED"/, "The filing page must identify a plan-match problem explicitly.");
+assert.match(
+  filingReview,
+  /title: "Choose the correct FT Williams plan"[\s\S]*?message: "Multiple possible plans were found\. Select the correct plan to continue\."/,
+  "A plan-match problem must use concise client-facing copy instead of dumping lookup diagnostics.",
+);
+assert.match(
+  filingReview,
+  /planMatchRequired[\s\S]*?onClick=\{onSelectPlan\}[\s\S]*?Select plan/,
+  "A plan-match problem must offer one direct Select plan action.",
+);
+assert.match(
+  filingReview,
+  /filing-guidance-details[\s\S]*?<summary>View technical details<\/summary>/,
+  "Raw FT Williams lookup diagnostics must stay collapsed behind View technical details.",
+);
 assert.match(filingReview, /query_state === "QUERY_FAILED"/, "The filing page must identify a failed FT Williams query explicitly.");
 assert.match(filingReview, /FT Williams refresh needs attention[\s\S]*?ApiRequestError[\s\S]*?clientError/, "A rejected current-data query must show its structured FT Williams reason.");
 assert.match(filingReview, /visibilitychange[\s\S]*?refreshFilingSnapshot/, "Returning to the filing must refresh server state from other browser sessions.");

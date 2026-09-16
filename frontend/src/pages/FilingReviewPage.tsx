@@ -834,6 +834,15 @@ export function FilingReviewPage() {
     }
   }
 
+  function openFtwPlanMatch() {
+    setShowTechnicalDrawer(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById("ftw-plan-match-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  }
+
   async function confirmAutomatedBringForward() {
     if (!id) return;
     setShowBringForwardConfirm(false);
@@ -1220,6 +1229,7 @@ export function FilingReviewPage() {
               busy={ftwInteractionBusy}
               onOpenBringForward={openFtwBringForward}
               onRetry={() => prepareFtw(true)}
+              onSelectPlan={openFtwPlanMatch}
               review={ftwReview}
             />
 
@@ -1489,7 +1499,12 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
       <span>
         <strong>{toast.title}</strong>
         <small>{toast.message}</small>
-        {toast.reason ? <small className="review-toast-detail"><b>Reason:</b> {toast.reason}</small> : null}
+        {toast.reason ? (
+          <details className="review-toast-details">
+            <summary>View technical details</summary>
+            <small className="review-toast-detail"><b>Reason:</b> {toast.reason}</small>
+          </details>
+        ) : null}
         {toast.nextAction ? <small className="review-toast-detail"><b>Next step:</b> {toast.nextAction}</small> : null}
         {toast.code ? <small className="review-toast-code">Reference: {toast.code}</small> : null}
       </span>
@@ -1843,10 +1858,10 @@ function ftwQueryStatusContent(review: FTWilliamsReview | null) {
     return {
       state,
       tone: "error" as const,
-      title: "FT Williams plan match is required",
-      message: reason || "The filing could not be matched to one FT Williams customer, plan, and year.",
+      title: "Choose the correct FT Williams plan",
+      message: "Multiple possible plans were found. Select the correct plan to continue.",
       reason,
-      nextAction: clientError?.next_action || "Confirm the plan identifiers in More actions, then query FTW Current again.",
+      nextAction: "This is a one-time selection for this filing.",
     };
   }
   if (state === "QUERY_FAILED") {
@@ -1967,16 +1982,19 @@ function FTWQueryStatusBanner({
   busy,
   onOpenBringForward,
   onRetry,
+  onSelectPlan,
   review,
 }: {
   busy: boolean;
   onOpenBringForward: () => void;
   onRetry: () => void;
+  onSelectPlan: () => void;
   review: FTWilliamsReview | null;
 }) {
   const content = ftwQueryStatusContent(review);
   if (!content) return null;
   const bringForward = content.state === "SCHEDULE_A_MISSING";
+  const planMatchRequired = content.state === "PLAN_MATCH_REQUIRED";
   return (
     <section className={`filing-guidance guidance-${content.tone}`} role="alert" aria-label="FT Williams query status">
       <div className="filing-guidance-icon"><AlertTriangle size={21} /></div>
@@ -1985,12 +2003,24 @@ function FTWQueryStatusBanner({
         <strong>{content.title}</strong>
         <p>{content.message}</p>
         <small>{content.nextAction}</small>
-        {review?.updated_at ? <small>Last checked: {formatDate(review.updated_at)}</small> : null}
+        {content.reason ? (
+          <details className="filing-guidance-details">
+            <summary>View technical details</summary>
+            <p>{content.reason}</p>
+          </details>
+        ) : null}
+        {review?.updated_at ? <small className="filing-guidance-timestamp">Last checked: {formatDate(review.updated_at)}</small> : null}
       </div>
       <div className="filing-guidance-actions">
-        <button className={`button ${bringForward ? "button-warn" : "secondary"}`} type="button" disabled={busy} onClick={bringForward ? onOpenBringForward : onRetry}>
-          {bringForward ? <><ExternalLink size={15} /> Open FTW Bring Forward</> : <><RefreshCw size={15} /> Retry FTW query</>}
-        </button>
+        {planMatchRequired ? (
+          <button className="button" type="button" disabled={busy} onClick={onSelectPlan}>
+            <Search size={15} /> Select plan
+          </button>
+        ) : (
+          <button className={`button ${bringForward ? "button-warn" : "secondary"}`} type="button" disabled={busy} onClick={bringForward ? onOpenBringForward : onRetry}>
+            {bringForward ? <><ExternalLink size={15} /> Open FTW Bring Forward</> : <><RefreshCw size={15} /> Retry FTW query</>}
+          </button>
+        )}
       </div>
     </section>
   );
@@ -4536,7 +4566,7 @@ function FTWilliamsComparisonPanel({
         </div>
 
         <div className="ftw-fallback-grid">
-          <form className="ftw-fallback-form" onSubmit={submitManualMatch}>
+          <form className="ftw-fallback-form" id="ftw-plan-match-form" onSubmit={submitManualMatch}>
             <h3>Plan Match</h3>
             <div className="ftw-fallback-inputs">
               <label>
