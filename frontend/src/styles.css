@@ -7271,6 +7271,30 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   margin-top: 4px;
 }
 
+.schedule-a-broker-table .broker-row-validation-summary > td {
+  background: #fff7ed;
+  border-top: 0;
+  padding: 8px 10px 10px;
+}
+
+.broker-row-validation-summary > td > div {
+  align-items: flex-start;
+  color: #9a3412;
+  display: flex;
+  gap: 8px;
+}
+
+.broker-row-validation-summary div > div {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+}
+
+.broker-row-validation-summary span {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .broker-row-actions,
 .broker-edit-actions {
   align-items: center;

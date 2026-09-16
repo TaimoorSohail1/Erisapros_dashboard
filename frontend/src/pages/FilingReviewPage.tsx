@@ -4045,6 +4045,22 @@ function brokerRowValidationIssues(row: ScheduleABrokerRow): string[] {
   if (String(row.state || "").trim() && !/^[A-Za-z]{2}$/.test(String(row.state).trim())) {
     issues.push("State must be a two-letter code.");
   }
+  const city = String(row.city || "").trim();
+  if (
+    city
+    && (
+      /\b(?:ADDRESS(?:\s+LINE\s+[12])?|CITY|STATE|ST|ZIP(?:\s+CODE)?)\s*:/i.test(city)
+      || /\b\d{5}(?:-\d{4})?\b/.test(city)
+      || /,\s*[A-Z]{2}(?:\s|$)/i.test(city)
+    )
+  ) {
+    issues.push("City contains street, state, or ZIP data. Enter only the city here, then use the State and ZIP code fields.");
+  }
+  for (const [label, value] of [["Address line 1", row.address_line_1], ["Address line 2", row.address_line_2]] as const) {
+    if (/\b(?:CITY|STATE|ST|ZIP(?:\s+CODE)?)\s*:/i.test(String(value || ""))) {
+      issues.push(`${label} contains city, state, or ZIP labels. Move each value to its matching field.`);
+    }
+  }
   if (String(row.zip_code || "").trim()) {
     const zipDigits = String(row.zip_code).replace(/\D/g, "");
     if (zipDigits.length !== 5 && zipDigits.length !== 9) issues.push("ZIP code must contain 5 or 9 digits.");
@@ -4154,8 +4170,7 @@ function ScheduleABrokerRowsPanel({
                 </td>
                 <td>{formatBrokerAddress(displayRow)}</td>
                 <td>
-                  <span className={rowIssues.length ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
-                  {rowIssues.length ? <small className="broker-validation-message"><AlertTriangle size={12} /> {rowIssues[0]}</small> : null}
+                  <span className={!String(displayRow.organization_code || "").trim() ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
                 </td>
                 <td>{displayRow.commission_total || "0"}</td>
                 <td>{displayRow.fee_total || "0"}</td>
@@ -4175,7 +4190,7 @@ function ScheduleABrokerRowsPanel({
                 <td>
                   <div className="broker-row-actions">
                     <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
-                      <Edit3 size={13} /> Edit
+                      <Edit3 size={13} /> {rowIssues.length ? "Fix issue" : "Edit"}
                     </button>
                     <button className="button danger" type="button" disabled={busy} onClick={() => void excludeRow(index)}>
                       <Ban size={13} /> Exclude
@@ -4183,6 +4198,22 @@ function ScheduleABrokerRowsPanel({
                   </div>
                 </td>
               </tr>
+              {rowIssues.length ? (
+                <tr className="broker-row-validation-summary">
+                  <td colSpan={8}>
+                    <div role="alert">
+                      <AlertTriangle size={15} />
+                      <div>
+                        <strong>Broker row {index + 1} needs correction</strong>
+                        {rowIssues.map((issue) => <span key={issue}>{issue}</span>)}
+                      </div>
+                      <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
+                        <Edit3 size={13} /> Fix issue
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
               {isEditing && draft ? (
                 <tr className="broker-edit-row" ref={editorRef}>
                   <td colSpan={8}>

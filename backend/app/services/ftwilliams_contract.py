@@ -7,6 +7,7 @@ import re
 
 from app.models import FormType
 from app.services.ftwilliams_tags import FORM_5500_UPDATE_TAGS_BY_RULE, SCHEDULE_A_TAGS_BY_RULE
+from app.services.schedule_a_broker_validation import broker_address_semantic_issue
 
 
 FTW_CONTRACT_VERSION = "2026-08"
@@ -173,6 +174,17 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
             _raise(tag, text, "expected a two-letter US state code")
         return text.upper()
 
+    broker_address_match = re.fullmatch(r"(AddressLine1|AddressLine2|City)(?:\d+|XX)", tag)
+    if broker_address_match:
+        field_name = {
+            "AddressLine1": "address_line_1",
+            "AddressLine2": "address_line_2",
+            "City": "city",
+        }[broker_address_match.group(1)]
+        semantic_issue = broker_address_semantic_issue(field_name, text)
+        if semantic_issue:
+            _raise(tag, text, semantic_issue)
+
     if re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
         digits = re.sub(r"\D", "", text)
         if len(digits) not in {5, 9} or re.search(r"[A-Za-z]", text):
@@ -244,6 +256,10 @@ def ftw_expected_format(tag: str) -> str:
         return "Two-letter US state code"
     if tag == "SDZipCode" or re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
         return "5- or 9-digit US ZIP code"
+    if re.fullmatch(r"City(?:\d+|XX)", tag):
+        return "City name only (no street, state, or ZIP data)"
+    if re.fullmatch(r"AddressLine[12](?:\d+|XX)", tag):
+        return "Street/address line only (no city, state, or ZIP labels)"
     if re.fullmatch(r"Code(?:\d+|XX)", tag):
         return "Organization code from 0 to 9"
     if tag in ZERO_ONE_INDICATOR_TAGS:

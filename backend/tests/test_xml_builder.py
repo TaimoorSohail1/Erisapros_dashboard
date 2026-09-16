@@ -208,6 +208,51 @@ class XmlBuilderTests(unittest.TestCase):
                 schedule_a_broker_rows=[{"name": "Example Broker", "state": "Texas", "organization_code": "3"}],
             )
 
+    def test_schedule_a_broker_rejects_address_fragment_in_city_before_send(self):
+        with self.assertRaises(FTWPayloadValidationError) as raised:
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "Gallagher Benefit Services Inc",
+                        "city": "ARLINGTON ST: 60006-3009",
+                        "organization_code": "6",
+                        "fee_total": "3",
+                    }
+                ],
+            )
+
+        issue = raised.exception.issues[0]
+        self.assertEqual(issue.tag, "City1")
+        self.assertIn("city name only", issue.reason)
+        self.assertIn("street, state, or ZIP", issue.reason)
+
+    def test_schedule_a_broker_accepts_a_valid_city_containing_st(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Example Broker",
+                    "city": "ST LOUIS",
+                    "state": "MO",
+                    "zip_code": "63101",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        self.assertIn("<CityXX>ST LOUIS</CityXX>", xml)
+
     def test_schedule_a_broker_rejects_invalid_organization_code_before_send(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "expected a numeric organization code"):
             build_schedule_a_records_update_xml(

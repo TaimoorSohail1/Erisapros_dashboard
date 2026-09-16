@@ -1,6 +1,6 @@
 import unittest
 
-from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerRow
+from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline, resolve_schedule_a_result
 
 
@@ -384,6 +384,41 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             any(item.validator == "broker_name_semantics" and item.status == "ERROR" for item in row.validation_results)
         )
         self.assertIn("broker_row_semantics", resolved.raw["extraction_quality"]["cross_field_errors"])
+
+    def test_broker_city_with_address_labels_requires_review(self):
+        result = NormalizedExtractionResult(
+            provider="structured OCR",
+            fields=[],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="Gallagher Benefit Services Inc",
+                    city="ARLINGTON ST: 60006-3009",
+                    organization_code="6",
+                    fee_total="3",
+                    source_page=4,
+                    evidence=[
+                        SourceEvidence(
+                            provider="structured OCR",
+                            page=4,
+                            source_text="ARLINGTON ST: 60006-3009",
+                        )
+                    ],
+                    confidence=0.98,
+                )
+            ],
+        )
+
+        resolved = resolve_schedule_a_result(result)
+
+        row = resolved.schedule_a_broker_rows[0]
+        self.assertEqual(row.decision, "REVIEW_REQUIRED")
+        self.assertTrue(
+            any(
+                item.validator == "broker_address_semantics" and item.status == "ERROR"
+                for item in row.validation_results
+            )
+        )
+        self.assertIn("broker_address_semantics", resolved.raw["extraction_quality"]["cross_field_errors"])
 
     def test_broker_row_without_page_evidence_requires_review(self):
         result = NormalizedExtractionResult(

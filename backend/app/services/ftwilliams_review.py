@@ -1252,7 +1252,11 @@ class FTWilliamsReviewService:
             "Code": "Organization code",
         }.get(match.group(1) if match else issue.tag, issue.tag)
         row_number = int(match.group(2)) if match and match.group(2).isdigit() else 1
-        return f"Broker row {row_number} - {field_name}: {issue.reason}. Current value: {issue.value}"
+        expected = ftw_expected_format(issue.tag)
+        return (
+            f"Broker row {row_number} - {field_name}: {issue.reason}. "
+            f"Current value: {issue.value or 'blank'}. Expected: {expected}."
+        )
 
     async def set_schedule_a_contract_type(
         self,

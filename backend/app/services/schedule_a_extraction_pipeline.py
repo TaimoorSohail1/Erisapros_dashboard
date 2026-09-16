@@ -19,6 +19,7 @@ from app.models import (
     ScheduleABrokerRow,
     SourceEvidence,
 )
+from app.services.schedule_a_broker_validation import broker_address_semantic_issue
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -712,6 +713,7 @@ def _validate_broker_rows(
     errors: list[str] = []
     has_row_semantic_error = False
     has_column_semantic_error = False
+    has_address_semantic_error = False
     for row in rows:
         if not row.evidence and (row.source_page or row.name):
             row.evidence.append(
@@ -735,6 +737,26 @@ def _validate_broker_rows(
                     "Broker row has page-level source evidence."
                     if has_row_evidence
                     else "Automatic broker extraction requires a source page and supporting row text."
+                ),
+            )
+        )
+        address_issues = [
+            (label, issue)
+            for label, issue in (
+                ("Address line 1", broker_address_semantic_issue("address_line_1", row.address_line_1)),
+                ("Address line 2", broker_address_semantic_issue("address_line_2", row.address_line_2)),
+                ("City", broker_address_semantic_issue("city", row.city)),
+            )
+            if issue
+        ]
+        validations.append(
+            ExtractionValidationResult(
+                validator="broker_address_semantics",
+                status="ERROR" if address_issues else "PASS",
+                reason=(
+                    "; ".join(f"{label}: {issue}" for label, issue in address_issues)
+                    if address_issues
+                    else "Broker address components are separated into the correct fields."
                 ),
             )
         )
@@ -809,11 +831,15 @@ def _validate_broker_rows(
             has_row_semantic_error = True
         if crossed_columns:
             has_column_semantic_error = True
+        if address_issues:
+            has_address_semantic_error = True
 
     if has_row_semantic_error:
         errors.append("broker_row_semantics")
     if has_column_semantic_error:
         errors.append("broker_column_semantics")
+    if has_address_semantic_error:
+        errors.append("broker_address_semantics")
     if any(
         any(item.validator == "source_evidence" and item.status == "ERROR" for item in row.validation_results)
         for row in rows

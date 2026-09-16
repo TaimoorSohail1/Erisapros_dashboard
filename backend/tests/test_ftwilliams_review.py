@@ -35,6 +35,7 @@ from app.models import (
     ScheduleAContractType,
 )
 from app.services.ftwilliams import FTWilliamsService
+from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
 from app.services.ftwilliams_review import FTWilliamsReviewService, clear_ftw_current_snapshot_cache
 from app.services.ftwilliams_tags import (
     FORM_5500_UPDATE_TAGS_BY_RULE,
@@ -1011,6 +1012,23 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_broker_validation_error_names_row_field_value_and_expected_format(self):
+        error = FTWPayloadValidationError(
+            [
+                FTWFieldValidationIssue(
+                    tag="City3",
+                    value="ARLINGTON ST: 60006-3009",
+                    reason="expected a city name only; move any street, state, or ZIP data to the matching broker address field",
+                )
+            ]
+        )
+
+        message = FTWilliamsReviewService()._friendly_broker_validation_error(error)
+
+        self.assertIn("Broker row 3 - City", message)
+        self.assertIn("Current value: ARLINGTON ST: 60006-3009", message)
+        self.assertIn("Expected: City name only", message)
+
     def test_plan_matching_rejects_a_different_plan_year_even_when_ein_and_plan_number_match(self):
         service = FTWilliamsReviewService()
         lookup = FTWilliamsPlanLookup(
@@ -2822,7 +2840,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            r"Broker row 1 - City: maximum length is 30 characters.*FORT WORTH ST: TX ZIP: 76107-5739",
+            r"Broker row 1 - City: expected a city name only.*FORT WORTH ST: TX ZIP: 76107-5739.*Expected: City name only",
         ):
             run_async(
                 FTWilliamsReviewService().update_schedule_a_broker_rows(

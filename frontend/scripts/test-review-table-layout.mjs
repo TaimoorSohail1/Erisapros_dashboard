@@ -943,6 +943,16 @@ assert.match(
 );
 assert.match(
   source,
+  /City contains street, state, or ZIP data/,
+  "Broker review must explain when address fragments leak into the city field.",
+);
+assert.match(
+  source,
+  /broker-row-validation-summary[\s\S]*?Broker row \{index \+ 1\} needs correction[\s\S]*?Fix issue/,
+  "Invalid broker rows must show a clear row-level error and direct fix action.",
+);
+assert.match(
+  source,
   /nextAction === "LOGIN_TO_FTW"[\s\S]*?onClick=\{onRetry\}[\s\S]*?Retry automation[\s\S]*?onClick=\{onOpenBringForward\}[\s\S]*?Open FTW/,
   "A refreshed automation login must offer Retry without removing the manual FT Williams fallback.",
 );
