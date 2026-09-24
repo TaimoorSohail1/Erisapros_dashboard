@@ -1,7 +1,7 @@
 # Client Workspaces and FT Williams Agent Rollout Plan
 
-Status: proposed — no multi-client automation is enabled by this plan alone.  
-Owner: ERISAPros engineering and operations.  
+Status: proposed — no multi-client automation is enabled by this plan alone.
+Owner: ERISAPros engineering and operations.
 Baseline: the HighlandTech five-plan Bring Forward canary is deployed; FT Williams updates and automatic sending are disabled.
 
 ## 1. Problem

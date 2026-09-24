@@ -1,7 +1,7 @@
 # FT Williams Automation Production Canary Report
 
-Date: 2026-09-11  
-Branch: `codex/automated-ftw-workflow`  
+Date: 2026-09-11
+Branch: `codex/automated-ftw-workflow`
 Production UI: `https://d3axcdlq9aydpw.cloudfront.net`
 
 ## Outcome

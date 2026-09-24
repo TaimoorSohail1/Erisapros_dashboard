@@ -1,7 +1,7 @@
 # Schedule A global position extraction verification
 
-Date: 2026-09-05  
-Scope: local implementation and QA only  
+Date: 2026-09-05
+Scope: local implementation and QA only
 Deployment: **not deployed**
 
 ## Outcome

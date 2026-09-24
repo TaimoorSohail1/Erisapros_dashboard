@@ -1,11 +1,11 @@
 # FT Williams Agent Client Onboarding and Session QA Report
 
-Date: 2026-09-12  
+Date: 2026-09-12
 Scope: Client-friendly Windows agent setup, connection verification, browser/session recovery, and regression safety.
 
 ## Result
 
-**Code and development-package QA: PASS**  
+**Code and development-package QA: PASS**
 **Client production rollout: BLOCKED until the Windows executable is code-signed**
 
 No client filing, FT Williams plan, Schedule A, or production credential was changed during this work.

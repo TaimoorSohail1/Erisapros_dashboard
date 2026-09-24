@@ -1,8 +1,8 @@
 # Schedule A semantic safety release report
 
-Date: 2026-08-29  
-Branch: `codex/ftw-operator-ui`  
-Implementation commit: `868cdbe`  
+Date: 2026-08-29
+Branch: `codex/ftw-operator-ui`
+Implementation commit: `868cdbe`
 Production: deployed
 
 ## Outcome

@@ -1,8 +1,8 @@
 # FGF LLC New Schedule A Verification Report
 
-Date: 2026-09-12  
-Environment: Production application connected to the HighlandTech FT Williams test account  
-Filing: `6aa4858082f596d80df9f834`  
+Date: 2026-09-12
+Environment: Production application connected to the HighlandTech FT Williams test account
+Filing: `6aa4858082f596d80df9f834`
 Source: `00555179 SCHEDULE A 01.01.25 TO 12.31.25.pdf`
 
 ## Result
