@@ -26,6 +26,7 @@ from app.models import (
     FTWilliamsSchemaSnapshot,
     FTWLocalAgentClaimResponse,
     FTWLocalAgentCompleteRequest,
+    FTWLocalAgentControlRequest,
     FTWLocalAgentDevice,
     FTWLocalAgentHeartbeatRequest,
     FTWLocalAgentJobResultResponse,
@@ -296,6 +297,8 @@ async def list_local_agent_devices(claims: dict = Depends(require_field_rule_adm
                 "status": device.status,
                 "agent_version": device.agent_version,
                 "browser_ready": device.browser_ready,
+                "pause_requested": device.pause_requested,
+                "active_job_id": device.active_job_id,
                 "last_error": device.last_error,
                 "last_seen_at": device.last_seen_at,
                 "revoked_at": device.revoked_at,
@@ -343,7 +346,29 @@ async def local_agent_heartbeat(
     device: FTWLocalAgentDevice = Depends(require_local_agent_device),
 ):
     updated = await FTWLocalAgentService().heartbeat(device, payload)
-    return {"device_id": updated.id, "status": updated.status, "server_time": datetime.utcnow()}
+    return {"device_id": updated.id, "status": updated.status, "pause_requested": updated.pause_requested, "server_time": datetime.utcnow()}
+
+
+@router.post("/local-agent/devices/{device_id}/control")
+async def control_local_agent_device(
+    device_id: str, payload: FTWLocalAgentControlRequest,
+    claims: dict = Depends(require_field_rule_admin),
+):
+    # Reuse exactly the same owner/workspace visibility boundary as the device list.
+    visible = await list_local_agent_devices(claims)
+    if not any(item["id"] == device_id and not item["revoked_at"] for item in visible["devices"]):
+        raise HTTPException(status_code=404, detail="Local-agent device not found.")
+    device = next(item for item in await get_repository().list_ftw_local_agent_devices() if item.id == device_id)
+    try:
+        updated = await FTWLocalAgentService().set_paused(device, payload.paused)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"device_id": updated.id, "status": updated.status, "pause_requested": updated.pause_requested}
+
+
+@router.get("/local-agent/agent/control")
+async def local_agent_control(device: FTWLocalAgentDevice = Depends(require_local_agent_device)):
+    return await FTWLocalAgentService().control(device)
 
 
 @router.post("/local-agent/agent/revoke")
@@ -373,7 +398,8 @@ async def complete_local_agent_job(
     service = FTWLocalAgentService()
     try:
         job = await service.complete(device, job_id, payload)
-        job = await service.continue_after_completion(job)
+        if job.status.value != "VERIFIED":
+            job = await service.continue_after_completion(job)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return FTWLocalAgentJobResultResponse(

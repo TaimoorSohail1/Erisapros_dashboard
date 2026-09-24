@@ -217,16 +217,14 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         filing.automation_bring_forward_approved_target_key = FTWAutomationPolicy.bring_forward_target_key(review)
         filing.automation_bring_forward_approved_at = datetime.utcnow()
 
-    def test_automation_requires_confirmed_browser_plan_mapping(self):
+    def test_automation_uses_lookup_identity_without_saved_mapping(self):
         filing, review, extracted, settings = self.safe_case()
         review.browser_mapping_confirmed = False
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
-        self.assertFalse(decision.eligible)
-        self.assertEqual(decision.next_action, "MAP_FTW_BROWSER_PLAN")
-        self.assertIn("one-time", decision.reasons[0].lower())
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
 
     def test_disabled_automation_keeps_filing_on_manual_workflow(self):
         filing = Filing(
@@ -543,7 +541,7 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
 
-    def test_account_scoped_demo_allowlist_rejects_an_unconfirmed_mapping(self):
+    def test_account_scoped_demo_allowlist_accepts_lookup_identity_without_saved_mapping(self):
         filing, review, extracted, settings = self.safe_case()
         review.browser_mapping_confirmed = False
         settings.ftwlink_sandbox_ftw_customer_id = None
@@ -560,8 +558,8 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.DISABLED)
-        self.assertIn("outside", decision.reasons[0].lower())
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
 
     def test_account_scoped_demo_allowlist_rejects_another_expected_account(self):
         filing, review, extracted, settings = self.safe_case()

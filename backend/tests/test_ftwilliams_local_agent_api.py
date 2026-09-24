@@ -73,6 +73,38 @@ def test_pairing_code_cannot_be_reused_through_the_api():
         repositories._repository = None
 
 
+def test_pause_resume_controls_are_owner_scoped_and_acknowledge_browser_closure():
+    repo = repositories.MemoryRepository()
+    repositories._repository = repo
+    client = TestClient(app)
+    try:
+        code = client.post("/api/ftwilliams/local-agent/pairing-codes").json()["pairing_code"]
+        device = client.post("/api/ftwilliams/local-agent/pair", json={
+            "pairing_code": code, "device_name": "Pause test", "agent_version": "0.4.0",
+        }).json()
+        headers = {"Authorization": f"Bearer {device['device_token']}"}
+        url = f"/api/ftwilliams/local-agent/devices/{device['device_id']}/control"
+        assert client.get("/api/ftwilliams/local-agent/agent/control").status_code == 401
+        requested = client.post(url, json={"paused": True})
+        assert requested.status_code == 200
+        assert requested.json()["status"] == "PAUSING"
+        assert client.get("/api/ftwilliams/local-agent/agent/control", headers=headers).json()["pause_requested"]
+        ack = client.post("/api/ftwilliams/local-agent/agent/heartbeat", headers=headers, json={
+            "agent_version": "0.4.0", "browser_ready": False, "paused": True,
+        })
+        assert ack.json()["status"] == "PAUSED"
+        assert client.post(url, json={"paused": False}).json()["status"] == "RESUMING"
+        assert client.post("/api/ftwilliams/local-agent/agent/jobs/claim", headers=headers).json()["job"] is None
+        other = asyncio.run(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+            name="Private", token_hash="private", token_prefix="priv", expected_account="Private",
+            paired_by="another@example.com", agent_version="0.4.0",
+        )))
+        assert client.post(f"/api/ftwilliams/local-agent/devices/{other.id}/control", json={"paused": True}).status_code == 404
+        assert "token_hash" not in str(client.get("/api/ftwilliams/local-agent/devices").json())
+    finally:
+        repositories._repository = None
+
+
 def test_local_agent_status_and_device_list_are_scoped_to_pairing_owner():
     repo = repositories.MemoryRepository()
     repositories._repository = repo

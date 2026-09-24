@@ -14,6 +14,34 @@ from app.repositories import MongoRepository, dashboard_identity_values, retry_r
 
 
 class MongoRepositoryResilienceTests(unittest.TestCase):
+    def test_sharefile_identity_projection_keeps_version_hash_and_size_for_deduplication(self):
+        captured = {}
+
+        class Cursor:
+            async def to_list(self, length):
+                captured["length"] = length
+                return []
+
+        def find(query, projection):
+            captured["query"] = query
+            captured["projection"] = projection
+            return Cursor()
+
+        repository = MongoRepository.__new__(MongoRepository)
+        repository.db = SimpleNamespace(
+            sharefile_file_index=SimpleNamespace(find=find)
+        )
+
+        asyncio.run(repository.list_sharefile_files_by_item_ids({"item-1"}))
+
+        self.assertEqual(captured["query"], {"item_id": {"$in": ["item-1"]}})
+        for field in ("file_size", "modified_at", "version", "hash"):
+            self.assertEqual(
+                captured["projection"].get(field),
+                1,
+                f"{field} is required to avoid re-extracting one ShareFile version",
+            )
+
     def test_legacy_empty_client_errors_load_as_missing_errors(self):
         review = repositories.from_mongo(
             {
@@ -104,6 +132,16 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             }
             for index in range(125)
         ]
+        client_path = "Community Legal Aid SoCal (Test) > Community Legal Aid SoCal (CLA SoCal)"
+        for index, name in enumerate(["COMMUNITY LEGAL AID SOCAL", "Community Legal Aid SoCal (CLA SoCal)"]):
+            documents[index].update({
+                "intake_source": "SHAREFILE",
+                "dashboard_client_name": name,
+                "package_documents": [{
+                    "client_name": "Community Legal Aid SoCal (CLA SoCal)",
+                    "sharefile_path": ("Folders > ERISA Pros > " if index else "") + client_path + f" > 5500 Filing > {2024 + index} Filing > Schedule A's > policy.pdf",
+                }],
+            })
 
         def find(query, projection):
             captured["query"] = query
@@ -122,6 +160,10 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         filings = asyncio.run(repository.list_dashboard_filings())
 
         self.assertEqual(len(filings), 125)
+        self.assertEqual(filings[0].dashboard_client_name, "Community Legal Aid SoCal (CLA SoCal)")
+        self.assertEqual(filings[0].dashboard_client_group_key, filings[1].dashboard_client_group_key)
+        self.assertTrue(filings[0].dashboard_client_group_key)
+        self.assertEqual(filings[0].package_documents, [])
         self.assertEqual(captured["read_preference"], ReadPreference.PRIMARY)
         self.assertEqual(captured["batch_size"], 1_000)
         self.assertIsNone(captured["to_list_length"])
@@ -131,6 +173,56 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
         self.assertIn("dashboard_ein", captured["projection"])
         self.assertIn("dashboard_plan_number", captured["projection"])
         self.assertIn("dashboard_plan_name", captured["projection"])
+
+    def test_sharefile_company_identity_does_not_merge_different_client_paths_or_workspaces(self):
+        def source(root="Test", workspace=None, year="2025"):
+            return {"intake_source": "SHAREFILE", "workspace_id": workspace, "package_documents": [{
+                "client_name": "Example Client", "sharefile_path": f"{root} > Example Client > 5500 Filing > {year} Filing > Schedule A's > carrier > policy.pdf",
+            }]}
+        base = repositories.dashboard_sharefile_company_identity(source())
+        self.assertEqual(base, repositories.dashboard_sharefile_company_identity(source(year="2024")))
+        self.assertNotEqual(base["dashboard_client_group_key"], repositories.dashboard_sharefile_company_identity(source(root="Production"))["dashboard_client_group_key"])
+        self.assertNotEqual(base["dashboard_client_group_key"], repositories.dashboard_sharefile_company_identity(source(workspace="another-workspace"))["dashboard_client_group_key"])
+        manual = source()
+        manual["intake_source"] = "MANUAL"
+        self.assertEqual(repositories.dashboard_sharefile_company_identity(manual), {})
+        conflict = source()
+        conflict["package_documents"].append({"client_name": "Different Client"})
+        self.assertEqual(repositories.dashboard_sharefile_company_identity(conflict), {})
+        # Source-derived sponsor XML is untouched by this presentation-only fix.
+        self.assertEqual(base["dashboard_client_name"], "Example Client")
+
+    def test_dashboard_groups_relative_and_discovery_root_paths_for_same_client(self):
+        from app.models import Filing
+        repository = repositories.MemoryRepository()
+        for index, prefix in enumerate(["", "Folders > ERISA Pros > "]):
+            repository.filings[str(index)] = Filing(
+                id=str(index), file_name=f"policy-{index}.pdf", content_type="application/pdf",
+                file_size=1, s3_key=f"policy-{index}.pdf", intake_source="SHAREFILE",
+                package_documents=[{"client_name": "The Barry Robinson Center TEST",
+                    "sharefile_path": prefix + "The Barry Robinson Center TEST > 5500 Filing > 2025 Filing > Schedule A's > policy.pdf"}],
+            )
+        rows = asyncio.run(repository.list_dashboard_filings())
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0].dashboard_client_group_key)
+        self.assertEqual(rows[0].dashboard_client_group_key, rows[1].dashboard_client_group_key)
+        self.assertEqual(repository.filings["1"].package_documents[0]["sharefile_path"],
+            "Folders > ERISA Pros > The Barry Robinson Center TEST > 5500 Filing > 2025 Filing > Schedule A's > policy.pdf")
+
+    def test_discovery_root_normalization_preserves_nested_client_boundaries(self):
+        def identity(path, folder_id=None):
+            return repositories.dashboard_sharefile_company_identity({
+                "intake_source": "SHAREFILE", "package_documents": [{
+                    "client_name": "Example Client", "sharefile_path": path,
+                    "sharefile_client_folder_id": folder_id,
+                }],
+            })["dashboard_client_group_key"]
+        base = identity("Test > Example Client > 5500 Filing > 2025 Filing")
+        self.assertEqual(base, identity(" folders > ERISA PROS > Test > Example Client > 5500 Filing > 2024 Filing"))
+        self.assertNotEqual(base, identity("Folders > ERISA Pros > Production > Example Client > 5500 Filing"))
+        self.assertNotEqual(base, identity("Folders > Another Account > Test > Example Client > 5500 Filing"))
+        self.assertEqual(identity("Example Client", "client-123"), identity("Folders > ERISA Pros > Example Client", "client-123"))
+        self.assertNotEqual(identity("Example Client", "client-123"), identity("Example Client", "client-456"))
 
     def test_performance_indexes_cover_review_and_history_queries(self):
         async def scenario():

@@ -3,6 +3,7 @@ import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from app.services.ftwilliams_local_agent import (
 from app.config import Settings
 from app.models import (
     Filing,
+    FilingStatus,
     FTWClientWorkspace,
     FTWAutomationStatus,
     FTWilliamsPlanLookup,
@@ -37,6 +39,18 @@ def run_async(value):
     return asyncio.run(value)
 
 
+@pytest.fixture(autouse=True)
+def missing_current_year_query(monkeypatch):
+    """These claim tests model FTW's explicit missing result, never live FTW."""
+    from app.models import FTWilliamsQueryResponse, FTWilliamsStatusItem
+    async def query(_self, request):
+        assert request.operation == "query_schedule_a" and request.send
+        return FTWilliamsQueryResponse(operation=request.operation, configured=True, sent=True,
+            request_xml="", http_status=200, success=False,
+            statuses=[FTWilliamsStatusItem(error_code="59")])
+    monkeypatch.setattr("app.services.ftwilliams.FTWilliamsService.run_query", query)
+
+
 class FailingPostBringForwardReviewService:
     async def prepare_review(self, *_args, **_kwargs):
         raise RuntimeError("ftwLink timeout")
@@ -48,6 +62,16 @@ class StaticPostBringForwardReviewService:
 
     async def prepare_review(self, *_args, **_kwargs):
         return self.review
+
+
+class DelayedPostBringForwardReviewService:
+    def __init__(self, *reviews):
+        self.reviews = list(reviews)
+        self.calls = 0
+
+    async def prepare_review(self, *_args, **_kwargs):
+        self.calls += 1
+        return self.reviews[min(self.calls - 1, len(self.reviews) - 1)]
 
 
 def sample_target(**overrides):
@@ -101,7 +125,7 @@ def test_identity_verification_requires_login_first():
     assert result.state == "LOGIN_REQUIRED"
 
 
-def test_identity_verification_requires_exact_account_plan_ein_number_and_year():
+def test_identity_verification_allows_missing_browser_plan_metadata_for_confirmed_target():
     target = sample_target()
     correct = (
         "HighlandTech\n"
@@ -113,6 +137,12 @@ def test_identity_verification_requires_exact_account_plan_ein_number_and_year()
     assert verify_local_ftw_identity(
         target,
         correct,
+        expected_account="HighlandTech",
+        password_visible=False,
+    ).success
+    assert verify_local_ftw_identity(
+        target,
+        correct.replace("Demo Health and Welfare Plan", "Demo Health and Welfar").replace("PN: 501", "PN: ???"),
         expected_account="HighlandTech",
         password_visible=False,
     ).success
@@ -208,6 +238,8 @@ def test_heartbeat_and_job_claim_are_pull_only_and_claim_token_is_one_time():
         year="2025",
         ftw_browser_customer_id="customer-1",
         ftw_browser_plan_id="plan-1",
+        ftw_customer_id="customer-1",
+        ftw_plan_id="plan-1",
         browser_mapping_confirmed=True,
         ftw_plan_url=(
             "https://www.ftwilliam.com/cgi-bin/index.cgi#go=iframe&"
@@ -375,6 +407,45 @@ def test_post_bring_forward_requires_a_new_record_id_before_continuing():
     assert updated_filing.automation_bring_forward_new_record_ids == []
 
 
+def test_post_bring_forward_retries_transient_vendor_propagation_before_stopping():
+    delayed = FTWilliamsReview(
+        filing_id="placeholder",
+        configured=True,
+        current_query_sent=True,
+        current_query_success=True,
+        current_query_complete=True,
+        current_year_exists=False,
+        bring_forward_required=True,
+        year="2025",
+        schedule_a_records=[{"ftw_seq_no": "1", "query_results": {}}],
+    )
+    verified = FTWilliamsReview(
+        filing_id="placeholder",
+        configured=True,
+        current_query_sent=True,
+        current_query_success=True,
+        current_query_complete=True,
+        current_year_exists=True,
+        bring_forward_required=False,
+        year="2025",
+        schedule_a_records=[
+            {"ftw_seq_no": "1", "query_results": {}},
+            {"ftw_seq_no": "2", "query_results": {}},
+        ],
+    )
+    review_service = DelayedPostBringForwardReviewService(delayed, verified)
+    repo, service, filing, job = _submitted_job_fixture(review_service)
+    delayed.filing_id = verified.filing_id = str(filing.id)
+
+    with patch("app.services.ftwilliams_local_agent_jobs.asyncio.sleep", new_callable=AsyncMock):
+        result = run_async(service.continue_after_completion(job))
+
+    assert result.status == FTWLocalAgentJobStatus.VERIFIED
+    assert review_service.calls == 2
+    updated_filing = run_async(repo.get_filing(str(filing.id)))
+    assert updated_filing.automation_bring_forward_new_record_ids == ["2"]
+
+
 def test_expired_job_claim_cannot_be_completed():
     repo = MemoryRepository()
     job = _submitted_job_fixture(FailingPostBringForwardReviewService())[3]
@@ -429,7 +500,143 @@ def test_login_required_job_is_automatically_reclaimed_after_login():
     assert reclaimed.completed_at is None
 
 
-def test_verified_job_is_requeued_when_fresh_query_still_requires_bring_forward():
+def test_stale_nonclaimed_device_job_is_released_and_next_job_claimed_same_poll():
+    repo, service, filing, stale_job = _submitted_job_fixture(
+        FailingPostBringForwardReviewService()
+    )
+    now = datetime.utcnow()
+    stale_job = run_async(
+        repo.update_ftw_local_agent_job(
+            str(stale_job.id),
+            {
+                "status": FTWLocalAgentJobStatus.ACTION_NEEDED,
+                "result_state": "PAGE_LAYOUT_CHANGED",
+                "operation_dispatched_at": None,
+                "claim_token_hash": None,
+                "claim_expires_at": None,
+                "completed_at": now,
+            },
+        )
+    )
+    next_job = run_async(
+        repo.create_or_get_ftw_local_agent_job(
+            stale_job.model_copy(
+                update={
+                    "id": None,
+                    "idempotency_key": "next-safe-job",
+                    "run_id": "run-2",
+                    "status": FTWLocalAgentJobStatus.QUEUED,
+                    "result_state": None,
+                    "result_message": None,
+                    "completed_at": None,
+                    "expires_at": now + timedelta(minutes=5),
+                }
+            )
+        )
+    )
+    device = run_async(
+        repo.create_ftw_local_agent_device(
+            FTWLocalAgentDevice(
+                name="Recovery workstation",
+                token_hash="recovery-token",
+                token_prefix="recover",
+                expected_account="HighlandTech",
+                agent_version="0.4.2",
+                status=FTWLocalAgentDeviceStatus.CONNECTED,
+                browser_ready=True,
+                last_seen_at=now,
+                active_job_id=str(stale_job.id),
+                active_claim_expires_at=now + timedelta(minutes=5),
+            )
+        )
+    )
+
+    claim = run_async(service.claim(device))
+
+    assert claim.job is not None
+    assert claim.job.id == next_job.id
+    recovered_device = run_async(service._fresh_device(device))
+    assert recovered_device.active_job_id == next_job.id
+
+
+def test_deleted_filing_history_does_not_block_fresh_missing_year_job():
+    repo, service, old_filing, old_job = _submitted_job_fixture(
+        FailingPostBringForwardReviewService()
+    )
+    now = datetime.utcnow()
+    run_async(repo.update_filing(str(old_filing.id), {"status": FilingStatus.DELETED}))
+    run_async(
+        repo.update_ftw_local_agent_job(
+            str(old_job.id),
+            {
+                "status": FTWLocalAgentJobStatus.ACTION_NEEDED,
+                "result_state": "UNKNOWN_OUTCOME",
+                "operation_dispatched_at": now - timedelta(minutes=10),
+                "completed_at": now - timedelta(minutes=10),
+            },
+        )
+    )
+    new_filing = run_async(
+        repo.create_filing(
+            old_filing.model_copy(
+                update={
+                    "id": None,
+                    "status": FilingStatus.NEEDS_REVIEW,
+                    "file_name": "Fresh Kestra Schedule A.pdf",
+                }
+            )
+        )
+    )
+    old_review = run_async(repo.get_ftwilliams_review(str(old_filing.id)))
+    run_async(
+        repo.upsert_ftwilliams_review(
+            old_review.model_copy(update={"id": None, "filing_id": str(new_filing.id)})
+        )
+    )
+    new_job = run_async(
+        repo.create_or_get_ftw_local_agent_job(
+            old_job.model_copy(
+                update={
+                    "id": None,
+                    "filing_id": str(new_filing.id),
+                    "run_id": "fresh-run",
+                    "idempotency_key": "fresh-after-dashboard-delete",
+                    "status": FTWLocalAgentJobStatus.QUEUED,
+                    "device_id": None,
+                    "claim_token_hash": None,
+                    "claim_expires_at": None,
+                    "claimed_at": None,
+                    "completed_at": None,
+                    "operation_dispatched_at": None,
+                    "result_state": None,
+                    "result_message": None,
+                    "expires_at": now + timedelta(minutes=5),
+                }
+            )
+        )
+    )
+    device = run_async(
+        repo.create_ftw_local_agent_device(
+            FTWLocalAgentDevice(
+                name="Fresh upload workstation",
+                token_hash="fresh-upload-token",
+                token_prefix="fresh-",
+                expected_account="HighlandTech",
+                agent_version="0.4.2",
+                status=FTWLocalAgentDeviceStatus.CONNECTED,
+                browser_ready=True,
+                last_seen_at=now,
+            )
+        )
+    )
+
+    claim = run_async(service.claim(device))
+
+    assert claim.job is not None
+    assert claim.job.id == new_job.id
+
+
+def test_verified_job_is_not_requeued_by_a_stale_missing_snapshot():
     repo, service, filing, job = _submitted_job_fixture(FailingPostBringForwardReviewService())
     run_async(repo.update_ftw_local_agent_job(str(job.id), {
         "status": FTWLocalAgentJobStatus.VERIFIED,
@@ -447,9 +654,9 @@ def test_verified_job_is_requeued_when_fresh_query_still_requires_bring_forward(
     ))
 
     assert retried.id == job.id
-    assert retried.status == FTWLocalAgentJobStatus.QUEUED
-    assert retried.run_id == "run-2"
-    assert retried.result_state is None
+    assert retried.status == FTWLocalAgentJobStatus.VERIFIED
+    assert retried.run_id == "run-1"
+    assert retried.result_state == "SUBMITTED"
 
 
 def test_device_cannot_claim_a_job_for_another_ftw_account():
@@ -597,11 +804,91 @@ def _workspace_routing_fixture():
     return repo, service, workspace, filing, review
 
 
-def test_workspace_routing_requires_a_verified_plan_mapping():
-    _repo, service, _workspace, filing, review = _workspace_routing_fixture()
+def test_workspace_routing_uses_current_lookup_without_manual_plan_mapping():
+    repo, service, workspace, filing, review = _workspace_routing_fixture()
+    device = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Client A computer",
+        token_hash="assigned-token",
+        token_prefix="assign",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=datetime.utcnow(),
+    )))
 
-    with pytest.raises(ValueError, match="verified FT Williams plan mapping"):
-        run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
+    job = run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
+
+    assert job.mapping_id is None
+    assert job.assigned_device_id == device.id
+
+
+def test_workspace_job_waits_for_a_paired_device_to_finish_login():
+    repo, service, workspace, filing, review = _workspace_routing_fixture()
+    device = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Client A computer",
+        token_hash="login-required-token",
+        token_prefix="login-",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.LOGIN_REQUIRED,
+        browser_ready=False,
+        last_seen_at=datetime.utcnow(),
+    )))
+
+    job = run_async(service.enqueue_bring_forward(
+        filing,
+        review,
+        run_id="run-while-login-is-required",
+        before_record_ids=[],
+    ))
+
+    assert job.status == FTWLocalAgentJobStatus.QUEUED
+    assert job.assigned_device_id == device.id
+    assert run_async(service.claim(device)).job is None
+
+    ready = run_async(service.heartbeat(device, FTWLocalAgentHeartbeatRequest(
+        agent_version="0.4.2",
+        browser_ready=True,
+    )))
+
+    claim = run_async(service.claim(ready))
+    assert claim.job is not None
+    assert claim.job.id == job.id
+
+
+def test_workspace_routing_prefers_a_ready_device_over_one_still_logging_in():
+    repo, service, workspace, filing, review = _workspace_routing_fixture()
+    now = datetime.utcnow()
+    ready = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Ready computer",
+        token_hash="ready-token",
+        token_prefix="ready-",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True,
+        last_seen_at=now - timedelta(seconds=1),
+    )))
+    run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Logging-in computer",
+        token_hash="logging-in-token",
+        token_prefix="login-",
+        expected_account="Shared Account",
+        workspace_id=str(workspace.id),
+        status=FTWLocalAgentDeviceStatus.LOGIN_REQUIRED,
+        browser_ready=False,
+        last_seen_at=now,
+    )))
+
+    job = run_async(service.enqueue_bring_forward(
+        filing,
+        review,
+        run_id="run-with-ready-and-login-required-devices",
+        before_record_ids=[],
+    ))
+
+    assert job.assigned_device_id == ready.id
 
 
 def test_workspace_job_is_assigned_to_one_ready_device_and_cannot_cross_workspace():
@@ -651,13 +938,13 @@ def test_workspace_job_is_assigned_to_one_ready_device_and_cannot_cross_workspac
     job = run_async(service.enqueue_bring_forward(filing, review, run_id="run-1", before_record_ids=[]))
 
     assert job.workspace_id == workspace.id
-    assert job.mapping_id == mapping.id
+    assert job.mapping_id is None
     assert job.assigned_device_id == assigned.id
     assert run_async(service.claim(other)).job is None
     claim = run_async(service.claim(assigned))
     assert claim.job is not None
     assert claim.job.workspace_id == workspace.id
-    assert claim.job.mapping_id == mapping.id
+    assert claim.job.mapping_id is None
 
 
 def test_workspace_job_cannot_be_claimed_by_an_unassigned_device_in_same_workspace():

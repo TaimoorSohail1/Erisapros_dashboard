@@ -8,7 +8,7 @@ from typing import TypeVar
 from uuid import uuid4
 from bson import ObjectId
 from pymongo import ReturnDocument, UpdateOne
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
@@ -153,6 +153,47 @@ def _package_text(package_documents: list[dict], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def dashboard_sharefile_company_identity(source: dict) -> dict[str, str]:
+    """Presentation identity only; never replace extracted sponsor/FTW identity.
+
+    Older packages lack a client folder ID. Their full client folder path is
+    the canonical fallback, excluding filing year, policy and carrier folders.
+    Do not guess aliases from an extracted name or merge solely on an EIN.
+    """
+    if source.get("intake_source") != "SHAREFILE":
+        return {}
+    candidates: dict[str, str] = {}
+    for document in source.get("package_documents") or []:
+        if not isinstance(document, dict):
+            continue
+        name = str(document.get("client_name") or document.get("client") or "").strip()
+        if not name:
+            continue
+        path = str(document.get("sharefile_path") or document.get("package_root_key") or "")
+        parts = [part.strip() for part in path.split(" > ") if part.strip()]
+        client_index = next((i for i, part in enumerate(parts) if part.casefold() == name.casefold()), None)
+        folder_id = str(document.get("sharefile_client_folder_id") or "").strip()
+        if folder_id:
+            identity = f"folder:{folder_id}"
+        elif client_index is not None:
+            client_parts = parts[:client_index + 1]
+            # Shared discovery records include this account-root breadcrumb;
+            # legacy client-root scans omit it. Normalize only this known
+            # prefix, not arbitrary ancestors (which distinguish clients).
+            if client_index >= 2 and [part.casefold() for part in client_parts[:2]] == ["folders", "erisa pros"]:
+                client_parts = client_parts[2:]
+            identity = "path:" + " > ".join(client_parts).casefold()
+        else:
+            identity = f"name:{name.casefold()}"
+        candidates[identity] = name
+    # Conflicting client metadata must not silently combine unrelated clients.
+    if len(candidates) != 1:
+        return {}
+    identity, name = next(iter(candidates.items()))
+    scope = str(source.get("workspace_id") or "legacy")
+    return {"dashboard_client_name": name, "dashboard_client_group_key": f"sharefile:{scope}:{identity}"}
+
+
 def to_mongo(model):
     data = model.model_dump(mode="json", by_alias=False)
     data.pop("id", None)
@@ -284,6 +325,18 @@ class Repository:
     async def get_ftw_local_agent_device_by_token_hash(self, token_hash: str) -> FTWLocalAgentDevice | None: ...
     async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]: ...
     async def update_ftw_local_agent_device(self, device_id: str, values: dict) -> FTWLocalAgentDevice | None: ...
+    async def acquire_ftw_browser_lease(self, account: str, device_id: str, now: datetime, expires_at: datetime) -> bool: ...
+    async def release_ftw_browser_lease(self, account: str, device_id: str) -> None: ...
+    async def renew_ftw_pending_jobs(self, device: FTWLocalAgentDevice, expires_at: datetime) -> None: ...
+    async def release_ftw_device_job(self, device_id: str, job_id: str) -> None: ...
+    async def begin_ftw_job_verification(self, job_id: str) -> bool: ...
+    async def expire_ftw_agent_claims(self, account: str, now: datetime) -> list[FTWLocalAgentJob]: ...
+    async def list_ftw_pending_agent_jobs(self, account: str) -> list[FTWLocalAgentJob]: ...
+
+    async def list_ftw_target_operation_history(self, account: str, year: str) -> list[FTWLocalAgentJob]: ...
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]: ...
+
+    async def mark_ftw_job_dispatched(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime) -> FTWLocalAgentJob | None: ...
     async def create_or_get_ftw_local_agent_job(self, job: FTWLocalAgentJob) -> FTWLocalAgentJob: ...
     async def claim_ftw_local_agent_job(self, device_id: str, expected_account: str, claim_token_hash: str, now: datetime, claim_expires_at: datetime, workspace_id: str | None = None) -> FTWLocalAgentJob | None: ...
     async def complete_ftw_local_agent_job(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime, values: dict) -> FTWLocalAgentJob | None: ...
@@ -478,6 +531,12 @@ class MongoRepository(Repository):
             "status": 1,
             "s3_key": 1,
             "dashboard_client_name": 1,
+            "workspace_id": 1,
+            "package_documents.client_name": 1,
+            "package_documents.client": 1,
+            "package_documents.sharefile_path": 1,
+            "package_documents.package_root_key": 1,
+            "package_documents.sharefile_client_folder_id": 1,
             "dashboard_ein": 1,
             "dashboard_plan_number": 1,
             "dashboard_plan_name": 1,
@@ -527,6 +586,10 @@ class MongoRepository(Repository):
             projection,
         ).sort("created_at", -1).batch_size(1_000)
         docs = await cursor.to_list(length=None)
+        for doc in docs:
+            doc.update(dashboard_sharefile_company_identity(doc))
+            # Only compact identity is returned; no worksheet/extraction payload.
+            doc.pop("package_documents", None)
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
@@ -1108,6 +1171,15 @@ class MongoRepository(Repository):
             "item_id": 1,
             "status": 1,
             "metadata_signature": 1,
+            # The ShareFile change detector intentionally ignores timestamp
+            # drift when the same content version is observed again. Keep the
+            # strong identity fields in this hot-path projection; without
+            # them every poll/webhook comparison falls back to the timestamp-
+            # bearing metadata signature and starts a duplicate extraction.
+            "file_size": 1,
+            "modified_at": 1,
+            "version": 1,
+            "hash": 1,
             "document_type": 1,
             "package_root_key": 1,
             "package_key": 1,
@@ -1312,6 +1384,100 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, FTWLocalAgentJob)
 
+    async def acquire_ftw_browser_lease(self, account, device_id, now, expires_at) -> bool:
+        # The unique _id serializes browser ownership across API processes.
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        try:
+            doc = await self.db.ftw_local_agent_browser_leases.find_one_and_update(
+                {"_id": key, "$or": [{"device_id": device_id}, {"expires_at": {"$lte": now}}]},
+                {"$set": {"device_id": device_id, "expires_at": expires_at}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            return bool(doc)
+        except DuplicateKeyError:
+            return False
+
+    async def release_ftw_browser_lease(self, account, device_id) -> None:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        await self.db.ftw_local_agent_browser_leases.delete_one({"_id": key, "device_id": device_id})
+
+    async def renew_ftw_pending_jobs(self, device, expires_at) -> None:
+        scope = ({"workspace_id": device.workspace_id, "assigned_device_id": str(device.id)}
+                 if device.workspace_id else {"expected_account": device.expected_account, "workspace_id": None})
+        await self.db.ftw_local_agent_jobs.update_many(
+            {**scope, "$or": [{"status": FTWLocalAgentJobStatus.QUEUED.value},
+                              {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value, "result_state": {"$in": ["LOGIN_REQUIRED", "CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"]}}]},
+            {"$max": {"expires_at": expires_at}},
+        )
+
+    async def release_ftw_device_job(self, device_id, job_id) -> None:
+        if ObjectId.is_valid(device_id):
+            await self.db.ftw_local_agent_devices.update_one(
+                {"_id": ObjectId(device_id), "active_job_id": job_id},
+                {"$set": {"active_job_id": None, "active_claim_expires_at": None}},
+            )
+
+    async def begin_ftw_job_verification(self, job_id) -> bool:
+        if not ObjectId.is_valid(job_id):
+            return False
+        result = await self.db.ftw_local_agent_jobs.update_one(
+            {"_id": ObjectId(job_id), "status": FTWLocalAgentJobStatus.SUBMITTED.value, "verification_started_at": None},
+            {"$set": {"verification_started_at": datetime.utcnow()}},
+        )
+        return bool(result.modified_count)
+
+    async def expire_ftw_agent_claims(self, account, now) -> list[FTWLocalAgentJob]:
+        selector = {"expected_account": account, "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                    "claim_expires_at": {"$lte": now}}
+        docs = await self.db.ftw_local_agent_jobs.find(selector).to_list(100)
+        held = []
+        for original in docs:
+            doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+                {**selector, "_id": original["_id"]},
+                {"$set": {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                          "result_state": "UNKNOWN_OUTCOME",
+                          "result_message": "The agent stopped before confirming this operation. Refresh FTW data to verify its outcome before retrying; it was not repeated.",
+                          "updated_at": now}}, return_document=ReturnDocument.AFTER,
+            )
+            if doc:
+                job = from_mongo(doc, FTWLocalAgentJob)
+                held.append(job)
+                await self.release_ftw_device_job(str(job.device_id), str(job.id))
+        return held
+
+    async def list_ftw_pending_agent_jobs(self, account) -> list[FTWLocalAgentJob]:
+        docs = await self.db.ftw_local_agent_jobs.find({
+            "expected_account": account, "status": FTWLocalAgentJobStatus.QUEUED.value,
+        }).sort("created_at", 1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def list_ftw_target_operation_history(self, account, year) -> list[FTWLocalAgentJob]:
+        # Target URLs can differ in nocache/order. Compare canonical plan IDs
+        # in the service, after restricting the journal to this account/year.
+        docs = await self.db.ftw_local_agent_jobs.find({
+            "expected_account": {"$regex": "^" + re.escape(account) + "$", "$options": "i"}, "expected_year": year,
+            "$or": [{"status": {"$in": ["CLAIMED", "SUBMITTED", "VERIFIED"]}},
+                    {"result_state": {"$in": ["SUBMITTED", "UNKNOWN_OUTCOME"]}},
+                    {"operation_dispatched_at": {"$ne": None}},
+                    {"status": "FAILED", "claimed_at": {"$ne": None}}],
+        }).to_list(None)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]:
+        docs = await self.db.ftw_local_agent_jobs.find({"filing_id": filing_id}).sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def mark_ftw_job_dispatched(self, job_id, device_id, claim_token_hash, now) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"_id": ObjectId(job_id), "status": "CLAIMED", "device_id": device_id,
+             "claim_token_hash": claim_token_hash, "claim_expires_at": {"$gt": now}},
+            {"$set": {"operation_dispatched_at": now, "preflight_retry_at": None, "updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
     async def claim_ftw_local_agent_job(
         self,
         device_id: str,
@@ -1321,6 +1487,15 @@ class MongoRepository(Repository):
         claim_expires_at: datetime,
         workspace_id: str | None = None,
     ) -> FTWLocalAgentJob | None:
+        # Reserve atomically against Pause and concurrent claims on this device.
+        reserved = await self.db.ftw_local_agent_devices.find_one_and_update(
+            {"_id": ObjectId(device_id), "pause_requested": {"$ne": True},
+             "revoked_at": None, "active_job_id": None},
+            {"$set": {"active_job_id": claim_token_hash, "active_claim_expires_at": claim_expires_at}},
+            return_document=ReturnDocument.AFTER,
+        ) if ObjectId.is_valid(device_id) else None
+        if not reserved:
+            return None
         scope_filter = (
             {"workspace_id": workspace_id, "assigned_device_id": device_id}
             if workspace_id
@@ -1333,13 +1508,12 @@ class MongoRepository(Repository):
                 "$or": [
                     {"status": FTWLocalAgentJobStatus.QUEUED.value},
                     {
-                        "status": FTWLocalAgentJobStatus.CLAIMED.value,
-                        "claim_expires_at": {"$lte": now},
-                    },
-                    {
                         "status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
                         "result_state": "LOGIN_REQUIRED",
                     },
+                    {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                     "result_state": {"$in": ["CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"]},
+                     "preflight_retry_at": {"$lte": now}},
                 ],
             },
             {
@@ -1360,6 +1534,11 @@ class MongoRepository(Repository):
             },
             sort=[("created_at", 1)],
             return_document=ReturnDocument.AFTER,
+        )
+        await self.db.ftw_local_agent_devices.update_one(
+            {"_id": ObjectId(device_id), "active_job_id": claim_token_hash},
+            {"$set": {"active_job_id": str(doc["_id"]) if doc else None,
+                      "active_claim_expires_at": claim_expires_at if doc else None}},
         )
         return from_mongo(doc, FTWLocalAgentJob) if doc else None
 
@@ -1434,6 +1613,7 @@ class MemoryRepository(Repository):
         return None
 
     def __init__(self):
+        self.ftw_browser_leases: dict[str, tuple[str, datetime]] = {}
         self.filings: dict[str, Filing] = {}
         self.fields: dict[str, ExtractedField] = {}
         self.events: list[ReviewEvent] = []
@@ -1472,7 +1652,10 @@ class MemoryRepository(Repository):
         return sorted(self.filings.values(), key=lambda item: item.created_at, reverse=True)
 
     async def list_dashboard_filings(self) -> list[Filing]:
-        return await self.list_filings()
+        return [
+            filing.model_copy(update=dashboard_sharefile_company_identity(filing.model_dump()))
+            for filing in await self.list_filings()
+        ]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
         return self.filings.get(filing_id)
@@ -2044,6 +2227,84 @@ class MemoryRepository(Repository):
         self.ftw_local_agent_jobs[stored.id] = stored
         return stored.model_copy(deep=True)
 
+    async def acquire_ftw_browser_lease(self, account, device_id, now, expires_at) -> bool:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        existing = self.ftw_browser_leases.get(key)
+        if existing and existing[0] != device_id and existing[1] > now:
+            return False
+        self.ftw_browser_leases[key] = (device_id, expires_at)
+        return True
+
+    async def release_ftw_browser_lease(self, account, device_id) -> None:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        if self.ftw_browser_leases.get(key, (None,))[0] == device_id:
+            self.ftw_browser_leases.pop(key, None)
+
+    async def renew_ftw_pending_jobs(self, device, expires_at) -> None:
+        for job in self.ftw_local_agent_jobs.values():
+            matches = (job.workspace_id == device.workspace_id and job.assigned_device_id == str(device.id)
+                       if device.workspace_id else not job.workspace_id and job.expected_account == device.expected_account)
+            pending = job.status == FTWLocalAgentJobStatus.QUEUED or (
+                job.status == FTWLocalAgentJobStatus.ACTION_NEEDED and job.result_state in {"LOGIN_REQUIRED", "CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"}
+            )
+            if matches and pending:
+                job.expires_at = max(job.expires_at, expires_at)
+
+    async def release_ftw_device_job(self, device_id, job_id) -> None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if device and device.active_job_id == job_id:
+            device.active_job_id = None
+            device.active_claim_expires_at = None
+
+    async def begin_ftw_job_verification(self, job_id) -> bool:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if not job or job.status != FTWLocalAgentJobStatus.SUBMITTED or job.verification_started_at:
+            return False
+        job.verification_started_at = datetime.utcnow()
+        return True
+
+    async def expire_ftw_agent_claims(self, account, now) -> list[FTWLocalAgentJob]:
+        held = []
+        for job in self.ftw_local_agent_jobs.values():
+            if (job.expected_account == account and job.status == FTWLocalAgentJobStatus.CLAIMED
+                    and job.claim_expires_at and job.claim_expires_at <= now):
+                job.status = FTWLocalAgentJobStatus.ACTION_NEEDED
+                job.result_state = "UNKNOWN_OUTCOME"
+                job.result_message = "The agent stopped before confirming this operation. Refresh FTW data to verify its outcome before retrying; it was not repeated."
+                job.updated_at = now
+                await self.release_ftw_device_job(str(job.device_id), str(job.id))
+                held.append(job.model_copy(deep=True))
+        return held
+
+    async def list_ftw_pending_agent_jobs(self, account) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in sorted(self.ftw_local_agent_jobs.values(), key=lambda j: j.created_at)
+                if job.expected_account == account and job.status == FTWLocalAgentJobStatus.QUEUED]
+
+    async def list_ftw_target_operation_history(self, account, year) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in self.ftw_local_agent_jobs.values()
+                if job.expected_account.casefold() == account.casefold() and job.expected_year == year
+                and (job.status in {FTWLocalAgentJobStatus.CLAIMED, FTWLocalAgentJobStatus.SUBMITTED, FTWLocalAgentJobStatus.VERIFIED}
+                     or job.result_state in {"SUBMITTED", "UNKNOWN_OUTCOME"}
+                     or job.operation_dispatched_at is not None
+                     or (job.status == FTWLocalAgentJobStatus.FAILED and job.claimed_at is not None))]
+
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in sorted(
+            self.ftw_local_agent_jobs.values(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        ) if job.filing_id == filing_id]
+
+    async def mark_ftw_job_dispatched(self, job_id, device_id, claim_token_hash, now) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if (not job or job.status != FTWLocalAgentJobStatus.CLAIMED or job.device_id != device_id
+                or job.claim_token_hash != claim_token_hash or not job.claim_expires_at or job.claim_expires_at <= now):
+            return None
+        job.operation_dispatched_at = now
+        job.preflight_retry_at = None
+        job.updated_at = now
+        return job.model_copy(deep=True)
+
     async def claim_ftw_local_agent_job(
         self,
         device_id: str,
@@ -2053,15 +2314,16 @@ class MemoryRepository(Repository):
         claim_expires_at: datetime,
         workspace_id: str | None = None,
     ) -> FTWLocalAgentJob | None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if not device or device.pause_requested or device.revoked_at or device.active_job_id:
+            return None
         candidates = sorted(self.ftw_local_agent_jobs.values(), key=lambda value: value.created_at)
         for job in candidates:
             available = job.status == FTWLocalAgentJobStatus.QUEUED or (
-                job.status == FTWLocalAgentJobStatus.CLAIMED
-                and job.claim_expires_at is not None
-                and job.claim_expires_at <= now
-            ) or (
                 job.status == FTWLocalAgentJobStatus.ACTION_NEEDED
-                and job.result_state == "LOGIN_REQUIRED"
+                and (job.result_state == "LOGIN_REQUIRED" or (
+                    job.result_state in {"CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"}
+                    and job.preflight_retry_at is not None and job.preflight_retry_at <= now))
             )
             legacy_scope_matches = not workspace_id and job.expected_account == expected_account
             workspace_scope_matches = bool(
@@ -2081,6 +2343,8 @@ class MemoryRepository(Repository):
             job.completed_at = None
             job.attempts += 1
             job.updated_at = now
+            device.active_job_id = str(job.id)
+            device.active_claim_expires_at = claim_expires_at
             return job.model_copy(deep=True)
         return None
 

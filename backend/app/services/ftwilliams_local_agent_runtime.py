@@ -8,16 +8,19 @@ import asyncio
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 import httpx
 
 from app.services.ftwilliams_local_agent import LocalFTWTarget, verify_local_ftw_identity
 
 
-AGENT_VERSION = "0.3.2"
+AGENT_VERSION = "0.4.5"
 _FTW_HOME_URL = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
 _AUTOMATIC_LOGIN_RETRY_SECONDS = 300.0
 _AUTOMATIC_LOGIN_MAX_ATTEMPTS = 2
+_TARGET_NAVIGATION_ATTEMPTS = 3
+_TARGET_RETRY_DELAY_MS = 1_000
 _MANUAL_VERIFICATION_TEXT = re.compile(
     r"(?:multi[-\s]*factor|two[-\s]*factor|verification\s+code|security\s+code|captcha)",
     re.IGNORECASE,
@@ -64,6 +67,8 @@ class LocalAgentApiClient:
         browser_ready: bool,
         login_required: bool = False,
         last_error: str | None = None,
+        paused: bool = False,
+        waiting: bool = False,
     ) -> dict:
         response = await self._client.post(
             "api/ftwilliams/local-agent/agent/heartbeat",
@@ -72,8 +77,15 @@ class LocalAgentApiClient:
                 "browser_ready": browser_ready,
                 "login_required": login_required,
                 "last_error": last_error,
+                "paused": paused,
+                "waiting": waiting,
             },
         )
+        response.raise_for_status()
+        return response.json()
+
+    async def control(self) -> dict:
+        response = await self._client.get("api/ftwilliams/local-agent/agent/control")
         response.raise_for_status()
         return response.json()
 
@@ -114,6 +126,11 @@ class PersistentFTWBrowser:
         login_credentials: dict[str, str] | None = None,
     ):
         self.profile_dir = Path(profile_dir).expanduser().resolve()
+        normalized_profile = str(self.profile_dir).replace("\\", "/").casefold()
+        if any(root in normalized_profile for root in (
+            "/google/chrome/user data", "/microsoft/edge/user data", "/chromium/user data",
+        )):
+            raise ValueError("Use a dedicated ERISAPros browser profile, not a personal browser profile.")
         self.expected_account = str(expected_account or "").strip()
         self.timeout_ms = max(5_000, timeout_ms)
         self.login_credentials = self._validated_login_credentials(login_credentials)
@@ -121,6 +138,7 @@ class PersistentFTWBrowser:
         self._automatic_login_attempts = 0
         self._next_automatic_login_at = 0.0
         self._manual_verification_pending = False
+        self._post_login_readiness_pending = False
         self._playwright = None
         self._context = None
         self._page = None
@@ -169,11 +187,9 @@ class PersistentFTWBrowser:
 
     async def session_ready(self) -> bool:
         await self.start()
-        preserve_verification_page = (
-            self._manual_verification_pending
-            and self._is_ftw_url(getattr(self._page, "url", ""))
-        )
-        if not preserve_verification_page:
+        # Inspect the owned FTW page without resetting searches/login each poll.
+        # A blank/non-FTW page needs initial navigation; existing FTW pages do not.
+        if not self._is_ftw_url(getattr(self._page, "url", "")):
             await self._page.goto(
                 _FTW_HOME_URL,
                 wait_until="domcontentloaded",
@@ -205,6 +221,7 @@ class PersistentFTWBrowser:
                 self._next_automatic_login_at = now + _AUTOMATIC_LOGIN_RETRY_SECONDS
                 self.login_required_message = "Automatic login is in progress."
                 try:
+                    self._post_login_readiness_pending = True
                     await self._submit_saved_login()
                 except Exception:
                     self.login_required_message = (
@@ -220,6 +237,12 @@ class PersistentFTWBrowser:
                 )
                 return False
             if self.expected_account.casefold() in normalized:
+                if self._post_login_readiness_pending:
+                    if not await self._post_login_search_ready():
+                        self.login_required_message = "FT Williams is signed in and still loading the client search."
+                        await self._page.wait_for_timeout(500)
+                        continue
+                    self._post_login_readiness_pending = False
                 self._automatic_login_attempts = 0
                 self._next_automatic_login_at = 0.0
                 self._manual_verification_pending = False
@@ -229,6 +252,30 @@ class PersistentFTWBrowser:
         self.login_required_message = (
             "FT Williams did not confirm the expected account. Complete login in the dedicated browser."
         )
+        return False
+
+    async def _post_login_search_ready(self) -> bool:
+        """Confirm the FTW home/search surface is hydrated after login.
+
+        Account text appears before the legacy FTW search widgets are usable.
+        Claiming work at that point races the client-side page initialization and
+        can make a valid plan look empty on the first attempt.
+        """
+        for frame in self._page.frames:
+            try:
+                controls = frame.locator(
+                    "input[placeholder*='Name or ID' i]:visible, "
+                    "input[aria-label*='Company' i]:visible, "
+                    "input[aria-label*='Plan' i]:visible"
+                )
+                if await controls.count():
+                    return True
+                body = (await frame.locator("body").inner_text(timeout=2_000)) or ""
+                normalized = re.sub(r"\s+", " ", body.casefold())
+                if "plan search" in normalized and "search results" in normalized:
+                    return True
+            except Exception:
+                continue
         return False
 
     async def _submit_saved_login(self) -> None:
@@ -329,10 +376,9 @@ class PersistentFTWBrowser:
             }
         )
         await self.start()
-        await self._page.goto(target.url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-        verification = await self._wait_for_identity(target)
+        verification = await self._navigate_and_verify_target(target)
         if not verification.success:
-            return LocalAgentActionResult(verification.state, verification.message)
+            return LocalAgentActionResult("INVALID_TARGET" if verification.state == "WRONG_ACCOUNT" else verification.state, verification.message)
 
         candidate = await self._single_bring_forward_candidate()
         if candidate is None:
@@ -353,8 +399,40 @@ class PersistentFTWBrowser:
             "Bring Forward was submitted from the client computer; ftwLink verification is required.",
         )
 
-    async def _wait_for_identity(self, target: LocalFTWTarget):
-        deadline = asyncio.get_running_loop().time() + self.timeout_ms / 1_000
+    async def _navigate_and_verify_target(self, target: LocalFTWTarget):
+        """Retry only pre-click navigation when FTW initially renders empty."""
+        last_result = None
+        attempt_timeout_ms = max(2_000, min(15_000, self.timeout_ms // _TARGET_NAVIGATION_ATTEMPTS))
+        for attempt in range(_TARGET_NAVIGATION_ATTEMPTS):
+            if attempt:
+                # Reset the hash-router to its fully initialized home surface.
+                # This is still read-only and happens strictly before any action click.
+                await self._page.goto(
+                    _FTW_HOME_URL,
+                    wait_until="domcontentloaded",
+                    timeout=self.timeout_ms,
+                )
+                home_deadline = asyncio.get_running_loop().time() + min(5.0, self.timeout_ms / 1_000)
+                while asyncio.get_running_loop().time() < home_deadline:
+                    if await self._post_login_search_ready():
+                        break
+                    await self._page.wait_for_timeout(500)
+                await self._page.wait_for_timeout(_TARGET_RETRY_DELAY_MS)
+
+            await self._page.goto(
+                target.url,
+                wait_until="domcontentloaded",
+                timeout=self.timeout_ms,
+            )
+            last_result = await self._wait_for_identity(target, timeout_ms=attempt_timeout_ms)
+            if last_result.success or last_result.state in {"LOGIN_REQUIRED", "WRONG_ACCOUNT"}:
+                return last_result
+            if attempt + 1 < _TARGET_NAVIGATION_ATTEMPTS:
+                await self._page.wait_for_timeout(_TARGET_RETRY_DELAY_MS)
+        return last_result
+
+    async def _wait_for_identity(self, target: LocalFTWTarget, *, timeout_ms: int | None = None):
+        deadline = asyncio.get_running_loop().time() + (timeout_ms or self.timeout_ms) / 1_000
         last_result = None
         while asyncio.get_running_loop().time() < deadline:
             text, password_visible = await self._page_text()
@@ -364,31 +442,52 @@ class PersistentFTWBrowser:
                 expected_account=self.expected_account,
                 password_visible=password_visible,
             )
-            if last_result.success or last_result.state in {"LOGIN_REQUIRED", "WRONG_ACCOUNT"}:
+            # FT Williams hydrates the outer account header and inner plan frame
+            # independently. A valid plan can therefore be visible briefly
+            # before the expected account label appears. Login is authoritative,
+            # but a missing account label is retried until this bounded deadline.
+            if last_result.success or last_result.state == "LOGIN_REQUIRED":
                 return last_result
             await self._page.wait_for_timeout(500)
         return last_result
 
     async def _single_bring_forward_candidate(self):
-        matches = []
-        for frame in self._page.frames:
-            elements = frame.locator("a, button, input[type='button'], input[type='submit']")
-            try:
-                values = await elements.evaluate_all(
-                    """
-                    nodes => nodes.map((node, index) => ({
-                      index,
-                      text: (node.innerText || node.value || node.textContent || '').trim(),
-                      visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
-                    }))
-                    """
+        # FT Williams renders the plan shell first and fills the action link
+        # asynchronously (often in an iframe). A single immediate scan can
+        # therefore miss a valid action and incorrectly report PAGE_LAYOUT_CHANGED.
+        deadline = asyncio.get_running_loop().time() + self.timeout_ms / 1_000
+        while asyncio.get_running_loop().time() < deadline:
+            matches = []
+            for frame in self._page.frames:
+                elements = frame.locator(
+                    "a, button, input[type='button'], input[type='submit'], "
+                    "[role='link'], [role='button']"
                 )
-            except Exception:
-                continue
-            for value in values:
-                if value.get("visible") and _BRING_FORWARD_TEXT.fullmatch(str(value.get("text") or "").strip()):
-                    matches.append(elements.nth(int(value["index"])))
-        return matches[0] if len(matches) == 1 else None
+                try:
+                    values = await elements.evaluate_all(
+                        """
+                        nodes => nodes.map((node, index) => ({
+                          index,
+                          text: (node.innerText || node.value || node.textContent || '').trim(),
+                          visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
+                        }))
+                        """
+                    )
+                except Exception:
+                    continue
+                for value in values:
+                    # FTW sometimes appends an icon/annotation to the link's
+                    # rendered text. Match the action phrase within that text,
+                    # while still requiring a single visible candidate.
+                    if value.get("visible") and _BRING_FORWARD_TEXT.search(str(value.get("text") or "").strip()):
+                        matches.append(elements.nth(int(value["index"])))
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                # Preserve the safe behavior: never guess between actions.
+                return None
+            await self._page.wait_for_timeout(500)
+        return None
 
     async def _page_text(self) -> tuple[str, bool]:
         texts: list[str] = []
@@ -422,11 +521,69 @@ class PersistentFTWBrowser:
 
 
 class FTWLocalAgentRunner:
-    def __init__(self, api: LocalAgentApiClient, browser: PersistentFTWBrowser):
+    def __init__(self, api: LocalAgentApiClient, browser: PersistentFTWBrowser,
+                 *, stop_requested: Callable[[], bool] | None = None):
         self.api = api
         self.browser = browser
+        self._pending_completion = None
+        self._was_paused = False
+        self._stop_requested = stop_requested or (lambda: False)
+
+    async def _close_for_update(self) -> bool:
+        if not self._stop_requested():
+            return False
+        await self.browser.close()
+        await self.api.heartbeat(browser_ready=False, waiting=True,
+                                 last_error="Agent browser closed for a connection-preserving update.")
+        return True
+
+    async def _close_if_stopped(self, control: dict) -> bool:
+        paused = bool(control.get("pause_requested"))
+        waiting = not bool(control.get("browser_allowed", False))
+        if not paused and not waiting:
+            if self._was_paused:
+                # An explicit Resume gets a fresh bounded automatic-login budget.
+                if isinstance(self.browser, PersistentFTWBrowser):
+                    self.browser._automatic_login_attempts = 0
+                    self.browser._next_automatic_login_at = 0.0
+                self._was_paused = False
+            return False
+        self._was_paused = paused or self._was_paused
+        await self.browser.close()
+        await self.api.heartbeat(browser_ready=False, **({"paused": True} if paused else {
+            "waiting": True, "last_error": str(control.get("reason") or "Another agent is using this FTW account. This browser stays closed until it is available.")[:500],
+        }))
+        return True
+
+    async def _report_pending_completion(self) -> None:
+        job_id, token, result = self._pending_completion
+        try:
+            await self.api.complete(job_id, token, result)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                self._pending_completion = None
+                await self.browser.close()
+                await self.api.heartbeat(browser_ready=False, last_error="The operation claim expired or needs verification. Refresh FTW current data before retrying; the browser action was not repeated.")
+                return
+            await self.browser.close()
+            raise
+        except Exception:
+            # Retain the result, not the click, for a network retry. Server-side
+            # expired claims require outcome verification after a process crash.
+            await self.browser.close()
+            raise
+        self._pending_completion = None
 
     async def run_once(self) -> bool:
+        if self._pending_completion:
+            await self._report_pending_completion()
+            if not await self._close_for_update():
+                await self._close_if_stopped(await self.api.control())
+            return True
+        if await self._close_for_update():
+            return False
+        if await self._close_if_stopped(await self.api.control()):
+            return False
         try:
             ready = await self.browser.session_ready()
         except Exception as exc:
@@ -444,6 +601,12 @@ class FTWLocalAgentRunner:
             return False
 
         await self.api.heartbeat(browser_ready=True)
+        if await self._close_for_update():
+            return False
+        if await self._close_if_stopped(await self.api.control()):
+            return False
+        if await self._close_for_update():
+            return False
         claim = await self.api.claim()
         job = claim.get("job")
         token = claim.get("claim_token")
@@ -453,21 +616,34 @@ class FTWLocalAgentRunner:
             result = await self.browser.execute(job)
         except Exception as exc:
             result = LocalAgentActionResult(
-                "FAILED",
-                f"The local browser stopped safely before completion: {type(exc).__name__}",
+                "UNKNOWN_OUTCOME",
+                f"The local browser could not confirm the operation ({type(exc).__name__}). Refresh FTW current data before retrying; the action will not be repeated automatically.",
             )
-        await self.api.complete(str(job["id"]), str(token), result)
+        self._pending_completion = (str(job["id"]), str(token), result)
+        await self._report_pending_completion()
+        if not await self._close_for_update():
+            await self._close_if_stopped(await self.api.control())
         return True
 
     async def run_forever(self, *, poll_seconds: float = 10.0) -> None:
         delay = max(2.0, poll_seconds)
         while True:
             try:
+                if self._stop_requested() and self._pending_completion is None:
+                    await self._close_for_update()
+                    return
                 await self.run_once()
+                if self._stop_requested():
+                    continue
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                await self.browser.close()
+                try:
+                    await self.api.heartbeat(browser_ready=False, waiting=True, last_error=f"Agent connection check failed ({type(exc).__name__}). Its dedicated browser is closed; retrying safely.")
+                except Exception:
+                    pass
                 await asyncio.sleep(min(60.0, delay * 2))
 
     async def close(self) -> None:

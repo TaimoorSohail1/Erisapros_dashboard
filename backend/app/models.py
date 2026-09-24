@@ -125,6 +125,10 @@ class FTWLocalAgentDeviceStatus(str, Enum):
     OFFLINE = "OFFLINE"
     LOGIN_REQUIRED = "LOGIN_REQUIRED"
     REVOKED = "REVOKED"
+    PAUSING = "PAUSING"
+    PAUSED = "PAUSED"
+    RESUMING = "RESUMING"
+    WAITING = "WAITING"
 
 
 class FTWLocalAgentJobStatus(str, Enum):
@@ -214,6 +218,10 @@ class FTWLocalAgentDevice(BaseModel):
     status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
     agent_version: str | None = None
     browser_ready: bool = False
+    pause_requested: bool = False
+    paused_at: datetime | None = None
+    active_job_id: str | None = None
+    active_claim_expires_at: datetime | None = None
     last_error: str | None = None
     last_seen_at: datetime | None = None
     paired_by: str | None = None
@@ -255,6 +263,10 @@ class FTWLocalAgentJob(BaseModel):
     claim_expires_at: datetime | None = None
     claimed_at: datetime | None = None
     completed_at: datetime | None = None
+    verification_started_at: datetime | None = None
+    # Survives status/result resets. Cleared only for confirmed pre-click exits.
+    operation_dispatched_at: datetime | None = None
+    preflight_retry_at: datetime | None = None
     result_state: str | None = None
     result_message: str | None = None
     attempts: int = 0
@@ -287,6 +299,12 @@ class FTWLocalAgentHeartbeatRequest(BaseModel):
     browser_ready: bool
     login_required: bool = False
     last_error: str | None = None
+    paused: bool = False
+    waiting: bool = False
+
+
+class FTWLocalAgentControlRequest(BaseModel):
+    paused: bool
 
 
 class FTWLocalAgentStatusResponse(BaseModel):
@@ -298,6 +316,7 @@ class FTWLocalAgentStatusResponse(BaseModel):
     agent_version: str | None = None
     last_seen_at: datetime | None = None
     last_error: str | None = None
+    pause_requested: bool = False
 
 
 class FTWLocalAgentJobPayload(BaseModel):
@@ -321,7 +340,7 @@ class FTWLocalAgentClaimResponse(BaseModel):
 
 class FTWLocalAgentCompleteRequest(BaseModel):
     claim_token: str
-    state: Literal["SUBMITTED", "LOGIN_REQUIRED", "INVALID_TARGET", "PAGE_LAYOUT_CHANGED", "FAILED"]
+    state: Literal["SUBMITTED", "LOGIN_REQUIRED", "INVALID_TARGET", "PAGE_LAYOUT_CHANGED", "FAILED", "UNKNOWN_OUTCOME"]
     message: str
 
 
@@ -466,6 +485,7 @@ class ScheduleABrokerRow(BaseModel):
     state: str | None = None
     zip_code: str | None = None
     organization_code: str | None = None
+    organization_code_defaulted: bool = False
     purpose: str | None = None
     commission_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     fee_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
@@ -567,6 +587,7 @@ class Filing(BaseModel):
     package_documents: list[dict] = Field(default_factory=list)
     workspace_id: str | None = None
     dashboard_client_name: str | None = None
+    dashboard_client_group_key: str | None = None
     dashboard_ein: str | None = None
     dashboard_plan_number: str | None = None
     dashboard_plan_name: str | None = None
@@ -1156,10 +1177,19 @@ class FTWilliamsSendUpdateRequest(BaseModel):
     reason: str = ""
     refresh_current_before_update: bool = True
     run_edit_checks: bool = False
+    selected_field_ids: list[str] | None = None
+    include_broker_updates: bool = False
 
 
 class FTWilliamsDismissFailureRequest(BaseModel):
     reason: str = "Dismissed by operator"
+
+
+class FTWilliamsBringForwardReconcileRequest(BaseModel):
+    """Explicit operator decision for a stale/uncertain Bring Forward attempt."""
+
+    resolution: Literal["VERIFY_CURRENT", "RESET_FAILED"]
+    reason: str = ""
 
 
 class FTWilliamsPlanMapping(BaseModel):

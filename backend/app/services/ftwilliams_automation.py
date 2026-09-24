@@ -122,13 +122,14 @@ class FTWAutomationPolicy:
             )
 
         if (
-            not review.browser_mapping_confirmed
+            not str(review.ftw_customer_id or "").strip()
+            or not str(review.ftw_plan_id or "").strip()
             or not str(review.ftw_browser_customer_id or "").strip()
             or not str(review.ftw_browser_plan_id or "").strip()
         ):
             return self._action_needed(
-                "This plan needs a one-time confirmed FT Williams browser mapping before automatic processing.",
-                "MAP_FTW_BROWSER_PLAN",
+                "The FT Williams lookup did not return a complete client and browser plan identity.",
+                "RETRY_AFTER_CURRENT_QUERY",
             )
 
         if review.bring_forward_required or not review.current_year_exists:
@@ -343,7 +344,6 @@ class FTWAutomationPolicy:
         review_year = self._year(review.year)
         auto_verified_browser_mapping = bool(
             settings.ftw_local_agent_enabled
-            and review.browser_mapping_confirmed
             and review.plan_lookup
             and review.plan_lookup.status == FTWilliamsPlanLookupStatus.MATCHED
             and str(review.ftw_customer_id or "").strip()

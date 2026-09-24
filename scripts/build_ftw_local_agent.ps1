@@ -1,6 +1,7 @@
 param(
     [string]$SigningCertificateThumbprint = "",
-    [switch]$RequireSignature
+    [switch]$RequireSignature,
+    [string]$AgentOutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,9 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $backendRoot = Join-Path $repositoryRoot "backend"
 $entryPoint = Join-Path $backendRoot "scripts\run_ftw_local_agent.py"
 $outputDirectory = Join-Path $repositoryRoot "output\ftw-local-agent"
+if ($AgentOutputDirectory) {
+    $outputDirectory = [System.IO.Path]::GetFullPath($AgentOutputDirectory)
+}
 
 if (-not (Test-Path -LiteralPath $entryPoint -PathType Leaf)) {
     throw "FT Williams local-agent entry point was not found."
@@ -54,6 +58,7 @@ $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
 $signature = Get-AuthenticodeSignature -LiteralPath $executable
 $manifest = [ordered]@{
     product = "ERISAPros FT Williams Agent"
+    agent_version = (Select-String -LiteralPath (Join-Path $backendRoot "app\services\ftwilliams_local_agent_runtime.py") -Pattern '^AGENT_VERSION = "([^"]+)"').Matches.Groups[1].Value
     executable = [System.IO.Path]::GetFileName($executable)
     sha256 = $hash
     signature_status = [string]$signature.Status

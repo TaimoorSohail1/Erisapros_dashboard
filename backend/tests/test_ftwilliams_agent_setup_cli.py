@@ -4,8 +4,16 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
+
 from app.services import windows_agent_installation
-from app.services.windows_agent_installation import InstalledAgent, install_agent
+from app.services.windows_agent_installation import (
+    ExistingConnectionState,
+    InstalledAgent,
+    existing_connection_state,
+    install_agent,
+    stop_disconnected_installation,
+)
 from app.services.windows_secret_store import load_secret_json
 from scripts.run_ftw_local_agent import collect_ftw_login_credentials, parse_args
 
@@ -229,3 +237,228 @@ def test_reinstall_can_remove_a_previously_saved_automatic_login(tmp_path, monke
     )
 
     assert not installed.login_credential.exists()
+
+
+def test_existing_connection_probe_distinguishes_active_revoked_and_network_failure(tmp_path, monkeypatch):
+    installed = windows_agent_installation.installation_paths(tmp_path / "LocalAppData")
+    installed.root.mkdir(parents=True)
+    installed.credential.write_bytes(b"protected")
+    monkeypatch.setattr(
+        windows_agent_installation,
+        "load_secret_json",
+        lambda _path: {
+            "server_url": "https://dashboard.example.com",
+            "device_token": "saved-token",
+        },
+    )
+
+    class FakeApi:
+        outcome = None
+
+        def __init__(self, server_url, token):
+            assert server_url == "https://dashboard.example.com"
+            assert token == "saved-token"
+
+        async def control(self):
+            if self.outcome is not None:
+                raise self.outcome
+            return {"status": "CONNECTED"}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(windows_agent_installation, "LocalAgentApiClient", FakeApi)
+    assert asyncio.run(existing_connection_state(installed)) is ExistingConnectionState.ACTIVE
+
+    request = httpx.Request("GET", "https://dashboard.example.com/control")
+    FakeApi.outcome = httpx.HTTPStatusError(
+        "revoked", request=request, response=httpx.Response(401, request=request)
+    )
+    assert asyncio.run(existing_connection_state(installed)) is ExistingConnectionState.REVOKED
+
+    FakeApi.outcome = httpx.ConnectError("offline", request=request)
+    assert asyncio.run(existing_connection_state(installed)) is ExistingConnectionState.UNAVAILABLE
+
+
+def test_disconnected_reconnect_stops_only_verified_installed_agent_and_preserves_profile(
+    tmp_path, monkeypatch
+):
+    installed = windows_agent_installation.installation_paths(tmp_path / "LocalAppData")
+    installed.root.mkdir(parents=True)
+    installed.executable.write_bytes(b"old-agent")
+    installed.credential.write_bytes(b"old-device")
+    installed.login_credential.write_bytes(b"saved-login")
+    installed.profile.mkdir()
+    (installed.profile / "Cookies").write_bytes(b"saved-profile")
+    stopped = []
+    probes = iter([[4100], [4100], []])
+    monkeypatch.setattr(
+        windows_agent_installation,
+        "installed_agent_processes",
+        lambda _installed: next(probes),
+    )
+    monkeypatch.setattr(windows_agent_installation.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        windows_agent_installation.subprocess,
+        "run",
+        lambda command, **kwargs: stopped.append((command, kwargs)),
+    )
+    monkeypatch.setattr(windows_agent_installation, "unregister_startup_task", lambda: None)
+
+    stop_disconnected_installation(installed, graceful_timeout_seconds=0)
+
+    assert stopped[0][0] == ["taskkill.exe", "/PID", "4100", "/T", "/F"]
+    assert installed.login_credential.read_bytes() == b"saved-login"
+    assert (installed.profile / "Cookies").read_bytes() == b"saved-profile"
+    assert not (installed.root / "update-stop.request").exists()
+
+
+def test_reconnect_replaces_only_device_pairing_and_keeps_saved_ftw_state(tmp_path, monkeypatch):
+    source = tmp_path / "download" / "ERISAProsFTWAgentSetup.exe"
+    source.parent.mkdir()
+    source.write_bytes(b"new-agent")
+    local_app_data = tmp_path / "LocalAppData"
+    installed = windows_agent_installation.installation_paths(local_app_data)
+    installed.root.mkdir(parents=True)
+    installed.executable.write_bytes(b"old-agent")
+    installed.login_credential.write_bytes(b"saved-login")
+    installed.profile.mkdir()
+    (installed.profile / "Cookies").write_bytes(b"saved-profile")
+    stopped = []
+
+    async def fake_pair_device(*_args, **_kwargs):
+        return {
+            "device_id": "replacement-device",
+            "device_token": "replacement-token",
+            "expected_account": "HighlandTech",
+        }
+
+    monkeypatch.setattr(windows_agent_installation, "pair_device", fake_pair_device)
+    monkeypatch.setattr(
+        windows_agent_installation,
+        "stop_disconnected_installation",
+        lambda current: stopped.append(current),
+    )
+
+    asyncio.run(
+        install_agent(
+            server_url="https://dashboard.example.com",
+            pairing_code="replacement-code",
+            device_name="Client computer",
+            source_executable=source,
+            local_app_data=local_app_data,
+            register_startup=False,
+            reconnect_disconnected=True,
+        )
+    )
+
+    assert stopped == [installed]
+    assert installed.executable.read_bytes() == b"new-agent"
+    assert installed.login_credential.read_bytes() == b"saved-login"
+    assert (installed.profile / "Cookies").read_bytes() == b"saved-profile"
+    assert load_secret_json(installed.credential)["device_token"] == "replacement-token"
+
+
+def test_double_click_reconnect_prompts_only_for_new_code_and_preserves_ftw_login(tmp_path, monkeypatch):
+    from scripts import run_ftw_local_agent as cli
+
+    installed = windows_agent_installation.installation_paths(tmp_path / "LocalAppData")
+    installed.root.mkdir(parents=True)
+    installed.credential.write_bytes(b"revoked-device")
+    installed.login_credential.write_bytes(b"saved-login")
+    calls = []
+    prompts = []
+
+    async def revoked(_installed):
+        return ExistingConnectionState.REVOKED
+
+    async def fake_install_agent(**kwargs):
+        calls.append(kwargs)
+        return installed
+
+    args = cli.argparse.Namespace(
+        command="install",
+        pairing_code="",
+        server_url="https://dashboard.example.com",
+        device_name="Client computer",
+        no_startup=True,
+    )
+    monkeypatch.setattr(cli, "parse_args", lambda: args)
+    monkeypatch.setattr(cli, "installation_paths", lambda: installed)
+    monkeypatch.setattr(cli, "existing_connection_state", revoked)
+    monkeypatch.setattr(cli, "install_agent", fake_install_agent)
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: prompts.append(prompt) or "fresh-pairing-code",
+    )
+
+    assert asyncio.run(cli.main()) == 0
+    assert prompts == ["Enter the one-time connection code from ERISAPros: "]
+    assert calls[0]["reconnect_disconnected"] is True
+    assert calls[0]["ftw_login_credentials"] is None
+    assert calls[0]["clear_ftw_login_credentials"] is False
+
+
+def test_failed_reconnect_startup_restores_revoked_credential_for_safe_retry(tmp_path, monkeypatch):
+    from app.services.windows_secret_store import save_secret_json
+
+    source = tmp_path / "download.exe"
+    source.write_bytes(b"new-agent")
+    local_app_data = tmp_path / "LocalAppData"
+    installed = windows_agent_installation.installation_paths(local_app_data)
+    installed.root.mkdir(parents=True)
+    installed.executable.write_bytes(b"old-agent")
+    old_device = {
+        "server_url": "https://dashboard.example.com",
+        "device_id": "revoked-device",
+        "device_token": "revoked-token",
+        "expected_account": "HighlandTech",
+    }
+    save_secret_json(installed.credential, old_device)
+    revoked = []
+
+    async def fake_pair_device(*_args, **_kwargs):
+        return {
+            "device_id": "replacement-device",
+            "device_token": "replacement-token",
+            "expected_account": "HighlandTech",
+        }
+
+    class FakeApi:
+        def __init__(self, _server_url, token):
+            self.token = token
+
+        async def revoke_self(self):
+            revoked.append(self.token)
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(windows_agent_installation, "pair_device", fake_pair_device)
+    monkeypatch.setattr(windows_agent_installation, "LocalAgentApiClient", FakeApi)
+    monkeypatch.setattr(windows_agent_installation, "stop_disconnected_installation", lambda _installed: None)
+    monkeypatch.setattr(
+        windows_agent_installation,
+        "register_startup_task",
+        lambda _installed: (_ for _ in ()).throw(OSError("registry unavailable")),
+    )
+
+    try:
+        asyncio.run(
+            install_agent(
+                server_url="https://dashboard.example.com",
+                pairing_code="replacement-code",
+                device_name="Client computer",
+                source_executable=source,
+                local_app_data=local_app_data,
+                reconnect_disconnected=True,
+            )
+        )
+    except OSError as exc:
+        assert "registry unavailable" in str(exc)
+    else:
+        raise AssertionError("Reconnect startup failure was not surfaced")
+
+    assert load_secret_json(installed.credential) == old_device
+    assert revoked == ["replacement-token"]

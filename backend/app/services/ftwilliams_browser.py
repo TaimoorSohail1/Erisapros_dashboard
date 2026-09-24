@@ -477,8 +477,6 @@ class PlaywrightFTWBringForwardAgent:
     def _target_error(review: FTWilliamsReview) -> str | None:
         if not review.bring_forward_required:
             return "Bring Forward is not required for this filing."
-        if not review.browser_mapping_confirmed:
-            return "The FT Williams browser plan mapping has not been confirmed."
         value = str(review.ftw_plan_url or "").strip()
         try:
             parsed = urlsplit(value)

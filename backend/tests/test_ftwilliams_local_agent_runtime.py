@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +32,9 @@ class FakeAgentApi:
 
     async def claim(self):
         return self.claim_result
+
+    async def control(self):
+        return {"pause_requested": False, "browser_allowed": True}
 
     async def complete(self, job_id, claim_token, result):
         self.completions.append((job_id, claim_token, result))
@@ -205,6 +209,9 @@ def test_persistent_browser_automatically_logs_in_and_verifies_the_expected_acco
 
         async def _submit_saved_login(self):
             self.submissions.append(dict(self.login_credentials))
+
+        async def _post_login_search_ready(self):
+            return True
 
     browser = AutoLoginBrowser()
 
@@ -391,11 +398,163 @@ def test_legacy_ft_williams_login_button_is_clicked_and_session_becomes_ready(tm
                 else ("Enter Login Information\nhighlandtech.test", True)
             )
 
+        async def _post_login_search_ready(self):
+            return True
+
     browser = LegacyLoginBrowser()
 
     assert run_async(browser.session_ready()) is True
     assert login.clicks == 1
     assert password.keys == []
+
+
+def test_first_login_waits_for_ftw_search_surface_before_reporting_ready(tmp_path):
+    class FirstLoginBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(
+                tmp_path / "profile",
+                expected_account="HighlandTech",
+                login_credentials={
+                    "company_code": "highland01",
+                    "username": "highlandtech.test",
+                    "password": "client-password",
+                },
+            )
+            self._page = StubBrowserPage()
+            self._page.url = "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home"
+            self.logged_in = False
+            self.search_ready_checks = 0
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            if self.logged_in:
+                return "HighlandTech", False
+            return "Enter Login Information", True
+
+        async def _submit_saved_login(self):
+            self.logged_in = True
+
+        async def _post_login_search_ready(self):
+            self.search_ready_checks += 1
+            return self.search_ready_checks >= 3
+
+    browser = FirstLoginBrowser()
+
+    assert run_async(browser.session_ready()) is True
+    assert browser.search_ready_checks == 3
+
+
+def test_target_navigation_retries_empty_first_load_without_duplicate_click(tmp_path):
+    class Candidate:
+        def __init__(self):
+            self.clicks = 0
+
+        async def click(self, **_kwargs):
+            self.clicks += 1
+
+    class RetryBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(tmp_path / "profile", expected_account="HighlandTech", timeout_ms=9_000)
+            self._page = StubBrowserPage()
+            self.verifications = iter([
+                SimpleNamespace(success=False, state="INVALID_TARGET", message="The first FTW page was empty."),
+                SimpleNamespace(success=False, state="INVALID_TARGET", message="The FTW search was still loading."),
+                SimpleNamespace(success=True, state="VERIFIED", message="Verified"),
+            ])
+            self.candidate = Candidate()
+
+        async def start(self):
+            return None
+
+        async def _wait_for_identity(self, _target, **_kwargs):
+            return next(self.verifications)
+
+        async def _post_login_search_ready(self):
+            return True
+
+        async def _single_bring_forward_candidate(self):
+            return self.candidate
+
+        async def _page_text(self):
+            return "HighlandTech", False
+
+    browser = RetryBrowser()
+    target_url = (
+        "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi"
+        "&PerformDoc5500=1&plan=2402914769,2950067216&Year=2025"
+    )
+    job = {
+        "id": "job-first-login",
+        "filing_id": "filing-first-login",
+        "expected_account": "HighlandTech",
+        "target_url": target_url,
+        "expected_plan_name": "BTIG LLC Health and Welfare Plan TEST",
+        "expected_ein": "04-3695739",
+        "expected_plan_number": "501",
+        "expected_year": "2025",
+    }
+
+    result = run_async(browser.execute(job))
+
+    assert result.state == "SUBMITTED"
+    assert browser._page.goto_calls.count(target_url) == 3
+    assert browser.candidate.clicks == 1
+
+
+def test_target_navigation_waits_for_account_header_before_rejecting_valid_plan(tmp_path):
+    """A hydrated plan iframe can appear before the outer FTW account header."""
+
+    class Candidate:
+        def __init__(self):
+            self.clicks = 0
+
+        async def click(self, **_kwargs):
+            self.clicks += 1
+
+    class DelayedAccountBrowser(PersistentFTWBrowser):
+        def __init__(self):
+            super().__init__(tmp_path / "profile", expected_account="HighlandTech", timeout_ms=9_000)
+            self._page = StubBrowserPage()
+            self.candidate = Candidate()
+            self.full_identity = (
+                "HighlandTech\n"
+                "Socure, Inc. Health And Welfare Plan\n"
+                "Details: EIN: 90-0888790 • PN: 501\n"
+                "5500 - 2025"
+            )
+            self.responses = [self.full_identity.replace("HighlandTech\n", "")]
+
+        async def start(self):
+            return None
+
+        async def _page_text(self):
+            return (self.responses.pop(0) if self.responses else self.full_identity), False
+
+        async def _single_bring_forward_candidate(self):
+            return self.candidate
+
+    browser = DelayedAccountBrowser()
+    target_url = (
+        "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi"
+        "&PerformDoc5500=1&plan=2405648717,2954016184&Year=2025"
+    )
+    job = {
+        "id": "job-delayed-account",
+        "filing_id": "filing-delayed-account",
+        "expected_account": "HighlandTech",
+        "target_url": target_url,
+        "expected_plan_name": "Socure, Inc. Health And Welfare Plan",
+        "expected_ein": "90-0888790",
+        "expected_plan_number": "501",
+        "expected_year": "2025",
+    }
+
+    result = run_async(browser.execute(job))
+
+    assert result.state == "SUBMITTED"
+    assert browser.candidate.clicks == 1
 
 
 def test_saved_login_is_blocked_outside_the_ft_williams_domain(tmp_path):
