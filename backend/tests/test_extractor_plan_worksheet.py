@@ -123,7 +123,7 @@ class PlanWorksheetFallbackTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.extractor.extract_pdf_text_pages", return_value=[])
     @patch(
         "app.services.extractor.get_settings",
-        return_value=SimpleNamespace(groundx_api_key="test-key", groundx_bucket_id="test-bucket"),
+        return_value=SimpleNamespace(groundx_api_key="test-key", groundx_bucket_id="test-bucket"),  # gitleaks:allow
     )
     async def test_scanned_pdf_uses_groundx_ocr_fallback_for_canonical_fields(self, _settings, _pages):
         service = ExtractionService()
