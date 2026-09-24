@@ -45,13 +45,21 @@ Run the standard local checks:
 
 ```powershell
 npm --prefix frontend ci
-npm run check
+npm --prefix frontend run check
 npm --prefix frontend run test:dashboard-ui
 npm --prefix frontend run test:field-rules-ui
 npm --prefix frontend run test:sharefile-ui
 npm --prefix frontend run test:ftw-agent-ui
+$env:SHAREFILE_CLIENT_ID = "test-client"
+$env:SHAREFILE_CLIENT_SECRET = "test-secret"
+$env:SHAREFILE_SHARED_ROOT_FOLDER_ID = "allshared"
+$env:SHAREFILE_DISCOVER_SHARED_FOLDERS = "false"
+$env:PYTHONPATH = "backend"
+backend\.venv\Scripts\python -m unittest discover -s backend\tests -p "test_*.py"
 docker build --pull --tag erisapros-backend:handover backend
 ```
+
+The placeholder ShareFile values make mocked scan tests independent of a developer's private `.env.local`; they do not connect to ShareFile.
 
 ## Deployment
 
