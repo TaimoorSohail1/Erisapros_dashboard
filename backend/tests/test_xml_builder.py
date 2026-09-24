@@ -290,9 +290,8 @@ class XmlBuilderTests(unittest.TestCase):
 
         self.assertIn("<CodeXX>3</CodeXX>", xml)
 
-    def test_schedule_a_broker_requires_organization_code_before_send(self):
-        with self.assertRaisesRegex(FTWPayloadValidationError, "organization code is required"):
-            build_schedule_a_records_update_xml(
+    def test_schedule_a_broker_defaults_blank_organization_code_before_send(self):
+        xml = build_schedule_a_records_update_xml(
                 [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
                 "1",
                 [],
@@ -301,6 +300,7 @@ class XmlBuilderTests(unittest.TestCase):
                 ftw_plan_id="plan",
                 schedule_a_broker_rows=[{"name": "Example Broker"}],
             )
+        self.assertIn("<CodeXX>3</CodeXX>", xml)
 
     def test_schedule_a_new_broker_rejects_unshortenable_name_over_ftw_limit(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):

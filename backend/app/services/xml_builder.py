@@ -964,7 +964,7 @@ def _schedule_a_broker_row_update_values(
     zip_code = _broker_row_attr(row, "zip_code")
     commission = _broker_row_attr(row, "commission_total")
     fees = _broker_row_attr(row, "fee_total")
-    code = _broker_row_attr(row, "organization_code")
+    code = _broker_row_attr(row, "organization_code") or "3"
     purpose = _broker_row_purpose(row, commission, fees)
 
     required_issues: list[FTWFieldValidationIssue] = []
@@ -1057,9 +1057,11 @@ def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple
 
 def _broker_row_attr(row: object, key: str) -> str:
     if hasattr(row, key):
-        return str(getattr(row, key) or "").strip()
+        value = getattr(row, key)
+        return "" if value is None else str(value).strip()
     if isinstance(row, dict):
-        return str(row.get(key) or "").strip()
+        value = row.get(key)
+        return "" if value is None else str(value).strip()
     return ""
 
 

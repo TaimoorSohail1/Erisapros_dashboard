@@ -244,7 +244,8 @@ a/k    Health PPO    $3,170,109          175/205
             "combined_commission_fee_source",
             resolved.raw["extraction_quality"]["cross_field_errors"],
         )
-        self.assertTrue(all(field.decision == "REVIEW_REQUIRED" for field in resolved.fields))
+        self.assertTrue(all(field.decision == "REVIEW_REQUIRED" for field in resolved.fields
+                            if field.field_name.startswith(("3b.", "3c."))))
 
     def test_multiple_schedule_a_groups_are_not_collapsed(self):
         document = SemanticDocument.from_page_texts(

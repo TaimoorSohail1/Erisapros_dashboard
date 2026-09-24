@@ -21,6 +21,8 @@ from app.models import (
     SourceEvidence,
 )
 from app.services.field_rules import normalize_name
+from app.services.schedule_a_lives_column import lives_column_selections
+from app.services.schedule_a_policy_period import explicit_contract_periods
 
 
 _MONEY = re.compile(r"(?<![A-Za-z0-9])\$?\s*(-?\d[\d,]*(?:\.\d{1,2})?)(?![A-Za-z0-9])")
@@ -204,6 +206,27 @@ def enrich_schedule_a_result(
 
     persons_field = _field_by_prefix(enriched.fields, "1e.")
     persons_candidates = _persons_covered_candidates(document)
+    columns = lives_column_selections(list(document.pages.items()))
+    column_ambiguous = any(column.ambiguous for column in columns)
+    column_contracts = {contract for column in columns for contract in column.contracts}
+    column_ambiguous = column_ambiguous or len(column_contracts) > 1
+    if columns and not column_ambiguous:
+        persons_candidates = [SemanticCandidate(column.value, column.page,
+            column.source_text, column.row, "highest_lives_covered_column") for column in columns]
+        if len(columns) > 1 and len(column_contracts) == 1 and all(column.contracts for column in columns):
+            # A continued table may repeat the same verified policy on several
+            # pages. Aggregate only that exact identity, not unrelated tables.
+            highest_column = max(columns, key=lambda column: int(column.value))
+            all_counts = [value for column in columns for value in column.counts]
+            evidence = ("Highest lives-covered count selected: " + highest_column.value + "\n"
+                + "Counts in covered-lives column: " + ", ".join(all_counts) + "\n"
+                + "\n".join(column.source_text for column in columns))
+            persons_candidates = [SemanticCandidate(highest_column.value, highest_column.page,
+                evidence, highest_column.row, "highest_lives_covered_column")]
+    elif column_ambiguous:
+        # Retain the provider's value for review; never merge different contracts
+        # or assert a maximum when any of the column's rows is unreadable.
+        persons_candidates = []
     unique_persons = _unique_candidates(persons_candidates)
     if persons_field is None and len(unique_persons) == 1:
         rule = next(
@@ -315,13 +338,29 @@ def enrich_schedule_a_result(
     for broker in enriched.schedule_a_broker_rows:
         _enrich_broker_evidence(broker, document)
 
+    # Apply after generic evidence enrichment so a provider's letter date or
+    # confidence cannot overwrite the explicitly labelled contract period.
+    period_ambiguities = _reconcile_contract_period(enriched, document, corrections)
+    carrier_ambiguities = _reconcile_carrier_worksheets(enriched, document, corrections)
+
     raw = dict(enriched.raw) if isinstance(enriched.raw, dict) else {"provider_raw": enriched.raw}
     group_count = len(document.groups) or (1 if document.lines else 0)
     ambiguities = _combined_compensation_ambiguities(enriched, document)
-    if group_count > 1:
+    ambiguities.extend(period_ambiguities)
+    ambiguities.extend(carrier_ambiguities)
+    if column_ambiguous:
+        ambiguities.append({"type": "lives_covered_column_ambiguous",
+            "reason": "Covered-lives column positions, contracts or row counts are ambiguous; review its count."})
+        if persons_field is not None:
+            persons_field.confidence = min(float(persons_field.confidence or 0), 0.5)
+            persons_field.decision = "REVIEW_REQUIRED"
+    manual_fallback = bool(raw.get("manual_review_required"))
+    if group_count > 1 or manual_fallback:
         # One dashboard filing cannot safely collapse distinct Schedule A
         # identities into a single set of values. Preserve every candidate and
         # force review before mapping or any downstream update can use it.
+        # Source-backed fields newly recovered by a customer rule must also
+        # preserve an unvalidated provider-failure review hold.
         for field_item in enriched.fields:
             field_item.confidence = min(float(field_item.confidence or 0), 0.5)
             field_item.decision = "REVIEW_REQUIRED"
@@ -332,7 +371,7 @@ def enrich_schedule_a_result(
         "version": 1,
         "decision": (
             "REVIEW_REQUIRED"
-            if group_count > 1 or len(unique_persons) > 1 or ambiguities
+            if group_count > 1 or manual_fallback or len(unique_persons) > 1 or ambiguities
             else "RESOLVED"
         ),
         "group_count": group_count,
@@ -346,10 +385,147 @@ def enrich_schedule_a_result(
             for group in document.groups
         ],
         "corrections": corrections,
+        "lives_covered_columns": [{"page": column.page, "counts": list(column.counts),
+            "selected": column.value if not column_ambiguous else None,
+            "contracts": list(column.contracts), "ambiguous": column.ambiguous} for column in columns],
         "ambiguities": ambiguities,
     }
     enriched.raw = raw
     return enriched
+
+
+def _reconcile_carrier_worksheets(result, document, corrections):
+    """Prefer complete labelled source tables over generic provider numbers.
+
+    Import lazily: extractor adapters also call the semantic layer. No provider
+    requests are made here, and an incomplete paid broker table returns no rows.
+    """
+    from app.services.extractor import (
+        extract_bcbsma_schedule_a_worksheet_fields,
+        extract_columnar_broker_compensation_rows,
+        extract_eyemed_payment_records,
+        is_eyemed_schedule_a_worksheet,
+        normalize_ocr_text,
+        sum_money_values,
+    )
+    ambiguities = []
+
+    def apply(label, value, page, source, *, review=False):
+        item = next((f for f in result.fields if normalize_name(f.field_name) == normalize_name(label)), None)
+        if item is None:
+            item = NormalizedExtractionField(field_name=label, value="", confidence=.94)
+            result.fields.append(item)
+        before = item.value
+        item.value = value
+        item.candidate_values = [value]
+        item.page = page
+        item.source_text = source
+        item.evidence = [SourceEvidence(provider="Schedule A labelled carrier table", page=page, source_text=source)]
+        item.confidence = .5 if review else .94
+        item.decision = "REVIEW_REQUIRED" if review else "AUTOMATIC"
+        if before != value:
+            corrections.append({"field": label, "before": before, "after": value,
+                                "reason": "labelled_carrier_table"})
+        return item
+
+    financials = {}
+    for page, text in document.pages.items():
+        for parsed in extract_bcbsma_schedule_a_worksheet_fields(text, page):
+            if parsed.field_name.startswith("9"):
+                financials.setdefault(parsed.field_name, []).append(parsed)
+    for label, candidates in financials.items():
+        identities = {_decimal_identity(candidate.value) for candidate in candidates}
+        if len(identities) == 1:
+            parsed = candidates[0]
+            apply(label, parsed.value, parsed.page, parsed.source_text)
+        else:
+            ambiguities.append({"type": "carrier_worksheet_financial_conflict",
+                                "reason": f"Conflicting labelled carrier amounts for {label}."})
+            existing = _field_by_prefix(result.fields, label.split(".")[0] + ".")
+            if existing is not None:
+                existing.confidence = .5
+                existing.decision = "REVIEW_REQUIRED"
+
+    rows = extract_columnar_broker_compensation_rows(list(document.pages.items()))
+    if rows:
+        # Keep the established classification of additional compensation in
+        # fee totals, but expose its separate component and require review.
+        has_additional = any(m.purpose == "Additional Compensation" for r in rows for m in r.fee_rows)
+        source = "\n".join(r.fee_source_text or "" for r in rows)
+        apply("3b. Amount of Commissions", sum_money_values(*(r.commission_total for r in rows)) or "0",
+              rows[0].source_page, source)
+        apply("3c. Amount of Fees", sum_money_values(*(r.fee_total for r in rows)) or "0",
+              rows[0].source_page, source, review=has_additional)
+        for row in rows:
+            row.commission_source_text = source
+            row.fee_source_text = source
+            row.evidence = [SourceEvidence(provider="Schedule A labelled carrier table", page=row.source_page, source_text=source)]
+            if has_additional:
+                row.confidence = .5
+                row.decision = "REVIEW_REQUIRED"
+        result.schedule_a_broker_rows = rows
+        if has_additional:
+            ambiguities.append({"type": "additional_compensation_classification_required",
+                                "reason": "Separate additional compensation is retained in the existing fee total; review its classification. Explicit paid-fee column is preserved in source evidence."})
+
+    records = []
+    for page, text in document.pages.items():
+        normalized = normalize_ocr_text(text)
+        if is_eyemed_schedule_a_worksheet(normalized):
+            records.extend((page, r) for r in extract_eyemed_payment_records(normalized))
+    if records:
+        highest_page, highest = max(records, key=lambda pair: int(pair[1]["persons_covered"].replace(",", "")))
+        contracts = {r["contract_number"] for _, r in records}
+        multiple = len(contracts) > 1
+        source = "Highest subscribers-and-dependents covered count selected: " + highest["persons_covered"] + "\n"
+        source += "\n".join(r["contract_number"] + ": " + r["persons_covered"] for _, r in records)
+        apply("1e. Persons Covered (End of Policy Year)", highest["persons_covered"], highest_page, source, review=multiple)
+        if multiple:
+            ambiguities.append({"type": "eyemed_contract_grouping_required",
+                                "reason": "Multiple EyeMed source contracts: highest lives is a proposal, not proof of a single FTW policy grouping. Review combined contract and financial amounts."})
+            for item in result.fields:
+                if item.field_name.startswith(("1d.", "3b.", "10a.")):
+                    item.confidence = min(float(item.confidence or 0), .5)
+                    item.decision = "REVIEW_REQUIRED"
+            for row in result.schedule_a_broker_rows:
+                row.confidence = min(float(row.confidence or 0), .5)
+                row.decision = "REVIEW_REQUIRED"
+    return ambiguities
+
+
+def _reconcile_contract_period(result, document, corrections):
+    matches = [(page, period) for page, text in document.pages.items()
+               for period in explicit_contract_periods(text)]
+    identities = {(period.beginning, period.ending) for _, period in matches}
+    if len(identities) > 1:
+        return [{"type": "contract_period_ambiguous",
+                 "reason": "Conflicting explicitly labelled contract periods; select the correct policy."}]
+    if not matches:
+        return []
+    page, period = matches[0]
+    month_precision = any(p.month_precision for _, p in matches)
+    for prefix, label, value in (("1f.", "1f. Policy Year Beginning Date", period.beginning),
+                                 ("1g.", "1g. Policy Year Ending Date", period.ending)):
+        item = _field_by_prefix(result.fields, prefix)
+        if item is None:
+            item = NormalizedExtractionField(field_name=label, value="", confidence=0.9)
+            result.fields.append(item)
+        before = item.value
+        source = period.source_text
+        if month_precision:
+            source += "\nMonth-only source: day boundaries derived; confirm exact policy dates."
+        item.value = value
+        item.candidate_values = [value]
+        item.page = page
+        item.source_text = source
+        item.evidence = [SourceEvidence(provider="Schedule A explicit contract period", page=page, source_text=source)]
+        item.confidence = 0.5 if month_precision else 0.9
+        if before != value:
+            corrections.append({"field": label, "before": before, "after": value,
+                                "reason": "explicit_contract_period"})
+    return ([{"type": "contract_period_month_precision",
+              "reason": "The source prints months, not exact days; confirm derived policy-date boundaries."}]
+            if month_precision else [])
 
 
 def _add_explicit_rule_fields(
@@ -801,7 +977,9 @@ def _apply_candidate(
         field_item.confidence = max(float(field_item.confidence or 0), 0.92)
     field_item.page = candidate.page
     field_item.source_text = candidate.source_text
-    _append_evidence(field_item, candidate.evidence())
+    _append_evidence(field_item, candidate.evidence(
+        "Schedule A covered-lives column" if candidate.reason == "highest_lives_covered_column"
+        else "Schedule A semantic layer"))
 
 
 def _append_evidence(field_item: NormalizedExtractionField, evidence: SourceEvidence) -> None:

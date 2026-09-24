@@ -20,6 +20,7 @@ from app.models import (
     SourceEvidence,
 )
 from app.services.schedule_a_broker_validation import broker_address_semantic_issue
+from app.services.schedule_a_customer_rules import DEFAULT_CODE_REASON, apply_customer_defaults
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -61,6 +62,8 @@ def apply_schedule_a_pipeline(
     rules: list[FieldRule] | None = None,
 ) -> NormalizedExtractionResult:
     """Run canonical resolution authoritatively or as a no-risk shadow diff."""
+    # Customer defaults apply independently of the optional canonical validator.
+    apply_customer_defaults(result)
     if authoritative:
         return resolve_schedule_a_result(result, rules=rules)
     if not shadow:
@@ -78,6 +81,7 @@ def resolve_schedule_a_result(
     rules: list[FieldRule] | None = None,
 ) -> NormalizedExtractionResult:
     """Attach evidence, validate values, and fail closed on contradictions."""
+    apply_customer_defaults(result)
     error_fields: set[str] = set()
     for field in result.fields:
         if not field.evidence and (field.page or field.source_text):
@@ -125,6 +129,26 @@ def resolve_schedule_a_result(
             ),
         )
     semantic_ambiguities = semantic_resolution.get("ambiguities", [])
+    if isinstance(semantic_ambiguities, list):
+        for ambiguity_type, prefixes, reason in (
+            ("additional_compensation_classification_required", ("3c.",), "Review classification of separately disclosed additional compensation; it was retained, not discarded."),
+            ("eyemed_contract_grouping_required", ("1d.", "1e.", "3b.", "10a."), "Verify multiple EyeMed source contracts and combined amounts. Highest lives is a proposal, not a confirmed single-policy grouping."),
+        ):
+            if any(isinstance(item, dict) and item.get("type") == ambiguity_type for item in semantic_ambiguities):
+                cross_field_errors.append(ambiguity_type)
+                _mark_fields_review(result.fields, prefixes, validator=ambiguity_type, reason=reason)
+    if isinstance(semantic_ambiguities, list) and any(
+        isinstance(item, dict) and item.get("type") in {
+            "contract_period_ambiguous", "contract_period_month_precision"}
+        for item in semantic_ambiguities):
+        _mark_fields_review(result.fields, ("1f.", "1g."), validator="contract_period_precision",
+            reason="Confirm exact policy dates: source has month-only or conflicting contract periods.")
+    if isinstance(semantic_ambiguities, list) and any(
+        isinstance(item, dict) and item.get("type") == "lives_covered_column_ambiguous"
+        for item in semantic_ambiguities):
+        cross_field_errors.append("lives_covered_column_ambiguous")
+        _mark_fields_review(result.fields, ("1e.",), validator="lives_covered_column_ambiguous",
+            reason="Covered-lives column positions, contracts or row counts are ambiguous; review its count.")
     if isinstance(semantic_ambiguities, list) and any(
         isinstance(item, dict) and item.get("type") == "combined_commission_fee_source"
         for item in semantic_ambiguities
@@ -215,6 +239,11 @@ def _validate_field(
 def _validate_source_evidence(
     field: NormalizedExtractionField,
 ) -> ExtractionValidationResult:
+    if (field.field_name.strip().lower().startswith("3e.") and field.value == "3"
+            and any(item.provider == "Customer configured default" and item.source_text == DEFAULT_CODE_REASON
+                    for item in field.evidence)):
+        return ExtractionValidationResult(validator="source_evidence", status="PASS",
+            reason="Blank organization code follows the explicit customer default; no OCR source page is claimed.")
     pages = [field.page, *(item.page for item in field.evidence)]
     source_texts = [field.source_text, *(item.source_text for item in field.evidence)]
     has_page = any(isinstance(page, int) and page > 0 for page in pages)
@@ -334,6 +363,16 @@ def _validate_persons_covered_semantics(
     if not field.field_name.strip().lower().startswith("1e."):
         return None
     extracted = str(field.value or "").replace(",", "").strip()
+    for evidence in field.evidence:
+        if evidence.provider != "Schedule A covered-lives column":
+            continue
+        counts = re.search(r"^Counts in covered-lives column: ([\d, ]+)$", evidence.source_text or "", re.M)
+        if counts:
+            values = [value.strip() for value in counts.group(1).split(",")]
+            valid = all(value.isdigit() for value in values) and extracted == max(values, key=int)
+            return _result("persons_covered_semantics", valid,
+                "Selected the highest valid count in the source covered-lives column." if valid
+                else "Covered-lives count does not match the column maximum.", extracted)
     evidence_text = " ".join(
         text
         for text in [field.source_text, *(item.source_text for item in field.evidence)]

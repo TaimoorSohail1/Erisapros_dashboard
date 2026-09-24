@@ -76,7 +76,8 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
 
         self.assertEqual(resolved.raw["extraction_quality"]["decision"], "REVIEW_REQUIRED")
         self.assertGreaterEqual(resolved.raw["extraction_quality"]["error_count"], 6)
-        self.assertTrue(all(field.confidence <= 0.5 for field in resolved.fields))
+        self.assertTrue(all(field.confidence <= 0.5 for field in resolved.fields
+                            if not field.field_name.startswith("3e.")))
         self.assertTrue(all(field.validation_results for field in resolved.fields))
 
     def test_valid_core_values_keep_their_confidence_and_source_evidence(self):
@@ -98,8 +99,10 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
         self.assertEqual(resolved.raw["extraction_quality"]["decision"], "AUTOMATIC")
         self.assertEqual(resolved.raw["extraction_quality"]["error_count"], 0)
         self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields))
-        self.assertTrue(all(field.confidence == 0.94 for field in resolved.fields))
-        self.assertTrue(all(field.evidence[0].provider == "layout OCR" for field in resolved.fields))
+        self.assertTrue(all(field.confidence == 0.94 for field in resolved.fields
+                            if not field.field_name.startswith("3e.")))
+        self.assertTrue(all(field.evidence[0].provider == "layout OCR" for field in resolved.fields
+                            if not field.field_name.startswith("3e.")))
 
     def test_placeholder_contract_identifier_is_never_automatic(self):
         result = NormalizedExtractionResult(
@@ -597,7 +600,8 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
 
         resolved = resolve_schedule_a_result(result)
 
-        self.assertTrue(all(field.decision == "REVIEW_REQUIRED" for field in resolved.fields))
+        self.assertTrue(all(field.decision == "REVIEW_REQUIRED" for field in resolved.fields
+                            if field.field_name.startswith(("9", "10"))))
         self.assertTrue(
             all(
                 any(
@@ -605,6 +609,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
                     for item in field.validation_results
                 )
                 for field in resolved.fields
+                if field.field_name.startswith(("9", "10"))
             )
         )
 

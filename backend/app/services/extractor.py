@@ -36,6 +36,8 @@ from app.services.schedule_a_layout_engine import (
     is_layout_label_text,
 )
 from app.services.schedule_a_semantic_layer import SemanticDocument, enrich_schedule_a_result
+from app.services.schedule_a_policy_period import explicit_contract_periods
+from app.services.schedule_a_customer_rules import default_blank_organization_codes
 from app.services.schedule_a_classification import classification_signals_from_text
 
 
@@ -949,13 +951,7 @@ def merge_schedule_a_broker_rows(
             if _row_has_position_aware_evidence(row)
             or not any(_broker_name_is_address_fragment(row, positioned) for positioned in positioned_rows)
         ]
-    for row in output:
-        if not row.organization_code and _row_has_explicit_broker_evidence(row):
-            # FT Williams code 3 represents an insurance agent or broker. Only
-            # derive it when the source itself explicitly labels the row as a
-            # broker; generic service-provider rows remain reviewable.
-            row.organization_code = "3"
-    return output
+    return default_blank_organization_codes(output)
 
 
 def _broker_row_is_parser_fragment(row: ScheduleABrokerRow) -> bool:
@@ -3397,8 +3393,14 @@ def _rules_driven_schedule_a_special_values(full_text: str) -> dict[str, tuple[s
         ],
         flags=re.IGNORECASE,
     )
-    dates = _normalized_date_tokens(date_context or compact)
-    if len(dates) >= 2:
+    periods = explicit_contract_periods(full_text)
+    identities = {(period.beginning, period.ending) for period in periods}
+    dates = _normalized_date_tokens(date_context) if date_context else []
+    if len(identities) == 1:
+        period = periods[0]
+        values["schedule_a_part_i_1f_policy_year_beginning_date"] = (period.beginning, None, period.source_text)
+        values["schedule_a_part_i_1g_policy_year_ending_date"] = (period.ending, None, period.source_text)
+    elif not periods and len(dates) >= 2:
         values["schedule_a_part_i_1f_policy_year_beginning_date"] = (dates[0], None, date_context or "Policy period")
         values["schedule_a_part_i_1g_policy_year_ending_date"] = (dates[1], None, date_context or "Policy period")
 
@@ -3867,12 +3869,12 @@ _COLUMNAR_BROKER_END = re.compile(
     re.IGNORECASE,
 )
 _COLUMNAR_BROKER_AMOUNTS = re.compile(
-    r"\$\s*(?P<sales>[\d,]+(?:\.\d{1,2})?)\s+"
-    r"\$\s*(?P<fees>[\d,]+(?:\.\d{1,2})?)\s+"
-    r"\$\s*(?P<additional>[\d,]+(?:\.\d{1,2})?)",
+    r"\$?\s*(?P<sales>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))\s+"
+    r"\$?\s*(?P<fees>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))\s+"
+    r"\$?\s*(?P<additional>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))(?![\d.])",
 )
 _COLUMNAR_CITY_STATE_ZIP = re.compile(
-    r"^(?P<city>[A-Za-z .'-]+),\s*(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)$",
+    r"^(?P<city>[A-Za-z .'-]+?),?\s+(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)$",
     re.IGNORECASE,
 )
 _SECONDARY_ADDRESS_LINE = re.compile(
@@ -3894,6 +3896,7 @@ def extract_columnar_broker_compensation_rows(page_texts: list[tuple[int, str]])
     page_offsets: list[tuple[int, int]] = []
     for page, text in page_texts:
         normalized = normalize_ocr_text(text or "")
+        normalized = re.sub(r"(?m)^[ \t]*-{5,}[ \t]*$", "", normalized)
         if not normalized:
             continue
         if combined:
@@ -3977,6 +3980,8 @@ def extract_columnar_broker_compensation_rows(page_texts: list[tuple[int, str]])
                 ],
                 commission_total=sales,
                 fee_total=fee_total,
+                commission_source_text="Sales Commission Paid / Fees Paid / Additional Compensation Paid\n" + block,
+                fee_source_text="Sales Commission Paid / Fees Paid / Additional Compensation Paid\n" + block,
                 source_page=source_page,
                 confidence=0.96,
             )
@@ -4025,6 +4030,8 @@ def _merge_columnar_broker_rows(rows: list[ScheduleABrokerRow]) -> list[Schedule
             continue
         existing.commission_rows.extend(row.commission_rows)
         existing.fee_rows.extend(row.fee_rows)
+        existing.commission_source_text = "\n".join(filter(None, [existing.commission_source_text, row.commission_source_text]))
+        existing.fee_source_text = "\n".join(filter(None, [existing.fee_source_text, row.fee_source_text]))
         existing.confidence = min(existing.confidence, row.confidence)
     result: list[ScheduleABrokerRow] = []
     for key in order:
@@ -4809,7 +4816,9 @@ def bcbsma_column_value(text: str, label: str, coverage: str) -> str | None:
     match = re.search(rf"{re.escape(label)}\s+(.+)", text, flags=re.IGNORECASE)
     if not match:
         return None
-    amounts = re.findall(r"\$?\s*([0-9,]+(?:\.\d{{2}})?)", match.group(1))
+    # This is a plain regex, not an f-string. Doubled braces matched literal
+    # braces and silently discarded cents (and shifted later coverage columns).
+    amounts = re.findall(r"\$?\s*([0-9,]+(?:\.\d+)?)", match.group(1))
     if not amounts:
         return None
     coverage_index = {"MEDICAL": 0, "DENTAL": 1, "SENIOR": 2}.get(coverage.upper(), 0)
@@ -4898,7 +4907,7 @@ def extract_eyemed_schedule_a_summaries(page_texts: list[tuple[int, str]]) -> li
     naic = first_nonempty(record.get("naic_code") for record in records)
     contracts = [record["contract_number"] for record in records]
     combined_contract = combine_eyemed_contract_numbers(contracts)
-    persons_covered = sum_money_values(*(record["persons_covered"] for record in records))
+    persons_covered = str(max(int(record["persons_covered"].replace(",", "")) for record in records))
     premium_total = sum_money_values(*(record["premium"] for record in records))
     broker_total = sum_money_values(*(row.commission_total for row in extract_eyemed_broker_rows(page_texts)))
     benefit_rows = [
@@ -4912,7 +4921,7 @@ def extract_eyemed_schedule_a_summaries(page_texts: list[tuple[int, str]]) -> li
     ]
     values = [
         ScheduleAWorksheetValue(label="Source contracts", value=", ".join(contracts), source="Payments received table", coverage="Vision"),
-        ScheduleAWorksheetValue(label="Persons covered", value=persons_covered or "", source="Payments received table", coverage="Vision"),
+        ScheduleAWorksheetValue(label="Persons covered", value=persons_covered or "", source="Highest subscribers-and-dependents count in Payments received table; contract grouping requires review when there are multiple contracts", coverage="Vision"),
         ScheduleAWorksheetValue(label="Total nonexperience premium", value=premium_total or "", source="Payments received table", coverage="Vision"),
         ScheduleAWorksheetValue(label="Broker payment total", value=broker_total or "", source="Broker payment table", coverage="Vision"),
     ]
@@ -4933,7 +4942,7 @@ def extract_eyemed_schedule_a_summaries(page_texts: list[tuple[int, str]]) -> li
             values=[value for value in values if value.value],
             benefit_rows=benefit_rows,
             notes=[
-                "Combined EyeMed worksheet contract rows into one FT Williams Schedule A contract.",
+                "EyeMed source contract rows retained as a worksheet bundle; verify the FT Williams contract grouping before using aggregated amounts.",
                 f"Extracted from page {first_page}",
             ],
         )
@@ -4969,7 +4978,7 @@ def extract_eyemed_payment_records(text: str) -> list[dict[str, str]]:
         premium_match = re.search(r"\$?([0-9,]+\.\d{2})\s*$", detail)
         money_detail = detail[: premium_match.start()].strip() if premium_match else detail
         identifiers = ""
-        id_match = re.search(r"([0-9]{9})([0-9]{4,6})\s*$", money_detail)
+        id_match = re.search(r"([0-9]{9})\s*([0-9]{4,6})\s*$", money_detail)
         if id_match:
             identifiers = id_match.group(0)
             money_detail = money_detail[: id_match.start()].strip()
@@ -4979,7 +4988,7 @@ def extract_eyemed_payment_records(text: str) -> list[dict[str, str]]:
         persons_match = number_matches[-1]
         subscribers_match = number_matches[-2]
         ein = naic = ""
-        id_match = re.search(r"([0-9]{9})([0-9]{4,6})", identifiers)
+        id_match = re.search(r"([0-9]{9})\s*([0-9]{4,6})", identifiers)
         if id_match:
             ein = id_match.group(1)
             naic = id_match.group(2)
@@ -6730,16 +6739,10 @@ def money_value(value: str) -> str:
 
 
 def extract_contract_year_range(text: str) -> tuple[str, str] | None:
-    match = re.search(
-        r"\b(?:Contract|Policy)\s+Year\s+from\s+"
-        r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})\s*(?:-|to|through)\s*"
-        r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
+    periods = explicit_contract_periods(text)
+    if len({(period.beginning, period.ending) for period in periods}) != 1:
         return None
-    return normalize_schedule_a_date(match.group(1), end_of_month=False), normalize_schedule_a_date(match.group(2), end_of_month=True)
+    return periods[0].beginning, periods[0].ending
 
 
 def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
