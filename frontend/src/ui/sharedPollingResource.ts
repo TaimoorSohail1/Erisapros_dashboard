@@ -24,7 +24,9 @@ export function createSharedPollingResource<T>({
   setIntervalFn = (callback, timeout) => globalThis.setInterval(callback, timeout),
   clearIntervalFn = (handle) => globalThis.clearInterval(handle as ReturnType<typeof setInterval>),
 }: SharedPollingOptions<T>) {
-  let snapshot: SharedPollingSnapshot<T> = { data: initialData, error: "", loading: false, updatedAt: 0 };
+  // A resource with updatedAt === 0 has never completed a request. Keep it in a
+  // loading state so consumers cannot mistake initialData for a real empty response.
+  let snapshot: SharedPollingSnapshot<T> = { data: initialData, error: "", loading: true, updatedAt: 0 };
   let inFlight: Promise<T> | null = null;
   let pollingConsumers = 0;
   let timer: unknown = null;
@@ -36,7 +38,19 @@ export function createSharedPollingResource<T>({
   }
 
   async function refresh({ force = false }: { force?: boolean } = {}): Promise<T> {
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      if (!force) return inFlight;
+      const olderRequest = inFlight;
+      return (async () => {
+        try {
+          await olderRequest;
+        } catch {
+          // A mutation-triggered refresh must still run after an older failed load.
+        }
+        if (inFlight && inFlight !== olderRequest) return inFlight;
+        return refresh({ force: true });
+      })();
+    }
     if (!force && snapshot.updatedAt && now() - snapshot.updatedAt < freshMs) return snapshot.data;
     publish({ loading: true });
     inFlight = load()

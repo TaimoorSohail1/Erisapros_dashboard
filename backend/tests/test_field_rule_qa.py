@@ -126,7 +126,9 @@ class FieldRuleQATests(unittest.TestCase):
         self.assertEqual(draft.status.value, "DRAFT")
         self.assertTrue(snapshot.version)
         self.assertEqual(result["provider"], "Local document parser")
-        self.assertEqual(result["summary"], {"extracted": 1, "matched": 1, "unmatched": 0, "extraction_only": 0})
+        # A missing Schedule A organizational code now adds the explicit
+        # customer-configured default alongside the carrier tracer field.
+        self.assertEqual(result["summary"], {"extracted": 2, "matched": 2, "unmatched": 0, "extraction_only": 0})
         self.assertEqual(result["fields"][0]["matched_alias"], "QA Carrier Registry Number")
         self.assertEqual(result["fields"][0]["mapped_rule_key"], "schedule_a_part_i_1c_naic_code")
         self.assertEqual(result["fields"][0]["value"], "98765")
@@ -214,6 +216,12 @@ class FieldRuleQATests(unittest.TestCase):
         self.assertEqual(result["summary"]["matched"], 1)
         self.assertEqual(result["fields"][0]["mapped_rule_key"], rule.key)
         self.assertEqual(result["fields"][0]["value"], "98765")
+
+    def test_default_qa_timeout_allows_normal_groundx_ingestion_but_stays_below_cloudfront(self):
+        settings = Settings()
+
+        self.assertGreaterEqual(settings.field_rule_qa_timeout_seconds, 55)
+        self.assertLess(settings.field_rule_qa_timeout_seconds, 60)
 
 
 if __name__ == "__main__":

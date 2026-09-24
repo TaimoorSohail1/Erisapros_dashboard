@@ -7,6 +7,7 @@ import { FTWilliamsFailuresPage } from "./pages/FTWilliamsFailuresPage";
 import { FilingReviewPage } from "./pages/FilingReviewPage";
 import { FieldRulesPage } from "./pages/FieldRulesPage";
 import { ShareFilePage } from "./pages/ShareFilePage";
+import { FTWilliamsAgentSettingsPage } from "./pages/FTWilliamsAgentSettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { AuthGate } from "./ui/AuthGate";
 import "./styles.css";
@@ -18,6 +19,7 @@ function CurrentPage() {
   if (/^\/filings\/[^/]+$/.test(path)) return <FilingReviewPage />;
   if (path === "/field-rules") return <FieldRulesPage />;
   if (path === "/sharefile") return <ShareFilePage />;
+  if (path === "/settings/ftw-agent") return <FTWilliamsAgentSettingsPage />;
   if (path === "/") return <DashboardPage />;
   return <NotFoundPage />;
 }

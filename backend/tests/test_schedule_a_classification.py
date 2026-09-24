@@ -61,6 +61,9 @@ def extracted_field(rule_key: str, value: str = "100") -> ExtractedField:
         source_document_type=DocumentType.SCHEDULE_A,
         value=value,
         proposed_value=value,
+        confidence=0.95,
+        page=1,
+        source_text=f"{rule_key} {value}",
     )
 
 
@@ -134,6 +137,19 @@ class ScheduleAClassificationTests(unittest.TestCase):
         self.assertEqual(line_10a.proposed_value, "0")
         self.assertIn("automatically derived", (line_10a.status_reason or "").lower())
 
+    def test_uncertain_fallback_classification_derived_zero_stays_in_review(self):
+        line_9a = extracted_field(LINE_9A, "170074")
+        line_10a = extracted_field(LINE_10A, "170074")
+        for field in (line_9a, line_10a):
+            field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+            field.confidence = 0.5
+
+        apply_schedule_a_classification([line_9a, line_10a])
+
+        self.assertEqual(line_10a.proposed_value, "0")
+        self.assertEqual(line_10a.status, ExtractedFieldStatus.LOW_CONFIDENCE)
+        self.assertIn("needs Review", line_10a.status_reason)
+
     def test_nonexperience_rating_automatically_sets_required_line_9_totals_to_zero(self):
         line_10a = extracted_field(LINE_10A, "170074")
         derived_fields = [extracted_field(rule_key, "") for rule_key in (LINE_9A4, LINE_9B3, LINE_9C1H)]
@@ -183,6 +199,8 @@ class ScheduleAClassificationTests(unittest.TestCase):
             proposed_value="45230.10",
             form_type=FormType.SCHEDULE_A,
             status=ExtractedFieldStatus.UNMAPPED,
+            page=1,
+            source_text="Total Premiums Paid 45230.10",
         )
         line_10a = extracted_field(LINE_10A, "")
         line_10a.status = ExtractedFieldStatus.MISSING
@@ -192,6 +210,7 @@ class ScheduleAClassificationTests(unittest.TestCase):
         self.assertEqual(classification.contract_type, ScheduleAContractType.NONEXPERIENCE_RATED)
         self.assertEqual(line_10a.proposed_value, "45230.10")
         self.assertIn("premium evidence", (line_10a.status_reason or "").lower())
+        self.assertEqual(line_10a.status, ExtractedFieldStatus.LOW_CONFIDENCE)
 
     def test_line_9a_takes_priority_when_line_10a_was_also_extracted(self):
         classification = classify_schedule_a_fields([

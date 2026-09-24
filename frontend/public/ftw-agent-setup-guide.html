@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ERISAPros FT Williams Agent setup</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17253b; background: #f3f7f9; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { margin: 0 auto; max-width: 880px; padding: 36px 22px 52px; }
+      header { align-items: center; display: flex; gap: 15px; margin-bottom: 25px; }
+      .mark { align-items: center; background: #e6f8ef; border: 1px solid #b9e6cf; border-radius: 14px; color: #08764a; display: flex; font-size: 22px; font-weight: 850; height: 52px; justify-content: center; width: 52px; }
+      .eyebrow { color: #08764a; font-size: 12px; font-weight: 850; letter-spacing: .08em; margin: 0 0 4px; text-transform: uppercase; }
+      h1 { font-size: clamp(25px, 4vw, 35px); letter-spacing: -.035em; margin: 0; }
+      .intro { color: #5d6b7c; font-size: 16px; line-height: 1.6; margin: 8px 0 0; }
+      .card { background: #fff; border: 1px solid #dbe5eb; border-radius: 16px; box-shadow: 0 10px 30px rgba(33, 57, 78, .06); padding: 24px; }
+      .steps { counter-reset: step; display: grid; gap: 0; list-style: none; margin: 0; padding: 0; }
+      .steps li { counter-increment: step; display: grid; gap: 5px 16px; grid-template-columns: 34px minmax(0, 1fr); padding: 16px 0; }
+      .steps li + li { border-top: 1px solid #e7edf1; }
+      .steps li::before { align-items: center; background: #e8f7f0; border-radius: 50%; color: #08764a; content: counter(step); display: flex; font-size: 14px; font-weight: 850; grid-row: 1 / span 2; height: 34px; justify-content: center; width: 34px; }
+      .steps strong { font-size: 16px; }
+      .steps p { color: #5e6f82; line-height: 1.5; margin: 0; }
+      .result { background: linear-gradient(135deg, #e9f8f1, #f5fbf8); border: 1px solid #b9e4cc; border-radius: 12px; color: #155c41; font-weight: 750; margin-top: 18px; padding: 15px 17px; }
+      .help-grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; margin-top: 18px; }
+      .help { background: #fff; border: 1px solid #dbe5eb; border-radius: 13px; padding: 18px; }
+      .help h2 { font-size: 15px; margin: 0 0 7px; }
+      .help p { color: #617185; font-size: 13px; line-height: 1.5; margin: 0; }
+      .safety { align-items: flex-start; background: #eef7fb; border: 1px solid #cae5f1; border-radius: 12px; color: #355e75; display: flex; gap: 10px; line-height: 1.5; margin-top: 18px; padding: 15px 17px; }
+      footer { color: #738195; font-size: 12px; line-height: 1.5; margin-top: 18px; text-align: center; }
+      @media (max-width: 650px) { main { padding: 24px 14px 38px; } .card { padding: 18px; } .help-grid { grid-template-columns: 1fr; } }
+      @media print { :root { background: #fff; } main { max-width: none; padding: 0; } .card { box-shadow: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mark" aria-hidden="true">EP</div>
+        <div>
+          <p class="eyebrow">Client setup guide</p>
+          <h1>Connect your FT Williams computer</h1>
+          <p class="intro">Four simple steps. Your FT Williams password and browser session stay encrypted on your computer.</p>
+        </div>
+      </header>
+
+      <section class="card" aria-label="Setup steps">
+        <ol class="steps">
+          <li>
+            <strong>Download and open the FT Williams Agent</strong>
+            <p>Use <b>Download FTW Agent</b> in ERISAPros, then double-click the setup file. Windows may show “Unknown publisher” for the pilot build.</p>
+          </li>
+          <li>
+            <strong>Enter your one-time connection code</strong>
+            <p>In ERISAPros, open <b>FTW Agent</b>, choose <b>Connect this computer</b>, and enter the code in the installer. The code expires after 10 minutes and works once.</p>
+          </li>
+          <li>
+            <strong>Enable automatic FT Williams sign-in</strong>
+            <p>Choose Yes in the installer and enter your company code, username, and password. Windows encrypts this login for your account. The agent types it only on ftwilliam.com; complete MFA yourself if requested.</p>
+          </li>
+          <li>
+            <strong>Test connection</strong>
+            <p>Return to <b>FTW Agent</b> in ERISAPros and click <b>Test connection</b>. You should see “Connection test passed.”</p>
+          </li>
+        </ol>
+        <div class="result">Done — leave the agent running. Approved work for your workspace can now use this computer.</div>
+      </section>
+
+      <div class="help-grid">
+        <section class="help">
+          <h2>If you see “Login required”</h2>
+          <p>The agent retries the saved login with a safe delay. If FT Williams requests MFA or rejects the login, complete it in the dedicated window. Waiting work then resumes automatically.</p>
+        </section>
+        <section class="help">
+          <h2>If the browser was closed</h2>
+          <p>The agent reopens the same dedicated profile and signs in with the Windows-encrypted login. You only need to complete MFA if FT Williams requests it.</p>
+        </section>
+        <section class="help">
+          <h2>If the computer is offline</h2>
+          <p>Reconnect to the internet and start the FT Williams Agent. No filing is sent while the agent is unavailable.</p>
+        </section>
+        <section class="help">
+          <h2>If the wrong account appears</h2>
+          <p>Stop and contact your ERISAPros administrator. The agent will not process work for a different FT Williams account.</p>
+        </section>
+      </div>
+
+      <aside class="safety">
+        <strong>Safety:</strong>
+        <span>Your FT Williams login never goes to ERISAPros servers. Windows encrypts it for the current user, and the local agent types it only after confirming the ftwilliam.com domain. Pairing remains private to your workspace.</span>
+      </aside>
+      <footer>Need help? Contact your ERISAPros administrator. Never send a pairing code, password, or MFA code by email or chat.</footer>
+    </main>
+  </body>
+</html>

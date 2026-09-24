@@ -22,41 +22,56 @@ import {
   XCircle,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
-  approveFiling,
+  ApiRequestError,
+  confirmFTWilliamsBringForward,
   getFiling,
+  getFTWLocalAgentStatus,
   getFTWilliamsBringForwardLink,
+  reconcileFTWilliamsBringForward,
   openFTWilliamsAuditPDF,
   prepareFTWilliamsReview,
   regenerateXml,
   reEvaluateFilingRules,
   rejectFiling,
+  resolveFTWilliamsPlanYearConflict,
   retryExtraction,
   saveManualFTWilliamsMatch,
   selectFTWilliamsScheduleAMatch,
+  setFTWilliamsScheduleABrokerMatches,
   sendApprovedFTWilliamsUpdate,
-  unapproveFiling,
   updateField,
+  updateFTWilliamsScheduleABrokerRows,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 import { formatDate, formatFilingDisplayName, percent } from "../utils";
 
 type ReviewTab = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE" | "ALL";
-type WorkflowStepKey = "INTAKE" | "EXTRACTION" | "FTW_LOADED" | "REVIEW" | "APPROVAL" | "FTW_UPDATE";
+type WorkflowStepKey = "INTAKE" | "EXTRACTION" | "FTW_LOADED" | "REVIEW" | "FTW_UPDATE";
 type FilterValue = "ALL" | string;
 type ContractTypeFilter = "ALL" | ScheduleAContractType;
 
 type ReviewRowGroup = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE";
 type ReviewToast = {
+  code?: string | null;
   message: string;
+  nextAction?: string | null;
+  reason?: string | null;
+  sticky?: boolean;
   title: string;
   tone: "error" | "success" | "warning";
+} | null;
+type SendValidationNotice = {
+  fieldId?: string | null;
+  fieldLabel?: string;
+  issueCount: number;
+  message: string;
 } | null;
 type FieldSaveOptions = {
   markMissing?: boolean;
@@ -95,6 +110,28 @@ const NONEXPERIENCE_DERIVED_ZERO_RULES = new Set([
   "schedule_a_part_iii_9b_3_incurred_claims_add_1_and_2",
   "schedule_a_part_iii_9c_1_h_total_retention",
 ]);
+const STRUCTURED_BROKER_SUMMARY_RULES = new Set([
+  "schedule_a_part_i_3a_name_of_agent_broker_person",
+  "schedule_a_part_i_3b_amount_of_commissions",
+  "schedule_a_part_i_3c_amount_of_fees",
+  "schedule_a_part_i_3d_purpose",
+  "schedule_a_part_i_3e_organizational_code",
+]);
+const RETIRED_REVIEW_RULE_KEYS = new Set([
+  "form_5500_part_i_2a_plan_administrator_name",
+]);
+const FTW_ORGANIZATION_CODE_OPTIONS = [
+  { value: "0", label: "Other" },
+  { value: "1", label: "Banking or financial institution" },
+  { value: "2", label: "Trust company" },
+  { value: "3", label: "Insurance agent or broker" },
+  { value: "4", label: "Non-insurance agent or broker" },
+  { value: "5", label: "Third-party administrator" },
+  { value: "6", label: "Investment company or mutual fund" },
+  { value: "7", label: "Investment manager or adviser" },
+  { value: "8", label: "Labor union" },
+  { value: "9", label: "Foreign entity" },
+] as const;
 
 interface ReviewDecisionRow {
   key: string;
@@ -114,6 +151,16 @@ interface ReviewDecisionRow {
   extractedField?: ExtractedField;
   failedByFtw?: boolean;
   ftwFailureReason?: string;
+  validationStatus?: string;
+  validationBlocking?: boolean;
+  validationExpectedFormat?: string;
+}
+
+interface ScheduleAIdentitySummary {
+  carrier: string;
+  carrierEin: string;
+  contract: string;
+  sequence: string;
 }
 
 export function FilingReviewPage() {
@@ -135,20 +182,51 @@ export function FilingReviewPage() {
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
   const [xmlBusy, setXmlBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
-  const [decisionAction, setDecisionAction] = useState<"approve" | "reject" | "unapprove" | null>(null);
+  const [decisionAction, setDecisionAction] = useState<"reject" | null>(null);
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
+  const [fieldValidationErrors, setFieldValidationErrors] = useState<Record<string, string>>({});
   const [rulesBusy, setRulesBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast>(null);
+  const [sendValidationNotice, setSendValidationNotice] = useState<SendValidationNotice>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<WorkflowStepKey | null>(null);
   const [showTechnicalDrawer, setShowTechnicalDrawer] = useState(false);
+  const [showReviewStatus, setShowReviewStatus] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
-  const [showApproveConfirm, setShowApproveConfirm] = useState(false);
-  const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
+  const [showFtwSendConfirm, setShowFtwSendConfirm] = useState(false);
+  const [selectedSendFieldIds, setSelectedSendFieldIds] = useState<string[]>([]);
+  const [includeSendBrokerUpdates, setIncludeSendBrokerUpdates] = useState(false);
+  const [showBringForwardConfirm, setShowBringForwardConfirm] = useState(false);
+  const [showAdvancedReview, setShowAdvancedReview] = useState(false);
+  const [localAgentStatus, setLocalAgentStatus] = useState<FTWLocalAgentStatus | null>(null);
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
   const ftwSendInFlightRef = useRef(false);
   const pollingPaused = ftwBusy || ftwSendBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
-  const shouldPollReview = !pollingPaused && isProcessingStatus(filing?.status ?? "UPLOADED");
+  const shouldPollReview = !pollingPaused && (
+    isProcessingStatus(filing?.status ?? "UPLOADED")
+    || ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND"].includes(filing?.automation_status || "DISABLED")
+  );
+
+  useEffect(() => setShowAdvancedReview(false), [id]);
+
+  useEffect(() => {
+    if (!filing?.automation_status || filing.automation_status === "DISABLED") return;
+    let active = true;
+    async function loadLocalAgentStatus() {
+      try {
+        const result = await getFTWLocalAgentStatus();
+        if (active) setLocalAgentStatus(result);
+      } catch {
+        if (active) setLocalAgentStatus(null);
+      }
+    }
+    loadLocalAgentStatus();
+    const interval = window.setInterval(loadLocalAgentStatus, REVIEW_POLL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [filing?.automation_status]);
 
   useEffect(() => {
     if (!id) return;
@@ -184,32 +262,77 @@ export function FilingReviewPage() {
     };
   }, [id, pollVersion, pollingPaused, shouldPollReview]);
 
-  const fields = filing?.fields ?? [];
+  // Another browser session can update this filing. Refresh the persisted
+  // snapshot on focus without sending another request to FT Williams.
+  useEffect(() => {
+    if (!id) return;
+    const filingId = id;
+    let active = true;
+    let requestInFlight = false;
+
+    async function refreshFilingSnapshot() {
+      if (document.visibilityState !== "visible") return;
+      if (pollingPaused || bringForwardOpenedRef.current || requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const updated = await getFiling(filingId);
+        if (!active) return;
+        previousFilingRef.current = updated;
+        setFiling(updated);
+      } catch {
+        // Keep the last valid snapshot. A passive refresh must never clear it.
+      } finally {
+        requestInFlight = false;
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void refreshFilingSnapshot();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", refreshFilingSnapshot);
+    return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", refreshFilingSnapshot);
+    };
+  }, [id, pollingPaused]);
+
+  const fields = (filing?.fields ?? []).filter((field) => !isRetiredReviewField(field));
   const ftwReview = filing?.ftw_review || null;
+  const ftwPlanUrl = ftwPlanPageUrl(ftwReview);
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
   const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
+  const scheduleABrokerMatches = ftwReview?.schedule_a_broker_matches || [];
+  const planYearConflictRequired = Boolean(
+    ftwReview?.plan_year_conflict
+    && !ftwReview?.plan_year_resolution,
+  );
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
-  const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
+  const reviewRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
   const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
-  const missingHigh = approvalRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
-  const missingOther = approvalRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
-  const lowConfidence = approvalRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
-  const unmapped = approvalRelevantFields.filter((field) => field.status === "UNMAPPED");
-  const extracted = approvalRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
-  const matched = approvalRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
+  const missingHigh = reviewRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
+  const missingOther = reviewRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
+  const lowConfidence = reviewRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
+  const unmapped = reviewRelevantFields.filter((field) => field.status === "UNMAPPED");
+  const extracted = reviewRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
+  const matched = reviewRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
   const actionFields = useMemo(
     () => [...missingHigh, ...lowConfidence, ...unmapped, ...missingOther].sort(compareFields),
     [missingHigh, lowConfidence, unmapped, missingOther],
   );
   const reviewRows = useMemo(
-    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false),
-    [fields, filing?.ftw_review, scheduleAContractType],
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, false, Boolean(scheduleABrokerRows.length)),
+    [fields, filing?.ftw_review, scheduleABrokerRows.length, scheduleAContractType],
+  );
+  const allReviewRows = useMemo(
+    () => buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true, Boolean(scheduleABrokerRows.length)),
+    [fields, filing?.ftw_review, scheduleABrokerRows.length, scheduleAContractType],
   );
   const visibleReviewRows = useMemo(
-    () => showExcludedFields
-      ? buildReviewDecisionRows(fields, filing?.ftw_review || null, scheduleAContractType, true)
-      : reviewRows,
-    [fields, filing?.ftw_review, reviewRows, scheduleAContractType, showExcludedFields],
+    () => showExcludedFields ? allReviewRows : reviewRows,
+    [allReviewRows, reviewRows, showExcludedFields],
   );
   const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
   const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" && isActionRequiredRow(row));
@@ -218,7 +341,31 @@ export function FilingReviewPage() {
   const missingRows = reviewRows.filter((row) => row.group === "MISSING");
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
   const actionRequiredRows = reviewRows.filter(isActionRequiredRow);
-  const approvalBlockerRows = actionRequiredRows;
+  const fieldValidationBlockerRows = reviewRows.filter((row) => row.validationBlocking);
+  const brokerValidationIssues = scheduleABrokerRows.flatMap((row, index) =>
+    brokerRowValidationIssues(row).map((message) => ({ index, message })),
+  );
+  const brokerActionRequiredIndexes = new Set([
+    ...brokerValidationIssues.map((issue) => issue.index),
+    ...(
+      ftwReview?.current_query_success
+      && ftwReview.current_year_exists
+      && !ftwReview.bring_forward_required
+        ? scheduleABrokerMatches.filter((match) => !match.resolved).map((match) => match.extracted_index)
+        : []
+    ),
+  ]);
+  const brokerActionRequiredCount = brokerActionRequiredIndexes.size;
+  const hardValidationBlockerCount = fieldValidationBlockerRows.length + brokerValidationIssues.length;
+  const actionRequiredCount = actionRequiredRows.length + brokerActionRequiredCount + (planYearConflictRequired ? 1 : 0);
+  const actionRequiredLabels = [
+    ...actionRequiredRows.map((row) => row.label),
+    ...[...brokerActionRequiredIndexes].map((index) => scheduleABrokerRows[index]?.name
+      ? `Broker: ${scheduleABrokerRows[index].name}`
+      : `Broker row ${index + 1}`),
+    ...(planYearConflictRequired ? ["Plan year selection"] : []),
+  ].filter((label, index, labels) => Boolean(label) && labels.indexOf(label) === index);
+  const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return visibleReviewRows.filter((row) => {
@@ -259,13 +406,20 @@ export function FilingReviewPage() {
     () => selectedFieldId ? fields.find((field) => field.id === selectedFieldId) : undefined,
     [fields, selectedFieldId],
   );
-  const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0;
-  const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
-  const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
+  const selectedReviewRow = selectedFieldId
+    ? reviewRows.find((row) => row.fieldId === selectedFieldId)
+    : undefined;
+  const expectsForm5500Current = expectsCurrentForForm(reviewRelevantFields, reviewRows, "FORM_5500");
+  const expectsScheduleACurrent = expectsCurrentForForm(reviewRelevantFields, reviewRows, "SCHEDULE_A");
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
+  const scheduleAMatchLabel = scheduleAIsNew ? "New prepared" : ftwReview?.schedule_a_match ? "Matched" : "Pending";
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
+  const scheduleABrokersReady = (
+    (!scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false)
+    && brokerValidationIssues.length === 0
+  );
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
   const bringForwardRequired = Boolean(ftwReview?.bring_forward_required);
   const ftwCurrentLoaded = Boolean(
@@ -282,21 +436,48 @@ export function FilingReviewPage() {
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
   const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
-  const showFtwSendAction = filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown));
-  const ftwReadyToSend = Boolean(
-    showFtwSendAction &&
-    ftwReview?.configured &&
-    ftwReview.current_query_success &&
-    ftwReview.current_query_complete !== false &&
-    ftwReview.ftw_editable !== false &&
-    form5500SafetyReady &&
-    scheduleASafetyReady,
+  const showFtwSendAction = true;
+  const hasPendingFtwUpdate = Boolean(
+    ftwReview?.update_xml_5500?.includes("DOL5500Data")
+    || ftwReview?.update_xml_schedule_a?.includes("DOLScheduleAData"),
   );
+  const ftwReadyToSend = true; // Selection/target checks happen on send, not on unrelated review counts.
+  const scheduleAUpdateIncluded = Boolean(
+    ftwReview?.update_xml_schedule_a?.includes("DOLScheduleAData"),
+  );
+  const currentScheduleARecordCount = ftwReview?.schedule_a_records?.length || 0;
+  const scheduleARecordCount = currentScheduleARecordCount + (
+    scheduleAUpdateIncluded && scheduleAIsNew ? 1 : 0
+  );
+  const preservedScheduleARecordCount = scheduleAUpdateIncluded
+    ? Math.max(0, currentScheduleARecordCount - (scheduleAIsNew ? 0 : 1))
+    : currentScheduleARecordCount;
+  const unchangedScheduleARecords = useMemo<ScheduleAIdentitySummary[]>(() => {
+    if (!scheduleAUpdateIncluded) return [];
+    const selectedSequence = textValue(ftwReview?.schedule_a_match?.ftw_seq_no);
+    return (ftwReview?.schedule_a_records || [])
+      .filter((record) => scheduleAIsNew || textValue(record.ftw_seq_no) !== selectedSequence)
+      .map((record) => {
+        const values = record.query_results && typeof record.query_results === "object"
+          ? record.query_results as Record<string, unknown>
+          : {};
+        return {
+          carrier: textValue(record.carrier) || textValue(values.InsCarrierName) || "Carrier not provided",
+          carrierEin: textValue(record.carrier_ein) || textValue(values.InsCarrierEIN) || "Not provided",
+          contract: textValue(record.contract) || textValue(values.InsContractNum) || "Not provided",
+          sequence: textValue(record.ftw_seq_no) || "New",
+        };
+      });
+  }, [ftwReview?.schedule_a_match, ftwReview?.schedule_a_records, scheduleAIsNew, scheduleAUpdateIncluded]);
+  const schemaIssueCount = (ftwReview?.schema_validation_results || []).reduce(
+    (total, result) => total + (result.issues?.length || 0),
+    0,
+  );
+  const sendWarningCount = actionRequiredCount + schemaIssueCount;
   const foundCount = extracted.length;
-  const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
+  const totalFields = reviewRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
-  const retryingFailedFtwUpdate = filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown) && ftwReadyToSend;
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.active_failure_client_error || filing?.ftw_review?.client_error || null;
@@ -304,13 +485,32 @@ export function FilingReviewPage() {
   const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
   const scheduleSelectionRequired = scheduleCandidates.length > 0 && !ftwReview?.schedule_a_match;
-  const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.sticky) return;
     const timer = window.setTimeout(() => setToast(null), 6500);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  function focusValidationIssue(fieldId?: string | null, fieldLabel?: string) {
+    if (!fieldId) {
+      document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const target = allReviewRows.find((row) => row.fieldId === fieldId);
+    setActiveTab("ALL");
+    setStatusFilter("ALL");
+    setPriorityFilter("ALL");
+    setSectionFilter("ALL");
+    setFormFilter("ALL");
+    setContractTypeFilter("ALL");
+    setShowExcludedFields(Boolean(target && !reviewRows.some((row) => row.fieldId === fieldId)));
+    setSearch(fieldLabel || target?.label || "");
+    setSelectedFieldId(fieldId);
+    window.setTimeout(() => {
+      document.querySelector(`[data-field-id="${fieldId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }
 
   async function saveField(fieldId: string, proposedValue: string, options: FieldSaveOptions = {}) {
     if (!id || !filing || fieldSavingId) return false;
@@ -318,12 +518,18 @@ export function FilingReviewPage() {
     setToast(null);
     try {
       const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
+      setFieldValidationErrors((current) => {
+        const next = { ...current };
+        delete next[fieldId];
+        return next;
+      });
       setFiling((current) => current ? {
         ...current,
-        ftw_review: result.ftw_review ?? current.ftw_review,
+        ftw_review: mergeFieldDecisionReview(current.ftw_review, result.ftw_review, fieldId),
         proposed_xml: result.proposed_xml,
         fields: current.fields.map((field) => field.id === fieldId ? result.field : field),
       } : current);
+      setSendValidationNotice(null);
       setToast({
         tone: "success",
         title: options.successTitle || (options.markMissing ? "Field marked missing" : "Field decision saved"),
@@ -333,10 +539,13 @@ export function FilingReviewPage() {
       });
       return true;
     } catch (error) {
+      const validationMessage = error instanceof Error ? error.message : "Please correct this value.";
+      setFieldValidationErrors((current) => ({ ...current, [fieldId]: validationMessage }));
+      setSelectedFieldId(fieldId);
       setToast({
         tone: "error",
         title: "Field decision was not saved",
-        message: error instanceof Error ? error.message : "Please try again.",
+        message: validationMessage,
       });
       return false;
     } finally {
@@ -344,70 +553,12 @@ export function FilingReviewPage() {
     }
   }
 
-  async function decide(action: "approve" | "reject", options?: { overrideBlockers?: boolean }) {
+  async function decide(action: "reject") {
     if (!id) return;
-    if (action === "approve") {
-      await approveFiling(id, reason, { override_blockers: Boolean(options?.overrideBlockers) });
-    }
-    else await rejectFiling(id, reason);
+    await rejectFiling(id, reason);
     setFiling(await getFiling(id));
   }
 
-  async function approveAnyway() {
-    setShowApproveConfirm(false);
-    setDecisionAction("approve");
-    setToast(null);
-    try {
-      await decide("approve", { overrideBlockers: approvalBlocked });
-      setToast({
-        tone: "success",
-        title: "Filing approved",
-        message: `${displayFileName} is approved and ready for the remaining FT Williams safety checks.`,
-      });
-    } catch (error) {
-      setToast({
-        tone: "error",
-        title: "Could not approve filing",
-        message: error instanceof Error ? error.message : "The filing could not be approved.",
-      });
-    } finally {
-      setDecisionAction(null);
-    }
-  }
-
-  function handleApproveClick() {
-    if (filing?.status === "APPROVED") {
-      setShowUnapproveConfirm(true);
-      return;
-    }
-    setMessage("");
-    setShowApproveConfirm(true);
-  }
-
-  async function confirmUnapprove() {
-    if (!id) return;
-    setShowUnapproveConfirm(false);
-    setDecisionAction("unapprove");
-    try {
-      await unapproveFiling(id);
-      const updated = await getFiling(id);
-      setFiling(updated);
-      previousFilingRef.current = updated;
-      setToast({
-        tone: "success",
-        title: "Approval removed",
-        message: `${formatFilingDisplayName(updated.file_name)} is no longer approved. FT Williams sending is locked until approval is restored.`,
-      });
-    } catch (error) {
-      setToast({
-        tone: "error",
-        title: "Could not remove approval",
-        message: error instanceof Error ? error.message : "The filing approval could not be removed.",
-      });
-    } finally {
-      setDecisionAction(null);
-    }
-  }
 
   async function rejectDecision() {
     setDecisionAction("reject");
@@ -431,7 +582,6 @@ export function FilingReviewPage() {
   }
 
   function reviewBlockingFields() {
-    setShowApproveConfirm(false);
     setActiveTab("NEEDS_DECISION");
     setStatusFilter("ALL");
     setPriorityFilter("ALL");
@@ -479,6 +629,7 @@ export function FilingReviewPage() {
       const updated = await getFiling(id);
       setFiling(updated);
       previousFilingRef.current = updated;
+      setSendValidationNotice(null);
       if (sendQueries && result.ftw_review.current_year_exists && !result.ftw_review.bring_forward_required) {
         setToast({
           tone: "success",
@@ -491,12 +642,28 @@ export function FilingReviewPage() {
           title: "Bring Forward still required",
           message: "The current-year FTW record is still missing. Complete Bring Forward in FT Williams, then refresh again.",
         });
+      } else if (sendQueries) {
+        const queryStatus = ftwQueryStatusContent(result.ftw_review);
+        setToast({
+          tone: "error",
+          title: queryStatus?.title || "FT Williams query was not completed",
+          message: queryStatus?.message || "FT Williams did not return usable current filing data.",
+          reason: queryStatus?.reason,
+          nextAction: queryStatus?.nextAction || "Confirm the plan match and retry the query.",
+          code: result.ftw_review.client_error?.code,
+          sticky: true,
+        });
       }
     } catch (error) {
+      const queryError = error instanceof ApiRequestError ? error.clientError : undefined;
       setToast({
         tone: "error",
-        title: "FT Williams refresh needs attention",
-        message: error instanceof Error ? error.message : "Current FT Williams data could not be refreshed.",
+        title: queryError?.title || "FT Williams refresh needs attention",
+        message: queryError?.message || (error instanceof Error ? error.message : "Current FT Williams data could not be refreshed."),
+        reason: queryError?.reason,
+        nextAction: queryError?.next_action || "Confirm the plan match and retry the query.",
+        code: queryError?.code,
+        sticky: true,
       });
     } finally {
       setFtwBusy(false);
@@ -517,7 +684,9 @@ export function FilingReviewPage() {
       setToast({
         tone: "success",
         title: "FT Williams opened",
-        message: "Complete FTW's native Bring Forward action and return here - FTW data will refresh automatically.",
+        message: result.plan_specific
+          ? "Complete FTW's native Bring Forward action and return here - FTW data will refresh automatically."
+          : "Select the plan in FT Williams, complete Bring Forward, then return here - FTW data will refresh automatically.",
       });
     } catch (error) {
       ftwWindow?.close();
@@ -536,6 +705,9 @@ export function FilingReviewPage() {
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   }) {
     if (!id) return;
@@ -580,6 +752,164 @@ export function FilingReviewPage() {
     }
   }
 
+  function openFtwPlanMatch() {
+    setShowTechnicalDrawer(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById("ftw-plan-match-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  }
+
+  async function confirmAutomatedBringForward() {
+    if (!id) return;
+    setShowBringForwardConfirm(false);
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await confirmFTWilliamsBringForward(id);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Bring Forward confirmed",
+        message: "The local agent will use only the confirmed FT Williams plan and year.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Bring Forward was not started",
+        message: error instanceof Error ? error.message : "The confirmed plan could not be queued safely.",
+        sticky: true,
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function reconcileStaleBringForward(resolution: "VERIFY_CURRENT" | "RESET_FAILED") {
+    if (!id) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await reconcileFTWilliamsBringForward(
+        id,
+        resolution,
+        resolution === "RESET_FAILED" ? "Operator confirmed the previous Bring Forward attempt did not complete." : "Operator verified the current FT Williams data.",
+      );
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: resolution === "RESET_FAILED" ? "Bring Forward retry authorized" : "Bring Forward state verified",
+        message: "FT Williams data was reconciled and the automation workflow was refreshed.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Bring Forward reconciliation failed",
+        message: error instanceof Error ? error.message : "The FT Williams state could not be reconciled.",
+        sticky: true,
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function resolvePlanYearConflict(resolution: "USE_WORKSHEET" | "KEEP_FTW") {
+    if (!id) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await resolveFTWilliamsPlanYearConflict(id, resolution);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Plan year confirmed",
+        message: resolution === "USE_WORKSHEET"
+          ? "The worksheet dates will update Form 5500 and every attached Schedule A."
+          : "The current FT Williams dates will be kept across Form 5500 and every attached Schedule A.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Plan year was not confirmed",
+        message: error instanceof Error ? error.message : "Choose the correct plan-year dates and try again.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function saveScheduleABrokerMatch(extractedIndex: number, ftwIndex?: number, createNew = false) {
+    if (!id || !ftwReview) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      const decisions = (ftwReview.schedule_a_broker_matches || [])
+        .filter((match) => match.status === "CONFIRMED" || match.status === "CONFIRMED_NEW")
+        .filter((match) => match.extracted_index !== extractedIndex)
+        .map((match) => ({
+          extracted_index: match.extracted_index,
+          ftw_index: match.ftw_index ?? undefined,
+          create_new: match.status === "CONFIRMED_NEW",
+        }));
+      decisions.push({ extracted_index: extractedIndex, ftw_index: ftwIndex, create_new: createNew });
+      await setFTWilliamsScheduleABrokerMatches(id, decisions);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: "Broker match saved",
+        message: createNew ? "The broker will be added as a new FT Williams row." : "The broker is linked to the selected FT Williams row.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Broker match was not saved",
+        message: error instanceof Error ? error.message : "Select a different FT Williams broker row and try again.",
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
+  async function saveScheduleABrokerRows(
+    rows: ScheduleABrokerRow[],
+    action: "edited" | "excluded",
+    editedIndex?: number,
+  ): Promise<boolean> {
+    if (!id) return false;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await updateFTWilliamsScheduleABrokerRows(id, rows, editedIndex, action);
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: action === "edited" ? "Broker row updated" : "Broker row excluded",
+        message: "The FT Williams preview was rebuilt. Confirm the broker matches before sending.",
+      });
+      return true;
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: action === "edited" ? "Broker row was not updated" : "Broker row was not excluded",
+        message: error instanceof Error ? error.message : "Check the broker values and try again.",
+      });
+      return false;
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function sendFtwUpdate() {
     if (!id || ftwSendInFlightRef.current) return;
     ftwSendInFlightRef.current = true;
@@ -592,36 +922,61 @@ export function FilingReviewPage() {
         reason,
         refresh_current_before_update: true,
         run_edit_checks: true,
+        selected_field_ids: selectedSendFieldIds,
+        include_broker_updates: includeSendBrokerUpdates,
       });
       const sentReview = sendResult.ftw_review;
       const updatedFiling = await getFiling(id);
       setFiling(updatedFiling);
-      if (!sentReview || sentReview.status !== "UPDATE_SENT") {
+      if (!sentReview || !isVerifiedFTWilliamsUpdate(sentReview)) {
         const confirmed = sentReview?.update_confirmed_count || 0;
         const remaining = sentReview?.update_remaining_count || 0;
+        const failure = sentReview?.active_failure_client_error || sentReview?.client_error;
         setToast({
           tone: confirmed ? "warning" : "error",
           title: confirmed ? "FT Williams partially updated" : "FT Williams needs attention",
           message: confirmed
             ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need${remaining === 1 ? "s" : ""} review.`
-            : sentReview?.active_failure_client_error?.message || sentReview?.client_error?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+            : failure?.message || "The latest FT Williams values were refreshed. Review the remaining field issue below.",
+          reason: failure?.reason,
+          nextAction: failure?.next_action,
+          code: failure?.code,
         });
         return;
       }
       const updateCount = sentReview.update_confirmed_count || sentReview.update_attempted_count || 0;
+      const validationOutcome = ftwEditCheckOutcome(sentReview);
       setToast({
-        tone: "success",
+        tone: validationOutcome?.tone === "attention" ? "warning" : "success",
         title: "FT Williams updated successfully",
-        message: updateCount
+        message: validationOutcome?.summary || (updateCount
           ? `${updateCount} field${updateCount === 1 ? "" : "s"} verified. Current FTW values are now refreshed.`
-          : "Current FTW values were refreshed and verified successfully.",
+          : "Current FTW values were refreshed and verified successfully."),
+        sticky: true,
       });
+      setSendValidationNotice(null);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
+      const errorMessage = error instanceof Error ? error.message : "Could not send selected FT Williams changes";
+      const failure = error instanceof ApiRequestError
+        ? error.clientError
+        : clientErrorFromRaw(errorMessage, "FT Williams");
+      const searchableError = [
+        errorMessage,
+        failure?.reason,
+        ...(failure?.rejected_fields || []).flatMap((field) => [field.label, field.tag]),
+      ].filter(Boolean).join(" ");
+      const validationNotice = sendValidationNoticeFromError(searchableError, allReviewRows);
+      if (validationNotice) setSendValidationNotice(validationNotice);
       setToast({
         tone: "error",
-        title: "FT Williams needs attention",
-        message: errorMessage,
+        title: failure?.title || (validationNotice ? "Fix the highlighted issue" : "FT Williams needs attention"),
+        message: validationNotice?.fieldLabel
+          ? `${validationNotice.fieldLabel} is preventing this update. Use Fix issue below for the exact reason.`
+          : failure?.message || errorMessage,
+        reason: failure?.reason || (!failure ? errorMessage : null),
+        nextAction: failure?.next_action || "Review the reason, correct the affected value, and retry Send to FT Williams.",
+        code: failure?.code || (error instanceof ApiRequestError ? `HTTP_${error.status}` : "CLIENT_REQUEST_FAILED"),
+        sticky: true,
       });
     } finally {
       void refreshFTWilliamsFailures().catch(() => undefined);
@@ -629,6 +984,13 @@ export function FilingReviewPage() {
       setFtwBusy(false);
       setFtwSendBusy(false);
     }
+  }
+
+  function requestFtwSend() {
+    setSelectedSendFieldIds(willUpdateRows.flatMap((row) => row.fieldId ? [row.fieldId] : []));
+    setIncludeSendBrokerUpdates(false);
+    setShowTechnicalDrawer(false);
+    setShowFtwSendConfirm(true);
   }
 
   async function viewFtwAuditPdf() {
@@ -709,22 +1071,53 @@ export function FilingReviewPage() {
   if (message && !filing) return <div className="card card-pad">{message}</div>;
   if (!filing) return <FilingReviewSkeleton />;
 
+  const queryStatus = ftwQueryStatusContent(ftwReview);
+  const validationIssueCount = sendValidationNotice?.issueCount || hardValidationBlockerCount;
+  const statusNeedsAttention = Boolean(queryStatus || validationIssueCount || planYearConflictRequired || (showFtwSendAction && ftwReview?.ftw_editable === false));
+
   return (
     <div className="review-page approval-workspace-page">
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
 
       <main className="approval-workspace">
-        <WorkflowStepper
-          filing={filing}
-          ftwReadyToSend={ftwReadyToSend}
-          needsDecisionCount={actionRequiredRows.length}
-          onStepSelect={setActiveWorkflowStep}
-        />
+        <div className="workflow-command-center">
+          <AutomationWorkflowNotice
+            filing={filing}
+            localAgentStatus={localAgentStatus}
+            decisionLabels={actionRequiredLabels}
+            onReview={reviewBlockingFields}
+          />
+
+          <div className="manual-ftw-send-toolbar">
+          <details open className="review-workflow-disclosure">
+            <summary><ListChecks size={15} /> Workflow progress <ChevronDown size={14} /></summary>
+            <WorkflowStepper
+              filing={filing}
+              ftwReadyToSend={ftwReadyToSend}
+              needsDecisionCount={actionRequiredCount}
+              onStepSelect={setActiveWorkflowStep}
+            />
+          </details>
+          <button className="button" type="button" disabled={reviewInteractionBusy} onClick={requestFtwSend}>
+            {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send to FT Williams</>}
+          </button>
+          </div>
+        </div>
+
+        {verifiedUpdateComplete && ftwReview ? <FTWUpdateSuccessNotice review={ftwReview} reviewNoteCount={actionRequiredCount} /> : null}
 
         {isProcessing && !fields.length ? (
           <ProcessingPanel filing={filing} />
         ) : filing.status === "FAILED" && !fields.length ? (
           <ExtractionFailurePanel busy={retryBusy} onRetry={retryFailedExtraction} />
+        ) : automationNeedsNoOperatorAction(filing) && !showAdvancedReview ? (
+          <AutomationSimpleSummary
+            filing={filing}
+            foundCount={foundCount}
+            totalFields={totalFields}
+            willUpdateCount={willUpdateRows.length}
+            onOpenAdvancedReview={() => setShowAdvancedReview(true)}
+          />
         ) : (
           <section className="approval-decision-table-shell approval-preview-shell" id="filing-review-table">
             <div className="approval-table-head compact-review-header">
@@ -733,42 +1126,113 @@ export function FilingReviewPage() {
               </div>
               <div className="compact-review-meta" aria-label="Filing review summary">
                 <span><small>Fields found</small><strong>{foundCount} / {totalFields || 61}</strong></span>
-                <span><small>Needs review</small><strong>{actionRequiredRows.length}</strong></span>
-                <span><small>FTW match</small><strong>{lookup?.status === "MATCHED" || filing.ftw_review?.customer_id ? "Matched" : "Pending"}</strong></span>
+                <span><small>{verifiedUpdateComplete ? "Review notes" : "Needs review"}</small><strong>{actionRequiredCount}</strong></span>
+                <span><small>FTW match</small><strong>{scheduleAMatchLabel}</strong></span>
               </div>
               <div className="compact-review-toolbar">
-              <ReviewPrimaryActions
-                approvalBlocked={approvalBlocked}
-                approvalReady={approvalReady}
-                bringForwardRequired={bringForwardRequired}
-                busy={reviewInteractionBusy}
-                decisionAction={decisionAction}
-                filingStatus={filing.status}
-                showFtwSendAction={showFtwSendAction}
-                ftwSendBusy={ftwSendBusy}
-                queryBusy={ftwInteractionBusy}
-                retryBusy={retryBusy}
-                rulesBusy={rulesBusy}
-                xmlBusy={xmlBusy}
-                onApprove={handleApproveClick}
-                onOpenBringForward={openFtwBringForward}
-                onPreviewXml={rebuildXml}
-                onQuery={() => prepareFtw(true)}
-                onReEvaluate={reEvaluateWithLatestRules}
-                onReject={rejectDecision}
-                onRetryExtraction={retryFailedExtraction}
-                onSend={sendFtwUpdate}
-                onOpenTechnical={() => setShowTechnicalDrawer(true)}
-              />
+              {automationNeedsNoOperatorAction(filing) ? (
+                <span className="automation-no-action"><ShieldCheck size={16} /> No action required</span>
+              ) : automationRequiresOperatorAction(filing, actionRequiredCount) ? (
+                <AutomationExceptionActions
+                  busy={reviewInteractionBusy}
+                  nextAction={filing.automation_next_action}
+                  onOpenBringForward={openFtwBringForward}
+                  onConfirmBringForward={() => setShowBringForwardConfirm(true)}
+                  onOpenTechnical={() => setShowTechnicalDrawer(true)}
+                  onResolve={() => {
+                    setActiveTab("NEEDS_DECISION");
+                    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                  }}
+                  onRetry={() => prepareFtw(true)}
+                />
+              ) : (
+                <ReviewPrimaryActions
+                  bringForwardRequired={bringForwardRequired}
+                  busy={reviewInteractionBusy}
+                  decisionAction={decisionAction}
+                  filingStatus={filing.status}
+                  showFtwSendAction={showFtwSendAction}
+                  ftwReadyToSend={ftwReadyToSend}
+                  ftwSendBusy={ftwSendBusy}
+                  queryBusy={ftwInteractionBusy}
+                  retryBusy={retryBusy}
+                  rulesBusy={rulesBusy}
+                  xmlBusy={xmlBusy}
+                  onOpenBringForward={openFtwBringForward}
+                  onPreviewXml={rebuildXml}
+                  onQuery={() => prepareFtw(true)}
+                  onReEvaluate={reEvaluateWithLatestRules}
+                  onReject={rejectDecision}
+                  onRetryExtraction={retryFailedExtraction}
+                  onSend={requestFtwSend}
+                  onOpenTechnical={() => setShowTechnicalDrawer(true)}
+                />
+              )}
                 <button className="button secondary table-filter-button" onClick={resetFilters}><SlidersHorizontal size={14} /> Reset</button>
               </div>
             </div>
 
             <div className="approval-count-tabs">
-              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Action Required" count={actionRequiredRows.length} onClick={() => setActiveTab("NEEDS_DECISION")} />
+              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Action Required"} count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
+
+            {statusNeedsAttention ? (
+              <section className="review-issue-summary" role="status" aria-live="polite">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <strong>{queryStatus?.title || (planYearConflictRequired ? "Confirm the correct plan-year dates" : ftwReview?.ftw_editable === false ? "FT Williams filing is not editable" : `${validationIssueCount} value${validationIssueCount === 1 ? " needs" : "s need"} correction`)}</strong>
+                  <span>{validationIssueCount ? "Correct or deselect affected values. Other selected changes can still be sent." : "Selected changes require a valid, editable FT Williams target."}</span>
+                </div>
+                <button className="button secondary" type="button" onClick={() => setShowReviewStatus(true)}>Review status details</button>
+              </section>
+            ) : null}
+
+            {showReviewStatus ? (
+              <ReviewStatusDrawer onClose={() => setShowReviewStatus(false)}>
+            <FTWQueryStatusBanner
+              busy={ftwInteractionBusy}
+              onOpenBringForward={() => { setShowReviewStatus(false); void openFtwBringForward(); }}
+              onRetry={() => prepareFtw(true)}
+              onReconcile={reconcileStaleBringForward}
+              onSelectPlan={() => { setShowReviewStatus(false); openFtwPlanMatch(); }}
+              staleOperation={(filing.automation_reasons || []).some((reason) => /submitted, verified or uncertain bring forward/i.test(reason))}
+              review={ftwReview}
+            />
+
+            {showFtwSendAction && ftwReview?.ftw_editable === false ? (
+              <FTWEditabilityBanner
+                busy={ftwInteractionBusy}
+                planUrl={ftwPlanUrl}
+                review={ftwReview}
+                onRefresh={() => prepareFtw(true)}
+              />
+            ) : null}
+
+            {planYearConflictRequired && ftwReview?.plan_year_conflict ? (
+              <PlanYearConflictPanel
+                busy={reviewInteractionBusy}
+                conflict={ftwReview.plan_year_conflict}
+                onResolve={resolvePlanYearConflict}
+              />
+            ) : null}
+
+            {sendValidationNotice || hardValidationBlockerCount > 0 ? (
+              <FTWValidationBlockerBanner
+                count={sendValidationNotice?.issueCount || hardValidationBlockerCount}
+                fieldLabel={sendValidationNotice?.fieldLabel || fieldValidationBlockerRows[0]?.label}
+                message={sendValidationNotice?.message || fieldValidationBlockerRows[0]?.issue || brokerValidationIssues[0]?.message}
+                onFix={() => {
+                  const fieldId = sendValidationNotice?.fieldId || fieldValidationBlockerRows[0]?.fieldId;
+                  const fieldLabel = sendValidationNotice?.fieldLabel || fieldValidationBlockerRows[0]?.label;
+                  setShowReviewStatus(false);
+                  focusValidationIssue(fieldId, fieldLabel);
+                }}
+              />
+            ) : null}
+              </ReviewStatusDrawer>
+            ) : null}
 
             <div className="field-filter-row approval-filter-row">
               <SelectFilter label="Form" value={formFilter} onChange={setFormFilter} options={["SCHEDULE_A", "FORM_5500"]} />
@@ -822,7 +1286,12 @@ export function FilingReviewPage() {
             </div>
 
             {!displayRows.length ? (
-              <div className="empty-state"><SearchX size={18} /> No fields match this view.</div>
+              <div className="empty-state">
+                <SearchX size={18} />
+                {activeTab === "NEEDS_DECISION" && automationRequiresOperatorAction(filing, actionRequiredCount)
+                  ? "No field decisions are required. Complete the workflow action above to continue."
+                  : "No fields match this view."}
+              </div>
             ) : null}
 
             <div className="approval-preview-footer">
@@ -840,6 +1309,16 @@ export function FilingReviewPage() {
                 </nav>
               ) : null}
             </div>
+
+            {activeTab === "ALL" || (activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0) ? (
+              <ScheduleABrokerRowsPanel
+                busy={ftwBusy}
+                matches={scheduleABrokerMatches}
+                onConfirm={saveScheduleABrokerMatch}
+                onSaveRows={saveScheduleABrokerRows}
+                rows={scheduleABrokerRows}
+              />
+            ) : null}
           </section>
         )}
 
@@ -848,53 +1327,63 @@ export function FilingReviewPage() {
       {selectedField ? (
         <FieldReviewModal
           field={selectedField}
+          expectedFormat={selectedReviewRow?.validationExpectedFormat}
+          validationError={fieldValidationErrors[selectedField.id] || (selectedReviewRow?.validationBlocking ? selectedReviewRow.issue : undefined)}
           onClose={() => setSelectedFieldId(null)}
           onSave={saveField}
           saving={fieldSavingId === selectedField.id}
         />
       ) : null}
 
-      {showApproveConfirm ? (
-        <ApproveConfirmationModal
-          blockers={{
-            highPriorityMissing: missingHigh.length,
-            lowConfidence: lowConfidence.length,
-            needsDecision: needsDecisionRows.length,
-            unmapped: unmapped.length,
-            willKeepFtw: sameRows.length,
-            willUpdate: willUpdateRows.length,
+
+      {showFtwSendConfirm ? (
+        <FTWilliamsSendConfirmationModal
+          brokerRowCount={scheduleABrokerRows.length}
+          busy={ftwSendBusy}
+          changedRows={willUpdateRows}
+          preservedScheduleARecordCount={preservedScheduleARecordCount}
+          scheduleARecordCount={scheduleARecordCount}
+          scheduleAUpdateIncluded={scheduleAUpdateIncluded}
+          unchangedScheduleARecords={unchangedScheduleARecords}
+          warningCount={sendWarningCount}
+          selectedFieldIds={selectedSendFieldIds}
+          includeBrokerUpdates={includeSendBrokerUpdates}
+          onToggleField={(fieldId) => setSelectedSendFieldIds((ids) => ids.includes(fieldId) ? ids.filter((id) => id !== fieldId) : [...ids, fieldId])}
+          onToggleBrokers={setIncludeSendBrokerUpdates}
+          onClose={() => setShowFtwSendConfirm(false)}
+          onConfirm={() => {
+            setShowFtwSendConfirm(false);
+            void sendFtwUpdate();
           }}
-          hasBlockers={actionRequiredRows.length > 0}
-          unresolvedRows={approvalBlockerRows}
-          onApprove={approveAnyway}
-          onClose={() => setShowApproveConfirm(false)}
-          onReviewFields={reviewBlockingFields}
+          onReviewFields={() => {
+            setShowFtwSendConfirm(false);
+            setActiveTab("WILL_UPDATE");
+            window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+          }}
         />
       ) : null}
 
-      {showUnapproveConfirm ? (
-        <UnapproveConfirmationModal
-          filingName={displayFileName}
-          onClose={() => setShowUnapproveConfirm(false)}
-          onConfirm={confirmUnapprove}
+      {showBringForwardConfirm && filing && ftwReview ? (
+        <BringForwardConfirmationModal
+          busy={ftwBusy}
+          clientName={filing.dashboard_client_name || "Not provided"}
+          planName={filing.dashboard_plan_name || ftwReview.plan_lookup?.plan_name || "Not provided"}
+          planNumber={filing.dashboard_plan_number || "Not provided"}
+          targetYear={ftwReview.year || "Not provided"}
+          onClose={() => setShowBringForwardConfirm(false)}
+          onConfirm={() => void confirmAutomatedBringForward()}
         />
       ) : null}
 
       {activeWorkflowStep ? (
         <WorkflowDetailDialog
-          actionRequiredCount={actionRequiredRows.length}
-          approvalBlocked={approvalBlocked}
-          approvalReady={approvalReady}
+          actionRequiredCount={actionRequiredCount}
           busy={reviewInteractionBusy}
           filing={filing}
           foundCount={foundCount}
           ftwCurrentLoaded={ftwCurrentLoaded}
           ftwReadyToSend={ftwReadyToSend}
           onClose={() => setActiveWorkflowStep(null)}
-          onApprove={() => {
-            setActiveWorkflowStep(null);
-            handleApproveClick();
-          }}
           onOpenBringForward={openFtwBringForward}
           onQuery={() => prepareFtw(true)}
           onViewAuditPDF={viewFtwAuditPdf}
@@ -924,7 +1413,7 @@ export function FilingReviewPage() {
           onRetryExtraction={retryFailedExtraction}
           onSaveManualMatch={saveFtwManualMatch}
           onSelectScheduleMatch={selectFtwScheduleMatch}
-          onSendUpdate={sendFtwUpdate}
+          onSendUpdate={requestFtwSend}
           sendBusy={ftwSendBusy}
         />
       ) : null}
@@ -953,11 +1442,245 @@ function ReviewToastMessage({ onClose, toast }: { onClose: () => void; toast: No
       <span>
         <strong>{toast.title}</strong>
         <small>{toast.message}</small>
+        {toast.reason ? (
+          <details className="review-toast-details">
+            <summary>View technical details</summary>
+            <small className="review-toast-detail"><b>Reason:</b> {toast.reason}</small>
+          </details>
+        ) : null}
+        {toast.nextAction ? <small className="review-toast-detail"><b>Next step:</b> {toast.nextAction}</small> : null}
+        {toast.code ? <small className="review-toast-code">Reference: {toast.code}</small> : null}
       </span>
       <button type="button" onClick={onClose} aria-label="Dismiss notification">
         <X size={15} />
       </button>
     </div>
+  );
+}
+
+function automationNeedsNoOperatorAction(filing: FilingDetail) {
+  const status = filing.automation_status || "DISABLED";
+  return ["PROCESSING", "BRING_FORWARD_REQUIRED", "COMPLETED"].includes(status)
+    || (status === "SAFE_TO_SEND" && filing.automation_next_action === "AUTO_SEND");
+}
+
+function automationRequiresOperatorAction(filing: FilingDetail, currentDecisionCount: number) {
+  if (filing.automation_status === "FAILED") return true;
+  if (filing.automation_status !== "ACTION_NEEDED") return false;
+  return filing.automation_next_action !== "RESOLVE_ISSUES" || currentDecisionCount > 0;
+}
+
+function AutomationExceptionActions({
+  busy,
+  nextAction,
+  onConfirmBringForward,
+  onOpenBringForward,
+  onOpenTechnical,
+  onResolve,
+  onRetry,
+}: {
+  busy: boolean;
+  nextAction?: string | null;
+  onConfirmBringForward: () => void;
+  onOpenBringForward: () => void;
+  onOpenTechnical: () => void;
+  onResolve: () => void;
+  onRetry: () => void;
+}) {
+  if (nextAction === "CONFIRM_BRING_FORWARD") {
+    return <button className="button" type="button" disabled={busy} onClick={onConfirmBringForward}><ShieldCheck size={16} /> Confirm Bring Forward</button>;
+  }
+  if (nextAction === "MAP_FTW_BROWSER_PLAN") {
+    return <button className="button" type="button" disabled={busy} onClick={onOpenTechnical}><ShieldCheck size={16} /> Confirm FTW plan</button>;
+  }
+  if (nextAction === "LOGIN_TO_FTW") {
+    return (
+      <>
+        <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry automation</button>
+        <button className="button secondary" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW</button>
+      </>
+    );
+  }
+  if (nextAction === "START_LOCAL_AGENT") {
+    return (
+      <>
+        <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Check local agent</button>
+        <button className="button secondary" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Manual Bring Forward</button>
+      </>
+    );
+  }
+  if (nextAction === "MANUAL_BRING_FORWARD") {
+    return <button className="button" type="button" disabled={busy} onClick={onOpenBringForward}><ExternalLink size={16} /> Open FTW Bring Forward</button>;
+  }
+  if (nextAction === "MANUAL_SCHEDULE_A_UPDATE") {
+    return <button className="button" type="button" disabled={busy} onClick={onResolve}><AlertTriangle size={16} /> Review Schedule A</button>;
+  }
+  if (nextAction === "RETRY" || nextAction === "RETRY_AFTER_CURRENT_QUERY") {
+    return <button className="button" type="button" disabled={busy} onClick={onRetry}><RefreshCw size={16} /> Retry</button>;
+  }
+  return <button className="button" type="button" disabled={busy} onClick={onResolve}><AlertTriangle size={16} /> Resolve & Continue</button>;
+}
+
+function AutomationWorkflowNotice({
+  decisionLabels,
+  filing,
+  localAgentStatus,
+  onReview,
+}: {
+  decisionLabels: string[];
+  filing: FilingDetail;
+  localAgentStatus: FTWLocalAgentStatus | null;
+  onReview: () => void;
+}) {
+  const status = filing.automation_status;
+  if (!status || status === "DISABLED") return null;
+  const resolvedFieldException = status === "ACTION_NEEDED"
+    && filing.automation_next_action === "RESOLVE_ISSUES"
+    && decisionLabels.length === 0;
+  const waitingForManualSend = status === "SAFE_TO_SEND"
+    && filing.automation_next_action === "MANUAL_SEND";
+  const presentation = status === "COMPLETED"
+    ? { label: "Completed", title: "FT Williams update verified", tone: "ready" }
+    : resolvedFieldException || waitingForManualSend
+      ? {
+          label: "Ready",
+          title: "Ready to update FT Williams",
+          tone: "ready",
+        }
+    : status === "ACTION_NEEDED"
+      ? { label: "Action Needed", title: "One or more items need your decision", tone: "warn" }
+      : status === "FAILED"
+        ? { label: "Failed", title: "Automation stopped safely", tone: "fail" }
+        : { label: "Processing", title: "ERISAPros is handling this filing", tone: "info" };
+  const reasons = filing.automation_reasons?.filter(Boolean) || [];
+  const showReasonList = !resolvedFieldException && (status === "ACTION_NEEDED" || status === "FAILED");
+  const compactReasons = status === "ACTION_NEEDED" && filing.automation_next_action === "RESOLVE_ISSUES"
+    ? decisionLabels
+    : decisionLabels.length ? decisionLabels : uniqueAutomationReasonLabels(reasons);
+  const decisionCount = compactReasons.length;
+  return (
+    <section className={`automation-workflow-notice ${presentation.tone}`} aria-live="polite">
+      <div className="automation-workflow-state">
+        <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
+        <div className="automation-workflow-copy">
+          <strong>{status === "ACTION_NEEDED" && decisionCount
+            ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
+            : presentation.title}</strong>
+          <p>
+            {resolvedFieldException || waitingForManualSend
+              ? filing.status === "APPROVED"
+                ? "All field decisions are complete. Review the changes below, then send them to FT Williams."
+                : "All field decisions are complete. Approve the filing to continue."
+              : showReasonList
+              ? "Automation paused safely. Review the highlighted fields to continue."
+              : reasons[0] || "No manual action is required while the automated workflow is running."}
+          </p>
+        </div>
+      </div>
+      <div className="automation-workflow-controls">
+        {showReasonList && compactReasons.length ? (
+          <div className="automation-decision-summary">
+            <button className="button automation-review-fields" type="button" onClick={onReview}>
+              <ListChecks size={16} /> Review fields
+            </button>
+            <details>
+              <summary>View fields needing attention <span>{decisionCount}</span><ChevronDown size={15} /></summary>
+              <ul className="automation-reason-list">
+                {compactReasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+            </details>
+          </div>
+        ) : null}
+        {localAgentStatus?.enabled ? (
+          <span className={`local-agent-status ${localAgentStatus.connected ? "connected" : "attention"}`}>
+            <i aria-hidden="true" />
+            Local FT Williams agent: {localAgentStatus.connected ? "Connected" : localAgentStatus.status === "LOGIN_REQUIRED" ? "Login required" : "Offline"}
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function uniqueAutomationReasonLabels(reasons: string[]) {
+  const labels = reasons.map((reason) => reason
+    .replace(/\s+confidence\s+\d+%.*$/i, "")
+    .replace(/\s+requires review\.?$/i, "")
+    .replace(/\s+has no source evidence\.?$/i, "")
+    .trim());
+  return labels.filter((label, index) => Boolean(label) && labels.indexOf(label) === index);
+}
+
+function AutomationSimpleSummary({
+  filing,
+  foundCount,
+  onOpenAdvancedReview,
+  totalFields,
+  willUpdateCount,
+}: {
+  filing: FilingDetail;
+  foundCount: number;
+  onOpenAdvancedReview: () => void;
+  totalFields: number;
+  willUpdateCount: number;
+}) {
+  const completed = filing.automation_status === "COMPLETED";
+  const broughtForward = Boolean(filing.automation_bring_forward_submitted_at);
+  return (
+    <section className={`automation-simple-summary ${completed ? "complete" : "processing"}`}>
+      <div className="automation-simple-icon">{completed ? <CheckCircle2 size={28} /> : <Sparkles size={28} />}</div>
+      <div className="automation-simple-copy">
+        <span>{completed ? "Verified result" : "Straight-through processing"}</span>
+        <h2>{completed ? "This filing is complete" : "No review is required right now"}</h2>
+        <p>
+          {completed
+            ? "ERISAPros verified the saved FT Williams values. The detailed comparison remains available for audit purposes."
+            : "ERISAPros is matching, validating, sending, and verifying this filing automatically. You can leave this page."}
+        </p>
+      </div>
+      <dl className="automation-simple-metrics">
+        <div><dt>Fields found</dt><dd>{foundCount} / {totalFields || 61}</dd></div>
+        <div><dt>FTW changes</dt><dd>{willUpdateCount}</dd></div>
+        <div><dt>Bring Forward</dt><dd>{broughtForward ? "Used" : "Not needed"}</dd></div>
+      </dl>
+      <button className="button secondary automation-advanced-button" type="button" onClick={onOpenAdvancedReview}>
+        <Eye size={16} /> Open Advanced Review
+      </button>
+    </section>
+  );
+}
+
+function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined) {
+  return Boolean(
+    review
+    && review.status === "UPDATE_SENT"
+    && review.update_verification_attempted
+    && review.update_verification_success === true
+    && (review.update_attempted_count || 0) > 0
+    && (review.update_remaining_count || 0) === 0
+  );
+}
+
+function FTWUpdateSuccessNotice({
+  review,
+  reviewNoteCount,
+}: {
+  review: FTWilliamsReview;
+  reviewNoteCount: number;
+}) {
+  const confirmed = review.update_confirmed_count || review.update_attempted_count || 0;
+  return (
+    <section className="ftw-verification-summary complete ftw-update-success-notice" role="status" aria-live="polite">
+      <div className="ftw-verification-icon"><CheckCircle2 size={22} /></div>
+      <div className="ftw-verification-copy">
+        <span>FT Williams update complete</span>
+        <strong>Data updated and verified successfully</strong>
+        <small>
+          FT Williams returned the saved values for {confirmed} field{confirmed === 1 ? "" : "s"}.
+          {reviewNoteCount ? ` ${reviewNoteCount} extraction review note${reviewNoteCount === 1 ? " remains" : "s remain"}; these do not mean the update failed.` : " No further update action is required."}
+        </small>
+      </div>
+    </section>
   );
 }
 
@@ -990,8 +1713,8 @@ function reviewChangeToast(previous: FilingDetail | null, next: FilingDetail): R
     if (next.status === "APPROVED") {
       return {
         tone: "success",
-        title: "Filing approved",
-        message: `${displayName} is approved and ready for FT Williams.`,
+        title: "Ready to select updates",
+        message: `${displayName} is ready for selected FT Williams changes.`,
       };
     }
     if (next.status === "FAILED" || next.status === "REJECTED") {
@@ -1041,6 +1764,90 @@ function hasUsableFtwCurrentValue(value: string | null | undefined) {
   return Boolean(text && text !== "no current value" && text !== "not found" && text !== "pending");
 }
 
+function ftwPlanPageUrl(review: FTWilliamsReview | null) {
+  const providedUrl = String(review?.ftw_plan_url || "").trim();
+  if (providedUrl) return providedUrl;
+  const customerId = String(review?.ftw_browser_customer_id || "").trim();
+  const planId = String(review?.ftw_browser_plan_id || "").trim();
+  const year = String(review?.year || review?.comparison_year || "").trim();
+  if (!customerId || !planId || !year) return "";
+  const plan = `${encodeURIComponent(customerId)},${encodeURIComponent(planId)}`;
+  return `https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan=${plan}&Year=${encodeURIComponent(year)}`;
+}
+
+function resolvedFtwQueryState(review: FTWilliamsReview | null): NonNullable<FTWilliamsReview["query_state"]> {
+  if (!review) return "NOT_QUERIED";
+  if (review.query_state === "PLAN_MATCH_REQUIRED") return "PLAN_MATCH_REQUIRED";
+  if (review.query_state === "QUERY_FAILED") return "QUERY_FAILED";
+  if (review.query_state === "SCHEDULE_A_MISSING" || review.bring_forward_required) return "SCHEDULE_A_MISSING";
+  if (review.query_state === "MATCHED" || review.current_query_success) return "MATCHED";
+  if (!review.current_query_sent) return "NOT_QUERIED";
+  if (["MISSING_IDENTIFIERS", "FOUND_NO_FTW_IDS", "MULTIPLE_MATCHES", "NOT_FOUND"].includes(review.plan_lookup?.status || "")) {
+    return "PLAN_MATCH_REQUIRED";
+  }
+  return "QUERY_FAILED";
+}
+
+function ftwQueryStatusContent(review: FTWilliamsReview | null) {
+  if (!review) return null;
+  const state = resolvedFtwQueryState(review);
+  const clientError = review.client_error;
+  const reason = review.plan_lookup?.error_message
+    || clientError?.reason
+    || clientError?.message
+    || review.error_message
+    || undefined;
+  if (state === "PLAN_MATCH_REQUIRED") {
+    return {
+      state,
+      tone: "error" as const,
+      title: "Choose the correct FT Williams plan",
+      message: "Multiple possible plans were found. Select the correct plan to continue.",
+      reason,
+      nextAction: "This is a one-time selection for this filing.",
+    };
+  }
+  if (state === "QUERY_FAILED") {
+    return {
+      state,
+      tone: "error" as const,
+      title: "FT Williams current-data query failed",
+      message: reason || "FT Williams did not return usable current filing data.",
+      reason,
+      nextAction: clientError?.next_action || "Check the FT Williams connection and retry the query.",
+    };
+  }
+  if (state === "SCHEDULE_A_MISSING") {
+    return {
+      state,
+      tone: "warning" as const,
+      title: "Current-year Schedule A is missing",
+      message: "The FT Williams plan was found, but its current-year Schedule A does not exist yet.",
+      reason,
+      nextAction: "Open FTW Bring Forward, complete it there, then return to refresh this filing.",
+    };
+  }
+  return null;
+}
+
+function sendValidationNoticeFromError(
+  message: string,
+  rows: ReviewDecisionRow[],
+): NonNullable<SendValidationNotice> | null {
+  if (!/FT Williams field validation issue|organization code.*required|pre-send validation failed/i.test(message)) {
+    return null;
+  }
+  const normalizedMessage = message.toLowerCase();
+  const matchedField = rows.find((row) => row.fieldId && normalizedMessage.includes(row.label.toLowerCase()));
+  const countMatch = message.match(/(\d+) FT Williams field validation issue/i);
+  return {
+    fieldId: matchedField?.fieldId,
+    fieldLabel: matchedField?.label,
+    issueCount: Number(countMatch?.[1] || 1),
+    message,
+  };
+}
+
 function sendLockReason(
   filing: FilingDetail | null,
   form5500SafetyReady: boolean,
@@ -1048,7 +1855,6 @@ function sendLockReason(
   ftwCurrentLoaded: boolean,
 ) {
   const retryingFailedFtwUpdate = filing?.status === "FAILED" && filing.ftw_review?.status === "UPDATE_FAILED";
-  if (filing?.status !== "APPROVED" && !retryingFailedFtwUpdate) return "Requires approval";
   if (filing?.ftw_review?.ftw_editable === false) return "Filing is locked in FT Williams";
   if (!ftwCurrentLoaded) return "Query FTW current data first";
   if (!form5500SafetyReady) return "Form 5500 current data missing";
@@ -1071,21 +1877,20 @@ function WorkflowStepper({
   const ftwQuerying = filing.status === "QUERYING_FTW_CURRENT";
   const ftwLoaded = Boolean(filing.ftw_review?.current_query_success);
   const ftwScheduleMatch = Boolean(filing.ftw_review?.schedule_a_match);
+  const ftwScheduleIsNew = Boolean(filing.ftw_review?.schedule_a_match?.create_new);
   const ftwScheduleNeedsDecision = Boolean(
     ftwLoaded
     && !filing.ftw_review?.schedule_a_match
     && ((filing.ftw_review?.schedule_a_candidates || []).length || filing.ftw_review?.bring_forward_required),
   );
-  const ftwScheduleStatus = ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
-  const approved = filing.status === "APPROVED";
-  const updateSent = filing.ftw_review?.status === "UPDATE_SENT";
+  const ftwScheduleStatus = ftwScheduleIsNew ? "New Schedule A prepared" : ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
+  const updateSent = isVerifiedFTWilliamsUpdate(filing.ftw_review);
   const steps = [
     { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
     { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
     { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwScheduleNeedsDecision ? "active" : ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
     { key: "REVIEW" as const, label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
-    { key: "APPROVAL" as const, label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : "active" },
-    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
+    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Verified" : "Send selected changes", state: updateSent ? "done" : "active" },
   ];
   return (
     <section className="approval-progress-card">
@@ -1113,10 +1918,71 @@ function WorkflowStepper({
   );
 }
 
+function FTWQueryStatusBanner({
+  busy,
+  onOpenBringForward,
+  onReconcile,
+  onRetry,
+  onSelectPlan,
+  review,
+  staleOperation,
+}: {
+  busy: boolean;
+  onOpenBringForward: () => void;
+  onReconcile: (resolution: "VERIFY_CURRENT" | "RESET_FAILED") => void;
+  onRetry: () => void;
+  onSelectPlan: () => void;
+  review: FTWilliamsReview | null;
+  staleOperation: boolean;
+}) {
+  const content = ftwQueryStatusContent(review);
+  if (!content) return null;
+  const bringForward = content.state === "SCHEDULE_A_MISSING";
+  const planMatchRequired = content.state === "PLAN_MATCH_REQUIRED";
+  return (
+    <section className={`filing-guidance guidance-${content.tone}`} role="alert" aria-label="FT Williams query status">
+      <div className="filing-guidance-icon"><AlertTriangle size={21} /></div>
+      <div className="filing-guidance-copy">
+        <span className="filing-guidance-source">FT Williams status</span>
+        <strong>{content.title}</strong>
+        <p>{content.message}</p>
+        <small>{content.nextAction}</small>
+        {content.reason ? (
+          <details className="filing-guidance-details">
+            <summary>View technical details</summary>
+            <p>{content.reason}</p>
+          </details>
+        ) : null}
+        {review?.updated_at ? <small className="filing-guidance-timestamp">Last checked: {formatDate(review.updated_at)}</small> : null}
+      </div>
+      <div className="filing-guidance-actions">
+        {staleOperation ? (
+          <>
+            <button className="button secondary" type="button" disabled={busy} onClick={() => onReconcile("VERIFY_CURRENT")}>
+              <RefreshCw size={15} /> Verify current FTW state
+            </button>
+            <button className="button button-warn" type="button" disabled={busy} onClick={() => onReconcile("RESET_FAILED")}>
+              <ShieldCheck size={15} /> Allow retry
+            </button>
+          </>
+        ) : null}
+        {planMatchRequired ? (
+          <button className="button" type="button" disabled={busy} onClick={onSelectPlan}>
+            <Search size={15} /> Select plan
+          </button>
+        ) : (
+          <button className={`button ${bringForward ? "button-warn" : "secondary"}`} type="button" disabled={busy} onClick={bringForward ? onOpenBringForward : onRetry}>
+            {bringForward ? <><ExternalLink size={15} /> Open FTW Bring Forward</> : <><RefreshCw size={15} /> Retry FTW query</>}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function FilingGuidancePanel({
   actionRequiredCount,
   actions,
-  approvalBlocked,
   bringForwardRequired,
   clientError,
   filingStatus,
@@ -1127,7 +1993,6 @@ function FilingGuidancePanel({
 }: {
   actionRequiredCount: number;
   actions?: ReactNode;
-  approvalBlocked: boolean;
   bringForwardRequired: boolean;
   clientError: ClientFacingError | null;
   filingStatus: string;
@@ -1137,9 +2002,9 @@ function FilingGuidancePanel({
   scheduleSelectionRequired: boolean;
 }) {
   let source = "User Review";
-  let title = "Ready for approval";
-  let message = "Review the FT Williams update preview, then approve this filing.";
-  let nextAction = "No blocking field issues remain.";
+  let title = "Ready to select updates";
+  let message = "Choose the changes you want to send to FT Williams.";
+  let nextAction = "Unselected values remain unchanged.";
   let tone = "ready";
 
   if (isProcessing) {
@@ -1152,7 +2017,7 @@ function FilingGuidancePanel({
     source = "FT Williams";
     title = "Current-year FT Williams record is missing";
     message = "Use Bring Forward for this plan in FT Williams, then refresh the current data here.";
-    nextAction = "This must be completed before approval and sending.";
+    nextAction = "The target record must exist before its selected changes can be saved.";
     tone = "warning";
   } else if (clientError) {
     source = clientError.source || "FT Williams";
@@ -1166,21 +2031,21 @@ function FilingGuidancePanel({
     message = "FT Williams returned more than one Schedule A for this plan.";
     nextAction = "Confirm the carrier, contract, year, and sequence below.";
     tone = "warning";
-  } else if (approvalBlocked) {
+  } else if (actionRequiredCount > 0) {
     title = `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`;
     message = `${missingHighCount} high-priority field${missingHighCount === 1 ? " is" : "s are"} missing or unresolved.`;
-    nextAction = "Review them now, or approve with the confirmation override.";
+    nextAction = "Review these items when needed. You can send other selected changes.";
     tone = "warning";
   } else if (filingStatus === "APPROVED" && ftwReadyToSend) {
     source = "FT Williams";
-    title = "Approved and ready to send";
-    message = "The proposed changes passed the review and FT Williams safety checks.";
+    title = "Ready to select updates";
+    message = "Select the changes to send. Existing approval history is retained.";
     nextAction = "Send the update; the dashboard will verify every field automatically.";
   } else if (filingStatus === "APPROVED") {
     source = "FT Williams";
-    title = "Approved — FT Williams check required";
-    message = "Approval is complete, but FT Williams current data must be refreshed before sending.";
-    nextAction = "Query FTW Current to unlock sending.";
+    title = "FT Williams check required";
+    message = "FT Williams current data must be refreshed before selected changes can be saved.";
+    nextAction = "Current data is checked again when you send.";
     tone = "warning";
   }
 
@@ -1200,16 +2065,82 @@ function FilingGuidancePanel({
   );
 }
 
+function FTWEditabilityBanner({
+  busy,
+  onRefresh,
+  planUrl,
+  review,
+}: {
+  busy: boolean;
+  onRefresh: () => void;
+  planUrl: string;
+  review: FTWilliamsReview;
+}) {
+  const lockStatus = String(review.ftw_locked_status || "Locked").trim();
+  const signedStatus = String(review.ftw_signed_status || "").trim();
+  const statusLabel = [lockStatus, signedStatus].filter(Boolean).join(" and ");
+  return (
+    <section className="ftw-editability-banner" role="alert" aria-label="FT Williams filing is not editable">
+      <span className="ftw-editability-icon"><Lock size={18} /></span>
+      <div className="ftw-editability-copy">
+        <small>FT Williams editability</small>
+        <strong>Send disabled: FT Williams filing is {statusLabel}.</strong>
+        <p>Unlock the filing or use Amend Filing in FT Williams, then refresh its status here.</p>
+      </div>
+      <div className="ftw-editability-status" aria-label="FT Williams filing statuses">
+        <span><Lock size={12} /> {lockStatus}</span>
+        {signedStatus ? <span><ShieldCheck size={12} /> {signedStatus}</span> : null}
+      </div>
+      <div className="ftw-editability-actions">
+        {planUrl ? (
+          <a className="button secondary" href={planUrl} target="_blank" rel="noopener noreferrer">
+            Open FT Williams <ExternalLink size={14} />
+          </a>
+        ) : null}
+        <button className="button" type="button" disabled={busy} onClick={onRefresh}>
+          {busy ? <InlineLoader label="Checking status" /> : <><RefreshCw size={14} /> Refresh status</>}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function FTWValidationBlockerBanner({
+  count,
+  fieldLabel,
+  message,
+  onFix,
+}: {
+  count: number;
+  fieldLabel?: string;
+  message?: string;
+  onFix: () => void;
+}) {
+  return (
+    <section className="ftw-validation-blocker-banner" role="alert" aria-label="FT Williams blocking validation issue">
+      <span className="ftw-validation-blocker-icon"><AlertTriangle size={18} /></span>
+      <div className="ftw-validation-blocker-copy">
+        <small>Values needing correction</small>
+        <strong>{count} issue{count === 1 ? "" : "s"} affect these values only</strong>
+        {fieldLabel ? <span className="ftw-validation-field-name">{fieldLabel}</span> : null}
+        <p>{message || "Correct or deselect the highlighted value before sending it to FT Williams."}</p>
+        <span className="ftw-validation-policy">Correct or deselect affected values before sending. Other review items do not block selected changes.</span>
+      </div>
+      <button className="button danger" type="button" onClick={onFix}>
+        <Edit3 size={14} /> Fix issue
+      </button>
+    </section>
+  );
+}
+
 function ReviewPrimaryActions({
-  approvalBlocked,
-  approvalReady,
   bringForwardRequired,
   busy,
   decisionAction,
   filingStatus,
   showFtwSendAction,
+  ftwReadyToSend,
   ftwSendBusy,
-  onApprove,
   onOpenBringForward,
   onPreviewXml,
   onQuery,
@@ -1223,15 +2154,13 @@ function ReviewPrimaryActions({
   rulesBusy,
   xmlBusy,
 }: {
-  approvalBlocked: boolean;
-  approvalReady: boolean;
   bringForwardRequired: boolean;
   busy: boolean;
-  decisionAction: "approve" | "reject" | "unapprove" | null;
+  decisionAction: "reject" | null;
   filingStatus: string;
   showFtwSendAction: boolean;
+  ftwReadyToSend: boolean;
   ftwSendBusy: boolean;
-  onApprove: () => void;
   onOpenBringForward: () => void;
   onPreviewXml: () => void;
   onQuery: () => void;
@@ -1245,7 +2174,6 @@ function ReviewPrimaryActions({
   rulesBusy: boolean;
   xmlBusy: boolean;
 }) {
-  const approved = filingStatus === "APPROVED";
   const failed = filingStatus === "FAILED";
   return (
     <div className="review-primary-actions" aria-label="Filing actions">
@@ -1257,26 +2185,9 @@ function ReviewPrimaryActions({
       <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
         {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
       </button>
-      {!approved && approvalReady ? (
-        <>
-          <button
-            className={`button ${approvalBlocked ? "button-warn" : ""}`}
-            disabled={busy}
-            onClick={onApprove}
-          >
-            {decisionAction === "approve" ? <InlineLoader label="Approving" /> : <><CheckCircle2 size={16} /> Approve Filing</>}
-          </button>
-          <button className="button danger" disabled={busy} onClick={onReject}>
-            {decisionAction === "reject" ? <InlineLoader label="Rejecting" /> : "Reject"}
-          </button>
-        </>
-      ) : null}
-      {approved ? <span className="review-approved-badge"><CheckCircle2 size={16} /> Approved</span> : null}
-      {showFtwSendAction ? (
-        <button className="button" disabled={busy} onClick={onSend}>
-          {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> {failed ? "Retry remaining" : "Send to FT Williams"}</>}
-        </button>
-      ) : null}
+      <button className="button danger" disabled={busy} onClick={onReject}>
+        {decisionAction === "reject" ? <InlineLoader label="Rejecting" /> : "Reject"}
+      </button>
       <button className="button secondary" type="button" onClick={onOpenTechnical}>
         <SlidersHorizontal size={16} /> More actions
       </button>
@@ -1286,15 +2197,12 @@ function ReviewPrimaryActions({
 
 function WorkflowDetailDialog({
   actionRequiredCount,
-  approvalBlocked,
-  approvalReady,
   busy,
   filing,
   foundCount,
   ftwCurrentLoaded,
   ftwReadyToSend,
   onClose,
-  onApprove,
   onOpenBringForward,
   onQuery,
   onViewAuditPDF,
@@ -1306,19 +2214,16 @@ function WorkflowDetailDialog({
   willUpdateCount,
 }: {
   actionRequiredCount: number;
-  approvalBlocked: boolean;
-  approvalReady: boolean;
   busy: boolean;
   filing: FilingDetail;
   foundCount: number;
   ftwCurrentLoaded: boolean;
   ftwReadyToSend: boolean;
   onClose: () => void;
-  onApprove: () => void;
   onOpenBringForward: () => void;
   onQuery: () => void;
   onViewAuditPDF: () => void;
-  onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string }) => void;
+  onSelectSchedule: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string; create_new?: boolean; schedule_desc?: string }) => void;
   onShowTab: (tab: ReviewTab) => void;
   scheduleCandidates: Array<Record<string, unknown>>;
   step: WorkflowStepKey;
@@ -1327,31 +2232,45 @@ function WorkflowDetailDialog({
 }) {
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
-  const stepNumber = ["INTAKE", "EXTRACTION", "FTW_LOADED", "REVIEW", "APPROVAL", "FTW_UPDATE"].indexOf(step) + 1;
+  const stepNumber = ["INTAKE", "EXTRACTION", "FTW_LOADED", "REVIEW", "FTW_UPDATE"].indexOf(step) + 1;
   const titles: Record<WorkflowStepKey, string> = {
     INTAKE: "Intake",
     EXTRACTION: "Extraction",
     FTW_LOADED: "FTW loaded",
     REVIEW: "User review",
-    APPROVAL: "Approval",
     FTW_UPDATE: "FT Williams verification",
   };
   const review = filing.ftw_review || null;
+  const updateVerified = isVerifiedFTWilliamsUpdate(review);
   const attempted = review?.update_attempted_count || 0;
   const confirmed = review?.update_confirmed_count || 0;
   const remaining = review?.update_remaining_count || 0;
   const packageCount = filing.package_document_count || 1;
+  const scheduleAIsNew = Boolean(review?.schedule_a_match?.create_new);
+  const newScheduleIdentity = scheduleACreationIdentity(review);
+  const newScheduleIdentityReady = Boolean(
+    newScheduleIdentity.carrier
+    && newScheduleIdentity.carrierEin
+    && newScheduleIdentity.naic
+    && newScheduleIdentity.contract,
+  );
+  const preservedScheduleCount = review?.schedule_a_records?.length || 0;
   const currentScheduleSequence = textValue(review?.schedule_a_match?.ftw_seq_no);
+  const [showCreateNewConfirmation, setShowCreateNewConfirmation] = useState(false);
   const [selectedScheduleIndex, setSelectedScheduleIndex] = useState(() => {
     const currentIndex = scheduleCandidates.findIndex((candidate) => textValue(candidate.ftw_seq_no) === currentScheduleSequence);
     return currentIndex >= 0 ? String(currentIndex) : "";
   });
   const selectedSchedule = selectedScheduleIndex === "" ? null : scheduleCandidates[Number(selectedScheduleIndex)] || null;
   const scheduleMatchSelected = Boolean(review?.schedule_a_match);
+  const canChooseScheduleA = Boolean(
+    review?.current_query_success
+    && !review?.bring_forward_required,
+  ) || scheduleCandidates.length > 0;
   const scheduleDecisionRequired = Boolean(
     (review?.current_query_success || ftwCurrentLoaded)
     && !scheduleMatchSelected
-    && (scheduleCandidates.length || review?.bring_forward_required),
+    && (canChooseScheduleA || review?.bring_forward_required),
   );
   const matchSource = textValue(review?.schedule_a_match?.source).toUpperCase();
   const recommendedSequence = scheduleMatchSelected && !["MANUAL", "NEW_SCHEDULE_A"].includes(matchSource)
@@ -1362,7 +2281,9 @@ function WorkflowDetailDialog({
   const selectedScheduleReasons = Array.isArray(rawMatchReasons)
     ? rawMatchReasons.map(textValue).filter(Boolean).join(", ")
     : "";
-  const selectedScheduleLabel = selectedSchedule
+  const selectedScheduleLabel = scheduleAIsNew
+    ? ["New Schedule A", newScheduleIdentity.carrier, newScheduleIdentity.contract && `Contract ${newScheduleIdentity.contract}`].filter(Boolean).join(" · ")
+    : selectedSchedule
     ? textValue(selectedSchedule.carrier) || textValue(selectedSchedule.description) || `FTW sequence ${textValue(selectedSchedule.ftw_seq_no)}`
     : currentScheduleSequence
       ? formatScheduleAMatch(review?.schedule_a_match)
@@ -1372,11 +2293,11 @@ function WorkflowDetailDialog({
     EXTRACTION: `${foundCount} of ${totalFields} fields extracted`,
     FTW_LOADED: selectedScheduleLabel,
     REVIEW: actionRequiredCount ? `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} still require action` : "Review complete",
-    APPROVAL: filing.status === "APPROVED" ? "Filing approved" : "Approval not yet confirmed",
-    FTW_UPDATE: review?.status === "UPDATE_SENT" ? `${confirmed} field${confirmed === 1 ? "" : "s"} verified` : "Update not yet verified",
+    FTW_UPDATE: updateVerified ? `${confirmed} field${confirmed === 1 ? "" : "s"} verified` : "Update not yet verified",
   };
 
   function handleScheduleChange(index: string) {
+    setShowCreateNewConfirmation(false);
     setSelectedScheduleIndex(index);
     if (index === "") return;
     const candidate = scheduleCandidates[Number(index)];
@@ -1386,6 +2307,18 @@ function WorkflowDetailDialog({
       carrier: textValue(candidate.carrier) || undefined,
       carrier_ein: textValue(candidate.carrier_ein) || undefined,
       contract: textValue(candidate.contract) || undefined,
+    });
+  }
+
+  function confirmCreateNewScheduleA() {
+    if (!newScheduleIdentityReady || busy) return;
+    setShowCreateNewConfirmation(false);
+    setSelectedScheduleIndex("");
+    onSelectSchedule({
+      carrier: newScheduleIdentity.carrier,
+      carrier_ein: newScheduleIdentity.carrierEin,
+      contract: newScheduleIdentity.contract,
+      create_new: true,
     });
   }
 
@@ -1429,15 +2362,15 @@ function WorkflowDetailDialog({
             <>
               <WorkflowStatus
                 tone={scheduleDecisionRequired || !ftwCurrentLoaded ? "warning" : "success"}
-                label={scheduleMatchSelected ? "Best match selected" : scheduleDecisionRequired ? "Needs your decision" : ftwCurrentLoaded ? "FTW current data loaded" : "Processing"}
+                label={scheduleAIsNew ? "New Schedule A prepared" : scheduleMatchSelected ? "Best match selected" : scheduleDecisionRequired ? "Needs your decision" : ftwCurrentLoaded ? "FTW current data loaded" : "Processing"}
               />
               {scheduleMatchSelected ? (
                 <div className="workflow-schedule-match-summary">
-                  <span><CheckCircle2 aria-hidden="true" size={14} /> Selected Schedule A</span>
+                  <span><CheckCircle2 aria-hidden="true" size={14} /> {scheduleAIsNew ? "New Schedule A" : "Selected Schedule A"}</span>
                   <strong>{selectedScheduleLabel}</strong>
                   <small>
-                    <span>Match score {selectedScheduleScore}</span>
-                    {selectedScheduleReasons ? <span>Matched by {selectedScheduleReasons}</span> : null}
+                    {scheduleAIsNew ? <span>{preservedScheduleCount} existing Schedule A record{preservedScheduleCount === 1 ? "" : "s"} will stay unchanged</span> : <span>Match score {selectedScheduleScore}</span>}
+                    {!scheduleAIsNew && selectedScheduleReasons ? <span>Matched by {selectedScheduleReasons}</span> : null}
                   </small>
                 </div>
               ) : scheduleDecisionRequired && review?.bring_forward_required ? (
@@ -1449,13 +2382,26 @@ function WorkflowDetailDialog({
                   FT Williams returned {scheduleCandidates.length} possible Schedule A {scheduleCandidates.length === 1 ? "record" : "records"}, but none passed the safe identity match. Choose the correct record to continue.
                 </p>
               ) : null}
-              {scheduleCandidates.length ? (
+              {canChooseScheduleA ? (
                 <WorkflowScheduleSelect
                   busy={busy}
                   candidates={scheduleCandidates}
+                  createNewSelected={scheduleAIsNew}
+                  newScheduleLabel={newScheduleIdentity.carrier || "Uploaded Schedule A"}
                   recommendedSequence={recommendedSequence}
                   selectedIndex={selectedScheduleIndex}
                   onChange={handleScheduleChange}
+                  onCreateNew={() => setShowCreateNewConfirmation(true)}
+                />
+              ) : null}
+              {showCreateNewConfirmation ? (
+                <NewScheduleAConfirmation
+                  busy={busy}
+                  identity={newScheduleIdentity}
+                  identityReady={newScheduleIdentityReady}
+                  onCancel={() => setShowCreateNewConfirmation(false)}
+                  onConfirm={confirmCreateNewScheduleA}
+                  preservedScheduleCount={preservedScheduleCount}
                 />
               ) : null}
               <p className="workflow-explanation">ERISAPros fetches current FT Williams values so extracted and existing data can be compared.</p>
@@ -1475,8 +2421,27 @@ function WorkflowDetailDialog({
           {step === "REVIEW" ? (
             <>
               <WorkflowStatus tone={actionRequiredCount ? "warning" : "success"} label={actionRequiredCount ? "Needs review" : "Review complete"} />
-              {scheduleCandidates.length ? (
-                <WorkflowScheduleSelect busy={busy} candidates={scheduleCandidates} recommendedSequence={recommendedSequence} selectedIndex={selectedScheduleIndex} onChange={handleScheduleChange} />
+              {canChooseScheduleA ? (
+                <WorkflowScheduleSelect
+                  busy={busy}
+                  candidates={scheduleCandidates}
+                  createNewSelected={scheduleAIsNew}
+                  newScheduleLabel={newScheduleIdentity.carrier || "Uploaded Schedule A"}
+                  recommendedSequence={recommendedSequence}
+                  selectedIndex={selectedScheduleIndex}
+                  onChange={handleScheduleChange}
+                  onCreateNew={() => setShowCreateNewConfirmation(true)}
+                />
+              ) : null}
+              {showCreateNewConfirmation ? (
+                <NewScheduleAConfirmation
+                  busy={busy}
+                  identity={newScheduleIdentity}
+                  identityReady={newScheduleIdentityReady}
+                  onCancel={() => setShowCreateNewConfirmation(false)}
+                  onConfirm={confirmCreateNewScheduleA}
+                  preservedScheduleCount={preservedScheduleCount}
+                />
               ) : null}
               <WorkflowReviewCenter
                 actionRequiredCount={actionRequiredCount}
@@ -1488,26 +2453,16 @@ function WorkflowDetailDialog({
             </>
           ) : null}
 
-          {step === "APPROVAL" ? (
-            <>
-              <WorkflowStatus tone={filing.status === "APPROVED" ? "success" : "warning"} label={filing.status === "APPROVED" ? "Filing approved" : "Approval pending"} />
-              <p className="workflow-explanation">Approval confirms the reviewed values. Any remaining issues are shown before the user confirms.</p>
-              <WorkflowActivity items={[
-                actionRequiredCount ? `${actionRequiredCount} unresolved field${actionRequiredCount === 1 ? "" : "s"} will be confirmed during approval` : "All field decisions are complete",
-                ftwCurrentLoaded ? "FT Williams current data is loaded" : "FT Williams current data is required",
-                filing.status === "APPROVED" ? "Approval recorded" : "Approval is waiting for confirmation",
-              ]} />
-            </>
-          ) : null}
 
           {step === "FTW_UPDATE" ? (
             <>
               <WorkflowStatus
-                tone={review?.status === "UPDATE_SENT" ? "success" : review?.status === "UPDATE_UNKNOWN" || ftwReadyToSend ? "warning" : "neutral"}
-                label={review?.status === "UPDATE_SENT" ? "Update verified" : review?.status === "UPDATE_UNKNOWN" ? "Verification required" : ftwReadyToSend ? "Ready to send" : "Waiting for approval and FTW checks"}
+                tone={updateVerified ? "success" : review?.status === "UPDATE_UNKNOWN" || ftwReadyToSend ? "warning" : "neutral"}
+                label={updateVerified ? "Update verified" : review?.update_access_status === "GRANTED" ? "Accepted · verification needs attention" : review?.status === "UPDATE_UNKNOWN" ? "Verification required" : ftwReadyToSend ? "Ready to send" : "Choose selected changes"}
               />
               <p className="workflow-explanation">After sending, ERISAPros refreshes FT Williams and verifies every returned value automatically.</p>
               <WorkflowActivity items={[
+                review?.update_access_status === "GRANTED" ? "FT Williams accepted the update" : "FT Williams has not accepted an update yet",
                 `${attempted} field${attempted === 1 ? "" : "s"} attempted`,
                 `${confirmed} field${confirmed === 1 ? "" : "s"} verified`,
                 `${remaining} field${remaining === 1 ? "" : "s"} need review`,
@@ -1519,12 +2474,12 @@ function WorkflowDetailDialog({
                 review?.edit_check_baseline_success === true
                   ? "Baseline Edit Checks passed"
                   : review?.edit_check_baseline_success === false
-                    ? "Baseline Edit Checks failed"
+                    ? `${review.edit_check_baseline_issues?.length || 0} baseline FT issue${review.edit_check_baseline_issues?.length === 1 ? "" : "s"} recorded as warning${review.edit_check_baseline_issues?.length === 1 ? "" : "s"}`
                     : "Baseline Edit Checks not run",
                 review?.edit_check_final_success === true
                   ? "Final Edit Checks passed"
                   : review?.edit_check_final_success === false
-                    ? "Final Edit Checks failed"
+                    ? ftwEditCheckOutcome(review)?.title || "Final Edit Checks need attention"
                     : "Final Edit Checks not run",
               ]} />
               {(review?.schema_validation_results || []).flatMap((result) => result.issues || []).length ? (
@@ -1542,7 +2497,7 @@ function WorkflowDetailDialog({
                   {(review?.update_results || []).map((result, index) => (
                     <div key={result.field_id || result.tag || index} className={result.status === "VERIFIED" ? "verified" : "needs-review"}>
                       {result.status === "VERIFIED" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-                      <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                      <span><strong>{result.label}</strong><small>{verificationResultDetail(result)}</small></span>
                     </div>
                   ))}
                 </div>
@@ -1563,16 +2518,6 @@ function WorkflowDetailDialog({
         <footer>
           <span className="workflow-dialog-footer-note">{footerNotes[step]}</span>
           <div className="workflow-dialog-footer-actions">
-            {step === "APPROVAL" && filing.status !== "APPROVED" && approvalReady ? (
-              <button
-                className={`button ${approvalBlocked ? "button-warn" : ""}`}
-                type="button"
-                disabled={busy}
-                onClick={onApprove}
-              >
-                <CheckCircle2 size={15} /> Approve filing
-              </button>
-            ) : null}
             <button className="button secondary" type="button" onClick={onClose}>Done</button>
           </div>
         </footer>
@@ -1597,20 +2542,28 @@ function WorkflowActivity({ items }: { items: string[] }) {
 function WorkflowScheduleSelect({
   busy,
   candidates,
+  createNewSelected,
+  newScheduleLabel,
   onChange,
+  onCreateNew,
   recommendedSequence,
   selectedIndex,
 }: {
   busy: boolean;
   candidates: Array<Record<string, unknown>>;
+  createNewSelected: boolean;
+  newScheduleLabel: string;
   onChange: (index: string) => void;
+  onCreateNew: () => void;
   recommendedSequence: string;
   selectedIndex: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   const selectedCandidate = selectedIndex === "" ? null : candidates[Number(selectedIndex)] || null;
-  const selectedLabel = selectedCandidate
+  const selectedLabel = createNewSelected
+    ? `New Schedule A · ${newScheduleLabel}`
+    : selectedCandidate
     ? [
       textValue(selectedCandidate.carrier) || textValue(selectedCandidate.description) || "Schedule A",
       textValue(selectedCandidate.contract) && `Contract ${textValue(selectedCandidate.contract)}`,
@@ -1693,9 +2646,27 @@ function WorkflowScheduleSelect({
               </button>
             );
           })}
+          <button
+            aria-selected={createNewSelected}
+            className={`workflow-schedule-create-option ${createNewSelected ? "selected" : ""}`}
+            disabled={busy}
+            onClick={() => {
+              onCreateNew();
+              setOpen(false);
+            }}
+            role="option"
+            type="button"
+          >
+            <span className="workflow-schedule-create-icon"><Plus aria-hidden="true" size={15} /></span>
+            <span className="workflow-schedule-candidate-copy">
+              <strong>Create new Schedule A</strong>
+              <small>Use the reviewed extracted values as a separate FT Williams record.</small>
+              <span className="workflow-schedule-create-safety"><ShieldCheck aria-hidden="true" size={11} /> Existing schedules stay unchanged</span>
+            </span>
+          </button>
         </div>
       ) : null}
-      <small>{candidates.length} Schedule A filing{candidates.length === 1 ? "" : "s"} available</small>
+      <small>{candidates.length} existing Schedule A filing{candidates.length === 1 ? "" : "s"} available · create new when none matches</small>
     </div>
   );
 }
@@ -1726,7 +2697,7 @@ function WorkflowReviewCenter({
             <strong>{reviewComplete ? "All field decisions are complete" : `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`}</strong>
           </div>
         </header>
-        <p>{reviewComplete ? "The reviewed values are ready for approval." : "Resolve missing or different values, then confirm what should be sent to FT Williams."}</p>
+        <p>{reviewComplete ? "Choose the reviewed values you want to send." : "You can send selected changes while other fields still need review."}</p>
         <div className="workflow-review-metrics" aria-label="User review counts">
           <span><small>Action required</small><strong>{actionRequiredCount}</strong></span>
           <span><small>Will update FTW</small><strong>{willUpdateCount}</strong></span>
@@ -1738,6 +2709,22 @@ function WorkflowReviewCenter({
         </div>
       </section>
       <FTWVerificationSummary review={review} onReview={() => onShowTab("NEEDS_DECISION")} compact />
+    </div>
+  );
+}
+
+function ReviewStatusDrawer({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const drawerRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, drawerRef, onClose);
+  return (
+    <div className="technical-drawer-backdrop" role="presentation">
+      <aside ref={drawerRef} tabIndex={-1} className="technical-review-drawer review-status-drawer" role="dialog" aria-modal="true" aria-labelledby="review-status-title">
+        <header>
+          <div><h2 id="review-status-title">What needs attention</h2><p>Review these items or send other selected changes.</p></div>
+          <button type="button" className="icon-button" aria-label="Close review status details" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="review-status-body">{children}</div>
+      </aside>
     </div>
   );
 }
@@ -1766,7 +2753,7 @@ function TechnicalReviewDrawer({
   onQueryCurrent: () => void;
   onReEvaluate: () => void;
   onRetryExtraction: () => void;
-  onSaveManualMatch: (payload: { customer_id?: string; plan_id?: string; ftw_customer_id?: string; ftw_plan_id?: string; year?: string }) => void;
+  onSaveManualMatch: (payload: { customer_id?: string; plan_id?: string; ftw_customer_id?: string; ftw_plan_id?: string; ftw_browser_customer_id?: string; ftw_browser_plan_id?: string; ftw_plan_url?: string; year?: string }) => void;
   onSelectScheduleMatch: (payload: { ftw_seq_no?: string; carrier?: string; carrier_ein?: string; contract?: string; create_new?: boolean; schedule_desc?: string }) => void;
   onSendUpdate: () => void;
   sendBusy: boolean;
@@ -1878,11 +2865,14 @@ function ScheduleASelectionStep({
 
 function FTWVerificationSummary({ review, onReview, compact = false }: { review: FTWilliamsReview | null; onReview: () => void; compact?: boolean }) {
   const attempted = review?.update_attempted_count || 0;
-  const verificationAttempted = Boolean(review?.update_verification_attempted || attempted);
+  const accepted = review?.update_access_status === "GRANTED";
+  const verificationAttempted = Boolean(review?.update_verification_attempted);
   const confirmed = review?.update_confirmed_count || 0;
   const remaining = review?.update_remaining_count || 0;
   const results = review?.update_results || [];
-  const complete = attempted > 0 && remaining === 0 && review?.update_verification_success !== false;
+  const complete = attempted > 0 && remaining === 0 && review?.update_verification_success === true;
+  const validationOutcome = ftwEditCheckOutcome(review);
+  const finalEditCheckIssues = review?.edit_check_final_issues || [];
 
   if (compact && !verificationAttempted) {
     return (
@@ -1891,15 +2881,15 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
           <span><ShieldCheck size={17} /></span>
           <div>
             <small>FT Williams verification</small>
-            <strong>Waiting for an FT Williams update</strong>
+            <strong>{accepted ? "FT Williams accepted the update" : "Waiting for an FT Williams update"}</strong>
           </div>
         </header>
-        <p>Verification results will appear here automatically after data is sent to FT Williams.</p>
+        <p>{accepted ? "The request was accepted, but the saved values are not confirmed yet." : "Verification results will appear here automatically after data is sent to FT Williams."}</p>
       </section>
     );
   }
 
-  if (!verificationAttempted) return null;
+  if (!verificationAttempted && !accepted) return null;
 
   if (compact) {
     return (
@@ -1908,7 +2898,7 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
           <span>{complete ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}</span>
           <div>
             <small>FT Williams verification</small>
-            <strong>{complete ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated and verified` : `${confirmed} field${confirmed === 1 ? "" : "s"} updated · ${remaining} need review`}</strong>
+            <strong>{complete ? `${confirmed} field${confirmed === 1 ? "" : "s"} updated and verified` : accepted ? "FT Williams accepted the update · verification needs attention" : `${confirmed} field${confirmed === 1 ? "" : "s"} updated · ${remaining} need review`}</strong>
           </div>
         </header>
         <p>The dashboard refreshed FT Williams and compared every returned value automatically.</p>
@@ -1924,20 +2914,24 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
               {results.map((result, index) => (
                 <article className={result.status === "VERIFIED" ? "verified" : "needs-correction"} key={result.field_id || result.tag || index}>
                   {result.status === "VERIFIED" ? <Check size={14} /> : <AlertTriangle size={14} />}
-                  <span><strong>{result.label}</strong><small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "the approved value"}` : result.reason || "FT Williams returned a different value."}</small></span>
+                  <span><strong>{result.label}</strong><small>{verificationResultDetail(result)}</small></span>
                 </article>
               ))}
             </div>
           </details>
         ) : null}
-        {review?.edit_check_final_success === false || review?.edit_check_final_issues?.length ? (
-          <FTWilliamsDiagnostic
-            errorCode={review.client_error?.code}
-            editCheckIssues={review.edit_check_final_issues || []}
-            message={review.error_message}
-            operations={review.update_diagnostics || []}
-            technicalDetails={review.client_error?.technical_details}
-          />
+        {validationOutcome ? (
+          <div className={`ftw-validation-outcome ${validationOutcome.tone}`}>
+            <strong>{validationOutcome.title}</strong>
+            <small>{validationOutcome.detail}</small>
+            {review?.edit_check_final_success === false || finalEditCheckIssues.length ? (
+              <FTWilliamsDiagnostic
+                editCheckIssues={finalEditCheckIssues}
+                message={validationOutcome.summary}
+                operations={review?.update_diagnostics || []}
+              />
+            ) : null}
+          </div>
         ) : null}
         {!complete ? <div className="workflow-dialog-actions"><button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button></div> : null}
       </section>
@@ -1949,7 +2943,7 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
       <div className="ftw-verification-icon">{complete ? <CheckCircle2 size={22} /> : <AlertTriangle size={22} />}</div>
       <div className="ftw-verification-copy">
         <span>FT Williams verification</span>
-        <strong>{complete ? `FT Williams updated successfully — ${confirmed} field${confirmed === 1 ? "" : "s"} verified` : `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need review`}</strong>
+        <strong>{complete ? `FT Williams updated successfully — ${confirmed} field${confirmed === 1 ? "" : "s"} verified` : accepted ? "FT Williams accepted the update — read-back verification needs attention" : `${confirmed} field${confirmed === 1 ? "" : "s"} updated — ${remaining} need review`}</strong>
         <small>The dashboard refreshed FT Williams and compared the returned values automatically.</small>
         {results.length ? (
           <details>
@@ -1959,16 +2953,74 @@ function FTWVerificationSummary({ review, onReview, compact = false }: { review:
                 <div className={result.status === "VERIFIED" ? "verified" : "needs-correction"} key={result.field_id || result.tag || index}>
                   <span>{result.status === "VERIFIED" ? <Check size={14} /> : <AlertTriangle size={14} />}</span>
                   <strong>{result.label}</strong>
-                  <small>{result.status === "VERIFIED" ? `Updated to ${result.sent_value || "the approved value"}` : result.reason || "FT Williams returned a different value."}</small>
+                  <small>{verificationResultDetail(result)}</small>
                 </div>
               ))}
             </div>
           </details>
         ) : null}
+        {validationOutcome ? (
+          <div className={`ftw-validation-outcome ${validationOutcome.tone}`}>
+            <strong>{validationOutcome.title}</strong>
+            <small>{validationOutcome.detail}</small>
+          </div>
+        ) : null}
       </div>
       {!complete ? <button className="button secondary" type="button" onClick={onReview}>Review remaining fields</button> : null}
     </section>
   );
+}
+
+function verificationResultDetail(
+  result: NonNullable<FTWilliamsReview["update_results"]>[number],
+) {
+  if (result.status === "VERIFIED") {
+    return `Updated and verified: ${result.returned_value || result.sent_value || "selected value"}.`;
+  }
+  const sent = result.sent_value || "selected value";
+  const returned = result.returned_value || "not returned";
+  return `Not updated. Sent: ${sent}. FT Williams returned: ${returned}. ${result.reason || "The values do not match after refresh."}`;
+}
+
+function ftwEditCheckOutcome(review: FTWilliamsReview | null | undefined): {
+  detail: string;
+  summary: string;
+  title: string;
+  tone: "attention" | "warning";
+} | null {
+  switch (review?.edit_check_validation_status) {
+    case "EXISTING_ISSUES":
+      return {
+        title: "Update verified — existing FT Williams issues remain",
+        summary: "The selected data was updated and verified. Existing FT Williams validation issues remain.",
+        detail: "These issues existed before this update and did not prevent the selected values from being saved.",
+        tone: "warning",
+      };
+    case "IMPROVED":
+      return {
+        title: "Update verified — fewer FT Williams issues remain",
+        summary: "The selected data was updated and verified, and some existing FT Williams issues were resolved.",
+        detail: "Any remaining validation issues can be corrected separately.",
+        tone: "warning",
+      };
+    case "NEW_ISSUES":
+      return {
+        title: "Update verified — new FT Williams validation issues need attention",
+        summary: "The selected data was updated and verified, but final FT Williams checks reported new issues.",
+        detail: "Review the new issues before the filing is finalized. The verified update itself was successful.",
+        tone: "attention",
+      };
+    case "CHECK_UNAVAILABLE":
+    case "CANNOT_COMPARE":
+      return {
+        title: "Update verified — FT Williams validation could not be confirmed",
+        summary: "The selected data was updated and verified, but FT Williams validation results were unavailable.",
+        detail: "Run Edit Checks again before the filing is finalized.",
+        tone: "attention",
+      };
+    default:
+      return null;
+  }
 }
 
 function PanelHeading({ icon, title }: { icon: ReactNode; title: string }) {
@@ -2066,14 +3118,14 @@ function ReviewDecisionTableRow({
   const canEdit = Boolean(row.fieldId);
   const issueClass = row.failedByFtw ? "issue-ftw-rejected" : `issue-${row.group.toLowerCase()}`;
   return (
-    <tr className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
-      <td>
+    <tr data-field-id={row.fieldId || undefined} className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
+      <td data-label="Field">
         <strong>{row.label}</strong>
         <small>{row.formLabel} / {row.section}</small>
       </td>
-      <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
-      <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
-      <td className="proposed-cell">
+      <td data-label="Extracted">{row.extracted || <span className="muted-value">Not found</span>}</td>
+      <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">No current value</span>}</td>
+      <td data-label="Proposed To Send" className="proposed-cell">
         <button className="proposed-value-button" type="button" disabled={disabled || !canEdit} onClick={onInspect}>
           <span>{row.proposed || "No proposed value"}</span>
           {canEdit ? <Edit3 size={14} /> : null}
@@ -2106,7 +3158,7 @@ function ReviewDecisionTableRow({
           )}
         </div>
       </td>
-      <td>
+      <td data-label="Status">
         <span className={`review-issue-pill ${issueClass}`}>{row.statusLabel}</span>
         <small className={row.failedByFtw ? "ftw-row-error" : undefined}>{row.ftwFailureReason || row.issue}</small>
       </td>
@@ -2305,6 +3357,7 @@ function ClientErrorBanner({ error }: { error: ClientFacingError }) {
         <p>{error.message}</p>
         {error.reason ? <small>Reason: {error.reason}</small> : null}
         {error.next_action ? <small>Next step: {error.next_action}</small> : null}
+        {error.code ? <small>Reference: {error.code}</small> : null}
         <RejectedFieldsList fields={error.rejected_fields || []} />
       </div>
     </section>
@@ -2414,160 +3467,55 @@ function clientErrorFromRaw(message: string, source: string): ClientFacingError 
   return null;
 }
 
-function ApproveConfirmationModal({
-  blockers,
-  hasBlockers,
-  onApprove,
-  onClose,
-  onReviewFields,
-  unresolvedRows,
-}: {
-  blockers: {
-    highPriorityMissing: number;
-    lowConfidence: number;
-    needsDecision: number;
-    unmapped: number;
-    willKeepFtw: number;
-    willUpdate: number;
-  };
-  hasBlockers: boolean;
-  onApprove: () => void;
-  onClose: () => void;
-  onReviewFields: () => void;
-  unresolvedRows: ReviewDecisionRow[];
-}) {
-  const previewRows = unresolvedRows.slice(0, 3);
-  const dialogRef = useRef<HTMLElement | null>(null);
-  useDialogFocus(true, dialogRef, onClose);
-  return (
-    <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="approve-confirm-title">
-        <header className="approve-confirm-header">
-          <div>
-            <span className="eyebrow">{hasBlockers ? "Approval override" : "Approval confirmation"}</span>
-            <h2 id="approve-confirm-title">{hasBlockers ? "Approve with unresolved items?" : "Approve this filing?"}</h2>
-            <p>
-              {hasBlockers
-                ? "This will mark the filing approved even though unresolved fields remain. FT Williams sending will still stay locked unless the current data, Schedule A match, and safe XML checks are complete."
-                : "This will mark the filing approved. FT Williams sending will unlock only when the current data, Schedule A match, and safe XML checks are complete."}
-            </p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close approval confirmation">
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="approve-confirm-stats">
-          <ApprovalModalStat label="Needs decision" value={blockers.needsDecision} tone="warn" />
-          <ApprovalModalStat label="High-priority missing" value={blockers.highPriorityMissing} tone="danger" />
-          <ApprovalModalStat label="Unmapped" value={blockers.unmapped} tone="danger" />
-          <ApprovalModalStat label="Low confidence" value={blockers.lowConfidence} tone="warn" />
-          <ApprovalModalStat label="Will update" value={blockers.willUpdate} tone="ready" />
-          <ApprovalModalStat label="Ready / keep FTW" value={blockers.willKeepFtw} tone="info" />
-        </div>
-
-        <div className={`approve-confirm-warning ${hasBlockers ? "" : "ready"}`}>
-          {hasBlockers ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
-          <span>
-            <strong>{hasBlockers ? "Approving does not mean every missing field will be sent." : "Review the prepared values before approving."}</strong>
-            <small>
-              {hasBlockers
-                ? "Fields without a proposed value will remain unchanged or excluded from the FT Williams update payload."
-                : "Only approved proposed values are prepared for the FT Williams update payload."}
-            </small>
-          </span>
-        </div>
-
-        <div className="approve-confirm-table-wrap">
-          <div className="approve-confirm-table-head">
-            <strong>Highest-priority unresolved fields</strong>
-            <span>Showing {previewRows.length} of {unresolvedRows.length}</span>
-          </div>
-          <table className="approve-confirm-table">
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Extracted</th>
-                <th>Current FTW</th>
-                <th>Proposed</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {previewRows.map((row) => (
-                <tr key={row.key}>
-                  <td>
-                    <strong>{row.label}</strong>
-                    <small>{row.formLabel} / {row.section}</small>
-                  </td>
-                  <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
-                  <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
-                  <td>{row.proposed || <span className="muted-value">No proposed value</span>}</td>
-                  <td><span className={`review-issue-pill issue-${row.group.toLowerCase()}`}>{row.statusLabel}</span></td>
-                </tr>
-              ))}
-              {!previewRows.length ? (
-                <tr>
-                  <td colSpan={5}>No unresolved fields remain.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-
-        <footer className="approve-confirm-actions">
-          <button className="button secondary" type="button" onClick={onClose}>Cancel</button>
-          <button className="button secondary" type="button" onClick={onReviewFields}>
-            <Eye size={16} /> Review Fields
-          </button>
-          <button className={hasBlockers ? "button button-warn" : "button"} type="button" onClick={onApprove}>
-            <CheckCircle2 size={16} /> {hasBlockers ? "Approve with unresolved fields" : "Approve filing"}
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function UnapproveConfirmationModal({
-  filingName,
+function BringForwardConfirmationModal({
+  busy,
+  clientName,
   onClose,
   onConfirm,
+  planName,
+  planNumber,
+  targetYear,
 }: {
-  filingName: string;
+  busy: boolean;
+  clientName: string;
   onClose: () => void;
   onConfirm: () => void;
+  planName: string;
+  planNumber: string;
+  targetYear: string;
 }) {
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
   return (
     <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal unapprove-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="unapprove-confirm-title">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="bring-forward-confirm-title">
         <header className="approve-confirm-header">
           <div>
-            <span className="eyebrow">Approval status</span>
-            <h2 id="unapprove-confirm-title">Remove approval?</h2>
-            <p>
-              This will move the filing out of approved status and lock FT Williams sending until the filing is approved again.
-            </p>
+            <span className="eyebrow">Required confirmation</span>
+            <h2 id="bring-forward-confirm-title">Confirm Bring Forward</h2>
+            <p>The local agent will open only this FT Williams plan and bring prior-year data into the target year.</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close unapprove confirmation">
-            <X size={18} />
-          </button>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close Bring Forward confirmation"><X size={18} /></button>
         </header>
-
-        <div className="unapprove-confirm-card">
-          <span><Ban size={18} /></span>
-          <div>
-            <strong>{filingName}</strong>
-            <small>Field decisions and prepared FT Williams data are kept. Only the approval state changes.</small>
+        <div className="approve-confirm-body">
+          <div className="approve-confirm-stats">
+            <ApprovalModalStat label="Client" value={clientName} tone="info" />
+            <ApprovalModalStat label="Plan" value={planName} tone="info" />
+            <ApprovalModalStat label="Plan number" value={planNumber} tone="info" />
+            <ApprovalModalStat label="Target year" value={targetYear} tone="warn" />
+          </div>
+          <div className="approve-confirm-warning ready">
+            <ShieldCheck size={18} />
+            <span>
+              <strong>Target-bound safety check</strong>
+              <small>If the plan or year changes, this approval expires and confirmation is required again.</small>
+            </span>
           </div>
         </div>
-
         <footer className="approve-confirm-actions">
-          <button className="button secondary" type="button" onClick={onClose}>Keep approved</button>
-          <button className="button danger" type="button" onClick={onConfirm}>
-            <Ban size={16} /> Unapprove filing
+          <button className="button secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="button" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? <InlineLoader label="Starting Bring Forward" /> : <><ShieldCheck size={16} /> Confirm this plan and year</>}
           </button>
         </footer>
       </section>
@@ -2575,7 +3523,176 @@ function UnapproveConfirmationModal({
   );
 }
 
-function ApprovalModalStat({ label, tone, value }: { label: string; tone: "danger" | "info" | "ready" | "warn"; value: number }) {
+function FTWilliamsSendConfirmationModal({
+  brokerRowCount,
+  busy,
+  changedRows,
+  onClose,
+  onConfirm,
+  onReviewFields,
+  preservedScheduleARecordCount,
+  scheduleARecordCount,
+  scheduleAUpdateIncluded,
+  unchangedScheduleARecords,
+  warningCount,
+  selectedFieldIds,
+  includeBrokerUpdates,
+  onToggleField,
+  onToggleBrokers,
+}: {
+  brokerRowCount: number;
+  busy: boolean;
+  changedRows: ReviewDecisionRow[];
+  onClose: () => void;
+  onConfirm: () => void;
+  onReviewFields: () => void;
+  preservedScheduleARecordCount: number;
+  scheduleARecordCount: number;
+  scheduleAUpdateIncluded: boolean;
+  unchangedScheduleARecords: ScheduleAIdentitySummary[];
+  warningCount: number;
+  selectedFieldIds: string[];
+  includeBrokerUpdates: boolean;
+  onToggleField: (fieldId: string) => void;
+  onToggleBrokers: (included: boolean) => void;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, dialogRef, onClose);
+  const selectedCount = changedRows.filter((row) => row.fieldId && selectedFieldIds.includes(row.fieldId)).length;
+  const scheduleChangesSelected = includeBrokerUpdates || changedRows.some((row) => row.formLabel === "Schedule A" && row.fieldId && selectedFieldIds.includes(row.fieldId));
+  return (
+    <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
+      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal ftw-send-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="ftw-send-confirm-title">
+        <header className="approve-confirm-header">
+          <div>
+            <span className="eyebrow">Final FT Williams check</span>
+            <h2 id="ftw-send-confirm-title">Confirm the values to update</h2>
+            <p>Select the changes to send. Other Action Required fields stay unchanged and do not block these updates. Current FTW data is refreshed before sending.</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close FT Williams confirmation"><X size={18} /></button>
+        </header>
+
+        <div className="approve-confirm-body">
+          <div className="approve-confirm-stats">
+            <ApprovalModalStat label="Review items (not send blockers)" value={warningCount} tone={warningCount ? "warn" : "ready"} />
+            <ApprovalModalStat label="Selected fields" value={selectedCount} tone="ready" />
+            <ApprovalModalStat label="Schedule A records included" value={scheduleChangesSelected ? scheduleARecordCount : 0} tone="info" />
+            <ApprovalModalStat label="Existing records preserved" value={scheduleChangesSelected ? preservedScheduleARecordCount : "Unchanged"} tone="info" />
+            <ApprovalModalStat label="Broker changes selected" value={includeBrokerUpdates ? brokerRowCount : 0} tone="info" />
+          </div>
+
+          <div className="approve-confirm-warning ready">
+            <ShieldCheck size={18} />
+            <span>
+              <strong>Complete Schedule A protection is enabled.</strong>
+              <small>The app retries delayed verification. It restores the pre-send snapshot only when read-back confirms a missing record or damaged broker-row set.</small>
+            </span>
+          </div>
+
+          <ol className="ftw-send-safety-flow" aria-label="FT Williams update safety flow">
+            <li><span>1</span><strong>Validate selection</strong><small>Only selected values and the FTW target are checked; unrelated review items remain unchanged.</small></li>
+            <li><span>2</span><strong>Send</strong><small>The complete, identity-checked payload is sent once.</small></li>
+            <li><span>3</span><strong>Accepted</strong><small>FT Williams accepted the update is recorded separately.</small></li>
+            <li><span>4</span><strong>Verify</strong><small>Complete appears only after every saved value is read back.</small></li>
+          </ol>
+          {brokerRowCount > 0 ? (
+            <label className="ftw-send-broker-selection">
+              <input type="checkbox" checked={includeBrokerUpdates} disabled={busy} onChange={(event) => onToggleBrokers(event.target.checked)} />
+              Include prepared broker changes (their values and matches must be valid). Unchecked keeps current FTW broker rows unchanged.
+            </label>
+          ) : null}
+
+          {unchangedScheduleARecords.length ? (
+            <details className="ftw-preserved-records">
+              <summary>Unchanged Schedule A records <span>{unchangedScheduleARecords.length} preserved</span></summary>
+              <div>
+                {unchangedScheduleARecords.map((record) => (
+                  <article key={`${record.sequence}-${record.contract}-${record.carrier}`}>
+                    <strong>{record.carrier}</strong>
+                    <small>Sequence {record.sequence} · EIN {record.carrierEin} · Policy {record.contract}</small>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ) : null}
+
+          <div className="approve-confirm-table-wrap">
+            <div className="approve-confirm-table-head">
+              <strong>Values that will change</strong>
+              <span>{selectedCount} selected / {changedRows.length} available</span>
+            </div>
+            <table className="approve-confirm-table">
+              <thead><tr><th>Select / Field</th><th>Current FTW</th><th>New value</th><th>Status</th></tr></thead>
+              <tbody>
+                {changedRows.map((row) => (
+                  <tr key={row.key}>
+                    <td data-label="Select / Field"><label><input type="checkbox" aria-label={`Send ${row.label}`} checked={Boolean(row.fieldId && selectedFieldIds.includes(row.fieldId))} disabled={busy || !row.fieldId} onChange={() => row.fieldId && onToggleField(row.fieldId)} /> <strong>{row.label}</strong></label><small>{row.formLabel} / {row.section}</small></td>
+                    <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">Blank</span>}</td>
+                    <td data-label="New value">{row.proposed || <span className="muted-value">Blank</span>}</td>
+                    <td data-label="Status"><span className="review-issue-pill issue-will_update">{row.fieldId && selectedFieldIds.includes(row.fieldId) ? "Selected" : "Keep current"}</span></td>
+                  </tr>
+                ))}
+                {!changedRows.length ? <tr><td colSpan={4}>{scheduleAUpdateIncluded ? "Schedule A or broker-row changes are prepared." : "No field changes are currently prepared."}</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <footer className="approve-confirm-actions">
+          <button className="button secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="button secondary" type="button" disabled={busy} onClick={onReviewFields}><Eye size={16} /> Review fields</button>
+          <button className="button" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send and verify</>}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function NewScheduleAConfirmation({
+  busy,
+  identity,
+  identityReady,
+  onCancel,
+  onConfirm,
+  preservedScheduleCount,
+}: {
+  busy: boolean;
+  identity: { carrier: string; carrierEin: string; naic: string; contract: string };
+  identityReady: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  preservedScheduleCount: number;
+}) {
+  return (
+    <section className="workflow-new-schedule-confirmation" aria-label="Confirm new Schedule A">
+      <header>
+        <span><Plus aria-hidden="true" size={17} /></span>
+        <div><small>New FT Williams record</small><strong>Create new Schedule A</strong></div>
+      </header>
+      <p>No existing record will be selected or overwritten. The Schedule A will be created only when its selected changes are sent.</p>
+      <div className="workflow-new-schedule-identity">
+        <span><small>Carrier</small><strong>{identity.carrier || "Required"}</strong></span>
+        <span><small>Carrier EIN</small><strong>{identity.carrierEin || "Required"}</strong></span>
+        <span><small>NAIC</small><strong>{identity.naic || "Required"}</strong></span>
+        <span><small>Contract</small><strong>{identity.contract || "Required"}</strong></span>
+      </div>
+      <div className="workflow-new-schedule-preservation">
+        <ShieldCheck aria-hidden="true" size={17} />
+        <span><strong>Existing Schedule A records stay unchanged</strong><small>{preservedScheduleCount} existing record{preservedScheduleCount === 1 ? "" : "s"} will be preserved and verified after sending.</small></span>
+      </div>
+      {!identityReady ? <p className="workflow-new-schedule-error"><AlertTriangle size={14} /> Complete the carrier, EIN, NAIC, and contract fields before creating a new Schedule A.</p> : null}
+      <div className="workflow-dialog-actions">
+        <button className="button secondary" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+        <button className="button" type="button" disabled={busy || !identityReady} onClick={onConfirm}><Plus size={15} /> Use as new Schedule A</button>
+      </div>
+    </section>
+  );
+}
+
+
+function ApprovalModalStat({ label, tone, value }: { label: string; tone: "danger" | "info" | "ready" | "warn"; value: ReactNode }) {
   return (
     <div className={`approve-confirm-stat stat-${tone}`}>
       <span>{label}</span>
@@ -2665,15 +3782,164 @@ function ScheduleAWorksheetSummaryPanel({ summaries }: { summaries: ScheduleAWor
   );
 }
 
-function ScheduleABrokerRowsPanel({ rows }: { rows: ScheduleABrokerRow[] }) {
-  if (!rows.length) return null;
+function PlanYearConflictPanel({
+  busy,
+  conflict,
+  onResolve,
+}: {
+  busy: boolean;
+  conflict: NonNullable<FTWilliamsReview["plan_year_conflict"]>;
+  onResolve: (resolution: "USE_WORKSHEET" | "KEEP_FTW") => void;
+}) {
+  const worksheetDates = `${conflict.worksheet_begin || "Missing"} – ${conflict.worksheet_end || "Missing"}`;
+  const ftwFormDates = `${conflict.ftw_form_begin || "Missing"} – ${conflict.ftw_form_end || "Missing"}`;
+  const ftwScheduleDates = `${conflict.ftw_schedule_a_begin || "Missing"} – ${conflict.ftw_schedule_a_end || "Missing"}`;
   return (
-    <section className="schedule-a-broker-panel card">
+    <section className="plan-year-conflict-panel" aria-label="Plan year conflict">
+      <div className="plan-year-conflict-copy">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>Confirm the plan year before sending date changes</strong>
+          <p>The selected dates will be applied together to Form 5500 and every attached Schedule A.</p>
+        </div>
+      </div>
+      <dl className="plan-year-conflict-values">
+        <div><dt>Plan worksheet</dt><dd>{worksheetDates}</dd></div>
+        <div><dt>FT Williams Form 5500</dt><dd>{ftwFormDates}</dd></div>
+        <div><dt>FT Williams Schedule A</dt><dd>{ftwScheduleDates}</dd></div>
+      </dl>
+      <div className="plan-year-conflict-actions">
+        <button className="button primary" type="button" disabled={busy} onClick={() => onResolve("USE_WORKSHEET")}>
+          Use worksheet dates
+        </button>
+        <button className="button secondary" type="button" disabled={busy} onClick={() => onResolve("KEEP_FTW")}>
+          Keep FT Williams dates
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function brokerRowValidationIssues(row: ScheduleABrokerRow): string[] {
+  const issues: string[] = [];
+  if (!String(row.name || "").trim()) issues.push("Broker / person is required.");
+  const organizationCode = String(row.organization_code || "").trim();
+  if (!organizationCode) issues.push("Organization code is required.");
+  else if (!/^[0-9]$/.test(organizationCode)) issues.push("Organization code must be from 0 to 9.");
+  const moneyPattern = /^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/;
+  for (const [label, value] of [["Commission", row.commission_total], ["Fees", row.fee_total]] as const) {
+    if (String(value || "").trim() && !moneyPattern.test(String(value).trim().replace("$", ""))) {
+      issues.push(`${label} must be a number with at most 2 decimal places.`);
+    }
+  }
+  if (String(row.state || "").trim() && !/^[A-Za-z]{2}$/.test(String(row.state).trim())) {
+    issues.push("State must be a two-letter code.");
+  }
+  const city = String(row.city || "").trim();
+  if (
+    city
+    && (
+      /\b(?:ADDRESS(?:\s+LINE\s+[12])?|CITY|STATE|ST|ZIP(?:\s+CODE)?)\s*:/i.test(city)
+      || /\b\d{5}(?:-\d{4})?\b/.test(city)
+      || /,\s*[A-Z]{2}(?:\s|$)/i.test(city)
+    )
+  ) {
+    issues.push("City contains street, state, or ZIP data. Enter only the city here, then use the State and ZIP code fields.");
+  }
+  for (const [label, value] of [["Address line 1", row.address_line_1], ["Address line 2", row.address_line_2]] as const) {
+    if (/\b(?:CITY|STATE|ST|ZIP(?:\s+CODE)?)\s*:/i.test(String(value || ""))) {
+      issues.push(`${label} contains city, state, or ZIP labels. Move each value to its matching field.`);
+    }
+  }
+  if (String(row.zip_code || "").trim()) {
+    const zipDigits = String(row.zip_code).replace(/\D/g, "");
+    if (zipDigits.length !== 5 && zipDigits.length !== 9) issues.push("ZIP code must contain 5 or 9 digits.");
+  }
+  return issues;
+}
+
+function ScheduleABrokerRowsPanel({
+  busy,
+  matches,
+  onConfirm,
+  onSaveRows,
+  rows,
+}: {
+  busy: boolean;
+  matches: ScheduleABrokerMatch[];
+  onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+  onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
+  rows: ScheduleABrokerRow[];
+}) {
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
+  const [showDraftValidation, setShowDraftValidation] = useState(false);
+  const editorRef = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    if (editingIndex === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editingIndex]);
+
+  if (!rows.length) return null;
+
+  function beginEdit(row: ScheduleABrokerRow, index: number) {
+    setEditingIndex(index);
+    const blankCode = !String(row.organization_code ?? "").trim();
+    const nextDraft = { ...row, purpose: formatBrokerPurpose(row),
+      organization_code: blankCode ? "3" : row.organization_code,
+      organization_code_defaulted: blankCode || row.organization_code_defaulted };
+    setDraft(nextDraft);
+    setShowDraftValidation(brokerRowValidationIssues(nextDraft).length > 0);
+  }
+
+  function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
+    setDraft((current) => {
+      if (!current) return current;
+      if (field === "organization_code") return { ...current,
+        organization_code: value.trim() || "3", organization_code_defaulted: !value.trim() };
+      return { ...current, [field]: value };
+    });
+  }
+
+  async function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (editingIndex === null || !draft) return;
+    if (brokerRowValidationIssues(draft).length) {
+      setShowDraftValidation(true);
+      return;
+    }
+    const nextRows = rows.map((row, index) => index === editingIndex ? draft : row);
+    if (await onSaveRows(nextRows, "edited", editingIndex)) {
+      setEditingIndex(null);
+      setDraft(null);
+      setShowDraftValidation(false);
+    }
+  }
+
+  async function excludeRow(index: number) {
+    if (!window.confirm("Exclude this broker row from the FT Williams update?")) return;
+    if (await onSaveRows(rows.filter((_, rowIndex) => rowIndex !== index), "excluded")) {
+      setEditingIndex(null);
+      setDraft(null);
+    }
+  }
+
+  return (
+    <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
       <div className="schedule-a-broker-panel-head">
         <PanelHeading icon={<ListChecks size={16} />} title="Schedule A broker rows" />
         <span>{rows.length} extracted</span>
       </div>
-      <div className="schedule-a-broker-table-wrap">
+      <div
+        aria-label="Schedule A broker rows"
+        className="schedule-a-broker-table-wrap"
+        role="region"
+        tabIndex={0}
+      >
         <table className="schedule-a-broker-table">
           <thead>
             <tr>
@@ -2682,25 +3948,152 @@ function ScheduleABrokerRowsPanel({ rows }: { rows: ScheduleABrokerRow[] }) {
               <th>Org</th>
               <th>Commissions</th>
               <th>Fees</th>
+              <th>Purpose</th>
+              <th>FT Williams row</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, index) => (
-              <tr key={`${row.name}-${row.zip_code || ""}-${index}`}>
-                <td>{row.name}</td>
-                <td>{formatBrokerAddress(row)}</td>
-                <td>{row.organization_code || "-"}</td>
-                <td>{row.commission_total || "0"}</td>
-                <td>{row.fee_total || "0"}</td>
+            {rows.map((row, index) => {
+              const match = matches.find((candidate) => candidate.extracted_index === index);
+              const isEditing = editingIndex === index && Boolean(draft);
+              const displayRow = editingIndex === index && draft ? draft : row;
+              const rowIssues = brokerRowValidationIssues(displayRow);
+              const draftIssues = isEditing && draft ? brokerRowValidationIssues(draft) : [];
+              return (
+              <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
+              <tr className={isEditing ? "broker-row-editing" : undefined}>
+                <td data-label="Broker / person">
+                  {displayRow.name}
+                  {isEditing ? <small className="broker-draft-badge">Unsaved changes</small> : null}
+                </td>
+                <td data-label="Address">{formatBrokerAddress(displayRow)}</td>
+                <td data-label="Org">
+                  <span className={!String(displayRow.organization_code || "").trim() ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
+                  {displayRow.organization_code_defaulted && displayRow.organization_code === "3" ?
+                    <small className="broker-draft-badge">Defaulted to 3 because organizational code was blank.</small> : null}
+                </td>
+                <td data-label="Commissions">{displayRow.commission_total || "0"}</td>
+                <td data-label="Fees">{displayRow.fee_total || "0"}</td>
+                <td data-label="Purpose">{formatBrokerPurpose(displayRow) || "-"}</td>
+                <td data-label="FT Williams row">
+                  {match?.resolved ? (
+                    <span className="broker-match-status broker-match-ready">
+                      {match.status === "CONFIRMED_NEW" ? "New broker row" : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
+                    </span>
+                  ) : match ? (
+                    <BrokerMatchDecision match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />
+                  ) : (
+                    <span className="broker-match-status">Load current FTW data to match</span>
+                  )}
+                  {match?.reason ? <small className="broker-match-reason">{match.reason}</small> : null}
+                </td>
+                <td data-label="Actions">
+                  <div className="broker-row-actions">
+                    <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
+                      <Edit3 size={13} /> {rowIssues.length ? "Fix issue" : "Edit"}
+                    </button>
+                    <button className="button danger" type="button" disabled={busy} onClick={() => void excludeRow(index)}>
+                      <Ban size={13} /> Exclude
+                    </button>
+                  </div>
+                </td>
               </tr>
-            ))}
+              {rowIssues.length ? (
+                <tr className="broker-row-validation-summary">
+                  <td colSpan={8}>
+                    <div role="alert">
+                      <AlertTriangle size={15} />
+                      <div>
+                        <strong>Broker row {index + 1} needs correction</strong>
+                        {rowIssues.map((issue) => <span key={issue}>{issue}</span>)}
+                      </div>
+                      <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
+                        <Edit3 size={13} /> Fix issue
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+              {isEditing && draft ? (
+                <tr className="broker-edit-row" ref={editorRef}>
+                  <td colSpan={8}>
+                    <form className="broker-edit-form" onSubmit={submitEdit}>
+                      <div className="broker-edit-toolbar">
+                        <div>
+                          <strong>Editing broker row {index + 1}</strong>
+                          <span>Changes preview above and are saved only when you confirm.</span>
+                        </div>
+                        <div className="broker-edit-actions">
+                          <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); setShowDraftValidation(false); }}>Cancel</button>
+                          <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
+                        </div>
+                      </div>
+                      {showDraftValidation && draftIssues.length ? (
+                        <div className="broker-edit-validation" role="alert">
+                          <strong>Fix this broker row before saving</strong>
+                          {draftIssues.map((issue) => <span key={issue}>{issue}</span>)}
+                        </div>
+                      ) : null}
+                      <label>Broker / person<input required maxLength={35} value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
+                      <label>Address line 1<input maxLength={35} value={draft.address_line_1 || ""} onChange={(event) => updateDraft("address_line_1", event.target.value)} /></label>
+                      <label>Address line 2<input maxLength={35} value={draft.address_line_2 || ""} onChange={(event) => updateDraft("address_line_2", event.target.value)} /></label>
+                      <label>City<input maxLength={30} value={draft.city || ""} onChange={(event) => updateDraft("city", event.target.value)} /></label>
+                      <label>State<input maxLength={2} value={draft.state || ""} onChange={(event) => updateDraft("state", event.target.value.toUpperCase())} /></label>
+                      <label>ZIP code<input maxLength={10} value={draft.zip_code || ""} onChange={(event) => updateDraft("zip_code", event.target.value)} /></label>
+                      <label>
+                        Organization code
+                        <select required value={draft.organization_code || ""} onChange={(event) => updateDraft("organization_code", event.target.value)}>
+                          <option value="">Use default (3)</option>
+                          {FTW_ORGANIZATION_CODE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.value} — {option.label}</option>
+                          ))}
+                        </select>
+                        <small>Blank codes default to 3. Existing codes are preserved.</small>
+                      </label>
+                      <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
+                      <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
+                      <label className="broker-purpose-input">Purpose<input maxLength={70} value={draft.purpose || ""} onChange={(event) => updateDraft("purpose", event.target.value)} /></label>
+                    </form>
+                  </td>
+                </tr>
+              ) : null}
+              </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
       {rows.length > 1 ? (
-        <p>Multiple broker rows are held separately so the single-row FT Williams broker fields are not overwritten.</p>
+        <p>Each extracted broker is matched separately. Existing unmatched FT Williams broker rows are preserved.</p>
       ) : null}
     </section>
+  );
+}
+
+function BrokerMatchDecision({
+  busy,
+  match,
+  onConfirm,
+}: {
+  busy: boolean;
+  match: ScheduleABrokerMatch;
+  onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+}) {
+  const candidates = match.candidate_ftw_indexes || [];
+  const [selected, setSelected] = useState(candidates[0]?.toString() || "");
+  return (
+    <div className="broker-match-decision">
+      {candidates.length ? (
+        <>
+          <select value={selected} onChange={(event) => setSelected(event.target.value)} disabled={busy} aria-label="FT Williams broker row">
+            {candidates.map((index) => <option key={index} value={index}>FT Williams row {index + 1}</option>)}
+          </select>
+          <button className="button secondary" type="button" disabled={busy || selected === ""} onClick={() => onConfirm(match.extracted_index, Number(selected), false)}>Match row</button>
+        </>
+      ) : null}
+      <button className="button secondary" type="button" disabled={busy} onClick={() => onConfirm(match.extracted_index, undefined, true)}>Add as new</button>
+    </div>
   );
 }
 
@@ -2713,6 +4106,20 @@ function formatBrokerAddress(row: ScheduleABrokerRow) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function organizationCodeLabel(value?: string | null) {
+  const normalized = String(value || "").replace(/^0+(?=\d)/, "");
+  const option = FTW_ORGANIZATION_CODE_OPTIONS.find((candidate) => candidate.value === normalized);
+  return option ? `${option.value} — ${option.label}` : "Not selected";
+}
+
+function formatBrokerPurpose(row: ScheduleABrokerRow) {
+  if (row.purpose?.trim()) return row.purpose.trim();
+  return [...new Set([...(row.commission_rows || []), ...(row.fee_rows || [])]
+    .map((item) => String(item.purpose || "").trim())
+    .filter(Boolean))]
+    .join(", ");
 }
 
 function FTWilliamsComparisonPanel({
@@ -2735,6 +4142,9 @@ function FTWilliamsComparisonPanel({
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   }) => void;
   onSelectScheduleMatch: (payload: {
@@ -2756,13 +4166,16 @@ function FTWilliamsComparisonPanel({
   const scheduleMatch = formatScheduleAMatch(review?.schedule_a_match);
   const currentQueryYear = formatCurrentQueryYear(review);
   const scheduleCandidates = review?.schedule_a_candidates ?? [];
-  const updateSent = review?.status === "UPDATE_SENT";
+  const updateSent = isVerifiedFTWilliamsUpdate(review);
   const updateFailed = Boolean(review?.active_failure || review?.status === "UPDATE_FAILED" || review?.status === "UPDATE_UNKNOWN");
   const [manualMatch, setManualMatch] = useState({
     customer_id: "",
     plan_id: "",
     ftw_customer_id: "",
     ftw_plan_id: "",
+    ftw_browser_customer_id: "",
+    ftw_browser_plan_id: "",
+    ftw_plan_url: "",
     year: "",
   });
   const [scheduleSelection, setScheduleSelection] = useState({
@@ -2779,6 +4192,9 @@ function FTWilliamsComparisonPanel({
       plan_id: textValue(identity.plan_id) || textValue(review?.plan_id),
       ftw_customer_id: textValue(identity.ftw_customer_id) || textValue(review?.ftw_customer_id),
       ftw_plan_id: textValue(identity.ftw_plan_id) || textValue(review?.ftw_plan_id),
+      ftw_browser_customer_id: textValue(review?.ftw_browser_customer_id),
+      ftw_browser_plan_id: textValue(review?.ftw_browser_plan_id),
+      ftw_plan_url: "",
       year: textValue(lookup?.year) || textValue(review?.year),
     });
     setScheduleSelection({
@@ -2787,7 +4203,7 @@ function FTWilliamsComparisonPanel({
       carrier_ein: textValue(review?.schedule_a_match?.carrier_ein),
       contract: textValue(review?.schedule_a_match?.contract),
     });
-  }, [lookup?.matched_identity, lookup?.year, review?.customer_id, review?.ftw_customer_id, review?.ftw_plan_id, review?.ftw_seq_no, review?.id, review?.plan_id, review?.schedule_a_match, review?.updated_at, review?.year]);
+  }, [lookup?.matched_identity, lookup?.year, review?.customer_id, review?.ftw_browser_customer_id, review?.ftw_browser_plan_id, review?.ftw_customer_id, review?.ftw_plan_id, review?.ftw_seq_no, review?.id, review?.plan_id, review?.schedule_a_match, review?.updated_at, review?.year]);
 
   function submitManualMatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2847,7 +4263,7 @@ function FTWilliamsComparisonPanel({
             <p>
               {review?.current_query_success
                 ? `${changedFields.length} proposed field${changedFields.length === 1 ? "" : "s"} differ from current FT Williams data.`
-                : "Query FT Williams current data before sending approved updates."}
+                : "Query FT Williams current data before sending selected changes."}
             </p>
           </div>
           <div className="ftw-comparison-actions">
@@ -2915,11 +4331,13 @@ function FTWilliamsComparisonPanel({
           <FTWMeta label="Current Query" value={review?.current_query_success ? "Successful" : review?.current_query_sent ? "Attempted" : "Not sent"} />
           <FTWMeta label="Customer / Plan" value={review?.customer_id && review?.plan_id ? `${review.customer_id} / ${review.plan_id}` : "Pending"} />
           <FTWMeta label="FTW IDs" value={review?.ftw_customer_id && review?.ftw_plan_id ? `${review.ftw_customer_id} / ${review.ftw_plan_id}` : "Pending"} />
+          <FTWMeta label="Browser IDs" value={review?.ftw_browser_customer_id && review?.ftw_browser_plan_id ? `${review.ftw_browser_customer_id} / ${review.ftw_browser_plan_id}` : "Pending"} />
+          <FTWMeta label="Plan Registry" value={review?.browser_mapping_confirmed ? "Confirmed" : "One-time mapping needed"} />
           <FTWMeta label="Schedule A Match" value={scheduleMatch} />
         </div>
 
         <div className="ftw-fallback-grid">
-          <form className="ftw-fallback-form" onSubmit={submitManualMatch}>
+          <form className="ftw-fallback-form" id="ftw-plan-match-form" onSubmit={submitManualMatch}>
             <h3>Plan Match</h3>
             <div className="ftw-fallback-inputs">
               <label>
@@ -2937,6 +4355,23 @@ function FTWilliamsComparisonPanel({
               <label>
                 <span>FTWPlanID</span>
                 <input className="input" value={manualMatch.ftw_plan_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_plan_id: event.target.value }))} />
+              </label>
+              <label>
+                <span>Browser Customer ID</span>
+                <input className="input" value={manualMatch.ftw_browser_customer_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_browser_customer_id: event.target.value }))} />
+              </label>
+              <label>
+                <span>Browser Plan ID</span>
+                <input className="input" value={manualMatch.ftw_browser_plan_id} onChange={(event) => setManualMatch((value) => ({ ...value, ftw_browser_plan_id: event.target.value }))} />
+              </label>
+              <label className="ftw-plan-url-field">
+                <span>FT Williams Plan URL</span>
+                <input
+                  className="input"
+                  value={manualMatch.ftw_plan_url}
+                  placeholder="Paste the exact FT Williams plan page URL"
+                  onChange={(event) => setManualMatch((value) => ({ ...value, ftw_plan_url: event.target.value }))}
+                />
               </label>
               <label>
                 <span>Year</span>
@@ -3044,6 +4479,20 @@ function formatScheduleAMatch(match?: Record<string, unknown> | null) {
   return parts.length ? parts.join(" / ") : "Matched";
 }
 
+function scheduleACreationIdentity(review: FTWilliamsReview | null) {
+  const byRule = new Map(
+    (review?.fields || [])
+      .filter((field) => field.rule_key)
+      .map((field) => [field.rule_key, field.proposed_value || field.extracted_value || ""]),
+  );
+  return {
+    carrier: byRule.get("schedule_a_part_i_1a_name_of_insurance_company") || "",
+    carrierEin: byRule.get("schedule_a_part_i_1b_insurance_carrier_ein") || "",
+    naic: byRule.get("schedule_a_part_i_1c_naic_code") || "",
+    contract: byRule.get("schedule_a_part_i_1d_contract_policy_number") || "",
+  };
+}
+
 function formatFtwLookupStatus(status: string) {
   if (!status) return "Not prepared";
   return status.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -3069,12 +4518,15 @@ function buildReviewDecisionRows(
   review: FTWilliamsReview | null,
   contractType: ScheduleAContractType,
   includeExcluded: boolean,
+  hideStructuredBrokerFields = false,
 ): ReviewDecisionRow[] {
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const usedFieldIds = new Set<string>();
   const rows: ReviewDecisionRow[] = [];
 
   (review?.fields ?? []).forEach((comparison, index) => {
+    if (isRetiredReviewField(comparison)) return;
+    if (hideStructuredBrokerFields && isStructuredBrokerSummaryRule(comparison.rule_key)) return;
     const extractedField = comparison.field_id ? fieldById.get(comparison.field_id) : undefined;
     if (!includeExcluded && !comparisonAllowedForContractType(comparison, extractedField, contractType)) return;
     if (comparison.field_id) usedFieldIds.add(comparison.field_id);
@@ -3082,6 +4534,7 @@ function buildReviewDecisionRows(
   });
 
   fields.forEach((field) => {
+    if (hideStructuredBrokerFields && isStructuredBrokerSummaryRule(fieldRuleKey(field))) return;
     if (!includeExcluded && !fieldAllowedForContractType(field, contractType)) return;
     if (field.id && usedFieldIds.has(field.id)) return;
     if (field.status === "MATCHED" || field.status === "EDITED") return;
@@ -3089,6 +4542,45 @@ function buildReviewDecisionRows(
   });
 
   return rows.sort(compareReviewRows);
+}
+
+function isStructuredBrokerSummaryRule(ruleKey?: string | null) {
+  return STRUCTURED_BROKER_SUMMARY_RULES.has(String(ruleKey || ""));
+}
+
+function isRetiredReviewField(field: ExtractedField | FTWilliamsComparisonField) {
+  const keyedField = field as ExtractedField & {
+    mapped_rule_key?: string | null;
+    rule_key?: string | null;
+  };
+  const ruleKey = keyedField.rule_key || keyedField.mapped_rule_key;
+  if (ruleKey && RETIRED_REVIEW_RULE_KEYS.has(ruleKey)) return true;
+
+  const labels = "source_field_name" in field
+    ? [field.source_field_name, field.mapped_label]
+    : [field.label];
+  return labels.some((label) => /^\s*(?:2a\.\s*)?Plan Administrator Name\s*$/i.test(String(label || "")));
+}
+
+function mergeFieldDecisionReview(
+  current: FTWilliamsReview | null | undefined,
+  updated: FTWilliamsReview | null | undefined,
+  fieldId: string,
+): FTWilliamsReview | null {
+  if (!updated) return current ?? null;
+  if (!current) return updated;
+
+  const replacement = updated.fields.find((field) => field.field_id === fieldId);
+  if (!replacement) return { ...updated, fields: current.fields };
+
+  let replaced = false;
+  const fields = current.fields.map((field) => {
+    if (field.field_id !== fieldId) return field;
+    replaced = true;
+    return replacement;
+  });
+  if (!replaced) fields.push(replacement);
+  return { ...updated, fields };
 }
 
 function rowFromComparison(
@@ -3117,6 +4609,9 @@ function rowFromComparison(
     extractedField: field,
     failedByFtw: Boolean(rejectedField),
     ftwFailureReason: rejectedField ? rejectedFieldDescription(rejectedField) : undefined,
+    validationStatus: comparison.validation_status,
+    validationBlocking: Boolean(comparison.validation_blocking),
+    validationExpectedFormat: comparison.validation_expected_format || undefined,
   };
 }
 
@@ -3142,9 +4637,13 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 }
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
+  if (comparison.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "SAME";
+  if (comparison.validation_blocking) return "NEEDS_DECISION";
   if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
-  if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") return "LOW_CONFIDENCE";
+  if (comparison.extraction_status === "LOW_CONFIDENCE" || field?.status === "LOW_CONFIDENCE") {
+    return comparison.changed && comparison.update_included ? "LOW_CONFIDENCE" : "SAME";
+  }
   if (comparison.extraction_status === "UNMAPPED" || field?.status === "UNMAPPED") return "NEEDS_DECISION";
   if (comparison.changed && comparison.update_included) return "WILL_UPDATE";
   if (comparison.changed) return "NEEDS_DECISION";
@@ -3159,6 +4658,10 @@ function groupForExtractedField(field: ExtractedField): ReviewRowGroup {
 }
 
 function issueForComparison(comparison: FTWilliamsComparisonField, field: ExtractedField | undefined, group: ReviewRowGroup) {
+  if (comparison.validation_message) {
+    const expected = comparison.validation_expected_format ? ` Expected: ${comparison.validation_expected_format}.` : "";
+    return `${comparison.validation_message}.${expected}`.replace("..", ".");
+  }
   if (field?.status === "EDITED" && group === "WILL_UPDATE") return "Reviewer confirmed this FT Williams update.";
   if (field?.status === "EDITED" && comparison.changed && !comparison.update_included) {
     if (comparison.update_exclusion_reason) return comparison.update_exclusion_reason;
@@ -3169,7 +4672,7 @@ function issueForComparison(comparison: FTWilliamsComparisonField, field: Extrac
   if (group === "MISSING") return "Required source value was not found.";
   if (group === "LOW_CONFIDENCE") return `Confidence ${percent(comparison.confidence)} needs review.`;
   if (group === "WILL_UPDATE") return comparison.current_value ? "Proposed value differs from current FTW." : "FTW current value is blank.";
-  if (group === "NEEDS_DECISION") return "Reviewer decision required before approval.";
+  if (group === "NEEDS_DECISION") return "Review this value when needed. Other selected changes can still be sent.";
   return "Current FTW and proposed value match.";
 }
 
@@ -3182,16 +4685,29 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 }
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
+  if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
+  if (comparison?.validation_status === "INVALID") return "Invalid FT Williams format";
+  if (comparison?.validation_status === "REQUIRED") return "Required";
+  if (comparison?.validation_status === "REVIEW_REQUIRED") return "Review required";
+  if (comparison?.validation_status === "UNSUPPORTED") return "Review only · not supported";
   if (field?.status !== "EDITED") return statusLabelForGroup(group);
   if (comparison?.changed && comparison.update_exclusion_reason) return "Review only · more FTW details required";
   if (comparison?.changed && !comparison.update_included) return "Review only · not supported";
-  if (group === "WILL_UPDATE") return "Resolved · will update";
-  if (group === "SAME") return "Resolved · keeps FTW";
+  if (group === "WILL_UPDATE") {
+    return `Will update FT Williams: ${displayFtwChangeValue(comparison?.current_value)} → ${displayFtwChangeValue(comparison?.proposed_value || field?.proposed_value)}`;
+  }
+  if (group === "SAME") return "No change · current FT Williams value kept";
   return "Resolved";
+}
+
+function displayFtwChangeValue(value?: string | null) {
+  const text = String(value || "").trim();
+  return text || "blank";
 }
 
 function isActionRequiredRow(row: ReviewDecisionRow) {
   if (row.failedByFtw) return true;
+  if (row.validationBlocking) return true;
   if (row.extractedField?.status === "EDITED") return false;
   return Boolean(
     row.group === "NEEDS_DECISION" ||
@@ -3297,24 +4813,30 @@ function FieldTableRow({ field, selected, onSelect }: { field: ExtractedField; s
 }
 
 function FieldReviewModal({
+  expectedFormat,
   field,
   onClose,
   onSave,
   saving,
+  validationError,
 }: {
+  expectedFormat?: string;
   field: ExtractedField;
   onClose: () => void;
   onSave: (fieldId: string, proposedValue: string, options?: FieldSaveOptions) => Promise<boolean>;
   saving: boolean;
+  validationError?: string;
 }) {
   const [draft, setDraft] = useState(field?.proposed_value ?? "");
+  const [inlineError, setInlineError] = useState(validationError || "");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
 
   useEffect(() => {
     setDraft(field?.proposed_value ?? "");
-  }, [field?.id, field?.proposed_value]);
+    setInlineError(validationError || "");
+  }, [field?.id, field?.proposed_value, validationError]);
 
   async function save(value: string, options: FieldSaveOptions = {}) {
     const saved = await onSave(field.id, value, options);
@@ -3355,8 +4877,23 @@ function FieldReviewModal({
               </label>
               <label className="field-review-value-card field-review-value-proposed">
                 <span className="field-review-value-label"><Sparkles size={15} /> Proposed to FT Williams</span>
-                <input ref={inputRef} className="input" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={saving} />
-                <small className="field-edit-hint">Edit if needed, then confirm. Empty values must be marked missing.</small>
+                <input
+                  ref={inputRef}
+                  aria-invalid={Boolean(inlineError)}
+                  className={`input ${inlineError ? "input-invalid" : ""}`}
+                  value={draft}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setInlineError("");
+                  }}
+                  disabled={saving}
+                  placeholder={expectedFormat || "Enter the FT Williams value"}
+                />
+                {inlineError ? <small className="field-validation-error"><AlertTriangle size={14} /> {inlineError}</small> : null}
+                <small className="field-edit-hint">
+                  {expectedFormat ? `FT Williams format: ${expectedFormat}. ` : ""}
+                  Edit if needed, then confirm. Empty values must be marked missing.
+                </small>
               </label>
             </div>
           </div>
@@ -3595,7 +5132,7 @@ function FilingReviewSkeleton() {
     <div className="review-page approval-workspace-page filing-review-skeleton" role="status" aria-live="polite" aria-label="Loading filing review">
       <main className="approval-workspace">
         <section className="skeleton-workflow card">
-          {Array.from({ length: 6 }, (_, index) => <div key={index}><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div>)}
+          {Array.from({ length: 5 }, (_, index) => <div key={index}><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div>)}
         </section>
         <section className="skeleton-review-banner"><Skeleton className="skeleton-icon-small" /><div><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></div></section>
         <section className="approval-summary-strip skeleton-summary-strip">
@@ -3619,7 +5156,7 @@ function FTWilliamsLoadingPanel({ autoQuery, sendBusy }: { autoQuery: boolean; s
         <h2>{sendBusy ? "Sending Approved Data to FT Williams" : "Fetching Current FT Williams Data"}</h2>
         <p>
           {sendBusy
-            ? "Buttons are locked while the latest approved XML is sent and the response is saved."
+            ? "Buttons are locked while the selected update XML is sent and the response is saved."
             : autoQuery
               ? "Extraction is complete. ERISAPros is automatically loading current Form 5500 and Schedule A values for comparison."
               : "Buttons are locked while the current Form 5500 and Schedule A values are loaded for comparison."}

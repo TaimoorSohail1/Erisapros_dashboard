@@ -10,13 +10,29 @@ from app.services.storage import StorageService
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def test_production_worker_auto_registers_sharefile_webhooks(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+        worker = contents.split("WorkerTaskDefinition:", 1)[1].split("WorkerService:", 1)[0]
+
+        self.assertIn('- Name: SHAREFILE_WEBHOOK_AUTO_REGISTER_ENABLED\n              Value: "true"', worker)
+
+    def test_production_enables_authoritative_schedule_a_semantic_validation(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertEqual(contents.count("- Name: SCHEDULE_A_CANONICAL_VALIDATION_ENABLED"), 2)
+        self.assertEqual(contents.count('- Name: SCHEDULE_A_CANONICAL_VALIDATION_SHADOW_ENABLED'), 2)
+        self.assertEqual(contents.count('Value: "true" # authoritative Schedule A semantic validation'), 2)
+        self.assertEqual(contents.count('Value: "false" # shadow mode disabled after authoritative release'), 2)
+
     def test_production_proxy_timeouts_allow_slow_ftw_current_queries(self):
         template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
         contents = template.read_text(encoding="utf-8")
 
         self.assertIn("idle_timeout.timeout_seconds", contents)
         self.assertIn('Value: "120"', contents)
-        self.assertIn("OriginReadTimeout: 60", contents)
+        self.assertIn("OriginReadTimeout: 120", contents)
         self.assertIn("OriginKeepaliveTimeout: 60", contents)
 
     def test_production_uses_plan_specific_ftw_deep_link_template(self):
@@ -25,10 +41,52 @@ class ProductionRuntimeTests(unittest.TestCase):
         expected = (
             'Value: "https://ftwilliam.com/cgi-bin/index.cgi?'
             '#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&'
-            'plan={ftw_customer_id},{ftw_plan_id}&Year={year}"'
+            'plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"'
         )
 
         self.assertEqual(contents.count(expected), 2)
+
+    def test_production_automation_defaults_off_and_supports_demo_plan_allowlist(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertIn("FtwAutomationEnabled:", contents)
+        self.assertIn("FtwAutomationBringForwardEnabled:", contents)
+        self.assertIn("FtwAutomationAutoSendEnabled:", contents)
+        self.assertIn("FtwAutomationAllowedTargetsJson:", contents)
+        self.assertIn("FtwLocalAgentEnabled:", contents)
+        self.assertIn("FtwLocalAgentExpectedAccount:", contents)
+        self.assertGreaterEqual(contents.count('Default: "false"'), 4)
+        self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ENABLED"), 2)
+        self.assertEqual(contents.count("- Name: FTW_AUTOMATION_ALLOWED_TARGETS_JSON"), 2)
+        self.assertEqual(contents.count("- Name: FTW_LOCAL_AGENT_ENABLED"), 2)
+        self.assertEqual(contents.count("- Name: FTW_LOCAL_AGENT_EXPECTED_ACCOUNT"), 2)
+
+    def test_production_defaults_to_verified_multi_schedule_a_preservation(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        parameter = contents.split("FtwScheduleASingleRecordOnly:", 1)[1].split(
+            "FtwAutomationEnabled:", 1
+        )[0]
+        self.assertIn('Default: "false"', parameter)
+        self.assertEqual(contents.count("- Name: FTWLINK_SCHEDULE_A_SINGLE_RECORD_ONLY"), 2)
+        self.assertFalse(Settings(_env_file=None).ftwlink_schedule_a_single_record_only)
+
+    def test_production_injects_ftw_browser_session_from_a_dedicated_secret(self):
+        template = Path(__file__).resolve().parents[2] / "deploy" / "aws" / "cloudformation.yaml"
+        contents = template.read_text(encoding="utf-8")
+
+        self.assertIn("FTWBrowserSessionSecret:", contents)
+        self.assertEqual(contents.count("- Name: FTW_BROWSER_STORAGE_STATE_JSON"), 2)
+        self.assertIn("FTWBrowserSessionSecretArn:", contents)
+
+    def test_production_image_installs_browser_runtime_and_runs_nonroot(self):
+        dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+        contents = dockerfile.read_text(encoding="utf-8")
+
+        self.assertIn("playwright install --with-deps chromium", contents)
+        self.assertIn("USER app", contents)
 
     def test_production_container_does_not_log_webhook_query_secrets(self):
         dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"

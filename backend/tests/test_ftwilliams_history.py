@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.api.ftwilliams import failure_queue, history
+from app.api.ftwilliams import failure_detail, failure_notifications, failure_queue, history
 from app.models import (
     AuditLog,
     ClientFacingError,
@@ -363,7 +363,7 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         response = run_async(scenario())
         self.assertEqual(response.total, 3)
         by_name = {item.filing_name: item for item in response.items}
-        self.assertEqual(by_name["Failed Schedule A.pdf"].failure_reason, "FT Williams rejected the update.")
+        self.assertEqual(by_name["Failed Schedule A.pdf"].short_reason, "FT Williams rejected the update.")
         self.assertEqual(by_name["Failed Schedule A.pdf"].attempted_field_count, 1)
         self.assertEqual(by_name["Pre-send Blocked Schedule A.pdf"].attempted_field_count, 0)
         self.assertEqual(by_name["Failed Schedule A.pdf"].company_employer_id, "12-3456789")
@@ -376,7 +376,7 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                 super().__init__()
                 self.individual_filing_reads = 0
                 self.individual_audit_reads = 0
-                self.batch_filing_reads = 0
+                self.failure_page_reads = 0
                 self.batch_audit_reads = 0
 
             async def get_filing(self, filing_id):
@@ -387,9 +387,9 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                 self.individual_audit_reads += 1
                 return await super().list_audit_logs(filing_id)
 
-            async def get_filings_by_ids(self, filing_ids):
-                self.batch_filing_reads += 1
-                return await super().get_filings_by_ids(filing_ids)
+            async def query_ftwilliams_failures(self, **kwargs):
+                self.failure_page_reads += 1
+                return await super().query_ftwilliams_failures(**kwargs)
 
             async def list_latest_ftwilliams_failure_audits(self, filing_ids):
                 self.batch_audit_reads += 1
@@ -424,15 +424,14 @@ class FTWilliamsHistoryTests(unittest.TestCase):
         response, repo = run_async(scenario())
 
         self.assertEqual(response.total, 3)
-        self.assertEqual(repo.batch_filing_reads, 1)
+        self.assertEqual(repo.failure_page_reads, 1)
         self.assertEqual(repo.batch_audit_reads, 1)
         self.assertEqual(repo.individual_filing_reads, 0)
         self.assertEqual(repo.individual_audit_reads, 0)
 
     def test_failure_queue_review_projection_excludes_large_xml_payloads(self):
-        projection = repositories.FTWILLIAMS_REVIEW_SUMMARY_PROJECTION
+        projection = repositories.FTWILLIAMS_FAILURE_LIST_PROJECTION
         self.assertEqual(projection["filing_id"], 1)
-        self.assertEqual(projection["update_diagnostics"], 1)
         for large_field in (
             "query_request_xml",
             "query_response_xml",
@@ -441,8 +440,97 @@ class FTWilliamsHistoryTests(unittest.TestCase):
             "update_response_xml",
             "update_verification_response_xml",
             "schedule_a_records",
+            "update_diagnostics",
+            "fields",
+            "edit_check_baseline_issues",
+            "edit_check_final_issues",
         ):
             self.assertNotIn(large_field, projection)
+
+    def test_failure_queue_uses_server_pagination_filters_and_compact_items(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            for index in range(25):
+                filing = await repo.create_filing(
+                    Filing(
+                        file_name=f"Client {index:02d} Schedule A.pdf",
+                        content_type="application/pdf",
+                        file_size=100,
+                        s3_key=f"failure-{index}",
+                        status=FilingStatus.FAILED,
+                    )
+                )
+                reason = "Plan identifier did not match." if index % 2 else "Schedule field is invalid."
+                await repo.upsert_ftwilliams_review(
+                    FTWilliamsReview(
+                        filing_id=filing.id,
+                        status=FTWilliamsReviewStatus.UPDATE_FAILED,
+                        active_failure=True,
+                        active_failure_reason=reason,
+                        active_failure_at=datetime.utcnow() - timedelta(minutes=index),
+                        update_diagnostics=[
+                            FTWilliamsOperationDiagnostic(
+                                operation="update_schedule_a",
+                                sent=True,
+                                outcome_code="REJECTED",
+                                response_excerpt="x" * 20_000,
+                            )
+                        ],
+                    )
+                )
+            page = await failure_queue(page=2, page_size=10)
+            filtered = await failure_queue(
+                page=1,
+                page_size=10,
+                search="Client 01",
+                failure_type=None,
+            )
+            typed = await failure_queue(
+                page=1,
+                page_size=10,
+                failure_type="NEEDS_PLAN_MATCH",
+            )
+            return page, filtered, typed
+
+        page, filtered, typed = run_async(scenario())
+        self.assertEqual(page.total, 25)
+        self.assertEqual(page.page, 2)
+        self.assertEqual(page.total_pages, 3)
+        self.assertEqual(len(page.items), 10)
+        self.assertLess(len(page.model_dump_json()), 20_000)
+        self.assertNotIn("response_excerpt", page.model_dump_json())
+        self.assertEqual(filtered.total, 1)
+        self.assertTrue(all(item.failure_type.value == "NEEDS_PLAN_MATCH" for item in typed.items))
+        self.assertEqual(typed.total, 12)
+
+    def test_failure_notifications_return_only_counts_and_latest_three(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            for index in range(5):
+                filing = await repo.create_filing(
+                    Filing(
+                        file_name=f"Notification {index}.pdf",
+                        content_type="application/pdf",
+                        file_size=1,
+                        s3_key=f"notification-{index}",
+                    )
+                )
+                await repo.upsert_ftwilliams_review(
+                    FTWilliamsReview(
+                        filing_id=filing.id,
+                        status=FTWilliamsReviewStatus.UPDATE_FAILED,
+                        active_failure=True,
+                        active_failure_reason="Connection timeout.",
+                        active_failure_at=datetime.utcnow() - timedelta(seconds=index),
+                    )
+                )
+            return await failure_notifications()
+
+        response = run_async(scenario())
+        self.assertEqual(response.total, 5)
+        self.assertEqual(response.counts.needs_service_check, 5)
+        self.assertEqual(len(response.items), 3)
+        self.assertEqual(response.items[0].filing_name, "Notification 0.pdf")
 
     def test_current_query_refresh_keeps_active_failure_in_queue_with_diagnostics(self):
         async def scenario():
@@ -497,18 +585,20 @@ class FTWilliamsHistoryTests(unittest.TestCase):
                     ],
                 )
             )
-            return await failure_queue()
+            return await failure_queue(), await failure_detail(filing.id)
 
-        response = run_async(scenario())
+        response, detail = run_async(scenario())
 
         self.assertEqual(response.total, 1)
         item = response.items[0]
         self.assertEqual(item.review_status, FTWilliamsReviewStatus.CURRENT_QUERIED)
         self.assertEqual(item.error_code, "FTW_EMPTY_OR_MALFORMED_RESPONSE")
-        self.assertEqual(item.operation_diagnostics[0].outcome_code, "EMPTY_RESPONSE")
-        self.assertEqual(item.operation_diagnostics[0].request_id, "request-123")
-        self.assertEqual(item.edit_check_issues[0].code, "FW-117")
-        self.assertEqual(item.edit_check_issues[0].schedule_seq_no, "10")
+        self.assertFalse(hasattr(item, "operation_diagnostics"))
+        self.assertEqual(item.issue_count, 1)
+        self.assertEqual(detail.operation_diagnostics[0].outcome_code, "EMPTY_RESPONSE")
+        self.assertEqual(detail.operation_diagnostics[0].request_id, "request-123")
+        self.assertEqual(detail.edit_check_issues[0].code, "FW-117")
+        self.assertEqual(detail.edit_check_issues[0].schedule_seq_no, "10")
 
     def test_failure_queue_recovers_legacy_failure_hidden_by_current_query(self):
         async def scenario():

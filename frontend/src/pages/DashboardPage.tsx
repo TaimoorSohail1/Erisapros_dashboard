@@ -17,7 +17,7 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "../router";
 import { deleteFiling, listFilings } from "../api";
-import type { Filing, FilingStatus, ScheduleAContractType } from "../types";
+import type { Filing, FilingStatus, FTWAutomationStatus, ScheduleAContractType } from "../types";
 import { StatusBadge } from "../ui/StatusBadge";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { useDialogFocus } from "../ui/useDialogFocus";
@@ -34,7 +34,7 @@ type DashboardToast = {
 } | null;
 const DASHBOARD_REVIEW_FIELD_TOTAL = 61;
 const DASHBOARD_ACTIVE_POLL_MS = 15_000;
-const DASHBOARD_IDLE_POLL_MS = 120_000;
+const DASHBOARD_IDLE_POLL_MS = 30_000;
 const DASHBOARD_EXPANDED_GROUPS_KEY = "erisapros.dashboard.expanded-company-groups";
 
 type DashboardCompanyGroup = {
@@ -52,7 +52,7 @@ export function DashboardPage() {
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
   const ftwFailuresState = useFTWilliamsFailures();
-  const ftwFailures = ftwFailuresState.data;
+  const ftwFailureCount = ftwFailuresState.data.total;
   const [rowsLimit, setRowsLimit] = useState(25);
   const [currentPage, setCurrentPage] = useState(1);
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(readExpandedCompanyGroups);
@@ -78,7 +78,9 @@ export function DashboardPage() {
         const toastMessage = announceChanges ? dashboardChangeToast(previousFilingsRef.current, shareFileRows) : null;
         previousFilingsRef.current = shareFileRows;
         setFilings(shareFileRows);
-        nextPollMs = shareFileRows.some((item) => isProcessingStatus(item.status))
+        nextPollMs = shareFileRows.some(
+          (item) => isProcessingStatus(item.status) || automationIsActive(item.automation_status),
+        )
           ? DASHBOARD_ACTIVE_POLL_MS
           : DASHBOARD_IDLE_POLL_MS;
         if (toastMessage) setToast(toastMessage);
@@ -99,7 +101,7 @@ export function DashboardPage() {
   }, []);
 
   const sortedFilings = useMemo(
-    () => [...filings].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+    () => [...filings].sort(compareDashboardFilings),
     [filings],
   );
   const needsReview = filings.filter((item) => item.status === "NEEDS_REVIEW");
@@ -116,7 +118,7 @@ export function DashboardPage() {
           displayName,
           filingClientName(filing),
           filingPlanIdentity(filing),
-          xmlValue(filing.proposed_xml, "PlanName"),
+          filing.dashboard_plan_name || xmlValue(filing.proposed_xml, "PlanName"),
         ].join(" ").toLowerCase();
         const matchesSearch = !needle || haystack.includes(needle);
         const matchesStatus = statusFilter === "ALL" || filing.status === statusFilter;
@@ -219,7 +221,7 @@ export function DashboardPage() {
         <DashboardKpi loading={initialLoading} icon={<FileText size={24} />} value={filings.length} label="Total Filings" tone="info" note="Tracked packages" />
         <DashboardKpi loading={initialLoading} icon={<HelpCircle size={24} />} value={needsReview.length} label="Needs Review" tone="warn" note={filings.length ? `${Math.round((needsReview.length / filings.length) * 100)}% of total` : "0% of total"} />
         <DashboardKpi loading={initialLoading} icon={<CheckCircle2 size={24} />} value={readyToSend.length} label="Ready to Send" tone="ready" note={filings.length ? `${Math.round((readyToSend.length / filings.length) * 100)}% of total` : "0% of total"} />
-        <DashboardKpi loading={!ftwFailuresState.updatedAt && ftwFailuresState.loading} icon={<XCircle size={24} />} value={ftwFailures.length} label="FTW Failed" tone="danger" featured={ftwFailures.length > 0} note={ftwFailures.length ? "Needs attention" : "Clear"} />
+        <DashboardKpi loading={!ftwFailuresState.updatedAt && ftwFailuresState.loading} icon={<XCircle size={24} />} value={ftwFailureCount} label="FTW Failed" tone="danger" featured={ftwFailureCount > 0} note={ftwFailureCount ? "Needs attention" : "Clear"} />
       </section>
 
       {message ? <div className="dashboard-message card">{message}</div> : null}
@@ -660,8 +662,13 @@ function DashboardFilingRow({
   const clientName = filingClientName(filing);
   const planIdentity = filingPlanIdentity(filing);
   const planName = filingPlanName(filing, pipelineStage);
-  const readyAction = filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL";
-  const statusDotTone = filing.status === "FAILED" || filing.status === "REJECTED"
+  const automation = dashboardAutomationState(filing);
+  const readyAction = automation
+    ? automation.status === "COMPLETED"
+    : filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL";
+  const statusDotTone = automation
+    ? automation.tone
+    : filing.status === "FAILED" || filing.status === "REJECTED"
     ? "danger"
     : filing.status === "APPROVED"
       ? "ready"
@@ -689,9 +696,13 @@ function DashboardFilingRow({
       </td>
       <td>
         <div className="dashboard-stage-cell">
-          <StatusBadge status={filing.status} />
+          {automation ? (
+            <span className={`badge automation-status ${automation.badgeClass}`}>{automation.label}</span>
+          ) : (
+            <StatusBadge status={filing.status} />
+          )}
           <ScheduleAContractBadge type={filing.schedule_a_contract_type || "UNKNOWN"} compact />
-          <small>{pipelineStage.detail}</small>
+          <small>{automation?.detail || pipelineStage.detail}</small>
         </div>
       </td>
       <td>
@@ -719,7 +730,7 @@ function DashboardFilingRow({
       <td>
         <div className="dashboard-row-actions">
           <Link className="button dashboard-review-button" to={`/filings/${filing.id}`} aria-label={`Review ${displayName}`}>
-            {readyAction ? "View" : "Review"} <Eye size={16} />
+            {automation?.actionLabel || (readyAction ? "View" : "Review")} <Eye size={16} />
           </Link>
         </div>
       </td>
@@ -736,6 +747,48 @@ function DashboardFilingRow({
       </td>
     </tr>
   );
+}
+
+type AutomationPresentation = {
+  actionLabel: string;
+  badgeClass: "info" | "warn" | "ready" | "fail";
+  detail: string;
+  label: "Processing" | "Action Needed" | "Completed" | "Failed";
+  status: FTWAutomationStatus;
+  tone: "info" | "warn" | "ready" | "danger";
+};
+
+function dashboardAutomationState(filing: Filing): AutomationPresentation | null {
+  const status = filing.automation_status;
+  if (!status || status === "DISABLED") return null;
+  const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";
+  if (status === "COMPLETED") {
+    return { status, label: "Completed", detail, actionLabel: "View result", badgeClass: "ready", tone: "ready" };
+  }
+  if (status === "ACTION_NEEDED") {
+    return { status, label: "Action Needed", detail, actionLabel: "Resolve issue", badgeClass: "warn", tone: "warn" };
+  }
+  if (status === "FAILED") {
+    return { status, label: "Failed", detail, actionLabel: "View issue", badgeClass: "fail", tone: "danger" };
+  }
+  return { status, label: "Processing", detail, actionLabel: "View progress", badgeClass: "info", tone: "info" };
+}
+
+function automationPriority(status?: FTWAutomationStatus) {
+  if (status === "ACTION_NEEDED") return 0;
+  if (status === "PROCESSING" || status === "BRING_FORWARD_REQUIRED" || status === "SAFE_TO_SEND") return 1;
+  if (status === "FAILED") return 2;
+  if (status === "COMPLETED") return 3;
+  return 2;
+}
+
+function automationIsActive(status?: FTWAutomationStatus) {
+  return status === "PROCESSING" || status === "BRING_FORWARD_REQUIRED" || status === "SAFE_TO_SEND";
+}
+
+function compareDashboardFilings(a: Filing, b: Filing) {
+  const priorityDifference = automationPriority(a.automation_status) - automationPriority(b.automation_status);
+  return priorityDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 }
 
 function ScheduleAContractBadge({ type, compact = false }: { type: ScheduleAContractType; compact?: boolean }) {
@@ -757,13 +810,14 @@ function contractTypeLabel(type: ScheduleAContractType) {
 }
 
 function filingClientName(filing: Filing) {
+  if (filing.dashboard_client_name?.trim()) return filing.dashboard_client_name.trim();
   const clientName = firstStringFromPackageDocuments(filing, ["client_name", "client"]);
   return clientName || xmlValue(filing.proposed_xml, "SponsorName") || "Client pending";
 }
 
 function filingPlanIdentity(filing: Filing) {
-  const ein = firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"]);
-  const planNumber = firstXmlValue(filing.proposed_xml, ["PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"]);
+  const ein = filing.dashboard_ein || firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"]);
+  const planNumber = filing.dashboard_plan_number || firstXmlValue(filing.proposed_xml, ["PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"]);
   if (ein && planNumber) return `${ein} / ${planNumber}`;
   if (ein) return ein;
   const docEin = firstStringFromPackageDocuments(filing, ["ein", "company_employer_id", "customer_id"]);
@@ -775,7 +829,7 @@ function filingPlanIdentity(filing: Filing) {
 }
 
 function filingPlanName(filing: Filing, stage: DashboardPipelineStage) {
-  const name = firstXmlValue(filing.proposed_xml, ["PlanName", "PlanNm"]) || firstStringFromPackageDocuments(filing, ["plan_name"]);
+  const name = filing.dashboard_plan_name || firstXmlValue(filing.proposed_xml, ["PlanName", "PlanNm"]) || firstStringFromPackageDocuments(filing, ["plan_name"]);
   if (name) return name;
   if (isWaitingForFiles(filing.status)) return stage.detail;
   if (isProcessingStatus(filing.status)) return "Plan details will appear after extraction";
@@ -805,7 +859,7 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
   }
   if (filing.status === "UPLOADED" || filing.status === "QUEUED") {
     return {
-      detail: "Both files found. Extraction is queued.",
+      detail: "Schedule A received. Extraction is queued.",
       pendingMetrics: true,
       tone: "info",
     };
@@ -840,14 +894,14 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
   }
   if (filing.status === "READY_FOR_APPROVAL") {
     return {
-      detail: "Fields reviewed. Approval is required before sending.",
+      detail: "Fields reviewed. Select changes to send to FT Williams.",
       pendingMetrics: false,
       tone: "ready",
     };
   }
   if (filing.status === "APPROVED") {
     return {
-      detail: "Approved and ready to send to FT Williams.",
+      detail: "Ready to select changes for FT Williams.",
       pendingMetrics: false,
       tone: "ready",
     };
@@ -1072,7 +1126,7 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
 
   return [...groups.entries()]
     .map(([key, companyFilings]) => {
-      const sorted = [...companyFilings].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const sorted = [...companyFilings].sort(compareDashboardFilings);
       const namedFiling = sorted.find((filing) => filingClientName(filing) !== "Client pending") || sorted[0];
       return {
         key,
@@ -1080,11 +1134,16 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
         filings: sorted,
       };
     })
-    .sort((a, b) => new Date(b.filings[0].created_at).getTime() - new Date(a.filings[0].created_at).getTime());
+    .sort((a, b) => {
+      const priorityDifference = automationPriority(a.filings[0].automation_status) - automationPriority(b.filings[0].automation_status);
+      return priorityDifference || new Date(b.filings[0].created_at).getTime() - new Date(a.filings[0].created_at).getTime();
+    });
 }
 
 function filingCompanyGroupKey(filing: Filing) {
-  const ein = firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
+  const canonicalClient = filing.dashboard_client_group_key?.trim();
+  if (canonicalClient) return canonicalClient;
+  const ein = filing.dashboard_ein || firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
     || firstStringFromPackageDocuments(filing, ["ein", "company_employer_id"]);
   const normalizedEin = ein.replace(/\D/g, "");
   const clientName = filingClientName(filing);
@@ -1094,9 +1153,8 @@ function filingCompanyGroupKey(filing: Filing) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, "-");
-  // ShareFile's client folder name is the stable company identity in this dashboard.
-  // Older filings can carry a missing or stale EIN, so including it in the primary
-  // key splits one client into duplicate company groups.
+  // Legacy/manual filings without canonical ShareFile metadata retain their
+  // name-first fallback; missing/stale EINs must not split one named client.
   if (normalizedName && clientName !== "Client pending") return `name-${normalizedName}`;
   if (normalizedEin) return `ein-${normalizedEin}`;
   return `filing-${filing.id}`;

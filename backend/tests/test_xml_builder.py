@@ -16,6 +16,310 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_selected_schedule_a_brokers_are_written_in_descending_payment_order(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Anthem", "InsContractNum": "300683"},
+                    "query_subparts": {"Broker": []},
+                }
+            ],
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "EMERSON ROGERS LLC",
+                    "commission_total": "0",
+                    "fee_total": "30270",
+                    "organization_code": "3",
+                },
+                {
+                    "name": "RSC INS BROKERAGE INC",
+                    "commission_total": "104203.61",
+                    "fee_total": "0",
+                    "organization_code": "3",
+                },
+            ],
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], [
+            "RSC INS BROKERAGE INC",
+            "EMERSON ROGERS LLC",
+        ])
+
+    def test_schedule_a_new_broker_row_writes_complete_address(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "MetLife", "InsContractNum": "5955240"},
+                "query_subparts": {"Broker": []},
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "NFP INS SERVICES INC",
+                    "address_line_1": "1250 S CAPITAL OF TEXAS HWY",
+                    "address_line_2": "BLDG 2 STE 125",
+                    "city": "AUSTIN",
+                    "state": "TX",
+                    "zip_code": "78746-6446",
+                    "organization_code": "03",
+                    "commission_total": "422",
+                    "fee_total": "0",
+                }
+            ],
+        )
+
+        broker = ET.fromstring(xml).find(".//DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("NameXX"), "NFP INS SERVICES INC")
+        self.assertEqual(broker.findtext("AddressLine1XX"), "1250 S CAPITAL OF TEXAS HWY")
+        self.assertEqual(broker.findtext("AddressLine2XX"), "BLDG 2 STE 125")
+        self.assertEqual(broker.findtext("CityXX"), "AUSTIN")
+        self.assertEqual(broker.findtext("StateXX"), "TX")
+        self.assertEqual(broker.findtext("ZipCodeXX"), "78746-6446")
+
+    def test_schedule_a_new_broker_splits_oversize_attention_and_po_box_address(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Unum Life Insurance Company of America"},
+                    "query_subparts": {"Broker": []},
+                }
+            ],
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[
+                {
+                    "name": "RSC Insurance Brokerage Inc",
+                    "address_line_1": "Attn: AMS Legacy Direct Biol Lockbox, PO Box 736061",
+                    "city": "Chicago",
+                    "state": "IL",
+                    "zip_code": "60673",
+                    "organization_code": "3",
+                    "commission_total": "10281.67",
+                    "fee_total": "0",
+                }
+            ],
+        )
+
+        broker = ET.fromstring(xml).find(".//DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("AddressLine1XX"), "AMS Legacy Direct Biol Lockbox")
+        self.assertEqual(broker.findtext("AddressLine2XX"), "PO Box 736061")
+        self.assertLessEqual(len(broker.findtext("AddressLine1XX") or ""), 35)
+        self.assertLessEqual(len(broker.findtext("AddressLine2XX") or ""), 35)
+
+    def test_schedule_a_new_broker_rejects_address_that_cannot_fit_without_truncation(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "Example Broker",
+                        "address_line_1": (
+                            "ATTENTION ACCOUNTS RECEIVABLE DEPARTMENT, "
+                            "BUILDING FOUR, 12345 EXTRAORDINARILY LONG BOULEVARD"
+                        ),
+                        "city": "CHICAGO",
+                        "state": "IL",
+                        "zip_code": "60673",
+                        "organization_code": "3",
+                    }
+                ],
+            )
+
+    def test_schedule_a_new_broker_uses_legal_name_when_dba_suffix_exceeds_ftw_limit(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Existing Carrier"},
+                }
+            ],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Nth Insurance Agency dba: Alliance 360 I",
+                    "organization_code": "3",
+                    "commission_total": "2340.80",
+                }
+            ],
+        )
+
+        self.assertIn("<NameXX>Nth Insurance Agency</NameXX>", xml)
+
+    def test_schedule_a_broker_reviewer_purpose_is_sent(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Example Broker",
+                    "commission_total": "100",
+                    "fee_total": "20",
+                    "purpose": "Benefits consulting",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        self.assertIn("<FeesPdTextXX>BENEFITS CONSULTING</FeesPdTextXX>", xml)
+
+    def test_schedule_a_broker_rejects_invalid_state_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected a two-letter US state code"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "state": "Texas", "organization_code": "3"}],
+            )
+
+    def test_schedule_a_broker_rejects_address_fragment_in_city_before_send(self):
+        with self.assertRaises(FTWPayloadValidationError) as raised:
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "Gallagher Benefit Services Inc",
+                        "city": "ARLINGTON ST: 60006-3009",
+                        "organization_code": "6",
+                        "fee_total": "3",
+                    }
+                ],
+            )
+
+        issue = raised.exception.issues[0]
+        self.assertEqual(issue.tag, "City1")
+        self.assertIn("city name only", issue.reason)
+        self.assertIn("street, state, or ZIP", issue.reason)
+
+    def test_schedule_a_broker_accepts_a_valid_city_containing_st(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "Example Broker",
+                    "city": "ST LOUIS",
+                    "state": "MO",
+                    "zip_code": "63101",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        self.assertIn("<CityXX>ST LOUIS</CityXX>", xml)
+
+    def test_schedule_a_broker_rejects_invalid_organization_code_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected a numeric organization code"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "ABC"}],
+            )
+
+    def test_schedule_a_broker_rejects_out_of_range_organization_code_before_send(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "expected an organization code from 0 to 9"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "12"}],
+            )
+
+    def test_schedule_a_broker_normalizes_zero_padded_organization_code(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[{"name": "Example Broker", "organization_code": "03"}],
+        )
+
+        self.assertIn("<CodeXX>3</CodeXX>", xml)
+
+    def test_schedule_a_broker_defaults_blank_organization_code_before_send(self):
+        xml = build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[{"name": "Example Broker"}],
+            )
+        self.assertIn("<CodeXX>3</CodeXX>", xml)
+
+    def test_schedule_a_new_broker_rejects_unshortenable_name_over_ftw_limit(self):
+        with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
+            build_schedule_a_records_update_xml(
+                [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+                "1",
+                [],
+                year="2025",
+                ftw_customer_id="customer",
+                ftw_plan_id="plan",
+                schedule_a_broker_rows=[
+                    {
+                        "name": "A Very Long Broker Legal Name That Cannot Be Safely Shortened",
+                        "organization_code": "3",
+                        "commission_total": "2340.80",
+                    }
+                ],
+            )
+
     def test_discovered_comparison_field_never_enters_ftw_xml(self):
         field = ExtractedField(
             filing_id="filing",
@@ -284,7 +588,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<SDName>New Sponsor Name</SDName>", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
         self.assertIn("<SDAddressLine1>490B Boston Post Road</SDAddressLine1>", xml)
-        self.assertIn("<ADMINName>New Administrator</ADMINName>", xml)
+        self.assertNotIn("<ADMINName>", xml)
 
     def test_5500_verified_sponsor_ein_uses_current_ft_tag(self):
         field = ExtractedField(
@@ -313,7 +617,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_EIN", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
 
-    def test_5500_administrator_change_clears_same_as_sponsor_indicator(self):
+    def test_5500_retired_administrator_change_is_not_sent(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="2a. Plan Administrator Name",
@@ -341,10 +645,10 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<ADMINName>Leslie Hanley</ADMINName>", xml)
-        self.assertIn("<AdminNameSameAsPlanSponsInd>0</AdminNameSameAsPlanSponsInd>", xml)
+        self.assertNotIn("<ADMINName>", xml)
+        self.assertNotIn("<AdminNameSameAsPlanSponsInd>", xml)
 
-    def test_5500_administrator_restore_sets_same_as_sponsor_indicator(self):
+    def test_5500_retired_administrator_restore_is_not_sent(self):
         field = ExtractedField(
             filing_id="filing",
             source_field_name="2a. Plan Administrator Name",
@@ -372,8 +676,8 @@ class XmlBuilderTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("<ADMINName>NEW YORK YANKEES PARTNERSHIP</ADMINName>", xml)
-        self.assertIn("<AdminNameSameAsPlanSponsInd>1</AdminNameSameAsPlanSponsInd>", xml)
+        self.assertNotIn("<ADMINName>", xml)
+        self.assertNotIn("<AdminNameSameAsPlanSponsInd>", xml)
 
     def test_5500_combined_address_uses_current_ft_street_tag_and_preserves_unchanged_locality(self):
         field = ExtractedField(
@@ -442,10 +746,71 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_CITY", xml)
         self.assertNotIn("SPONS_DFE_STATE", xml)
         self.assertNotIn("SPONS_DFE_ZIP_CODE", xml)
-        self.assertIn("<SDAddressLine1>18 CHESTNUT ST. SUITE 500</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine1>18 CHESTNUT ST.</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>SUITE 500</SDAddressLine2>", xml)
         self.assertIn("<SDCity>WORCESTER</SDCity>", xml)
         self.assertIn("<SDState>MA</SDState>", xml)
         self.assertIn("<SDZipCode>01608</SDZipCode>", xml)
+
+    def test_5500_combined_address_splits_floor_into_address_line_2_without_current_snapshot(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+            proposed_value="815 2ND AVENUE 9TH FLOOR NEW YORK NY 100174503",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="13-0417693",
+            plan_id="13-0417693501",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SDAddressLine1>815 2ND AVENUE</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>9TH FLOOR</SDAddressLine2>", xml)
+        self.assertIn("<SDCity>NEW YORK</SDCity>", xml)
+        self.assertIn("<SDState>NY</SDState>", xml)
+        self.assertIn("<SDZipCode>10017-4503</SDZipCode>", xml)
+
+    def test_5500_combined_address_splits_comma_before_suite_without_current_snapshot(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="3625 DEL AMO AVENUE, SUITE 260 TORRANCE CA 90503",
+            proposed_value="3625 DEL AMO AVENUE, SUITE 260 TORRANCE CA 90503",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="13-1994506",
+            plan_id="13-1994506503",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SDAddressLine1>3625 DEL AMO AVENUE</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>SUITE 260</SDAddressLine2>", xml)
+        self.assertIn("<SDCity>TORRANCE</SDCity>", xml)
+        self.assertIn("<SDState>CA</SDState>", xml)
+        self.assertIn("<SDZipCode>90503</SDZipCode>", xml)
 
     def test_unknown_schedule_a_tag_is_blocked_by_default(self):
         field = ExtractedField(
@@ -580,7 +945,7 @@ class XmlBuilderTests(unittest.TestCase):
                 year="2025",
             )
 
-    def test_5500_plan_administrator_uses_verified_current_ft_tag(self):
+    def test_5500_plan_administrator_is_excluded_from_update(self):
         fields = [
             ExtractedField(
                 filing_id="filing",
@@ -618,7 +983,7 @@ class XmlBuilderTests(unittest.TestCase):
         )
 
         self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertIn("<ADMINName>Charlotte Tallon</ADMINName>", xml)
+        self.assertNotIn("<ADMINName>", xml)
         self.assertIn("<TotActivePartcpCnt>125</TotActivePartcpCnt>", xml)
 
     def test_5500_participant_totals_use_the_same_ftw_tags_returned_by_current_query(self):
@@ -853,6 +1218,50 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<NameXX>Principal Broker</NameXX>", xml)
         self.assertNotIn("<Name1>Old Broker</Name1>", xml)
 
+    def test_schedule_a_records_keep_distinct_persons_covered_values(self):
+        persons_field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1e. Persons Covered (End of Policy Year)",
+            normalized_field_name="persons_covered",
+            mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+            mapped_label="1e. Persons Covered (End of Policy Year)",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="10",
+            proposed_value="10",
+        )
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "InsCarrierName": "Selected Carrier",
+                    "InsPrsnCoveredEoyCnt": "5",
+                },
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {
+                    "InsCarrierName": "Preserved Carrier",
+                    "InsPrsnCoveredEoyCnt": "23",
+                },
+            },
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [persons_field],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+        )
+
+        documents = ET.fromstring(xml).findall(".//DOLScheduleAData")
+        self.assertEqual(
+            [document.findtext("InsPrsnCoveredEoyCnt") for document in documents],
+            ["10", "23"],
+        )
+
     def test_schedule_a_replace_preserves_all_current_fields_and_uses_broker_multipart_rows(self):
         fields = [
             ExtractedField(
@@ -916,6 +1325,32 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(broker.findtext("NameXX"), "First Broker")
         self.assertEqual(broker.findtext("CommPdAmtXX"), "250")
         self.assertEqual(broker.findtext("AddressLine1XX"), "100 Main Street")
+
+    def test_schedule_a_replace_accepts_vendor_subpart_rows_that_restart_field_numbers(self):
+        records = [{
+            "ftw_seq_no": "7",
+            "query_results": {"InsCarrierName": "Hartford"},
+            "query_subparts": {
+                "Broker": [
+                    {"Name1": f"Broker {index}", "CommPdAmt01": str(index * 100)}
+                    for index in range(1, 9)
+                ]
+            },
+        }]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "7",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2024",
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual(len(brokers), 8)
+        self.assertEqual(brokers[7].findtext("NameXX"), "Broker 8")
+        self.assertEqual(brokers[7].findtext("CommPdAmtXX"), "800")
 
     def test_schedule_a_reviewer_field_edits_override_stale_extracted_broker_rows(self):
         fields = [
@@ -1001,6 +1436,96 @@ class XmlBuilderTests(unittest.TestCase):
 
         self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
         self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
+
+    def test_schedule_a_replace_preserves_vendor_broker_fields_outside_editable_map(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "Cigna"},
+                "query_subparts": {
+                    "Broker": [
+                        {
+                            "Name1": "First Broker",
+                            "CommPdAmt01": "100",
+                            "VendorFutureField1": "KEEP ME",
+                        }
+                    ]
+                },
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+        )
+
+        root = ET.fromstring(xml)
+        broker = root.find(".//DOLScheduleAData/DOLSubPartData/Broker")
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.findtext("VendorFutureFieldXX"), "KEEP ME")
+        self.assertIsNone(root.find(".//DOLScheduleAData/VendorFutureField1"))
+
+    def test_schedule_a_replace_coalesces_fragmented_vendor_broker_fields(self):
+        records = [{
+            "ftw_seq_no": "1",
+            "query_results": {
+                "InsCarrierName": "Cigna",
+                "Name1": "First Broker",
+                "CommPdAmt01": "100",
+                "Name2": "Second Broker",
+                "CommPdAmt02": "200",
+            },
+            "query_subparts": {
+                "Broker": [
+                    {"Name1": "First Broker"},
+                    {"CommPdAmt01": "100"},
+                    {"Name2": "Second Broker"},
+                    {"CommPdAmt02": "200"},
+                ]
+            },
+        }]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual(len(brokers), 2)
+        self.assertEqual(brokers[0].findtext("NameXX"), "First Broker")
+        self.assertEqual(brokers[0].findtext("CommPdAmtXX"), "100")
+        self.assertEqual(brokers[1].findtext("NameXX"), "Second Broker")
+        self.assertEqual(brokers[1].findtext("CommPdAmtXX"), "200")
+
+    def test_schedule_a_replace_preflight_rejects_changed_sibling_values(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {"InsCarrierName": "Selected Carrier", "InsPrsnCoveredEoyCnt": "10"},
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {"InsCarrierName": "Manual Carrier", "InsPrsnCoveredEoyCnt": "25"},
+                "query_subparts": {"Broker": [{"Name1": "Manual Broker"}]},
+            },
+        ]
+        unsafe_xml = """<ftwLink><DataBatch>
+          <DOLScheduleAData><InsCarrierName>Selected Carrier</InsCarrierName><InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt></DOLScheduleAData>
+          <DOLScheduleAData><InsCarrierName>Manual Carrier</InsCarrierName><InsPrsnCoveredEoyCnt>0</InsPrsnCoveredEoyCnt><DOLSubPartData><Broker><NameXX>Wrong Broker</NameXX></Broker></DOLSubPartData></DOLScheduleAData>
+        </DataBatch></ftwLink>"""
+
+        gaps = schedule_a_replacement_data_gaps(records, unsafe_xml, matched_ftw_seq_no="1")
+
+        self.assertIn("sequence 2 changed field InsPrsnCoveredEoyCnt", gaps)
+        self.assertIn("sequence 2 changed broker row 1 field NameXX", gaps)
 
     def test_schedule_a_records_update_preserves_all_existing_records_with_no_selected_changes(self):
         records = [
@@ -1174,6 +1699,68 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_5500)
         self.assertIn("<PlanYearBeginDate>10/01/2024</PlanYearBeginDate>", xml_schedule_a)
         self.assertIn("<PlanYearEndDate>09/30/2025</PlanYearEndDate>", xml_schedule_a)
+
+    def test_confirmed_plan_year_updates_every_preserved_schedule_a_record(self):
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "ScheduleDesc": "LIFE",
+                    "PlanYearBeginDate": "01/01/2025",
+                    "PlanYearEndDate": "12/31/2025",
+                    "InsCarrierName": "Life Carrier",
+                },
+            },
+            {
+                "ftw_seq_no": "2",
+                "query_results": {
+                    "ScheduleDesc": "DENTAL",
+                    "PlanYearBeginDate": "01/01/2025",
+                    "PlanYearEndDate": "12/31/2025",
+                    "InsCarrierName": "Dental Carrier",
+                },
+            },
+        ]
+        plan_year_fields = [
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="4d. Plan Year Beginning Date",
+                normalized_field_name="schedule_plan_year_begin",
+                mapped_rule_key="schedule_a_part_iv_4d_plan_year_beginning_date",
+                mapped_label="4d. Plan Year Beginning Date",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="08-01-2025",
+                proposed_value="08-01-2025",
+            ),
+            ExtractedField(
+                filing_id="filing",
+                source_field_name="4e. Plan Year Ending Date",
+                normalized_field_name="schedule_plan_year_end",
+                mapped_rule_key="schedule_a_part_iv_4e_plan_year_ending_date",
+                mapped_label="4e. Plan Year Ending Date",
+                form_type=FormType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value="12-31-2025",
+                proposed_value="12-31-2025",
+            ),
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            all_record_fields=plan_year_fields,
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+        )
+
+        documents = ET.fromstring(xml).findall(".//DOLScheduleAData")
+        self.assertEqual(len(documents), 2)
+        self.assertEqual([item.findtext("PlanYearBeginDate") for item in documents], ["08/01/2025", "08/01/2025"])
+        self.assertEqual([item.findtext("PlanYearEndDate") for item in documents], ["12/31/2025", "12/31/2025"])
+        self.assertEqual([item.findtext("InsCarrierName") for item in documents], ["Life Carrier", "Dental Carrier"])
 
 
 if __name__ == "__main__":

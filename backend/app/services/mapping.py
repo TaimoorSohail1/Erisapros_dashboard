@@ -1,7 +1,7 @@
 from datetime import datetime
 from app.config import get_settings
 from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FieldRuleMappingMode, FilingStatus, FormType, NormalizedExtractionField
-from app.services.field_rules import find_rule_for_field, form_type_for_rule, normalize_name, rules_for_form_type
+from app.services.field_rules import find_rule_for_field, form_type_for_rule, is_retired_field, normalize_name, rules_for_form_type
 
 
 def map_extraction_to_rules(
@@ -19,6 +19,8 @@ def map_extraction_to_rules(
     field_rules = rules_for_form_type(form_type, rules)
 
     for field in fields:
+        if is_retired_field(field):
+            continue
         field_rule = find_rule_for_field(field.field_name, field_rules)
         confidence = normalize_confidence(field.confidence)
         status = ExtractedFieldStatus.MATCHED

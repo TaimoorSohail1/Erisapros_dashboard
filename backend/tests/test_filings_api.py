@@ -1,13 +1,16 @@
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
 from fastapi import HTTPException
 from app.api.filings import (
+    approve_filing,
     delete_filing_from_dashboard,
     get_filing,
     get_ftwilliams_bring_forward_link,
@@ -16,7 +19,20 @@ from app.api.filings import (
     unapprove_filing,
     update_field,
 )
-from app.models import ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FormType, FTWilliamsReview
+from app.models import (
+    ApproveRequest,
+    ExtractedField,
+    ExtractedFieldStatus,
+    FieldEditRequest,
+    Filing,
+    FilingStatus,
+    FormType,
+    FTWLocalAgentDevice,
+    FTWLocalAgentDeviceStatus,
+    FTWLocalAgentJob,
+    FTWLocalAgentJobStatus,
+    FTWilliamsReview,
+)
 
 
 def run_async(coro):
@@ -80,6 +96,126 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(visible["filings"], [])
         self.assertEqual(suppressions["sf-item-1"]["reason"], "DASHBOARD_DELETE")
         self.assertIsNone(suppressions["sf-worksheet-1"])
+
+    def test_delete_filing_cancels_undispatched_agent_job_and_releases_device(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Delete Pending Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/delete-pending",
+                )
+            )
+            device = await repo.create_ftw_local_agent_device(
+                FTWLocalAgentDevice(
+                    name="Pending workstation",
+                    token_hash="pending-token",
+                    token_prefix="pending",
+                    expected_account="HighlandTech",
+                    status=FTWLocalAgentDeviceStatus.CONNECTED,
+                    browser_ready=True,
+                )
+            )
+            job = await repo.create_or_get_ftw_local_agent_job(
+                FTWLocalAgentJob(
+                    filing_id=str(filing.id),
+                    run_id="delete-run",
+                    idempotency_key="delete-pending-job",
+                    status=FTWLocalAgentJobStatus.ACTION_NEEDED,
+                    target_url="https://www.ftwilliam.com/cgi-bin/index.cgi?Year=2025",
+                    expected_account="HighlandTech",
+                    expected_plan_name="Delete Pending Plan",
+                    expected_ein="12-3456789",
+                    expected_plan_number="501",
+                    expected_year="2025",
+                    device_id=str(device.id),
+                    result_state="PAGE_LAYOUT_CHANGED",
+                    expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+            await repo.update_ftw_local_agent_device(
+                str(device.id),
+                {
+                    "active_job_id": str(job.id),
+                    "active_claim_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                },
+            )
+
+            await delete_filing_from_dashboard(str(filing.id))
+
+            return (
+                await repo.get_ftw_local_agent_job(str(job.id)),
+                await repo.get_ftw_local_agent_device_by_token_hash("pending-token"),
+            )
+
+        job, device = run_async(scenario())
+
+        self.assertEqual(job.status, FTWLocalAgentJobStatus.EXPIRED)
+        self.assertEqual(job.result_state, "NO_LONGER_REQUIRED")
+        self.assertIsNone(device.active_job_id)
+
+    def test_delete_filing_preserves_uncertain_operation_but_releases_stale_device_pointer(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Delete Uncertain Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/delete-uncertain",
+                )
+            )
+            device = await repo.create_ftw_local_agent_device(
+                FTWLocalAgentDevice(
+                    name="Uncertain workstation",
+                    token_hash="uncertain-token",
+                    token_prefix="uncert",
+                    expected_account="HighlandTech",
+                    status=FTWLocalAgentDeviceStatus.CONNECTED,
+                    browser_ready=True,
+                )
+            )
+            job = await repo.create_or_get_ftw_local_agent_job(
+                FTWLocalAgentJob(
+                    filing_id=str(filing.id),
+                    run_id="uncertain-run",
+                    idempotency_key="delete-uncertain-job",
+                    status=FTWLocalAgentJobStatus.ACTION_NEEDED,
+                    target_url="https://www.ftwilliam.com/cgi-bin/index.cgi?Year=2025",
+                    expected_account="HighlandTech",
+                    expected_plan_name="Delete Uncertain Plan",
+                    expected_ein="12-3456789",
+                    expected_plan_number="501",
+                    expected_year="2025",
+                    device_id=str(device.id),
+                    result_state="UNKNOWN_OUTCOME",
+                    operation_dispatched_at=datetime.utcnow(),
+                    expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+            await repo.update_ftw_local_agent_device(
+                str(device.id),
+                {
+                    "active_job_id": str(job.id),
+                    "active_claim_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                },
+            )
+
+            await delete_filing_from_dashboard(str(filing.id))
+
+            return (
+                await repo.get_ftw_local_agent_job(str(job.id)),
+                await repo.get_ftw_local_agent_device_by_token_hash("uncertain-token"),
+            )
+
+        job, device = run_async(scenario())
+
+        self.assertEqual(job.status, FTWLocalAgentJobStatus.ACTION_NEEDED)
+        self.assertEqual(job.result_state, "UNKNOWN_OUTCOME")
+        self.assertIsNotNone(job.operation_dispatched_at)
+        self.assertIsNone(device.active_job_id)
 
     def test_preview_xml_is_repeatable_and_does_not_mutate_the_filing(self):
         async def scenario():
@@ -153,7 +289,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIn("InsPolicyFromDate:202501", str(error.detail))
         self.assertIn("expected a valid date", str(error.detail))
 
-    def test_unapprove_filing_clears_approval_and_locks_send_flow(self):
+    def test_retired_unapprove_endpoint_preserves_historical_approval(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -177,19 +313,55 @@ class FilingsApiTests(unittest.TestCase):
                 ]
             )
 
-            response = await unapprove_filing(filing.id)
+            with self.assertRaises(HTTPException) as raised:
+                await unapprove_filing(filing.id)
             updated = await repo.get_filing(filing.id)
             events = await repo.list_events(filing.id)
             audits = await repo.list_audit_logs(filing.id)
-            return response, updated, events, audits
+            return raised.exception, updated, events, audits
 
-        response, updated, events, audits = run_async(scenario())
+        error, updated, events, audits = run_async(scenario())
 
-        self.assertEqual(response["status"], FilingStatus.NEEDS_REVIEW)
-        self.assertEqual(updated.status, FilingStatus.NEEDS_REVIEW)
+        self.assertEqual(error.status_code, 410)
+        self.assertEqual(updated.status, FilingStatus.APPROVED)
         self.assertIsNone(updated.approved_at)
-        self.assertEqual(events[-1].type, "UNAPPROVE")
-        self.assertEqual(audits[-1].event, "UNAPPROVED")
+        self.assertEqual(events, [])
+        self.assertEqual(audits, [])
+
+    def test_retired_approve_endpoint_does_not_start_automation(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Approved Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/approved",
+                    status=FilingStatus.READY_FOR_APPROVAL,
+                )
+            )
+            approved_review = FTWilliamsReview(filing_id=filing.id)
+            refreshed_review = FTWilliamsReview(filing_id=filing.id, configured=True)
+            review_service = AsyncMock()
+            review_service.approve_and_update.return_value = approved_review
+
+            with (
+                patch("app.api.filings.FTWilliamsReviewService", return_value=review_service),
+                patch(
+                    "app.api.filings.continue_ftw_automation",
+                    new=AsyncMock(return_value=refreshed_review),
+                ) as continue_automation,
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    await approve_filing(filing.id, ApproveRequest())
+
+            return raised.exception, continue_automation, await repo.get_filing(filing.id)
+
+        error, continue_automation, filing = run_async(scenario())
+
+        self.assertEqual(error.status_code, 410)
+        continue_automation.assert_not_awaited()
+        self.assertEqual(filing.status, FilingStatus.READY_FOR_APPROVAL)
 
     def test_field_review_actions_distinguish_confirmed_values_from_marked_missing(self):
         async def scenario():
@@ -279,6 +451,248 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(updated.status, FilingStatus.READY_FOR_APPROVAL)
         self.assertIsNone(updated.approved_at)
         self.assertIsNone(updated.error_message)
+
+    def test_field_edit_saves_when_another_field_fails_ftw_preview_validation(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Independent field decision.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/independent-field-decision",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered",
+                        form_type=FormType.SCHEDULE_A,
+                        proposed_value="9",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1f. Plan Sponsor Address",
+                        normalized_field_name="sponsor_address",
+                        mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                        mapped_label="1f. Plan Sponsor Address",
+                        form_type=FormType.FORM_5500,
+                        ftw_resolved_tag="SDAddressLine1",
+                        proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS",
+                    ),
+                ]
+            )
+
+            unrelated_before = next(
+                field.model_dump()
+                for field in fields
+                if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address"
+            )
+            response = await update_field(
+                filing.id,
+                fields[0].id,
+                FieldEditRequest(proposed_value="10"),
+            )
+            saved = await repo.list_fields(filing.id)
+            return response, saved, unrelated_before
+
+        response, saved, unrelated_before = run_async(scenario())
+
+        edited = next(field for field in saved if field.mapped_rule_key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year")
+        invalid_address = next(field for field in saved if field.mapped_rule_key == "form_5500_part_i_1f_plan_sponsor_address")
+        self.assertEqual(response["field"].proposed_value, "10")
+        self.assertEqual(edited.status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(edited.proposed_value, "10")
+        self.assertEqual(invalid_address.model_dump(), unrelated_before)
+        self.assertIsNone(response["proposed_xml"])
+
+    def test_manual_supported_value_is_a_single_ftw_update(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Manual persons covered.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/manual-persons-covered",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered (End of Policy Year)",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered (End of Policy Year)",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        value="",
+                        proposed_value="",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="9a(4). Total Earned Premium",
+                        normalized_field_name="total_earned_premium",
+                        mapped_rule_key="schedule_a_part_iii_9a_4_earned_1_2_3",
+                        mapped_label="9a(4). Total Earned Premium",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        value="",
+                        proposed_value="",
+                    ),
+                ]
+            )
+            await repo.upsert_ftwilliams_review(
+                FTWilliamsReview(
+                    filing_id=filing.id,
+                    configured=True,
+                    current_query_sent=True,
+                    current_query_success=True,
+                    current_query_complete=True,
+                    current_year_exists=True,
+                    schedule_a_current_values={"InsPrsnCoveredEoyCnt": ""},
+                )
+            )
+
+            response = await update_field(
+                filing.id,
+                fields[0].id,
+                FieldEditRequest(proposed_value="1100"),
+            )
+            saved = await repo.list_fields(filing.id)
+            return response, saved
+
+        response, saved = run_async(scenario())
+
+        comparison = next(
+            field
+            for field in response["ftw_review"].fields
+            if field.rule_key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year"
+        )
+        untouched = next(
+            field
+            for field in saved
+            if field.mapped_rule_key == "schedule_a_part_iii_9a_4_earned_1_2_3"
+        )
+        self.assertEqual(response["field"].status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(comparison.ftw_tag, "InsPrsnCoveredEoyCnt")
+        self.assertTrue(comparison.changed)
+        self.assertTrue(comparison.update_included)
+        self.assertEqual(untouched.status, ExtractedFieldStatus.MISSING)
+        self.assertEqual(untouched.proposed_value, "")
+
+    def test_field_edit_rejects_invalid_selected_value_without_saving_it(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Invalid selected address.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/invalid-selected-address",
+                    intake_source="SHAREFILE",
+                )
+            )
+            fields = await repo.add_fields(
+                [
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1f. Plan Sponsor Address",
+                        normalized_field_name="sponsor_address",
+                        mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                        mapped_label="1f. Plan Sponsor Address",
+                        form_type=FormType.FORM_5500,
+                        ftw_resolved_tag="SDAddressLine1",
+                        proposed_value="OLD ADDRESS",
+                    ),
+                    ExtractedField(
+                        filing_id=filing.id,
+                        source_field_name="1e. Persons Covered",
+                        normalized_field_name="persons_covered",
+                        mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year",
+                        mapped_label="1e. Persons Covered",
+                        form_type=FormType.SCHEDULE_A,
+                        status=ExtractedFieldStatus.MISSING,
+                        proposed_value="",
+                    ),
+                ]
+            )
+            untouched_before = fields[1].model_dump()
+
+            try:
+                await update_field(
+                    filing.id,
+                    fields[0].id,
+                    FieldEditRequest(proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS"),
+                )
+            except HTTPException as exc:
+                error = exc
+            else:
+                self.fail("Invalid FT Williams value should be rejected before it is saved")
+            saved = await repo.list_fields(filing.id)
+            return error, saved, fields[0].model_dump(), untouched_before
+
+        error, saved, selected_before, untouched_before = run_async(scenario())
+
+        selected = next(field for field in saved if field.id == selected_before["id"])
+        untouched = next(field for field in saved if field.id != selected_before["id"])
+        self.assertEqual(error.status_code, 422)
+        self.assertEqual(error.detail["code"], "FTW_FIELD_VALIDATION_FAILED")
+        self.assertEqual(error.detail["expected_format"], "Text up to 35 characters")
+        self.assertIn("maximum length is 35 characters", error.detail["message"])
+        self.assertEqual(selected.model_dump(), selected_before)
+        self.assertEqual(untouched.model_dump(), untouched_before)
+
+    def test_field_edit_accepts_structured_address_longer_than_one_ftw_component(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Structured address.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/structured-address",
+                    intake_source="SHAREFILE",
+                )
+            )
+            field = (
+                await repo.add_fields(
+                    [
+                        ExtractedField(
+                            filing_id=filing.id,
+                            source_field_name="1f. Plan Sponsor Address",
+                            normalized_field_name="sponsor_address",
+                            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+                            mapped_label="1f. Plan Sponsor Address",
+                            form_type=FormType.FORM_5500,
+                            ftw_resolved_tag="SDAddressLine1",
+                            proposed_value="OLD ADDRESS",
+                        )
+                    ]
+                )
+            )[0]
+            return await update_field(
+                filing.id,
+                field.id,
+                FieldEditRequest(
+                    proposed_value="123 MAIN STREET SUITE 200, SPRINGFIELD, IL 62704"
+                ),
+            )
+
+        response = run_async(scenario())
+
+        self.assertEqual(response["field"].status, ExtractedFieldStatus.EDITED)
+        self.assertEqual(
+            response["field"].proposed_value,
+            "123 MAIN STREET SUITE 200, SPRINGFIELD, IL 62704",
+        )
 
     def test_filing_detail_reads_independent_collections_concurrently(self):
         class ConcurrentReadRepository(repositories.MemoryRepository):
@@ -387,6 +801,8 @@ class FilingsApiTests(unittest.TestCase):
                     year="2025",
                     ftw_customer_id="1822236451",
                     ftw_plan_id="2196092986",
+                    ftw_browser_customer_id="2429100964",
+                    ftw_browser_plan_id="2986383641",
                     ftw_plan_url="https://www.ftwilliam.com/",
                 )
             )
@@ -400,12 +816,14 @@ class FilingsApiTests(unittest.TestCase):
             response["url"],
             "https://ftwilliam.com/cgi-bin/index.cgi?"
             "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-            "plan=1822236451,2196092986&Year=2025",
+            "plan=2429100964,2986383641&Year=2025",
         )
         self.assertEqual(response["target_year"], "2025")
         self.assertIsNone(response["prior_year"])
+        self.assertTrue(response["plan_specific"])
         self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
         self.assertFalse(audits[-1].details["mutation_requested"])
+        self.assertTrue(audits[-1].details["plan_specific"])
 
     def test_bring_forward_link_uses_the_selected_2026_filing_year(self):
         async def scenario():
@@ -430,6 +848,8 @@ class FilingsApiTests(unittest.TestCase):
                     year="2026",
                     ftw_customer_id="1822236451",
                     ftw_plan_id="2196092986",
+                    ftw_browser_customer_id="2429100964",
+                    ftw_browser_plan_id="2986383641",
                 )
             )
             return await get_ftwilliams_bring_forward_link(filing.id)
@@ -440,7 +860,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIn("Year=2026", response["url"])
         self.assertEqual(response["target_year"], "2026")
 
-    def test_bring_forward_link_rejects_generic_homepage_when_ftw_ids_are_missing(self):
+    def test_bring_forward_link_preserves_manual_homepage_fallback_when_browser_ids_are_missing(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -464,14 +884,14 @@ class FilingsApiTests(unittest.TestCase):
                     ftw_plan_url="https://www.ftwilliam.com/",
                 )
             )
-            with self.assertRaises(HTTPException) as raised:
-                await get_ftwilliams_bring_forward_link(filing.id)
-            return raised.exception, await repo.list_audit_logs(filing.id)
+            response = await get_ftwilliams_bring_forward_link(filing.id)
+            return response, await repo.list_audit_logs(filing.id)
 
-        error, audits = run_async(scenario())
-        self.assertEqual(error.status_code, 400)
-        self.assertIn("plan-specific", str(error.detail))
-        self.assertEqual(audits, [])
+        response, audits = run_async(scenario())
+        self.assertEqual(response["url"], "https://www.ftwilliam.com/cgi-bin/index.cgi?#go=home")
+        self.assertFalse(response["plan_specific"])
+        self.assertEqual(audits[-1].event, "FTWILLIAMS_BRING_FORWARD_OPENED")
+        self.assertFalse(audits[-1].details["plan_specific"])
 
 
 if __name__ == "__main__":

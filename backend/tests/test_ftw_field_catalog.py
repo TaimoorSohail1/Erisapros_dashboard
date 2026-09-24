@@ -17,7 +17,7 @@ def test_catalog_covers_every_supported_field_rule_once() -> None:
 
     verified = [entry for entry in catalog if entry.catalog_tier == "VERIFIED"]
 
-    assert len(verified) == len(DEFAULT_FIELD_RULES) == 62
+    assert len(verified) == len(DEFAULT_FIELD_RULES) == 61
     assert {entry.key for entry in verified} == {rule.key for rule in DEFAULT_FIELD_RULES}
     assert len({entry.key for entry in catalog}) == len(catalog)
     assert all(tuple(entry.supported_years) == SUPPORTED_FTW_YEARS for entry in verified)
@@ -45,7 +45,6 @@ def test_catalog_records_update_support_and_read_only_reason() -> None:
         "form_5500_part_i_1d_plan_sponsor_name",
         "form_5500_part_i_1e_plan_sponsor_ein",
         "form_5500_part_i_1f_plan_sponsor_address",
-        "form_5500_part_i_2a_plan_administrator_name",
     }
     for rule_key in verified_form_5500_writes:
         entry = field_catalog_entry(rule_key)
@@ -66,13 +65,20 @@ def test_catalog_excludes_retired_discovered_schedule_a_fields() -> None:
     assert retired_keys.isdisjoint({entry.key for entry in field_catalog()})
 
 
+def test_catalog_excludes_retired_plan_administrator_field() -> None:
+    keys = {entry.key for entry in field_catalog()}
+
+    assert "form_5500_part_i_2a_plan_administrator_name" not in keys
+    assert "ftw_discovered_form_5500_admin_name" not in keys
+
+
 def test_catalog_preserves_every_observed_current_tag_without_promoting_write_access() -> None:
     catalog = field_catalog()
     discovered = [entry for entry in catalog if entry.catalog_tier == "DISCOVERED"]
 
-    assert len(catalog) == 352
+    assert len(catalog) == 351
     assert len(discovered) == 290
-    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 350
+    assert len({(entry.form_type, entry.current_tag) for entry in catalog if entry.current_tag}) == 349
     assert all(not entry.update_supported and entry.update_tag is None for entry in discovered)
 
 

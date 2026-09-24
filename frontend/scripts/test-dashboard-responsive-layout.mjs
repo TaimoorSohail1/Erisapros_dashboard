@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const dashboardSource = await readFile(new URL("../src/pages/DashboardPage.tsx", import.meta.url), "utf8");
 
 assert.match(
   styles,
@@ -47,6 +48,26 @@ assert.doesNotMatch(
   styles,
   /\.dashboard-ops \.dashboard-table-panel\s*\{[^}]*height:\s*clamp\([^}]*560px/s,
   "The dashboard must not retain the old 560px table height cap.",
+);
+assert.match(
+  dashboardSource,
+  /label: "Action Needed"[\s\S]*?label: "Failed"[\s\S]*?label: "Processing"/,
+  "Automated filings should use a small client-facing status vocabulary.",
+);
+assert.match(
+  dashboardSource,
+  /status === "COMPLETED"[\s\S]*?label: "Completed"/,
+  "Verified automated filings should render as Completed.",
+);
+assert.match(
+  dashboardSource,
+  /function automationPriority[\s\S]*?ACTION_NEEDED[\s\S]*?PROCESSING[\s\S]*?FAILED[\s\S]*?COMPLETED/,
+  "Dashboard ordering should place Action Needed automation items before passive statuses.",
+);
+assert.match(
+  styles,
+  /\.automation-workflow-notice\s*\{[^}]*display:\s*flex;[^}]*gap:/,
+  "The automation summary should use a professional responsive status layout.",
 );
 
 console.log("Dashboard responsive layout checks passed.");

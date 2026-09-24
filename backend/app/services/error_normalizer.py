@@ -152,7 +152,7 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
         return ClientFacingError(
             title=title,
             message=body,
-            reason=reason,
+            reason=reason or (text[:597] + "..." if len(text) > 600 else text),
             next_action=next_action,
             severity=severity,
             source=source,
@@ -358,8 +358,9 @@ def normalize_client_error(message: str | None, *, source: str = "FT Williams") 
         )
 
     return build(
-        "Action failed",
-        "The app could not complete this step.",
+        "FT Williams request was not completed",
+        "FT Williams did not complete the requested action.",
+        reason=text,
         next_action="Open the technical details below or retry after checking the selected plan and filing status.",
         code="UNKNOWN_FAILURE",
     )

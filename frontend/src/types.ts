@@ -24,6 +24,91 @@ export type ExtractionJobStatus =
   | "COMPLETED"
   | "FAILED";
 
+export type FTWAutomationStatus =
+  | "DISABLED"
+  | "PROCESSING"
+  | "ACTION_NEEDED"
+  | "BRING_FORWARD_REQUIRED"
+  | "SAFE_TO_SEND"
+  | "COMPLETED"
+  | "FAILED";
+
+export interface FTWLocalAgentStatus {
+  enabled: boolean;
+  connected: boolean;
+  device_count: number;
+  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED" | "PAUSING" | "PAUSED" | "RESUMING" | "WAITING";
+  device_name?: string | null;
+  agent_version?: string | null;
+  last_seen_at?: string | null;
+  last_error?: string | null;
+  pause_requested?: boolean;
+}
+
+export interface FTWLocalAgentDevice {
+  id: string;
+  name: string;
+  expected_account: string;
+  workspace_id?: string | null;
+  status: FTWLocalAgentStatus["status"];
+  agent_version?: string | null;
+  browser_ready: boolean;
+  pause_requested?: boolean;
+  active_job_id?: string | null;
+  last_error?: string | null;
+  last_seen_at?: string | null;
+  revoked_at?: string | null;
+  created_at: string;
+}
+
+export interface FTWLocalAgentDevicesResponse {
+  devices: FTWLocalAgentDevice[];
+}
+
+export interface FTWLocalAgentPairingCodeResponse {
+  pairing_code: string;
+  expires_at: string;
+  workspace_id?: string | null;
+}
+
+export interface FTWClientWorkspace {
+  id: string;
+  name: string;
+  slug: string;
+  expected_account: string;
+  enabled: boolean;
+}
+
+export interface FTWWorkspacePlanMapping {
+  id: string;
+  workspace_id: string;
+  expected_account: string;
+  company_employer_id: string;
+  plan_number: string;
+  year: string;
+  plan_name: string;
+  ftw_customer_id: string;
+  ftw_plan_id: string;
+  ftw_browser_customer_id: string;
+  ftw_browser_plan_id: string;
+  verification_evidence: string;
+  status: "PENDING_VERIFICATION" | "VERIFIED" | "DISABLED" | "NEEDS_REVIEW";
+  verified_by: string;
+  verified_at: string;
+}
+
+export type FTWWorkspacePlanMappingInput = Pick<FTWWorkspacePlanMapping,
+  | "company_employer_id"
+  | "plan_number"
+  | "year"
+  | "plan_name"
+  | "ftw_customer_id"
+  | "ftw_plan_id"
+  | "ftw_browser_customer_id"
+  | "ftw_browser_plan_id"
+  | "verification_evidence"
+>;
+
 export type FieldPriority = "HIGH" | "MEDIUM" | "LOW" | "IGNORE";
 export type DocumentType = "SCHEDULE_A" | "PLAN_WORKSHEET" | "UNKNOWN";
 export type FormType = "SCHEDULE_A" | "FORM_5500";
@@ -43,12 +128,24 @@ export interface ScheduleABrokerRow {
   state?: string | null;
   zip_code?: string | null;
   organization_code?: string | null;
+  organization_code_defaulted?: boolean;
+  purpose?: string | null;
   commission_rows?: ScheduleABrokerMoneyRow[];
   fee_rows?: ScheduleABrokerMoneyRow[];
   commission_total?: string | null;
   fee_total?: string | null;
   source_page?: number | null;
   confidence?: number;
+}
+
+export interface ScheduleABrokerMatch {
+  extracted_index: number;
+  ftw_index?: number | null;
+  status: "AUTO_MATCHED" | "CONFIRMED" | "CONFIRMED_NEW" | "NEEDS_CONFIRMATION" | string;
+  resolved: boolean;
+  reason: string;
+  candidate_ftw_indexes?: number[];
+  current_row?: ScheduleABrokerRow | null;
 }
 
 export interface ScheduleAWorksheetValue {
@@ -88,8 +185,27 @@ export interface Filing {
   document_type: DocumentType;
   package_document_count: number;
   package_documents: Array<Record<string, unknown>>;
+  dashboard_client_name?: string | null;
+  dashboard_client_group_key?: string | null;
+  dashboard_ein?: string | null;
+  dashboard_plan_number?: string | null;
+  dashboard_plan_name?: string | null;
   intake_source?: "SHAREFILE" | "MANUAL" | string | null;
   status: FilingStatus;
+  automation_status?: FTWAutomationStatus;
+  automation_reasons?: string[];
+  automation_next_action?: string | null;
+  automation_policy_version?: string | null;
+  automation_last_evaluated_at?: string | null;
+  automation_completed_at?: string | null;
+  automation_run_id?: string | null;
+  automation_bring_forward_approved_target_key?: string | null;
+  automation_bring_forward_approved_at?: string | null;
+  automation_bring_forward_target_key?: string | null;
+  automation_bring_forward_submitted_at?: string | null;
+  automation_bring_forward_verified_at?: string | null;
+  automation_bring_forward_before_record_ids?: string[];
+  automation_bring_forward_new_record_ids?: string[];
   s3_key: string;
   s3_bucket?: string | null;
   storage_path?: string | null;
@@ -157,6 +273,11 @@ export interface FTWilliamsComparisonField {
   changed: boolean;
   update_included: boolean;
   update_exclusion_reason?: string | null;
+  validation_status?: "VALID" | "INVALID" | "REQUIRED" | "UNSUPPORTED" | "REVIEW_REQUIRED" | string;
+  validation_message?: string | null;
+  validation_expected_format?: string | null;
+  validation_normalized_value?: string | null;
+  validation_blocking?: boolean;
 }
 
 export interface FTWilliamsPlanLookup {
@@ -171,6 +292,9 @@ export interface FTWilliamsPlanLookup {
   error_message?: string | null;
   matches: Array<Record<string, unknown>>;
   matched_identity?: Record<string, unknown> | null;
+  ftw_browser_customer_id?: string | null;
+  ftw_browser_plan_id?: string | null;
+  browser_mapping_confirmed?: boolean;
 }
 
 export interface ClientRejectedField {
@@ -248,6 +372,7 @@ export interface FTWilliamsReview {
   current_query_sent: boolean;
   current_query_success: boolean;
   current_query_complete?: boolean | null;
+  query_state?: "NOT_QUERIED" | "MATCHED" | "SCHEDULE_A_MISSING" | "PLAN_MATCH_REQUIRED" | "QUERY_FAILED";
   current_year_exists: boolean;
   bring_forward_required: boolean;
   ftw_editable?: boolean | null;
@@ -257,10 +382,23 @@ export interface FTWilliamsReview {
   ftw_plan_url?: string | null;
   comparison_year?: string | null;
   comparison_year_source?: string | null;
+  plan_year_conflict?: {
+    worksheet_begin?: string | null;
+    worksheet_end?: string | null;
+    ftw_form_begin?: string | null;
+    ftw_form_end?: string | null;
+    ftw_schedule_a_begin?: string | null;
+    ftw_schedule_a_end?: string | null;
+  } | null;
+  plan_year_resolution?: "USE_WORKSHEET" | "KEEP_FTW" | null;
+  plan_year_resolution_begin?: string | null;
+  plan_year_resolution_end?: string | null;
   schedule_a_match?: Record<string, unknown> | null;
   schedule_a_candidates?: Array<Record<string, unknown>>;
   schedule_a_records?: Array<Record<string, unknown>>;
   schedule_a_broker_rows?: ScheduleABrokerRow[];
+  schedule_a_broker_matches?: ScheduleABrokerMatch[];
+  schedule_a_broker_match_complete?: boolean;
   schedule_a_worksheet_summaries?: ScheduleAWorksheetSummary[];
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
@@ -275,6 +413,9 @@ export interface FTWilliamsReview {
   year?: string | null;
   ftw_customer_id?: string | null;
   ftw_plan_id?: string | null;
+  ftw_browser_customer_id?: string | null;
+  ftw_browser_plan_id?: string | null;
+  browser_mapping_confirmed?: boolean;
   ftw_seq_no?: string | null;
   plan_lookup?: FTWilliamsPlanLookup | null;
   query_request_xml?: string | null;
@@ -298,6 +439,7 @@ export interface FTWilliamsReview {
     label: string;
     form_type?: string | null;
     sent_value?: string | null;
+    returned_value?: string | null;
     status: "VERIFIED" | "NEEDS_CORRECTION" | string;
     reason?: string | null;
   }>;
@@ -315,6 +457,9 @@ export interface FTWilliamsReview {
   edit_check_response_xml?: string | null;
   edit_check_final_success?: boolean | null;
   edit_check_final_issues?: FTWilliamsEditCheckIssue[];
+  edit_check_validation_status?: string;
+  edit_check_new_issues?: FTWilliamsEditCheckIssue[];
+  edit_check_resolved_issues?: FTWilliamsEditCheckIssue[];
   audit_pdf_status?: string;
   audit_pdf_sha256?: string | null;
   audit_pdf_created_at?: string | null;
@@ -363,12 +508,20 @@ export interface FTWilliamsHistoryResponse {
   items: FTWilliamsHistoryItem[];
 }
 
-export interface FTWilliamsFailureQueueItem {
+export type FTWilliamsFailureType = "NEEDS_RETRY" | "NEEDS_DATA_FIX" | "NEEDS_PLAN_MATCH" | "NEEDS_SERVICE_CHECK";
+
+export interface FTWilliamsFailureIssueGroup {
+  label: string;
+  count: number;
+}
+
+export interface FTWilliamsFailureQueueSummary {
   filing_id: string;
   filing_name: string;
   filing_status: FilingStatus;
   review_status: string;
-  failure_reason: string;
+  failure_type: FTWilliamsFailureType;
+  short_reason: string;
   next_action?: string | null;
   plan_name?: string | null;
   sponsor_name?: string | null;
@@ -380,18 +533,42 @@ export interface FTWilliamsFailureQueueItem {
   ftw_plan_id?: string | null;
   year?: string | null;
   attempted_field_count: number;
+  issue_count: number;
+  issue_groups: FTWilliamsFailureIssueGroup[];
   failed_at: string;
   last_action_label: string;
   error_code?: string | null;
+  can_dismiss?: boolean;
+}
+
+export interface FTWilliamsFailureQueueItem extends FTWilliamsFailureQueueSummary {
+  failure_reason: string;
   technical_details?: string | null;
   operation_diagnostics?: FTWilliamsOperationDiagnostic[];
   edit_check_issues?: FTWilliamsEditCheckIssue[];
-  can_dismiss?: boolean;
+}
+
+export interface FTWilliamsFailureCounts {
+  active: number;
+  needs_retry: number;
+  needs_data_fix: number;
+  needs_plan_match: number;
+  needs_service_check: number;
 }
 
 export interface FTWilliamsFailureQueueResponse {
   total: number;
-  items: FTWilliamsFailureQueueItem[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+  counts: FTWilliamsFailureCounts;
+  items: FTWilliamsFailureQueueSummary[];
+}
+
+export interface FTWilliamsFailureNotificationResponse {
+  total: number;
+  counts: FTWilliamsFailureCounts;
+  items: FTWilliamsFailureQueueSummary[];
 }
 
 export interface ReviewEvent {

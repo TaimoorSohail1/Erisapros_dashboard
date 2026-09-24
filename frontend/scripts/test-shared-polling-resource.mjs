@@ -33,6 +33,9 @@ const resource = createSharedPollingResource({
   clearIntervalFn: () => { cleared += 1; },
 });
 
+assert.equal(resource.getSnapshot().loading, true, "a new shared resource must expose initial loading before its first request completes");
+assert.equal(resource.getSnapshot().updatedAt, 0, "a new shared resource must not look like a completed empty response");
+
 const releaseFirst = resource.acquirePolling();
 const releaseSecond = resource.acquirePolling();
 const concurrentRefresh = resource.refresh();
@@ -41,6 +44,7 @@ assert.equal(intervals, 1, "multiple consumers must share one polling timer");
 resolveLoad(["loaded"]);
 await concurrentRefresh;
 assert.deepEqual(resource.getSnapshot().data, ["loaded"]);
+assert.equal(resource.getSnapshot().loading, false, "a completed first request must leave the initial loading state");
 
 await resource.refresh();
 assert.equal(calls, 1, "fresh cached data must prevent an immediate duplicate request");
@@ -51,3 +55,26 @@ releaseSecond();
 assert.equal(cleared, 1, "last consumer must stop the shared polling timer");
 
 console.log("Shared polling resource deduplicates requests and timers.");
+
+let raceCalls = 0;
+const raceResolvers = [];
+const raceResource = createSharedPollingResource({
+  initialData: ["initial"],
+  load: () => {
+    raceCalls += 1;
+    return new Promise((resolve) => raceResolvers.push(resolve));
+  },
+  pollMs: 60_000,
+});
+
+const staleRefresh = raceResource.refresh({ force: true });
+const postMutationRefresh = raceResource.refresh({ force: true });
+raceResolvers.shift()(["stale failure"]);
+await staleRefresh;
+await Promise.resolve();
+assert.equal(raceCalls, 2, "a forced refresh during an older request must queue a new post-mutation load");
+raceResolvers.shift()([]);
+await postMutationRefresh;
+assert.deepEqual(raceResource.getSnapshot().data, [], "the queued refresh must publish the latest post-mutation state");
+
+console.log("Shared polling resource refreshes again after an in-flight stale request.");

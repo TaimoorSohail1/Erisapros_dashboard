@@ -1,12 +1,14 @@
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 from app.config import get_settings
-from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FilingStatus, FormType, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
+from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FieldRule, FilingStatus, FormType, NormalizedExtractionField, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
 from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_automation import FTWAutomationService, automation_reset_values
 from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
@@ -134,6 +136,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             summary = summarize_mapped_fields(relevant_fields)
             fields: list[ExtractedField] = await repo.replace_fields(filing_id, mapped_fields)
 
+            automation_values = automation_reset_values(
+                get_settings(),
+                "Extraction completed; automation is waiting for fresh FT Williams current data.",
+            )
             await repo.update_filing(
                 filing_id,
                 {
@@ -159,6 +165,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in schedule_a_worksheet_summaries],
                     "proposed_xml": proposed_xml,
                     "error_message": None,
+                    **automation_values,
                 },
             )
             await supersede_duplicate_active_package_rows(filing_id)
@@ -341,6 +348,24 @@ async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsRevie
                 reuse_current_snapshot=True,
             )
         await repo.update_filing(filing_id, {"status": previous_status})
+        if get_settings().ftw_automation_enabled:
+            try:
+                await FTWAutomationService(settings=get_settings()).run(
+                    filing_id,
+                    review=review,
+                )
+            except Exception as automation_error:
+                # Automation is an optional layer above the existing workflow.
+                # Its failure must never turn a successful extraction/query into
+                # a failed filing or remove the operator's manual fallback.
+                await repo.add_audit(
+                    AuditLog(
+                        filing_id=filing_id,
+                        event="FTW_AUTOMATION_FAILED",
+                        message="Optional FT Williams automation stopped; manual review remains available.",
+                        details={"error": str(automation_error)},
+                    )
+                )
         if review.current_query_success:
             await repo.add_audit(
                 AuditLog(
@@ -469,6 +494,24 @@ def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[
         if not worksheet_value:
             continue
 
+        schedule_value = str(schedule_field.proposed_value or schedule_field.value or "").strip()
+        if schedule_value and not _schedule_reference_values_match(schedule_key, schedule_value, worksheet_value):
+            reason = (
+                f"Schedule A identity value {schedule_value!r} conflicts with Plan Worksheet value "
+                f"{worksheet_value!r}. Confirm the correct client, plan year, EIN, and plan number in Review."
+            )
+            for field in (schedule_field, worksheet_field):
+                field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+                field.confidence = min(field.confidence, 0.5)
+                field.status_reason = reason
+                field.updated_at = datetime.utcnow()
+            continue
+
+        if schedule_value:
+            # Both documents agree. Preserve the Schedule A source evidence
+            # instead of replacing it with evidence from another document.
+            continue
+
         schedule_field.value = worksheet_value
         schedule_field.proposed_value = worksheet_value
         schedule_field.confidence = max(schedule_field.confidence, worksheet_field.confidence)
@@ -485,6 +528,73 @@ def harmonize_schedule_a_reference_fields(fields: list[ExtractedField]) -> list[
     return fields
 
 
+def remap_existing_fields_with_source_context(
+    filing_id: str,
+    existing_fields: list[ExtractedField],
+    rules: list[FieldRule],
+) -> list[ExtractedField]:
+    """Re-map stored values without losing their form or source document.
+
+    A filing can contain both a Plan Worksheet and one or more Schedule A
+    documents. Re-evaluating the flattened values in a single mapping call
+    erases that boundary and can make Schedule A values disappear from review.
+    """
+    grouped: dict[tuple[FormType | None, DocumentType | None], list[NormalizedExtractionField]] = {}
+    for field in existing_fields:
+        value = field.proposed_value or field.value
+        if not value or field.status == ExtractedFieldStatus.IGNORED:
+            continue
+        form_type = field.form_type
+        source_document_type = field.source_document_type
+        if source_document_type is None:
+            if form_type == FormType.SCHEDULE_A:
+                source_document_type = DocumentType.SCHEDULE_A
+            elif form_type == FormType.FORM_5500:
+                source_document_type = DocumentType.PLAN_WORKSHEET
+        grouped.setdefault((form_type, source_document_type), []).append(
+            NormalizedExtractionField(
+                field_name=field.source_field_name,
+                value=value,
+                confidence=field.confidence,
+                page=field.page,
+                source_text=field.source_text,
+            )
+        )
+
+    remapped: list[ExtractedField] = []
+    for (form_type, source_document_type), values in grouped.items():
+        mapped = map_extraction_to_rules(
+            filing_id,
+            values,
+            form_type=form_type,
+            source_document_type=source_document_type,
+            rules=rules,
+        )
+        remapped.extend(mapped["fields"])
+    return remapped
+
+
+def _schedule_reference_values_match(rule_key: str, left: str, right: str) -> bool:
+    if rule_key.endswith("sponsor_ein"):
+        return re.sub(r"\D", "", left) == re.sub(r"\D", "", right)
+    if rule_key.endswith("plan_number_pn"):
+        return re.sub(r"[^A-Z0-9]", "", left.upper()) == re.sub(r"[^A-Z0-9]", "", right.upper())
+    if rule_key.endswith(("beginning_date", "ending_date")):
+        def date_parts(value: str) -> tuple[int, int, int] | None:
+            parts = [int(part) for part in re.findall(r"\d+", value)]
+            if len(parts) != 3:
+                return None
+            if parts[0] > 1900:
+                return parts[0], parts[1], parts[2]
+            if parts[2] < 100:
+                parts[2] += 2000
+            return parts[2], parts[0], parts[1]
+
+        return date_parts(left) == date_parts(right)
+    normalize = lambda value: re.sub(r"[^A-Z0-9]", "", value.upper())
+    return normalize(left) == normalize(right)
+
+
 def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> list[ExtractedField]:
     by_rule_key = {field.mapped_rule_key: field for field in fields if field.mapped_rule_key}
     purpose_field = by_rule_key.get("schedule_a_part_i_3d_purpose")
@@ -497,11 +607,32 @@ def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> l
     if not derived_purpose:
         return fields
 
+    contributors = [field for field in (commissions_field, fees_field) if field is not None]
+    trusted_contributors = bool(contributors) and all(
+        field.status == ExtractedFieldStatus.MATCHED
+        and field.page is not None
+        and bool(str(field.source_text or "").strip())
+        and parse_numeric_amount(field.proposed_value or field.value) is not None
+        for field in contributors
+    )
     purpose_field.value = derived_purpose
     purpose_field.proposed_value = derived_purpose
-    purpose_field.confidence = max(purpose_field.confidence, 0.95)
-    purpose_field.status = ExtractedFieldStatus.MATCHED
-    purpose_field.status_reason = "Derived from Schedule A commission and fee values per field rules."
+    if trusted_contributors:
+        purpose_field.confidence = min(field.confidence for field in contributors)
+        purpose_field.status = ExtractedFieldStatus.MATCHED
+        purpose_field.page = next((field.page for field in contributors if field.page is not None), None)
+        purpose_field.source_text = " | ".join(
+            str(field.source_text).strip() for field in contributors if field.source_text
+        )[:1600]
+        purpose_field.status_reason = (
+            "Derived from Schedule A commission and fee values with page-level source evidence."
+        )
+    else:
+        purpose_field.confidence = min(purpose_field.confidence, 0.5)
+        purpose_field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+        purpose_field.status_reason = (
+            "Derived purpose needs Review because its commission or fee inputs lack trusted page-level source evidence."
+        )
     purpose_field.updated_at = datetime.utcnow()
     return fields
 

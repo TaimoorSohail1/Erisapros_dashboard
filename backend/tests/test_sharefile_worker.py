@@ -12,10 +12,100 @@ from app.sharefile_worker import (
     process_sqs_messages,
     process_next_extraction_batch,
     receive_message_burst,
+    run_worker,
+    run_webhook_registration_loop,
 )
 
 
 class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_webhook_registration_loop_checks_immediately(self):
+        service = AsyncMock()
+        service.auto_register_relevant_webhooks.return_value = {
+            "webhook_roots": 2,
+            "registered": 1,
+            "failed": 0,
+        }
+        with (
+            patch("app.sharefile_worker.ShareFileService", return_value=service),
+            patch("app.sharefile_worker.asyncio.sleep", new=AsyncMock(side_effect=asyncio.CancelledError)) as sleep,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_webhook_registration_loop(3600)
+
+        service.auto_register_relevant_webhooks.assert_awaited_once_with()
+        sleep.assert_awaited_once_with(3600)
+
+    async def test_worker_registers_webhooks_on_startup(self):
+        queue = AsyncMock()
+        queue.configured = True
+        registration_started = asyncio.Event()
+
+        async def registration_loop(_interval_seconds):
+            registration_started.set()
+            await asyncio.Event().wait()
+
+        async def stop_after_registration(_queue):
+            await asyncio.wait_for(registration_started.wait(), timeout=1)
+            raise asyncio.CancelledError
+
+        with (
+            patch("app.sharefile_worker.get_settings") as settings,
+            patch("app.sharefile_worker.get_sharefile_work_queue", return_value=queue),
+            patch("app.sharefile_worker.get_repository") as repository,
+            patch("app.sharefile_worker.run_webhook_registration_loop", side_effect=registration_loop, create=True) as register,
+            patch("app.sharefile_worker.receive_message_burst", side_effect=stop_after_registration),
+        ):
+            repository.return_value.ensure_indexes = AsyncMock()
+            settings.return_value.sharefile_webhook_auto_register_enabled = True
+            settings.return_value.sharefile_webhook_discovery_interval_seconds = 3600
+            with self.assertRaises(asyncio.CancelledError):
+                await run_worker()
+
+        settings.return_value.validate_runtime.assert_called_once_with()
+        register.assert_called_once_with(3600)
+        queue.enqueue.assert_not_awaited()
+
+    async def test_slow_webhook_reconciliation_does_not_block_upload_intake(self):
+        queue = AsyncMock()
+        queue.configured = True
+        registration_started = asyncio.Event()
+        upload_processed = asyncio.Event()
+        upload = {"Body": json.dumps({"type": "webhook", "payload": {"ItemId": "new-pdf"}}), "ReceiptHandle": "upload"}
+        calls = 0
+
+        async def slow_registration(_interval_seconds):
+            registration_started.set()
+            await asyncio.Event().wait()
+
+        async def receive(_queue):
+            nonlocal calls
+            await asyncio.wait_for(registration_started.wait(), timeout=1)
+            calls += 1
+            if calls == 1:
+                return [upload]
+            await asyncio.wait_for(upload_processed.wait(), timeout=1)
+            raise asyncio.CancelledError
+
+        async def process(_queue, messages, _extraction_queue):
+            self.assertEqual(messages, [upload])
+            upload_processed.set()
+
+        with (
+            patch("app.sharefile_worker.get_settings") as settings,
+            patch("app.sharefile_worker.get_sharefile_work_queue", return_value=queue),
+            patch("app.sharefile_worker.get_repository") as repository,
+            patch("app.sharefile_worker.run_webhook_registration_loop", side_effect=slow_registration),
+            patch("app.sharefile_worker.receive_message_burst", side_effect=receive),
+            patch("app.sharefile_worker.process_sqs_messages", side_effect=process),
+        ):
+            settings.return_value.sharefile_webhook_auto_register_enabled = True
+            settings.return_value.sharefile_webhook_discovery_interval_seconds = 3600
+            repository.return_value.ensure_indexes = AsyncMock()
+            with self.assertRaises(asyncio.CancelledError):
+                await run_worker()
+
+        self.assertTrue(upload_processed.is_set())
+
     async def test_dispatches_each_supported_work_type(self):
         service = AsyncMock()
         cases = {
@@ -190,6 +280,19 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
             await process_sqs_message(queue, message)
         dispatch.assert_awaited_once()
         queue.delete.assert_awaited_once_with("receipt-1")
+
+    async def test_webhook_registration_failure_is_logged_before_acknowledgement(self):
+        queue = AsyncMock()
+        message = {"Body": json.dumps({"type": "auto_register"}), "ReceiptHandle": "receipt-registration"}
+        with patch(
+            "app.sharefile_worker.dispatch_sharefile_work",
+            new=AsyncMock(return_value={"webhook_roots": 4, "registered": 2, "skipped": 1, "failed": 1}),
+        ):
+            with self.assertLogs("app.sharefile_worker", level="WARNING") as logs:
+                await process_sqs_message(queue, message)
+
+        self.assertTrue(any("registration incomplete" in line for line in logs.output))
+        queue.delete.assert_awaited_once_with("receipt-registration")
 
     async def test_failed_message_is_left_for_sqs_retry(self):
         queue = AsyncMock()

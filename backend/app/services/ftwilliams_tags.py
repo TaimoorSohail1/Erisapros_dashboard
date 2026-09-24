@@ -159,7 +159,6 @@ FORM_5500_VERIFIED_UPDATE_RULES = frozenset(
         "form_5500_part_i_1e_plan_sponsor_ein",
         "form_5500_part_i_1f_plan_sponsor_address",
         "form_5500_part_i_1g_business_code",
-        "form_5500_part_i_2a_plan_administrator_name",
         "form_5500_part_i_6_plan_year_beginning_date",
         "form_5500_part_i_7_plan_year_ending_date",
         "form_5500_part_ii_4_plan_characteristic_codes",
@@ -358,6 +357,11 @@ def values_meaningfully_different(
 ) -> bool:
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
+    if tag and "address" in tag.casefold():
+        current_address = _normalize_address_compare(current)
+        proposed_address = _normalize_address_compare(proposed)
+        if current_address and proposed_address:
+            return current_address != proposed_address
     if tag == "InsFailProvideInfoInd":
         current_indicator = _one_two_indicator_value(current)
         proposed_indicator = _one_two_indicator_value(proposed)
@@ -372,8 +376,23 @@ def values_meaningfully_different(
         current_number = _parse_decimal(current)
         proposed_number = _parse_decimal(proposed)
         if current_number is not None and proposed_number is not None:
-            return abs(current_number - proposed_number) >= Decimal("0.5")
+            # FT Williams stores amount fields as whole dollars and rounds
+            # half-dollar values (for example 497.50 -> 498). Treat that
+            # read-back as the same business value.
+            return abs(current_number - proposed_number) > Decimal("0.5")
     return normalize_compare_value(current) != normalize_compare_value(proposed)
+
+
+def _normalize_address_compare(value: str) -> str:
+    """Compare one combined/structured address without punctuation-only noise.
+
+    FT Williams may return ZIP+4 with a hyphen and insert commas between the
+    same address components that the source worksheet supplies as plain text.
+    Removing non-alphanumeric separators preserves the business value while
+    still detecting changed street numbers, unit values, localities, or ZIPs.
+    """
+
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
 
 
 def _one_two_indicator_value(value: str) -> str | None:

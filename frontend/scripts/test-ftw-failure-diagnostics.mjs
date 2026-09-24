@@ -3,14 +3,34 @@ import { readFile } from "node:fs/promises";
 
 const failuresPage = await readFile(new URL("../src/pages/FTWilliamsFailuresPage.tsx", import.meta.url), "utf8");
 const notifications = await readFile(new URL("../src/ui/FTWilliamsNotifications.tsx", import.meta.url), "utf8");
+const notificationStore = await readFile(new URL("../src/ui/ftWilliamsNotificationStore.ts", import.meta.url), "utf8");
+const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
 const diagnostics = await readFile(new URL("../src/ui/FTWilliamsDiagnostic.tsx", import.meta.url), "utf8");
 const filingReview = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
+const activityPage = await readFile(new URL("../src/pages/FTWilliamsActivityPage.tsx", import.meta.url), "utf8");
 
-assert.match(failuresPage, /useFTWilliamsFailures\(\)/, "The full failure page must use the shared failure resource.");
-assert.doesNotMatch(failuresPage, /listFTWilliamsFailureQueue/, "The full failure page must not maintain a separate stale queue.");
+assert.match(failuresPage, /listFTWilliamsFailureQueue/, "The full failure page must request its server-paginated queue.");
+assert.match(failuresPage, /pageSize: PAGE_SIZE/, "The full failure page must request only ten records per page.");
+assert.match(failuresPage, /search: debouncedSearch/, "Search must be sent to the server after a debounce.");
+assert.match(failuresPage, /failureType: typeFilter/, "Failure type filtering must be sent to the server.");
+assert.match(failuresPage, /date: dateFilter/, "Date filtering must be sent to the server.");
+assert.doesNotMatch(failuresPage, /filteredFailures|\.slice\(pageStartIndex/, "The browser must not filter or paginate the full queue.");
+assert.match(notificationStore, /listFTWilliamsFailureNotifications/, "The notification drawer must use the lightweight notification endpoint.");
 assert.match(notifications, /refreshFTWilliamsFailures\(\)/, "Opening the drawer must fetch fresh failures.");
-assert.match(notifications, /failures\.slice\(0, 3\)/, "The drawer must remain a three-item preview.");
+assert.doesNotMatch(notifications, /failures\.slice\(0, 3\)/, "The drawer must not download a full queue and slice it in the browser.");
+assert.match(notifications, /failuresState\.loading/, "The drawer must distinguish initial loading from a truly empty queue.");
+assert.match(notifications, /ftw-notification-count-loading/, "The notification badge must show a neutral loading state instead of zero.");
+assert.match(notifications, /historyState\.loading/, "The Activity drawer must distinguish initial loading from a truly empty history.");
+assert.match(failuresPage, /const initialLoad = loading && !loaded;/, "The failure page must not announce an empty queue before its request completes.");
+assert.match(failuresPage, /aria-busy=\{loading\}/, "The failure queue must expose its refresh state accessibly.");
+assert.match(activityPage, /useFTWilliamsHistory\(true, range\)/, "The Activity page must use the same shared history snapshot as the drawer.");
+assert.doesNotMatch(activityPage, /listFTWilliamsHistory/, "The Activity page must not maintain a separate request state.");
 assert.match(failuresPage, /dismissFTWilliamsFailure/, "Operators must be able to dismiss an acknowledged active failure.");
+assert.match(failuresPage, /getFTWilliamsFailureDetail/, "Technical details must load only after the operator requests them.");
+assert.match(failuresPage, /View details/, "Each compact failure row must expose an explicit details action.");
+assert.match(failuresPage, /item\.short_reason/, "Compact rows must render the short failure reason.");
+assert.match(failuresPage, /item\.issue_groups/, "Repeated failures must be rendered as grouped issue counts.");
+assert.match(api, /requestWithTimeout/, "Failure requests must have a bounded timeout.");
 assert.match(diagnostics, /operation\.outcome_code/, "Technical details must show the normalized FT outcome.");
 assert.match(diagnostics, /operation\.request_id/, "Technical details must show the vendor request identifier when available.");
 assert.match(diagnostics, /operation\.response_excerpt/, "Technical details must expose the masked response excerpt.");
@@ -19,12 +39,46 @@ assert.match(diagnostics, /issue\.schedule_desc/, "Diagnostics must identify the
 assert.match(diagnostics, /issue\.field_label/, "Diagnostics must identify the affected field.");
 assert.match(diagnostics, /issue\.current_value/, "Diagnostics must show the current invalid value.");
 assert.match(diagnostics, /issue\.correction/, "Diagnostics must show the required correction.");
-assert.match(failuresPage, /editCheckIssues=\{item\.edit_check_issues\}/, "The full failure queue must pass FT Edit Check issues to diagnostics.");
+assert.match(failuresPage, /editCheckIssues=\{detail\.edit_check_issues\}/, "On-demand detail must pass FT Edit Check issues to diagnostics.");
 assert.match(filingReview, /active_failure_client_error/, "The filing page must prefer the persistent active failure details.");
 assert.match(filingReview, /editCheckIssues=\{[\s\S]*?edit_check_baseline_issues/, "The filing review must show baseline FT Edit Check issues.");
 assert.match(filingReview, /edit_check_final_issues/, "The filing review must prefer final FT Edit Check issues when present.");
 assert.match(filingReview, /edit_check_final_success === false[\s\S]*?<FTWilliamsDiagnostic/, "The FTW Update workflow step must show final Edit Check diagnostics.");
+assert.match(filingReview, /edit_check_validation_status/, "The filing review must distinguish update verification from FT validation status.");
+assert.match(filingReview, /Update verified[^\n]*existing FT Williams issues remain/, "Existing FT issues must be shown as warnings after a verified update.");
+assert.match(filingReview, /Update verified[^\n]*new FT Williams validation issues need attention/, "New FT issues must be clearly identified without misreporting the update as failed.");
 assert.match(filingReview, /comparison\.update_exclusion_reason/, "Conditionally blocked FTW fields must show their exact exclusion reason.");
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
+assert.match(filingReview, /sticky\?: boolean/, "Verified FT Williams success notifications must support remaining visible until dismissed.");
+assert.match(filingReview, /title: "FT Williams updated successfully"[\s\S]*?sticky: true/, "A verified update must show a persistent success notification.");
+assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Action Required"/, "Post-update extraction notes must not look like failed FT Williams actions.");
+assert.match(filingReview, /<FTWUpdateSuccessNotice[\s\S]*?review=\{ftwReview\}/, "Verified FT Williams updates must have a persistent success notice in the filing page.");
+assert.match(api, /class ApiRequestError extends Error[\s\S]*?clientError/, "API failures must preserve structured client-facing FT Williams details.");
+assert.match(api, /payload\.client_error[\s\S]*?detail\.client_error/, "The API client must recognize structured FT Williams errors at either response level.");
+assert.match(api, /case 504:[\s\S]*?outcome is unknown[\s\S]*?Query FTW Current/, "Gateway timeouts must explain that the send outcome is unknown and require read-back before retry.");
+assert.match(filingReview, /toast\.reason[\s\S]*?toast\.nextAction[\s\S]*?toast\.code/, "The send failure toast must show the reason, recovery action, and support code.");
+assert.match(filingReview, /sendValidationNoticeFromError\([^,]+, allReviewRows\)/, "A validation failure must resolve fields against included and excluded review rows.");
+assert.match(filingReview, /function focusValidationIssue[\s\S]*?setSearch\(""\)[\s\S]*?setShowExcludedFields/, "Fix issue must clear filters and reveal the affected field before focusing it.");
+assert.match(filingReview, /function FTWQueryStatusBanner/, "An attempted FT Williams query must have a persistent status banner.");
+assert.match(filingReview, /query_state === "PLAN_MATCH_REQUIRED"/, "The filing page must identify a plan-match problem explicitly.");
+assert.match(
+  filingReview,
+  /title: "Choose the correct FT Williams plan"[\s\S]*?message: "Multiple possible plans were found\. Select the correct plan to continue\."/,
+  "A plan-match problem must use concise client-facing copy instead of dumping lookup diagnostics.",
+);
+assert.match(
+  filingReview,
+  /planMatchRequired[\s\S]*?onClick=\{onSelectPlan\}[\s\S]*?Select plan/,
+  "A plan-match problem must offer one direct Select plan action.",
+);
+assert.match(
+  filingReview,
+  /filing-guidance-details[\s\S]*?<summary>View technical details<\/summary>/,
+  "Raw FT Williams lookup diagnostics must stay collapsed behind View technical details.",
+);
+assert.match(filingReview, /query_state === "QUERY_FAILED"/, "The filing page must identify a failed FT Williams query explicitly.");
+assert.match(filingReview, /FT Williams refresh needs attention[\s\S]*?ApiRequestError[\s\S]*?clientError/, "A rejected current-data query must show its structured FT Williams reason.");
+assert.match(filingReview, /visibilitychange[\s\S]*?refreshFilingSnapshot/, "Returning to the filing must refresh server state from other browser sessions.");
+assert.match(filingReview, /window\.addEventListener\("focus", refreshFilingSnapshot\)/, "Focusing the browser must refresh the filing snapshot.");
 
 console.log("FT Williams failure diagnostics workflow passed.");

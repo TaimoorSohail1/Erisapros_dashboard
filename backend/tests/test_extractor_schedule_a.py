@@ -1,14 +1,28 @@
+import asyncio
 import unittest
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import DocumentType, FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField
+from app.models import (
+    DocumentType,
+    FieldRule,
+    FieldRuleMappingMode,
+    FormType,
+    NormalizedExtractionField,
+    NormalizedExtractionResult,
+    ScheduleABrokerMoneyRow,
+    ScheduleABrokerRow,
+)
 from app.services.extractor import (
+    ExtractionService,
     extract_cigna_schedule_a_broker_rows,
     extract_cigna_schedule_a_fields,
+    extract_columnar_broker_compensation_rows,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
     extract_bcbs_michigan_schedule_a_summaries,
@@ -17,6 +31,8 @@ from app.services.extractor import (
     extract_eyemed_schedule_a_summaries,
     extract_explicit_benefit_indicator_fields,
     extract_fields_from_groundx_xray,
+    extract_hmsa_schedule_a_fields,
+    extract_nyl_annual_policy_fields,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
     extract_bcbsma_schedule_a_worksheet_summaries,
@@ -37,7 +53,9 @@ from app.services.extractor import (
     extract_fields_from_document_text,
     is_obvious_template_placeholder,
     merge_schedule_a_fields,
+    merge_schedule_a_broker_rows,
     parse_schedule_a_text,
+    schedule_a_broker_compensation_fields,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -46,6 +64,192 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_new_york_life_annual_policy_report_keeps_full_contract_and_totals(self):
+        pages = [
+            (
+                2,
+                """
+                Anniversary
+                Annual Policy Information Report
+                Name of Insurance Carrier
+                New Y ork Life Group Insurance Company of New Y ork
+                EIN 23-1503749
+                NAIC Code 65498
+                Contract/Policy Number OK 0968358
+                Contract/Policy Y ear From: 01/01/2025
+                Contract/Policy Y ear T o: 12/31/2025
+                T otal premiums paid to Insurance Company during the policy year: $ 7,462.96
+                """,
+            )
+        ]
+
+        by_name = {field.field_name: field.value for field in extract_nyl_annual_policy_fields(pages)}
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "New York Life Group Insurance Company of New York")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "23-1503749")
+        self.assertEqual(by_name["1c. NAIC Code"], "65498")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "OK 0968358")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "7,462.96")
+
+    def test_hmsa_support_packet_extracts_header_covered_count_and_total_premium(self):
+        pages = [
+            (
+                1,
+                """
+                Attached is the HMSA Health Plan information that may be used to complete Schedule A.
+                For filing purposes, please use EIN number 99-0040115 and NAIC code 49948.
+                """,
+            ),
+            (
+                2,
+                """
+                HAWAII MEDICAL SERVICE ASSOCIATION
+                ERISA FORM 5500 AND SCHEDULE A INFORMATION
+                FOR THE PLAN YEAR: January 2025 - December 2025
+                Acct Code Group # Sub Group Group Name Subs Subs & Deps Paid Premium
+                C000 012763 001 JTB USA INC 19 23 $210,730.54
+                012763 002 JTB USA INC COBRA 0 0 $756.56
+                """,
+            ),
+        ]
+
+        by_name = {field.field_name: field.value for field in extract_hmsa_schedule_a_fields(pages)}
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Hawaii Medical Service Association (HMSA)")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "99-0040115")
+        self.assertEqual(by_name["1c. NAIC Code"], "49948")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "012763")
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "23")
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "211,487.10")
+
+    def test_schedule_a_parser_extracts_and_merges_columnar_broker_disclosure_rows(self):
+        pages = [
+            (
+                2,
+                """
+                5. INSURANCE FEES AND COMMISSION INFORMATION:
+                NAME AND ADDRESS OF EACH SOLICITING AGENT OR BROKER RECEIVING COMPENSATION:
+                SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                ALLIANT INSURANCE
+                SERVICES, INC.
+                $ 0.00 $ 0.00 $ 0.00
+                32 OLD SLIP
+                NEW YORK, NY 10005
+
+                NFP CORPORATE SERVICES
+                (NY) LLC
+                $ 1,689.77 $ 0.00 $ 0.00
+                PO BOX 9101
+                PLAINVIEW, NY 11803
+
+                USI INSURANCE SERVICES LLC $ 45.45 $ 0.00 $ 0.00
+                3RD FLOOR
+                600 THIRD AVENUE
+                NEW YORK, NY 10016
+
+                USI INSURANCE SERVICES LLC $ 0.00 $ 0.00 $ 52.98
+                3RD FLOOR
+                600 THIRD AVENUE
+                NEW YORK, NY 10016
+
+                MANAGEMENT COMPENSATION
+                GROUP/NFP
+                $ 0.00 $ 0.00 $ 145.16
+                STE 200
+                3445 PEACHTREE RD NE
+                """,
+            ),
+            (
+                3,
+                """
+                ATLANTA, GA 30326
+
+                NFP CORPORATE SERVICES
+                (NY) LLC
+                $ 1,035.96 $ 0.00 $ 0.00
+                PO BOX 9101
+                PLAINVIEW, NY 11803
+
+                NFP INSURANCE SERVICES,
+                INC
+                $ 0.00 $ 0.00 $ 510.90
+                1250 CAPITAL OF TEXAS HWY
+                BLDG 2 STE 125
+                AUSTIN, TX 78746
+
+                6. COVERAGE/BENEFITS PROVIDED: DISABILITY
+                """,
+            ),
+        ]
+
+        rows = extract_columnar_broker_compensation_rows(pages)
+        by_name = {row.name: row for row in rows}
+
+        self.assertEqual(len(rows), 4)
+        self.assertNotIn("ALLIANT INSURANCE SERVICES, INC.", by_name)
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].commission_total, "2,725.73")
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].fee_total, "0")
+        self.assertEqual(by_name["NFP CORPORATE SERVICES (NY) LLC"].zip_code, "11803")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].commission_total, "45.45")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].fee_total, "52.98")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].address_line_1, "600 THIRD AVENUE")
+        self.assertEqual(by_name["USI INSURANCE SERVICES LLC"].address_line_2, "3RD FLOOR")
+        self.assertEqual(by_name["MANAGEMENT COMPENSATION GROUP/NFP"].city, "ATLANTA")
+        self.assertEqual(by_name["MANAGEMENT COMPENSATION GROUP/NFP"].fee_total, "145.16")
+        self.assertEqual(by_name["NFP INSURANCE SERVICES INC"].fee_total, "510.90")
+
+        fields = {field.field_name: field.value for field in schedule_a_broker_compensation_fields(rows)}
+        self.assertEqual(fields["3b. Amount of Commissions"], "2,771.18")
+        self.assertEqual(fields["3c. Amount of Fees"], "709.04")
+
+    def test_columnar_broker_disclosure_fails_closed_when_a_paid_row_has_no_name(self):
+        rows = extract_columnar_broker_compensation_rows(
+            [
+                (
+                    1,
+                    """
+                    INSURANCE FEES AND COMMISSION INFORMATION:
+                    SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                    $ 100.00 $ 0.00 $ 0.00
+                    1 MAIN STREET
+                    BOSTON, MA 02110
+
+                    6. COVERAGE/BENEFITS PROVIDED: LIFE
+                    """,
+                )
+            ]
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_verified_broker_table_replaces_incorrect_ai_broker_values(self):
+        ai_fields = [
+            NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value="March", confidence=0.99),
+            NormalizedExtractionField(field_name="3b. Amount of Commissions", value="31", confidence=0.99),
+        ]
+        broker_fields = schedule_a_broker_compensation_fields(
+            [
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES (NY) LLC",
+                    commission_total="2,725.73",
+                    fee_total="0",
+                    commission_rows=[ScheduleABrokerMoneyRow(amount="2,725.73", purpose="Sales Commission")],
+                    source_page=2,
+                )
+            ]
+        )
+
+        merged = {field.field_name: field.value for field in merge_schedule_a_fields(ai_fields, broker_fields)}
+
+        self.assertEqual(merged["3a. Name of Agent/Broker/Person"], "NFP CORPORATE SERVICES (NY) LLC")
+        self.assertEqual(merged["3b. Amount of Commissions"], "2,725.73")
+
     def test_cigna_summary_page_wins_over_state_appendices(self):
         pages = [
             (
@@ -117,6 +321,111 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "NFP CORPORATE SERVICES (NY), LLC")
         self.assertEqual(rows[0].commission_total, "18,603")
         self.assertEqual(rows[0].fee_total, "1,397")
+
+    def test_cigna_schedule_a_support_packet_uses_plan_detail_not_schedule_c_disclosures(self):
+        pages = [
+            (
+                2,
+                """
+                INFORMATION FOR COMPLETING SCHEDULE A ON THE IRS FORM 5500
+                For Plan Year Beginning:
+                January 01, 2025
+                and Ending:
+                December 31, 2025
+                Name of Plan:
+                JTB Americas, Ltd.
+                SCHEDULE A - INSURANCE INFORMATION:
+                Name of Insurance Carrier:
+                Cigna Health and Life Insurance Company
+                EIN
+                NAIC
+                Contract or identification
+                Policy or contract year:
+                To
+                59-1031071
+                67369
+                00656053
+                12/31/2025
+                1/1/2025
+                From
+                Approximate number of persons covered at end of policy or contract year:
+                Total premiums* or subscription charges paid to carrier:
+                $891,167.11
+                """,
+            ),
+            (
+                4,
+                """
+                Eligible Indirect Compensation
+                Service Provider Information for Reporting on Form 5500 Schedule C Part 1, Line 3
+                (a) Service provider name: Cigna
+                Eligible Indirect Compensation Formula/Estimate: For calendar year 2025, $0.07 PMPY
+                Sources of indirect compensation, excluding eligible indirect compensation, to be reported on Schedule C Part 1, Line 3
+                """,
+            ),
+            (
+                6,
+                """
+                PREMIUMS PLAN DETAIL
+                COMMISSIONS PAID DETAIL
+                BENEFIT ADVISOR FEE PAID DETAIL
+                SERVICE AND / OR GENERAL AGENT FEE PAID DETAIL
+                BENEFIT
+                TOTAL COMM PAID
+                BROKER ACCT#
+                BROKER NAME
+                MEDICAL
+                $192,508.68
+                113447
+                ALLIANCE 360 INSURANCE SOLUTIONS
+                TOTAL
+                $192,508.68
+                BENEFIT
+                TOTAL FEES
+                BROKER ACCT#
+                BROKER NAME
+                TOTAL
+                BENEFIT
+                TOTAL FEES
+                BROKER ACCT#
+                BROKER NAME
+                MEDICAL
+                $77,014.08
+                302347
+                CENTERSTONE INS & FIN SVC LLC
+                TOTAL
+                $77,014.08
+                For Plan Year Beginning:
+                January 01, 2025
+                and Ending:
+                December 31, 2025
+                Name of Plan:
+                JTB Americas, Ltd.
+                Cigna
+                Plan Detail Report
+                Plan #:
+                00656053
+                """,
+            ),
+        ]
+
+        fields = {field.field_name: field.value for field in extract_cigna_schedule_a_fields(pages)}
+        rows = extract_cigna_schedule_a_broker_rows(pages)
+
+        self.assertEqual(fields["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company")
+        self.assertEqual(fields["1b. Insurance Carrier EIN"], "59-1031071")
+        self.assertEqual(fields["1c. NAIC Code"], "67369")
+        self.assertEqual(fields["1d. Contract/Policy Number"], "00656053")
+        self.assertEqual(fields["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(fields["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(fields["3b. Amount of Commissions"], "192,508.68")
+        self.assertEqual(fields["3c. Amount of Fees"], "77,014.08")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "891,167.11")
+        self.assertEqual([row.name for row in rows], ["ALLIANCE 360 INSURANCE SOLUTIONS", "CENTERSTONE INS & FIN SVC LLC"])
+        self.assertEqual(rows[0].commission_total, "192,508.68")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[1].commission_total, "0")
+        self.assertEqual(rows[1].fee_total, "77,014.08")
 
     def test_equitable_schedule_a_worksheet_extracts_coverage_period_and_checkbox_no_values(self):
         health_rule = FieldRule(
@@ -248,6 +557,10 @@ class ScheduleAExtractionTests(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].value, "1042075/6-1001/1002")
+        self.assertEqual(
+            merged[0].candidate_values,
+            ["10420761002", "1042075/6-1001/1002"],
+        )
 
     def test_groundx_query_contains_published_aliases_for_the_relevant_form(self):
         custom_alias = "Carrier Registry Number"
@@ -359,6 +672,24 @@ class ScheduleAExtractionTests(unittest.TestCase):
             by_name["10a. Total premiums or subscription charges paid to carrier"],
             "12,013.49",
         )
+
+    def test_annual_policy_report_extracts_colon_labelled_policy_year_dates(self):
+        text = """
+        Annual Policy Information Report
+        Name of Insurance Carrier
+        Life Insurance Company of North America
+        EIN 23-1503749
+        NAIC Code 65498
+        Contract/Policy Number FLX0966852
+        Contract/Policy Year From: 01/01/2025
+        Contract/Policy Year To: 12/31/2025
+        """
+
+        fields = parse_schedule_a_text(text)
+        by_name = {field.field_name: field.value for field in fields}
+
+        self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
 
     def test_groundx_ocr_maps_nonparticipating_subscription_charge_wording_to_line_10a(self):
         text = """
@@ -696,6 +1027,66 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[2].fee_total, "299")
         self.assertEqual(rows[3].fee_total, "2")
 
+    def test_schedule_a_parser_reads_metlife_address_and_split_state_zip(self):
+        text = """
+        (a) Name and address of the agents, brokers or other persons to whom commissions or fees were paid
+        Name: GALLAGHER BENEFIT SERVICES INC
+        Address: PO BOX 3009 City: ARLINGTON
+        HEIGHTS ST: IL ZIP: 60006-3009
+        Commissions Paid Fees Paid Organization
+        codeCoverage Amount Purpose Coverage Amount Purpose
+        Health 978 Base Commissions Multiple 107 Non-Monetary
+        Compensation 03
+        978 Sub-total 107 Sub-total
+        """
+        rows = extract_schedule_a_broker_rows(text)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].address_line_1, "PO BOX 3009")
+        self.assertEqual(rows[0].city, "ARLINGTON HEIGHTS")
+        self.assertEqual(rows[0].state, "IL")
+        self.assertEqual(rows[0].zip_code, "60006-3009")
+        self.assertEqual(rows[0].organization_code, "03")
+        self.assertEqual(rows[0].commission_total, "978")
+        self.assertEqual(rows[0].fee_total, "107")
+
+    def test_broker_fragment_joins_only_same_name_and_zip(self):
+        rows = merge_schedule_a_broker_rows(
+            [
+                ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", address_line_1="PO BOX 3009", city="ARLINGTON HEIGHTS", state="IL", zip_code="60006-3009", commission_total="978", fee_total="107"),
+                ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", address_line_1="PO BOX 95287", city="CHICAGO", state="IL", zip_code="60690-7219", commission_total="0", fee_total="121"),
+            ],
+            [ScheduleABrokerRow(name="GALLAGHER BENEFIT SERVICES INC", city="ARLINGTON HEIGHTS ST: IL ZIP: 60006-3009", fee_total="3")],
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].address_line_1, "PO BOX 3009")
+        self.assertEqual(rows[1].address_line_1, "PO BOX 95287")
+
+    def test_schedule_a_parser_stops_last_broker_before_part_iii(self):
+        text = """
+        Name and address of the agents, brokers or other persons to whom commissions or fees were paid
+        Name: NFP CORPORATE SERVICES LLC Address Line 1: 200 PARK AVE RM 3202
+        Address Line 2: ATTN ACCOUNTING City: NEW YORK State: NY
+        Zip Code: 10166-3201 Organization code: 03
+        Commissions Paid
+        Coverage Amount Purpose
+        0 Sub Total
+        Fees Paid
+        Coverage Amount Purpose
+        Vision 2 Marketing Fees
+        2 Sub Total
+        Part III Welfare Benefit Contract Information
+        Vision 15,870
+        If more than one contract covers the same group of employees, complete the information below.
+        """
+
+        rows = extract_schedule_a_broker_rows(text)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].fee_total, "2")
+        self.assertEqual(rows[0].fee_rows, [])
+        self.assertNotIn("15,870", str(rows[0].model_dump()))
+        self.assertNotIn("Welfare Benefit Contract Information", str(rows[0].model_dump()))
+
     def test_schedule_a_parser_extracts_bcbsma_worksheet_experience_rated_fields(self):
         text = """
         ACCOUNT NAME: R. H. White Construction Co. I
@@ -910,12 +1301,12 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "43-0949844")
         self.assertEqual(by_name["1c. NAIC Code"], "71870")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "1025848/9-1001")
-        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "367")
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "366")
         self.assertEqual(by_name["1f. Policy Year Beginning Date"], "01/01/2025")
         self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
-        self.assertEqual(by_name["3b. Amount of Commissions"], "4,877")
+        self.assertEqual(by_name["3b. Amount of Commissions"], "4,876.54")
         self.assertEqual(by_name["3c. Amount of Fees"], "0")
-        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,191")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,190.52")
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].source, "EyeMed vision worksheet")
         self.assertEqual(len(summaries[0].benefit_rows), 2)
@@ -923,8 +1314,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "RSC Insurance Brokerage, Inc. - Boston")
         self.assertEqual(rows[0].address_line_1, "160 Federal Street")
         self.assertEqual(rows[0].city, "Boston")
-        self.assertEqual(rows[0].commission_total, "2,980")
-        self.assertEqual(rows[-1].commission_total, "20")
+        self.assertEqual(rows[0].commission_total, "2,979.55")
+        self.assertEqual(rows[-1].commission_total, "19.50")
 
     def test_schedule_a_parser_extracts_eyemed_rows_with_blank_identifier_cells(self):
         pages = [
@@ -963,12 +1354,117 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "43-0949844")
         self.assertEqual(by_name["1c. NAIC Code"], "71870")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "1042075/6-1001/1002")
-        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "339")
-        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "11,965")
-        self.assertEqual(by_name["3b. Amount of Commissions"], "4,920")
+        self.assertEqual(by_name["1e. Persons Covered (End of Policy Year)"], "335")
+        self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "11,965.18")
+        self.assertEqual(by_name["3b. Amount of Commissions"], "4,920.17")
         self.assertEqual(len(summaries), 1)
         self.assertEqual(len(summaries[0].benefit_rows), 4)
         self.assertEqual(len(rows), 3)
+
+    def test_eyemed_broker_rows_accept_city_joined_to_state_without_losing_cents(self):
+        pages = [
+            (
+                1,
+                """
+                Vision Insurance Information For Form 5500
+                Information Compiled By: EyeMed Vision Care on behalf of the Fidelity Security Life Insurance Company
+                Payee Name Contract or ID # Address Line 1 City StateZip Code Amount
+                NFP Corporate Services NY - Norwell, MA10545381001Po Box 786677 PhiladelphiaPA 19178-6677 $1,932.21
+                Total: $1,932.21
+                Commissions or fees paid by carrier to agents, brokers or other persons:
+                """,
+            )
+        ]
+
+        rows = extract_eyemed_broker_rows(pages)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "NFP Corporate Services NY - Norwell, MA")
+        self.assertEqual(rows[0].city, "Philadelphia")
+        self.assertEqual(rows[0].state, "PA")
+        self.assertEqual(rows[0].zip_code, "19178-6677")
+        self.assertEqual(rows[0].commission_total, "1,932.21")
+
+    def test_groundx_failure_marks_local_fallback_for_manual_review(self):
+        fallback = NormalizedExtractionResult(
+            provider="Local PDF parser fallback",
+            fields=[NormalizedExtractionField(field_name="1e. Persons Covered (End of Policy Year)", value="143740", confidence=0.99)],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=fallback),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(side_effect=RuntimeError("temporary AI failure"))),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        self.assertIn("manual review required", result.provider.lower())
+        self.assertTrue(result.raw["manual_review_required"])
+        self.assertLessEqual(result.fields[0].confidence, 0.5)
+        self.assertLessEqual(result.schedule_a_broker_rows[0].confidence, 0.5)
+
+    def test_groundx_failure_keeps_complete_local_fallback_trusted(self):
+        fallback = NormalizedExtractionResult(
+            provider="Local PDF parser fallback",
+            fields=[
+                NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity Security Life Insurance Company", confidence=0.96),
+                NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="43-0949844", confidence=0.98),
+                NormalizedExtractionField(field_name="1c. NAIC Code", value="71870", confidence=0.98),
+                NormalizedExtractionField(field_name="1d. Contract/Policy Number", value="1054538/9-1001", confidence=0.97),
+                NormalizedExtractionField(field_name="1e. Persons Covered (End of Policy Year)", value="171", confidence=0.97),
+                NormalizedExtractionField(field_name="1f. Policy Year Beginning Date", value="04/01/2025", confidence=0.97),
+                NormalizedExtractionField(field_name="1g. Policy Year Ending Date", value="03/31/2026", confidence=0.97),
+            ],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=fallback),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(side_effect=RuntimeError("temporary AI failure"))),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        self.assertIn("verified local fallback", result.provider.lower())
+        self.assertTrue(result.raw["fallback_validated"])
+        self.assertEqual(result.fields[0].confidence, 0.96)
+        self.assertEqual(result.schedule_a_broker_rows[0].confidence, 0.95)
+
+    def test_groundx_result_is_defensively_supplemented_by_local_parser(self):
+        groundx = NormalizedExtractionResult(
+            provider="GroundX X-Ray",
+            fields=[NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity", confidence=0.5)],
+        )
+        local = NormalizedExtractionResult(
+            provider="Local PDF parser",
+            fields=[
+                NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Fidelity Security Life Insurance Company", confidence=0.96),
+                NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="43-0949844", confidence=0.98),
+            ],
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NFP Corporate Services", confidence=0.95)],
+        )
+        settings = SimpleNamespace(groundx_api_key="test", groundx_bucket_id="test")
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=local),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(return_value=groundx)),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        by_name = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Fidelity Security Life Insurance Company")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "43-0949844")
+        self.assertEqual(result.schedule_a_broker_rows[0].name, "NFP Corporate Services")
 
     def test_schedule_a_parser_extracts_standard_long_form_separate_benefits(self):
         pages = self._standard_long_form_pages()

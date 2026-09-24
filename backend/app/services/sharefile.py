@@ -22,6 +22,7 @@ MAX_SHAREFILE_SCAN_DEPTH = 8
 # booklets, scans, or templates that would make the scan take minutes each.
 MAX_CONTENT_SNIFF_BYTES = 10 * 1024 * 1024
 SHAREFILE_INCREMENTAL_STATE_KEY = "sharefile_incremental_scan"
+SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY = "sharefile_webhook_registration"
 # A deep scan walks every folder of every client - on a large ShareFile
 # account that is thousands of folder listings and takes the best part of an
 # hour. Running it every few minutes keeps the account permanently busy and
@@ -235,6 +236,18 @@ class ShareFileService:
                 webhook_roots,
                 existing,
             )
+
+        attempted_at = datetime.utcnow()
+        registration_state = {
+            "last_attempt_at": attempted_at,
+            "webhook_roots": len(webhook_roots),
+            "registered": len(registered),
+            "skipped": len(skipped),
+            "failed": len(failed),
+        }
+        if not failed:
+            registration_state["last_success_at"] = attempted_at
+        await repo.upsert_sharefile_state(SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY, registration_state)
 
         await repo.add_audit(
             AuditLog(
@@ -680,7 +693,16 @@ class ShareFileService:
     async def scan_status(self) -> dict:
         """Visibility into the background scan so nobody has to guess whether
         scans are running, finishing, or failing."""
-        state = await get_repository().get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+        repo = get_repository()
+        state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
+        registration = await repo.get_sharefile_state(SHAREFILE_WEBHOOK_REGISTRATION_STATE_KEY) or {}
+        registration_health = bool(
+            registration.get("last_attempt_at")
+            and registration.get("webhook_roots")
+            and not registration.get("failed")
+            and int(registration.get("registered") or 0) + int(registration.get("skipped") or 0)
+            >= int(registration.get("webhook_roots") or 0)
+        )
         started = state.get("last_scan_started_at")
         completed = state.get("last_scan_completed_at") or state.get("last_scan_at")
         running = bool(started and (not completed or completed < started))
@@ -705,6 +727,82 @@ class ShareFileService:
             "last_quick_scan_at": state.get("last_quick_scan_at"),
             "known_folder_count": len(state.get("known_folder_ids") or []),
             "deep_scan_interval_hours": get_settings().sharefile_deep_scan_interval_hours,
+            "webhook_registration": {
+                "healthy": registration_health,
+                "last_attempt_at": registration.get("last_attempt_at"),
+                "last_success_at": registration.get("last_success_at"),
+                "webhook_roots": registration.get("webhook_roots"),
+                "registered": registration.get("registered"),
+                "skipped": registration.get("skipped"),
+                "failed": registration.get("failed"),
+            },
+            "upload_finality": await self._upload_finality_status(),
+        }
+
+    async def _upload_finality_status(self) -> dict:
+        repo = get_repository()
+        indexed = [
+            item
+            for item in await repo.list_active_sharefile_file_summaries()
+            if item.get("document_type") == DocumentType.SCHEDULE_A.value
+        ]
+        item_ids = {str(item.get("item_id")) for item in indexed if item.get("item_id")}
+        filings = await repo.list_filings_by_sharefile_item_ids(item_ids)
+        by_item_id: dict[str, Filing] = {}
+        for filing in filings:
+            if filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+                continue
+            filing_item_ids = {str(filing.sharefile_item_id or "")}
+            filing_item_ids.update(
+                str(document.get("sharefile_item_id") or "")
+                for document in filing.package_documents
+            )
+            for item_id in filing_item_ids & item_ids:
+                existing = by_item_id.get(item_id)
+                if existing is None or filing.updated_at > existing.updated_at:
+                    by_item_id[item_id] = filing
+
+        final_statuses = {
+            FilingStatus.NEEDS_REVIEW,
+            FilingStatus.READY_FOR_APPROVAL,
+            FilingStatus.APPROVED,
+            FilingStatus.REJECTED,
+            FilingStatus.FAILED,
+        }
+        waiting_statuses = {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}
+        timeout_seconds = max(60, get_settings().sharefile_upload_finality_timeout_seconds)
+        now = datetime.utcnow()
+        counters = {"final": 0, "in_progress": 0, "stalled": 0, "action_required": 0, "orphaned": 0}
+        attention_items: list[dict] = []
+
+        for item_id in sorted(item_ids):
+            filing = by_item_id.get(item_id)
+            if not filing:
+                counters["orphaned"] += 1
+                attention_items.append({"item_id": item_id, "state": "ORPHANED", "filing_id": None})
+                continue
+            age_seconds = max(0, int((now - filing.updated_at).total_seconds()))
+            if filing.status in final_statuses:
+                counters["final"] += 1
+            elif filing.status in waiting_statuses:
+                counters["action_required"] += 1
+                attention_items.append(
+                    {"item_id": item_id, "state": filing.status.value, "filing_id": filing.id, "age_seconds": age_seconds}
+                )
+            elif age_seconds > timeout_seconds:
+                counters["stalled"] += 1
+                attention_items.append(
+                    {"item_id": item_id, "state": "STALLED", "filing_id": filing.id, "status": filing.status.value, "age_seconds": age_seconds}
+                )
+            else:
+                counters["in_progress"] += 1
+
+        return {
+            "schedule_a_uploads": len(item_ids),
+            **counters,
+            "all_final": bool(item_ids) and counters["final"] == len(item_ids),
+            "timeout_seconds": timeout_seconds,
+            "attention_items": attention_items[:100],
         }
 
     async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
@@ -1551,9 +1649,12 @@ class ShareFileService:
             return {"complete": True, "status": FilingStatus.QUEUED, "message": "Package has Schedule A and Plan Worksheet."}
         if has_schedule_a:
             return {
-                "complete": False,
-                "status": FilingStatus.WAITING_FOR_WORKSHEET,
-                "message": "Schedule A was received. Waiting for matching 5500 Plan Worksheet.",
+                "complete": True,
+                "status": FilingStatus.QUEUED,
+                "message": (
+                    "Schedule A was received without a Plan Worksheet. Extraction will continue; "
+                    "missing or uncertain plan identity will be sent to Review."
+                ),
             }
         return {
             "complete": False,
@@ -2058,6 +2159,25 @@ class ShareFileService:
             change_type = "UPDATED" if existing.get("status") == "FAILED" else str(existing.get("status"))
             file_item["change_type"] = change_type
             return change_type
+        current_hash = str(self._sharefile_hash(file_item) or "")
+        existing_hash = str(existing.get("hash") or "")
+        current_version = str(self._sharefile_version(file_item) or "")
+        existing_version = str(existing.get("version") or "")
+        same_size = int(existing.get("file_size") or 0) == int(file_item.get("size") or 0)
+        same_strong_identity = (
+            bool(current_hash and existing_hash and current_hash == existing_hash)
+            or (
+                not (current_hash and existing_hash)
+                and bool(current_version and existing_version and current_version == existing_version)
+            )
+        )
+        if same_size and same_strong_identity:
+            # ShareFile can emit Upload and Update notifications for one
+            # completed version while only its modified timestamp representation
+            # changes. Do not create and extract a second dashboard filing when
+            # version/hash and byte size prove that the content is identical.
+            file_item["change_type"] = "UNCHANGED"
+            return "UNCHANGED"
         existing_signature = str(existing.get("metadata_signature") or "")
         current_signature = self._sharefile_metadata_signature(file_item)
         if existing_signature != current_signature:
@@ -2243,7 +2363,7 @@ class ShareFileService:
         seen: set[str] = set()
         for root in roots:
             root_id = str(root.get("id") or "")
-            if not root_id or root_id in seen:
+            if not root_id or root_id in seen or self._is_shared_navigation_placeholder_id(root_id):
                 continue
             seen.add(root_id)
             deduped.append(root)
@@ -3087,8 +3207,14 @@ class ShareFileService:
         return any(self._is_year_filing_segment(part) for part in path_parts)
 
     def _is_year_filing_segment(self, value: str) -> bool:
-        text = str(value or "").lower()
-        return bool(re.search(r"\b20\d{2}\b", text) and "filing" in text)
+        text = str(value or "").strip().lower()
+        if not re.search(r"\b20\d{2}\b", text):
+            return False
+        # Client trees use both "2025 Filing" and a bare "2025" folder for
+        # the same filing-year boundary. Treating the latter as an ordinary
+        # folder collapses several years into one package root and prevents
+        # the quick scan/webhook registration from reaching Schedule A files.
+        return "filing" in text or bool(re.fullmatch(r"20\d{2}", text))
 
     def _is_5500_filing_folder_segment(self, value: str) -> bool:
         text = str(value or "").lower()
@@ -3165,9 +3291,15 @@ class ShareFileService:
         for item in children:
             item_id = item.get("Id")
             name = item.get("Name") or item.get("FileName") or item_id
-            if item_id and name and self._is_folder(item):
+            if item_id and name and self._is_folder(item) and not self._is_shared_navigation_placeholder_id(item_id):
                 roots.append(self._scan_root(item_id, "ShareFile allshared", [name]))
         return roots
+
+    def _is_shared_navigation_placeholder_id(self, item_id: str) -> bool:
+        # ShareFile's allshared listing also returns virtual navigation nodes.
+        # They can look like folders, but their n-prefixed IDs are not valid
+        # webhook resources (the subscription API responds HTTP 404).
+        return bool(re.fullmatch(r"n[0-9a-f]{7}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(item_id), re.I))
 
     def _scan_root(self, folder_id: str, source: str, path_parts: list[str] | None = None) -> dict:
         cleaned_path = [part for part in (path_parts or []) if part]
@@ -3443,6 +3575,8 @@ class ShareFileService:
         return {"Authorization": f"Bearer {token.access_token}"}
 
     def _is_folder(self, item: dict) -> bool:
+        if self._is_shared_navigation_placeholder_id(item.get("Id") or item.get("id") or ""):
+            return False
         item_type = str(item.get("ItemType") or item.get("Type") or item.get("__type") or item.get("odata.type") or "").lower()
         if "folder" in item_type:
             return True

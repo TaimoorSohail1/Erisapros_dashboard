@@ -7,6 +7,7 @@ export default defineConfig({
   },
   plugins: [react()],
   server: {
-    port: 5173
+    allowedHosts: ["fredricka-sorriest-collegiately.ngrok-free.dev"],
+    port: 5173,
   }
 });

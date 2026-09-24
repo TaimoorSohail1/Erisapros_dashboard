@@ -36,7 +36,7 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
         by_name = {field.field_name: field.value for field in fields}
         self.assertEqual(by_name["Filing Signer Email"], "signer@example.com")
 
-    def test_fixed_signer_label_maps_to_plan_administrator_without_an_alias(self):
+    def test_fixed_signer_label_is_not_exposed_as_plan_administrator(self):
         text = """
         Form 5500 Information:
         Plan sponsor name MIDWEST HOSE & SPECIALTY INC.
@@ -59,7 +59,7 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
         fields = parse_plan_worksheet_text(text)
         by_name = {field.field_name: field.value for field in fields}
 
-        self.assertEqual(by_name["2a. Plan Administrator Name"], "CHRISTINE CATALDO")
+        self.assertNotIn("2a. Plan Administrator Name", by_name)
         self.assertEqual(by_name["8c. Welfare Benefit Features"], "4A 4B 4D 4E 4F 4H 4Q")
 
     def test_ohio_valley_layout_extracts_every_present_canonical_worksheet_value(self):
@@ -104,7 +104,6 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
             "1e. Plan Sponsor EIN": "34-1655024",
             "1f. Plan Sponsor Address": "515 NEWMAN ST MASFIELD OH 44902",
             "1g. Business Code": "336370",
-            "2a. Plan Administrator Name": "MICHAEL HAMILTON",
             "6. Plan Year Beginning Date": "01-01-2025",
             "7. Plan Year Ending Date": "12-31-2025",
             "9. Plan funding arrangement": "Insurance",

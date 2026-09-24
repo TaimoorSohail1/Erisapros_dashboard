@@ -5,26 +5,177 @@ import type {
   FTWFieldCatalogEntry,
   Filing,
   FilingDetail,
+  FTWilliamsFailureNotificationResponse,
+  FTWilliamsFailureQueueItem,
   FTWilliamsFailureQueueResponse,
+  FTWilliamsFailureType,
   FTWilliamsHistoryRange,
   FTWilliamsHistoryResponse,
+  FTWLocalAgentStatus,
+  FTWLocalAgentDevice,
+  FTWLocalAgentPairingCodeResponse,
+  FTWClientWorkspace,
+  FTWWorkspacePlanMapping,
+  FTWWorkspacePlanMappingInput,
   FTWilliamsReview,
+  ClientFacingError,
+  ScheduleABrokerRow,
 } from "./types";
 import { getIdToken } from "./auth";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? "/api" : "http://localhost:8001");
 
+export class ApiRequestError extends Error {
+  clientError?: ClientFacingError;
+  status: number;
+
+  constructor(message: string, status: number, clientError?: ClientFacingError) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.clientError = clientError;
+  }
+}
+
+function isClientFacingError(value: unknown): value is ClientFacingError {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ClientFacingError>;
+  return typeof candidate.title === "string" && typeof candidate.message === "string";
+}
+
+function clientErrorForHttpStatus(status: number, detail?: string): ClientFacingError {
+  const receivedDetail = detail?.trim();
+  switch (status) {
+    case 400:
+      return {
+        title: "Check the entered value",
+        message: receivedDetail || "The value is not valid for this action.",
+        reason: receivedDetail || "The server returned HTTP 400 Bad Request.",
+        next_action: "Correct the highlighted value and save it again.",
+        code: "HTTP_400",
+        source: "ERISAPros",
+      };
+    case 401:
+      return {
+        title: "Your session has expired",
+        message: "The request was not sent because your sign-in session is no longer valid.",
+        reason: receivedDetail || "The server returned HTTP 401 Unauthorized.",
+        next_action: "Sign in again, reopen the filing, and retry the action.",
+        code: "HTTP_401",
+        source: "ERISAPros",
+      };
+    case 403:
+      return {
+        title: "FT Williams permission is missing",
+        message: "The active account is not allowed to perform this FT Williams action.",
+        reason: receivedDetail || "The server returned HTTP 403 Forbidden.",
+        next_action: "Confirm the FT Williams account and KeyID permissions, then retry.",
+        code: "HTTP_403",
+        source: "FT Williams",
+      };
+    case 429:
+      return {
+        title: "FT Williams is receiving too many requests",
+        message: "The update was paused by a service rate limit.",
+        reason: receivedDetail || "The server returned HTTP 429 Too Many Requests.",
+        next_action: "Wait briefly, click Query FTW Current, and retry only if the values were not updated.",
+        code: "HTTP_429",
+        source: "FT Williams",
+      };
+    case 502:
+    case 503:
+      return {
+        title: "FT Williams is temporarily unavailable",
+        message: "The gateway could not reach a healthy FT Williams service.",
+        reason: receivedDetail || `The server returned HTTP ${status}.`,
+        next_action: "Click Query FTW Current when the service is available, then retry only if needed.",
+        code: `HTTP_${status}`,
+        source: "FT Williams",
+      };
+    case 504:
+      return {
+        title: "FT Williams verification timed out",
+        message: "The send and read-back did not finish before the gateway time limit.",
+        reason: receivedDetail || "The request exceeded the gateway time limit, so the update outcome is unknown.",
+        next_action: "Click Query FTW Current to verify what was saved before retrying.",
+        code: "HTTP_504",
+        source: "FT Williams",
+      };
+    default:
+      return {
+        title: "FT Williams request was not completed",
+        message: "The server could not complete the requested FT Williams action.",
+        reason: receivedDetail || `The server returned HTTP ${status}.`,
+        next_action: "Review the reason and technical details, then retry only after confirming the current FT Williams values.",
+        code: `HTTP_${status}`,
+        source: "FT Williams",
+      };
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   const idToken = await getIdToken();
   if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
-  const response = await fetch(API_BASE + path, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(API_BASE + path, { ...options, headers });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "The browser could not reach the server.";
+    const clientError: ClientFacingError = {
+      title: "Connection to FT Williams was interrupted",
+      message: "The browser did not receive a response, so the action outcome is unknown.",
+      reason,
+      next_action: "Restore the connection and click Query FTW Current before retrying.",
+      code: "NETWORK_REQUEST_FAILED",
+      source: "Network",
+    };
+    throw new ApiRequestError(clientError.message, 0, clientError);
+  }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail || payload.error || "Request failed");
+    const detail = payload.detail;
+    const structuredError = isClientFacingError(payload.client_error)
+      ? payload.client_error
+      : detail && typeof detail === "object" && isClientFacingError(detail.client_error)
+        ? detail.client_error
+        : isClientFacingError(detail)
+          ? detail
+          : undefined;
+    if (structuredError) {
+      throw new ApiRequestError(structuredError.message, response.status, structuredError);
+    }
+    if (detail && typeof detail === "object") {
+      const message = String(detail.message || detail.reason || "Value is not valid for FT Williams");
+      const expected = detail.expected_format ? ` Expected: ${detail.expected_format}.` : "";
+      throw new ApiRequestError(`${message}.${expected}`.replace("..", "."), response.status);
+    }
+    const rawDetail = String(detail || payload.error || "");
+    const statusError = clientErrorForHttpStatus(response.status, rawDetail || undefined);
+    throw new ApiRequestError(statusError.message, response.status, statusError);
   }
   return response.json();
+}
+
+async function requestWithTimeout<T>(path: string, options: RequestInit = {}, timeoutMs = 8_000): Promise<T> {
+  const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  const timeout = window.setTimeout(() => controller.abort("Request timed out"), timeoutMs);
+  try {
+    return await request<T>(path, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      throw new Error("FT Williams data took too long to load. Please retry.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  }
 }
 
 export async function listFilings(): Promise<Filing[]> {
@@ -36,8 +187,89 @@ export async function listFTWilliamsHistory(range: FTWilliamsHistoryRange): Prom
   return request<FTWilliamsHistoryResponse>("/ftwilliams/history?range=" + encodeURIComponent(range));
 }
 
-export async function listFTWilliamsFailureQueue(): Promise<FTWilliamsFailureQueueResponse> {
-  return request<FTWilliamsFailureQueueResponse>("/ftwilliams/failure-queue");
+export async function listFTWilliamsFailureNotifications(): Promise<FTWilliamsFailureNotificationResponse> {
+  return requestWithTimeout<FTWilliamsFailureNotificationResponse>("/ftwilliams/failure-notifications");
+}
+
+export async function getFTWLocalAgentStatus(): Promise<FTWLocalAgentStatus> {
+  return requestWithTimeout<FTWLocalAgentStatus>("/ftwilliams/local-agent/status", {}, 5_000);
+}
+
+export async function createFTWLocalAgentPairingCode(workspaceId?: string): Promise<FTWLocalAgentPairingCodeResponse> {
+  return request<FTWLocalAgentPairingCodeResponse>("/ftwilliams/local-agent/pairing-codes", {
+    method: "POST",
+    ...(workspaceId ? { body: JSON.stringify({ workspace_id: workspaceId }) } : {}),
+  });
+}
+
+export async function listFTWClientWorkspaces(): Promise<FTWClientWorkspace[]> {
+  const payload = await request<{ workspaces: FTWClientWorkspace[] }>("/ftwilliams/local-agent/workspaces");
+  return payload.workspaces;
+}
+
+export async function listFTWWorkspacePlanMappings(workspaceId: string): Promise<FTWWorkspacePlanMapping[]> {
+  const payload = await request<{ mappings: FTWWorkspacePlanMapping[] }>(
+    `/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings`,
+  );
+  return payload.mappings;
+}
+
+export async function verifyFTWWorkspacePlanMapping(
+  workspaceId: string,
+  mapping: FTWWorkspacePlanMappingInput,
+): Promise<FTWWorkspacePlanMapping> {
+  return request(`/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mapping),
+  });
+}
+
+export async function disableFTWWorkspacePlanMapping(
+  workspaceId: string,
+  mappingId: string,
+): Promise<FTWWorkspacePlanMapping> {
+  return request(
+    `/ftwilliams/local-agent/workspaces/${encodeURIComponent(workspaceId)}/plan-mappings/${encodeURIComponent(mappingId)}/disable`,
+    { method: "POST" },
+  );
+}
+
+export async function listFTWLocalAgentDevices(): Promise<FTWLocalAgentDevice[]> {
+  const payload = await request<{ devices: FTWLocalAgentDevice[] }>("/ftwilliams/local-agent/devices");
+  return payload.devices;
+}
+
+export async function revokeFTWLocalAgentDevice(deviceId: string): Promise<{ device_id: string; status: string }> {
+  return request(`/ftwilliams/local-agent/devices/${encodeURIComponent(deviceId)}/revoke`, { method: "POST" });
+}
+
+export async function setFTWLocalAgentPaused(deviceId: string, paused: boolean): Promise<{ device_id: string; status: FTWLocalAgentDevice["status"]; pause_requested: boolean }> {
+  return request(`/ftwilliams/local-agent/devices/${encodeURIComponent(deviceId)}/control`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused }),
+  });
+}
+
+export async function listFTWilliamsFailureQueue(options: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  failureType?: "ALL" | FTWilliamsFailureType;
+  date?: "ALL" | "TODAY" | "LAST_7" | "LAST_30";
+  signal?: AbortSignal;
+} = {}): Promise<FTWilliamsFailureQueueResponse> {
+  const params = new URLSearchParams({
+    page: String(options.page || 1),
+    page_size: String(options.pageSize || 10),
+    date: options.date || "ALL",
+  });
+  if (options.search?.trim()) params.set("search", options.search.trim());
+  if (options.failureType && options.failureType !== "ALL") params.set("failure_type", options.failureType);
+  return requestWithTimeout<FTWilliamsFailureQueueResponse>(`/ftwilliams/failure-queue?${params}`, { signal: options.signal });
+}
+
+export async function getFTWilliamsFailureDetail(filingId: string, signal?: AbortSignal): Promise<FTWilliamsFailureQueueItem> {
+  return requestWithTimeout<FTWilliamsFailureQueueItem>(`/ftwilliams/failure-queue/${filingId}`, { signal });
 }
 
 export async function openFTWilliamsAuditPDF(filingId: string): Promise<void> {
@@ -83,21 +315,6 @@ export async function updateField(
   });
 }
 
-export async function approveFiling(
-  filingId: string,
-  reason: string,
-  options?: { send_to_ftw?: boolean; refresh_current_before_update?: boolean; run_edit_checks?: boolean; override_blockers?: boolean },
-): Promise<{ status: string; ftw_review?: FTWilliamsReview | null }> {
-  return request("/filings/" + filingId + "/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason, ...(options || {}) })
-  });
-}
-
-export async function unapproveFiling(filingId: string): Promise<{ status: string }> {
-  return request("/filings/" + filingId + "/unapprove", { method: "POST" });
-}
 
 export async function rejectFiling(filingId: string, reason: string): Promise<void> {
   await request("/filings/" + filingId + "/reject", {
@@ -123,8 +340,34 @@ export async function getFTWilliamsBringForwardLink(filingId: string): Promise<{
   url: string;
   target_year?: string | null;
   prior_year?: string | null;
+  plan_specific?: boolean;
 }> {
   return request("/filings/" + filingId + "/ftw/bring-forward-link", { method: "POST" });
+}
+
+export async function confirmFTWilliamsBringForward(filingId: string): Promise<{
+  ftw_review: FTWilliamsReview;
+  automation_status: string;
+  automation_next_action?: string | null;
+}> {
+  return request("/filings/" + filingId + "/ftw/confirm-bring-forward", { method: "POST" });
+}
+
+export async function reconcileFTWilliamsBringForward(
+  filingId: string,
+  resolution: "VERIFY_CURRENT" | "RESET_FAILED",
+  reason = "",
+): Promise<{
+  ftw_review: FTWilliamsReview;
+  automation_status: string;
+  automation_next_action?: string | null;
+  reconciled_job_ids: string[];
+}> {
+  return request("/filings/" + filingId + "/ftw/reconcile-bring-forward", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution, reason }),
+  });
 }
 
 export async function saveManualFTWilliamsMatch(
@@ -134,6 +377,9 @@ export async function saveManualFTWilliamsMatch(
     plan_id?: string;
     ftw_customer_id?: string;
     ftw_plan_id?: string;
+    ftw_browser_customer_id?: string;
+    ftw_browser_plan_id?: string;
+    ftw_plan_url?: string;
     year?: string;
   },
 ): Promise<{ ftw_review: FTWilliamsReview }> {
@@ -162,12 +408,49 @@ export async function selectFTWilliamsScheduleAMatch(
   });
 }
 
+export async function resolveFTWilliamsPlanYearConflict(
+  filingId: string,
+  resolution: "USE_WORKSHEET" | "KEEP_FTW",
+): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request("/filings/" + filingId + "/ftw/plan-year-resolution", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution }),
+  });
+}
+
+export async function setFTWilliamsScheduleABrokerMatches(
+  filingId: string,
+  decisions: Array<{ extracted_index: number; ftw_index?: number; create_new?: boolean }>,
+): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request("/filings/" + filingId + "/ftw/schedule-a-broker-matches", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisions })
+  });
+}
+
+export async function updateFTWilliamsScheduleABrokerRows(
+  filingId: string,
+  rows: ScheduleABrokerRow[],
+  editedIndex?: number,
+  action: "edited" | "excluded" = "edited",
+): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request("/filings/" + filingId + "/ftw/schedule-a-broker-rows", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rows, edited_index: editedIndex, action }),
+  });
+}
+
 export async function sendApprovedFTWilliamsUpdate(
   filingId: string,
   payload: {
     reason?: string;
     refresh_current_before_update?: boolean;
     run_edit_checks?: boolean;
+    selected_field_ids?: string[];
+    include_broker_updates?: boolean;
   },
 ): Promise<{ ftw_review: FTWilliamsReview | null }> {
   return request("/filings/" + filingId + "/ftw/send-update", {
@@ -223,10 +506,23 @@ export async function runFieldRuleExtractionQA(
   const formData = new FormData();
   formData.set("file", file);
   formData.set("document_type", documentType);
-  return request<FieldRuleQAResult>("/field-rules/qa-extraction", {
+  const submitted = await request<{ job_id: string; status: string }>("/field-rules/qa-extraction/jobs", {
     method: "POST",
     body: formData,
   });
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    const job = await request<{
+      job_id: string;
+      status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+      result?: FieldRuleQAResult | null;
+      error?: string | null;
+    }>(`/field-rules/qa-extraction/jobs/${encodeURIComponent(submitted.job_id)}`);
+    if (job.status === "COMPLETED" && job.result) return job.result;
+    if (job.status === "FAILED") throw new Error(job.error || "Document extraction QA failed.");
+  }
+  throw new Error("Document extraction QA is still processing after 10 minutes. Try again shortly.");
 }
 
 export async function publishFieldRule(key: string, reason: string): Promise<FieldRule> {
@@ -277,6 +573,19 @@ export async function getShareFileStatus(): Promise<{
   scan_scope?: string;
 }> {
   return request("/sharefile/status");
+}
+
+export async function getShareFileScanStatus(): Promise<{
+  webhook_registration: {
+    healthy: boolean;
+    last_attempt_at?: string | null;
+    webhook_roots?: number | null;
+    registered?: number | null;
+    skipped?: number | null;
+    failed?: number | null;
+  };
+}> {
+  return request("/sharefile/scan-status");
 }
 
 export async function getShareFileAuthorizationUrl(): Promise<{ configured: boolean; authorization_url?: string; redirect_uri?: string; message?: string }> {

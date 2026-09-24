@@ -1,24 +1,38 @@
 import asyncio
-from datetime import datetime
+import html
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 from uuid import uuid4
 from bson import ObjectId
 from pymongo import ReturnDocument, UpdateOne
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from pymongo.read_preferences import ReadPreference
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 from app.config import get_settings
+from app.services.ftwilliams_failures import classify_ftwilliams_failure, failure_reason
 from app.models import (
     AuditLog,
     ExtractedField,
     ExtractedFieldStatus,
     ExtractionJob,
     FTWilliamsReview,
+    FTWilliamsFailureType,
     FTWilliamsSchemaSnapshot,
     FTWilliamsPlanMapping,
+    FTWLocalAgentDevice,
+    FTWClientWorkspace,
+    FTWWorkspacePlanMapping,
+    FTWWorkspacePlanMappingStatus,
+    FTWLocalAgentJob,
+    FTWLocalAgentJobStatus,
+    FTWLocalAgentPairingCode,
     RawExtraction,
     Filing,
+    FilingStatus,
     FieldRule,
     FieldRuleStatus,
     ReviewEvent,
@@ -26,7 +40,7 @@ from app.models import (
 )
 
 
-FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
+FTWILLIAMS_FAILURE_LIST_PROJECTION = {
     "filing_id": 1,
     "status": 1,
     "comparison_year": 1,
@@ -38,27 +52,177 @@ FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
     "plan_lookup": 1,
     "update_attempted_count": 1,
     "update_confirmed_count": 1,
-    "update_diagnostics": 1,
-    "edit_check_baseline_issues": 1,
-    "edit_check_final_issues": 1,
+    "update_remaining_count": 1,
     "error_message": 1,
-    "client_error": 1,
+    "client_error.title": 1,
+    "client_error.message": 1,
+    "client_error.next_action": 1,
+    "client_error.code": 1,
     "active_failure": 1,
     "active_failure_reason": 1,
-    "active_failure_client_error": 1,
+    "active_failure_client_error.title": 1,
+    "active_failure_client_error.message": 1,
+    "active_failure_client_error.next_action": 1,
+    "active_failure_client_error.code": 1,
+    "active_failure_type": 1,
+    "active_failure_issue_count": 1,
+    "active_failure_issue_groups": 1,
     "active_failure_at": 1,
     "failure_dismissed_at": 1,
     "failure_dismissed_reason": 1,
-    "fields": 1,
     "created_at": 1,
     "updated_at": 1,
 }
+
+
+FTWILLIAMS_REVIEW_SUMMARY_PROJECTION = {
+    **FTWILLIAMS_FAILURE_LIST_PROJECTION,
+    "update_diagnostics": 1,
+    "fields": 1,
+}
+
+
+@dataclass
+class FTWilliamsFailureRecord:
+    filing: Filing
+    review: FTWilliamsReview
+    failed_audit: AuditLog | None = None
+
+
+@dataclass
+class FTWilliamsFailurePage:
+    total: int
+    counts: dict[str, int]
+    records: list[FTWilliamsFailureRecord]
+
+
+_DASHBOARD_XML_TAGS = {
+    "dashboard_client_name": ("SponsorName", "PlanSponsorName", "SponsDfeName"),
+    "dashboard_ein": ("EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"),
+    "dashboard_plan_number": ("PlanNum", "PN", "PlanNumber", "SponsDfePlanNum"),
+    "dashboard_plan_name": ("PlanName", "PlanNm"),
+}
+
+_DASHBOARD_PACKAGE_KEYS = {
+    "dashboard_client_name": ("client_name", "client"),
+    "dashboard_ein": ("ein", "company_employer_id", "customer_id"),
+    "dashboard_plan_number": ("plan_number", "plan_num", "pn"),
+    "dashboard_plan_name": ("plan_name",),
+}
+
+
+def dashboard_identity_values(source: dict) -> dict[str, str]:
+    """Build the compact identity used by the dashboard list response."""
+    proposed_xml = str(source.get("proposed_xml") or "")
+    package_documents = source.get("package_documents") or []
+    values: dict[str, str] = {}
+    for field_name, tags in _DASHBOARD_XML_TAGS.items():
+        value = ""
+        for tag in tags:
+            value = _xml_text(proposed_xml, tag)
+            if value:
+                break
+        if not value:
+            value = _package_text(package_documents, _DASHBOARD_PACKAGE_KEYS[field_name])
+        if value:
+            values[field_name] = value
+    return values
+
+
+def _xml_text(xml: str, tag: str) -> str:
+    if not xml:
+        return ""
+    match = re.search(
+        rf"<(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}(?:\s[^>]*)?>(.*?)</(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}>",
+        xml,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+
+
+def _package_text(package_documents: list[dict], keys: tuple[str, ...]) -> str:
+    for document in package_documents:
+        if not isinstance(document, dict):
+            continue
+        for key in keys:
+            value = document.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def dashboard_sharefile_company_identity(source: dict) -> dict[str, str]:
+    """Presentation identity only; never replace extracted sponsor/FTW identity.
+
+    Older packages lack a client folder ID. Their full client folder path is
+    the canonical fallback, excluding filing year, policy and carrier folders.
+    Do not guess aliases from an extracted name or merge solely on an EIN.
+    """
+    if source.get("intake_source") != "SHAREFILE":
+        return {}
+    candidates: dict[str, str] = {}
+    for document in source.get("package_documents") or []:
+        if not isinstance(document, dict):
+            continue
+        name = str(document.get("client_name") or document.get("client") or "").strip()
+        if not name:
+            continue
+        path = str(document.get("sharefile_path") or document.get("package_root_key") or "")
+        parts = [part.strip() for part in path.split(" > ") if part.strip()]
+        client_index = next((i for i, part in enumerate(parts) if part.casefold() == name.casefold()), None)
+        folder_id = str(document.get("sharefile_client_folder_id") or "").strip()
+        if folder_id:
+            identity = f"folder:{folder_id}"
+        elif client_index is not None:
+            client_parts = parts[:client_index + 1]
+            # Shared discovery records include this account-root breadcrumb;
+            # legacy client-root scans omit it. Normalize only this known
+            # prefix, not arbitrary ancestors (which distinguish clients).
+            if client_index >= 2 and [part.casefold() for part in client_parts[:2]] == ["folders", "erisa pros"]:
+                client_parts = client_parts[2:]
+            identity = "path:" + " > ".join(client_parts).casefold()
+        else:
+            identity = f"name:{name.casefold()}"
+        candidates[identity] = name
+    # Conflicting client metadata must not silently combine unrelated clients.
+    if len(candidates) != 1:
+        return {}
+    identity, name = next(iter(candidates.items()))
+    scope = str(source.get("workspace_id") or "legacy")
+    return {"dashboard_client_name": name, "dashboard_client_group_key": f"sharefile:{scope}:{identity}"}
 
 
 def to_mongo(model):
     data = model.model_dump(mode="json", by_alias=False)
     data.pop("id", None)
     return data
+
+
+def to_mongo_bson(model):
+    """Serialize records that participate in Mongo date-range queries.
+
+    JSON-mode Pydantic dumps turn datetimes into strings. Mongo cannot compare
+    those strings with the native datetime values used by atomic expiry and
+    lease queries, so local-agent records must retain BSON datetimes.
+    """
+    data = model.model_dump(mode="python", by_alias=False)
+    data.pop("id", None)
+    return data
+
+
+def _mongo_update_value(value):
+    """Convert nested API models into values the BSON encoder accepts."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=False)
+    if isinstance(value, list):
+        return [_mongo_update_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_mongo_update_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _mongo_update_value(item) for key, item in value.items()}
+    return value
 
 
 def from_mongo(data: dict, model):
@@ -75,6 +239,8 @@ class Repository:
     async def get_filing(self, filing_id: str) -> Filing | None: ...
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool: ...
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None: ...
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def list_fields(self, filing_id: str) -> list[ExtractedField]: ...
@@ -95,12 +261,30 @@ class Repository:
     async def list_latest_ftwilliams_failure_audits(self, filing_ids: set[str]) -> list[AuditLog]: ...
     async def list_unresolved_ftwilliams_failure_audits(self) -> list[AuditLog]: ...
     async def list_failed_ftwilliams_reviews(self) -> list[FTWilliamsReview]: ...
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage: ...
     async def get_ftwilliams_review(self, filing_id: str) -> FTWilliamsReview | None: ...
     async def get_ftwilliams_reviews_by_filing_ids(self, filing_ids: set[str]) -> list[FTWilliamsReview]: ...
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview: ...
     async def get_ftwilliams_schema(self, cache_key: str) -> FTWilliamsSchemaSnapshot | None: ...
     async def upsert_ftwilliams_schema(self, snapshot: FTWilliamsSchemaSnapshot) -> FTWilliamsSchemaSnapshot: ...
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None: ...
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None: ...
+    async def list_ftwilliams_plan_mappings(
+        self,
+        year: str | None = None,
+    ) -> list[FTWilliamsPlanMapping]: ...
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping: ...
     async def create_extraction_job(self, job: ExtractionJob) -> ExtractionJob: ...
     async def update_extraction_job(self, job_id: str, values: dict) -> ExtractionJob | None: ...
@@ -123,6 +307,41 @@ class Repository:
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
     async def get_sharefile_suppression(self, item_id: str) -> dict | None: ...
     async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict: ...
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace: ...
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]: ...
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None: ...
+    async def upsert_ftw_workspace_plan_mapping(self, mapping: FTWWorkspacePlanMapping) -> FTWWorkspacePlanMapping: ...
+    async def list_ftw_workspace_plan_mappings(self, workspace_id: str) -> list[FTWWorkspacePlanMapping]: ...
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None: ...
+    async def create_ftw_local_agent_pairing_code(self, record: FTWLocalAgentPairingCode) -> FTWLocalAgentPairingCode: ...
+    async def consume_ftw_local_agent_pairing_code(self, code_hash: str, now: datetime) -> FTWLocalAgentPairingCode | None: ...
+    async def create_ftw_local_agent_device(self, device: FTWLocalAgentDevice) -> FTWLocalAgentDevice: ...
+    async def get_ftw_local_agent_device_by_token_hash(self, token_hash: str) -> FTWLocalAgentDevice | None: ...
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]: ...
+    async def update_ftw_local_agent_device(self, device_id: str, values: dict) -> FTWLocalAgentDevice | None: ...
+    async def acquire_ftw_browser_lease(self, account: str, device_id: str, now: datetime, expires_at: datetime) -> bool: ...
+    async def release_ftw_browser_lease(self, account: str, device_id: str) -> None: ...
+    async def renew_ftw_pending_jobs(self, device: FTWLocalAgentDevice, expires_at: datetime) -> None: ...
+    async def release_ftw_device_job(self, device_id: str, job_id: str) -> None: ...
+    async def begin_ftw_job_verification(self, job_id: str) -> bool: ...
+    async def expire_ftw_agent_claims(self, account: str, now: datetime) -> list[FTWLocalAgentJob]: ...
+    async def list_ftw_pending_agent_jobs(self, account: str) -> list[FTWLocalAgentJob]: ...
+
+    async def list_ftw_target_operation_history(self, account: str, year: str) -> list[FTWLocalAgentJob]: ...
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]: ...
+
+    async def mark_ftw_job_dispatched(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime) -> FTWLocalAgentJob | None: ...
+    async def create_or_get_ftw_local_agent_job(self, job: FTWLocalAgentJob) -> FTWLocalAgentJob: ...
+    async def claim_ftw_local_agent_job(self, device_id: str, expected_account: str, claim_token_hash: str, now: datetime, claim_expires_at: datetime, workspace_id: str | None = None) -> FTWLocalAgentJob | None: ...
+    async def complete_ftw_local_agent_job(self, job_id: str, device_id: str, claim_token_hash: str, now: datetime, values: dict) -> FTWLocalAgentJob | None: ...
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None: ...
+    async def update_ftw_local_agent_job(self, job_id: str, values: dict) -> FTWLocalAgentJob | None: ...
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]: ...
     async def save_field_rule_version(self, rule: FieldRule) -> FieldRule: ...
 
@@ -172,6 +391,10 @@ class MongoRepository(Repository):
             [("status", 1), ("created_at", -1)],
             name="filing_status_created_idx",
         )
+        await self.db.filings.create_index(
+            [("created_at", -1)],
+            name="filing_created_idx",
+        )
         await self.db.extracted_fields.create_index(
             [("filing_id", 1), ("mapped_label", 1)],
             name="field_filing_label_idx",
@@ -208,18 +431,77 @@ class MongoRepository(Repository):
             [("active_failure", 1), ("updated_at", -1)],
             name="ftw_review_active_failure_updated_idx",
         )
+        await self.db.ftwilliams_reviews.create_index(
+            [("active_failure", 1), ("active_failure_at", -1), ("filing_id", 1)],
+            name="ftw_review_failure_date_filing_idx",
+        )
+        await self.db.ftwilliams_reviews.create_index(
+            [("active_failure", 1), ("active_failure_type", 1), ("active_failure_at", -1)],
+            name="ftw_review_failure_type_date_idx",
+        )
         await self.db.ftwilliams_plan_mappings.create_index(
             [("company_employer_id", 1), ("plan_number", 1)],
             name="ftw_plan_mapping_identity_idx",
+        )
+        await self.db.ftwilliams_plan_mappings.create_index(
+            [("company_employer_id", 1), ("plan_number", 1), ("plan_name_key", 1)],
+            name="ftw_plan_mapping_exact_identity_idx",
+        )
+        await self.db.ftwilliams_plan_mappings.create_index(
+            [("year", 1), ("updated_at", -1)],
+            name="ftw_plan_mapping_year_updated_idx",
         )
         await self.db.field_rule_versions.create_index(
             [("key", 1), ("version", -1), ("created_at", -1)],
             name="field_rule_key_version_idx",
         )
+        await self.db.ftw_local_agent_pairing_codes.create_index(
+            "code_hash",
+            name="ftw_local_agent_pairing_code_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_pairing_codes.create_index(
+            "expires_at",
+            name="ftw_local_agent_pairing_expiry_idx",
+            expireAfterSeconds=0,
+        )
+        await self.db.ftw_local_agent_devices.create_index(
+            "token_hash",
+            name="ftw_local_agent_device_token_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            "idempotency_key",
+            name="ftw_local_agent_job_idempotency_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            [("status", 1), ("expires_at", 1), ("created_at", 1)],
+            name="ftw_local_agent_job_claim_idx",
+        )
+        await self.db.ftw_client_workspaces.create_index(
+            "slug",
+            name="ftw_client_workspace_slug_idx",
+            unique=True,
+        )
+        await self.db.ftw_workspace_plan_mappings.create_index(
+            [("workspace_id", 1), ("company_employer_id", 1), ("plan_number", 1), ("year", 1)],
+            name="ftw_workspace_plan_mapping_identity_idx",
+            unique=True,
+        )
+        await self.db.ftw_local_agent_jobs.create_index(
+            [("workspace_id", 1), ("assigned_device_id", 1), ("status", 1), ("expires_at", 1)],
+            name="ftw_local_agent_workspace_job_claim_idx",
+        )
 
     async def create_filing(self, filing: Filing) -> Filing:
-        result = await self.db.filings.insert_one(to_mongo(filing))
+        document = to_mongo(filing)
+        identity = dashboard_identity_values(document)
+        document.update(identity)
+        result = await self.db.filings.insert_one(document)
         filing.id = str(result.inserted_id)
+        for key, value in identity.items():
+            setattr(filing, key, value)
         return filing
 
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
@@ -248,7 +530,16 @@ class MongoRepository(Repository):
             "package_document_count": 1,
             "status": 1,
             "s3_key": 1,
-            "package_documents": 1,
+            "dashboard_client_name": 1,
+            "workspace_id": 1,
+            "package_documents.client_name": 1,
+            "package_documents.client": 1,
+            "package_documents.sharefile_path": 1,
+            "package_documents.package_root_key": 1,
+            "package_documents.sharefile_client_folder_id": 1,
+            "dashboard_ein": 1,
+            "dashboard_plan_number": 1,
+            "dashboard_plan_name": 1,
             "intake_source": 1,
             "extraction_provider": 1,
             "overall_confidence": 1,
@@ -267,17 +558,38 @@ class MongoRepository(Repository):
             "schedule_a_contract_type_evidence": 1,
             "ftw_schedule_a_contract_type": 1,
             "ftw_schedule_a_contract_type_reason": 1,
-            "proposed_xml": 1,
+            "automation_status": 1,
+            "automation_reasons": 1,
+            "automation_next_action": 1,
+            "automation_policy_version": 1,
+            "automation_last_evaluated_at": 1,
+            "automation_completed_at": 1,
+            "automation_run_id": 1,
+            "automation_bring_forward_target_key": 1,
+            "automation_bring_forward_submitted_at": 1,
+            "automation_bring_forward_verified_at": 1,
+            "automation_bring_forward_before_record_ids": 1,
+            "automation_bring_forward_new_record_ids": 1,
             "error_message": 1,
             "rejection_reason": 1,
             "created_at": 1,
             "updated_at": 1,
         }
-        cursor = self.db.filings.find(
+        # Atlas replicas can lag badly under bulk extraction load. This is a
+        # user-facing operational view, so read it from the primary instead of
+        # waiting on the process-wide secondary-preferred connection policy.
+        dashboard_filings = self.db.filings.with_options(
+            read_preference=ReadPreference.PRIMARY
+        )
+        cursor = dashboard_filings.find(
             {"status": {"$nin": ["SUPERSEDED", "DELETED"]}},
             projection,
-        ).sort("created_at", -1)
-        docs = [document async for document in cursor]
+        ).sort("created_at", -1).batch_size(1_000)
+        docs = await cursor.to_list(length=None)
+        for doc in docs:
+            doc.update(dashboard_sharefile_company_identity(doc))
+            # Only compact identity is returned; no worksheet/extraction payload.
+            doc.pop("package_documents", None)
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
@@ -307,9 +619,45 @@ class MongoRepository(Repository):
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         if not ObjectId.is_valid(filing_id):
             return None
+        values = {key: _mongo_update_value(value) for key, value in values.items()}
+        if "proposed_xml" in values or "package_documents" in values:
+            values.update(dashboard_identity_values(values))
         values["updated_at"] = datetime.utcnow()
         doc = await self.db.filings.find_one_and_update({"_id": ObjectId(filing_id)}, {"$set": values}, return_document=ReturnDocument.AFTER)
         return from_mongo(doc, Filing) if doc else None
+
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
+        if not ObjectId.is_valid(filing_id):
+            return False
+        now = datetime.utcnow()
+        doc = await self.db.filings.find_one_and_update(
+            {
+                "_id": ObjectId(filing_id),
+                "$or": [
+                    {"automation_lease_id": lease_id},
+                    {"automation_lease_id": None},
+                    {"automation_lease_id": {"$exists": False}},
+                    {"automation_lease_expires_at": {"$lte": now}},
+                ],
+            },
+            {
+                "$set": {
+                    "automation_lease_id": lease_id,
+                    "automation_lease_expires_at": now + timedelta(seconds=max(30, seconds)),
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return doc is not None
+
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None:
+        if not ObjectId.is_valid(filing_id):
+            return
+        await self.db.filings.update_one(
+            {"_id": ObjectId(filing_id), "automation_lease_id": lease_id},
+            {"$set": {"automation_lease_id": None, "automation_lease_expires_at": None}},
+        )
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
         if not fields:
@@ -438,6 +786,194 @@ class MongoRepository(Repository):
         ).sort("updated_at", -1).to_list(100)
         return [from_mongo(doc, FTWilliamsReview) for doc in docs]
 
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage:
+        failure_text = {
+            "$toLower": {
+                "$concat": [
+                    {"$ifNull": ["$active_failure_client_error.message", ""]},
+                    " ",
+                    {"$ifNull": ["$client_error.message", ""]},
+                    " ",
+                    {"$ifNull": ["$active_failure_reason", ""]},
+                    " ",
+                    {"$ifNull": ["$error_message", ""]},
+                    " ",
+                    {"$ifNull": ["$active_failure_client_error.next_action", ""]},
+                    " ",
+                    {"$ifNull": ["$status", ""]},
+                ]
+            }
+        }
+        computed_type = {
+            "$ifNull": [
+                "$active_failure_type",
+                {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(plan|mapping|customer|identifier|match|ein|pn|ftw id|plan id|customer id)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_PLAN_MATCH.value,
+                            },
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(field|xml|form|checkbox|edit check|value|line|schedule|payload|invalid)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_DATA_FIX.value,
+                            },
+                            {
+                                "case": {"$regexMatch": {"input": failure_text, "regex": r"\b(login|session|credential|auth|unauthorized|forbidden|token|permission|network|timeout|connection|service unavailable|gateway|rate limit)\b"}},
+                                "then": FTWilliamsFailureType.NEEDS_SERVICE_CHECK.value,
+                            },
+                        ],
+                        "default": FTWilliamsFailureType.NEEDS_RETRY.value,
+                    }
+                },
+            ]
+        }
+        pipeline: list[dict] = [
+            {
+                "$match": {
+                    "$or": [
+                        {"active_failure": True},
+                        {
+                            "active_failure": {"$exists": False},
+                            "failure_dismissed_at": {"$exists": False},
+                            "status": {"$in": ["UPDATE_FAILED", "UPDATE_UNKNOWN"]},
+                        },
+                    ]
+                }
+            },
+            {
+                "$addFields": {
+                    "effective_failure_date": {"$ifNull": ["$active_failure_at", "$updated_at"]},
+                    "effective_failure_text": failure_text,
+                    "effective_failure_type": computed_type,
+                    "failure_filing_object_id": {
+                        "$convert": {
+                            "input": "$filing_id",
+                            "to": "objectId",
+                            "onError": None,
+                            "onNull": None,
+                        }
+                    },
+                }
+            },
+        ]
+        if failed_since:
+            pipeline.append({"$match": {"effective_failure_date": {"$gte": failed_since}}})
+        pipeline.extend(
+            [
+                {
+                    "$lookup": {
+                        "from": "filings",
+                        "let": {"failure_filing_object_id": "$failure_filing_object_id"},
+                        "pipeline": [
+                            {
+                                "$match": {
+                                    "$expr": {
+                                        "$eq": [
+                                            "$_id",
+                                            "$$failure_filing_object_id",
+                                        ]
+                                    },
+                                    "status": {"$nin": ["SUPERSEDED", "DELETED"]},
+                                }
+                            },
+                            {
+                                "$project": {
+                                    "file_name": 1,
+                                    "content_type": 1,
+                                    "file_size": 1,
+                                    "s3_key": 1,
+                                    "status": 1,
+                                    "created_at": 1,
+                                    "updated_at": 1,
+                                }
+                            },
+                        ],
+                        "as": "failure_filing",
+                    }
+                },
+                {"$unwind": "$failure_filing"},
+            ]
+        )
+        if search.strip():
+            pattern = re.escape(search.strip())
+            pipeline.append(
+                {
+                    "$match": {
+                        "$or": [
+                            {"effective_failure_text": {"$regex": pattern, "$options": "i"}},
+                            {"failure_filing.file_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.plan_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.sponsor_name": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.company_employer_id": {"$regex": pattern, "$options": "i"}},
+                            {"plan_lookup.plan_number": {"$regex": pattern, "$options": "i"}},
+                            {"ftw_customer_id": {"$regex": pattern, "$options": "i"}},
+                            {"ftw_plan_id": {"$regex": pattern, "$options": "i"}},
+                        ]
+                    }
+                }
+            )
+
+        projected: dict[str, object] = {
+            "filing": "$failure_filing",
+            "effective_failure_date": 1,
+            "effective_failure_type": 1,
+            "review._id": "$_id",
+        }
+        for key in FTWILLIAMS_FAILURE_LIST_PROJECTION:
+            projected[f"review.{key}"] = f"${key}"
+        pipeline.append({"$project": projected})
+
+        selected_match = (
+            [{"$match": {"effective_failure_type": failure_type.value}}]
+            if failure_type
+            else []
+        )
+        offset = max(0, (page - 1) * page_size)
+        pipeline.append(
+            {
+                "$facet": {
+                    "total": [*selected_match, {"$count": "value"}],
+                    "counts": [
+                        {"$group": {"_id": "$effective_failure_type", "value": {"$sum": 1}}}
+                    ],
+                    "items": [
+                        *selected_match,
+                        {"$sort": {"effective_failure_date": -1, "review._id": -1}},
+                        {"$skip": offset},
+                        {"$limit": page_size},
+                    ],
+                }
+            }
+        )
+        rows = await self.db.ftwilliams_reviews.aggregate(pipeline, allowDiskUse=False).to_list(1)
+        result = rows[0] if rows else {}
+        total_rows = result.get("total") or []
+        total = int(total_rows[0].get("value", 0)) if total_rows else 0
+        counts = {
+            str(item.get("_id") or FTWilliamsFailureType.NEEDS_RETRY.value): int(item.get("value", 0))
+            for item in result.get("counts") or []
+        }
+        records: list[FTWilliamsFailureRecord] = []
+        for item in result.get("items") or []:
+            review_doc = dict(item.get("review") or {})
+            filing_doc = dict(item.get("filing") or {})
+            if not review_doc.get("_id") or not filing_doc.get("_id"):
+                continue
+            review = from_mongo(review_doc, FTWilliamsReview)
+            review.active_failure_type = FTWilliamsFailureType(item["effective_failure_type"])
+            filing = from_mongo(filing_doc, Filing)
+            records.append(FTWilliamsFailureRecord(filing=filing, review=review))
+        return FTWilliamsFailurePage(total=total, counts=counts, records=records)
+
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:
         values = to_mongo(review)
         created_at = values.pop("created_at", review.created_at)
@@ -464,18 +1000,35 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, FTWilliamsSchemaSnapshot)
 
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None:
-        doc = await self.db.ftwilliams_plan_mappings.find_one(
-            {"company_employer_id": company_employer_id, "plan_number": plan_number}
-        )
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None:
+        query: dict = {"company_employer_id": company_employer_id, "plan_number": plan_number}
+        if plan_name_key:
+            query["plan_name_key"] = plan_name_key
+        doc = await self.db.ftwilliams_plan_mappings.find_one(query)
         return from_mongo(doc, FTWilliamsPlanMapping) if doc else None
+
+    async def list_ftwilliams_plan_mappings(self, year: str | None = None) -> list[FTWilliamsPlanMapping]:
+        query = {"year": year} if year else {}
+        cursor = self.db.ftwilliams_plan_mappings.find(query).sort("updated_at", -1)
+        docs = await cursor.to_list(length=None)
+        return [from_mongo(doc, FTWilliamsPlanMapping) for doc in docs]
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
         values = to_mongo(mapping)
         created_at = values.pop("created_at", mapping.created_at)
         values["updated_at"] = datetime.utcnow()
+        identity = {
+            "company_employer_id": mapping.company_employer_id,
+            "plan_number": mapping.plan_number,
+            "plan_name_key": mapping.plan_name_key or "",
+        }
         doc = await self.db.ftwilliams_plan_mappings.find_one_and_update(
-            {"company_employer_id": mapping.company_employer_id, "plan_number": mapping.plan_number},
+            identity,
             {"$set": self._mongo_safe_value(values), "$setOnInsert": {"created_at": created_at}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
@@ -618,6 +1171,15 @@ class MongoRepository(Repository):
             "item_id": 1,
             "status": 1,
             "metadata_signature": 1,
+            # The ShareFile change detector intentionally ignores timestamp
+            # drift when the same content version is observed again. Keep the
+            # strong identity fields in this hot-path projection; without
+            # them every poll/webhook comparison falls back to the timestamp-
+            # bearing metadata signature and starts a duplicate extraction.
+            "file_size": 1,
+            "modified_at": 1,
+            "version": 1,
+            "hash": 1,
             "document_type": 1,
             "package_root_key": 1,
             "package_key": 1,
@@ -688,6 +1250,345 @@ class MongoRepository(Repository):
         )
         return self._plain_mongo_doc(doc)
 
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
+        record = workspace.model_copy(deep=True)
+        result = await self.db.ftw_client_workspaces.insert_one(to_mongo_bson(record))
+        record.id = str(result.inserted_id)
+        return record
+
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]:
+        docs = await self.db.ftw_client_workspaces.find().sort("created_at", -1).to_list(500)
+        return [from_mongo(doc, FTWClientWorkspace) for doc in docs]
+
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None:
+        if not ObjectId.is_valid(workspace_id):
+            return None
+        doc = await self.db.ftw_client_workspaces.find_one({"_id": ObjectId(workspace_id)})
+        return from_mongo(doc, FTWClientWorkspace) if doc else None
+
+    async def upsert_ftw_workspace_plan_mapping(
+        self,
+        mapping: FTWWorkspacePlanMapping,
+    ) -> FTWWorkspacePlanMapping:
+        payload = to_mongo_bson(mapping)
+        payload.pop("created_at", None)
+        payload["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_workspace_plan_mappings.find_one_and_update(
+            {
+                "workspace_id": mapping.workspace_id,
+                "company_employer_id": mapping.company_employer_id,
+                "plan_number": mapping.plan_number,
+                "year": mapping.year,
+            },
+            {"$set": payload, "$setOnInsert": {"created_at": mapping.created_at}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWWorkspacePlanMapping)
+
+    async def list_ftw_workspace_plan_mappings(
+        self,
+        workspace_id: str,
+    ) -> list[FTWWorkspacePlanMapping]:
+        docs = await self.db.ftw_workspace_plan_mappings.find(
+            {"workspace_id": workspace_id}
+        ).sort("updated_at", -1).to_list(500)
+        return [from_mongo(doc, FTWWorkspacePlanMapping) for doc in docs]
+
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None:
+        doc = await self.db.ftw_workspace_plan_mappings.find_one(
+            {
+                "workspace_id": workspace_id,
+                "company_employer_id": company_employer_id,
+                "plan_number": plan_number,
+                "year": year,
+                "status": FTWWorkspacePlanMappingStatus.VERIFIED.value,
+            }
+        )
+        return from_mongo(doc, FTWWorkspacePlanMapping) if doc else None
+
+    async def create_ftw_local_agent_pairing_code(
+        self,
+        record: FTWLocalAgentPairingCode,
+    ) -> FTWLocalAgentPairingCode:
+        result = await self.db.ftw_local_agent_pairing_codes.insert_one(to_mongo_bson(record))
+        record.id = str(result.inserted_id)
+        return record
+
+    async def consume_ftw_local_agent_pairing_code(
+        self,
+        code_hash: str,
+        now: datetime,
+    ) -> FTWLocalAgentPairingCode | None:
+        doc = await self.db.ftw_local_agent_pairing_codes.find_one_and_update(
+            {
+                "code_hash": code_hash,
+                "used_at": None,
+                "expires_at": {"$gt": now},
+            },
+            {"$set": {"used_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentPairingCode) if doc else None
+
+    async def create_ftw_local_agent_device(
+        self,
+        device: FTWLocalAgentDevice,
+    ) -> FTWLocalAgentDevice:
+        result = await self.db.ftw_local_agent_devices.insert_one(to_mongo_bson(device))
+        device.id = str(result.inserted_id)
+        return device
+
+    async def get_ftw_local_agent_device_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> FTWLocalAgentDevice | None:
+        doc = await self.db.ftw_local_agent_devices.find_one({"token_hash": token_hash})
+        return from_mongo(doc, FTWLocalAgentDevice) if doc else None
+
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]:
+        docs = await self.db.ftw_local_agent_devices.find().sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentDevice) for doc in docs]
+
+    async def update_ftw_local_agent_device(
+        self,
+        device_id: str,
+        values: dict,
+    ) -> FTWLocalAgentDevice | None:
+        if not ObjectId.is_valid(device_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_devices.find_one_and_update(
+            {"_id": ObjectId(device_id)},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentDevice) if doc else None
+
+    async def create_or_get_ftw_local_agent_job(
+        self,
+        job: FTWLocalAgentJob,
+    ) -> FTWLocalAgentJob:
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"idempotency_key": job.idempotency_key},
+            {"$setOnInsert": to_mongo_bson(job)},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob)
+
+    async def acquire_ftw_browser_lease(self, account, device_id, now, expires_at) -> bool:
+        # The unique _id serializes browser ownership across API processes.
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        try:
+            doc = await self.db.ftw_local_agent_browser_leases.find_one_and_update(
+                {"_id": key, "$or": [{"device_id": device_id}, {"expires_at": {"$lte": now}}]},
+                {"$set": {"device_id": device_id, "expires_at": expires_at}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            return bool(doc)
+        except DuplicateKeyError:
+            return False
+
+    async def release_ftw_browser_lease(self, account, device_id) -> None:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        await self.db.ftw_local_agent_browser_leases.delete_one({"_id": key, "device_id": device_id})
+
+    async def renew_ftw_pending_jobs(self, device, expires_at) -> None:
+        scope = ({"workspace_id": device.workspace_id, "assigned_device_id": str(device.id)}
+                 if device.workspace_id else {"expected_account": device.expected_account, "workspace_id": None})
+        await self.db.ftw_local_agent_jobs.update_many(
+            {**scope, "$or": [{"status": FTWLocalAgentJobStatus.QUEUED.value},
+                              {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value, "result_state": {"$in": ["LOGIN_REQUIRED", "CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"]}}]},
+            {"$max": {"expires_at": expires_at}},
+        )
+
+    async def release_ftw_device_job(self, device_id, job_id) -> None:
+        if ObjectId.is_valid(device_id):
+            await self.db.ftw_local_agent_devices.update_one(
+                {"_id": ObjectId(device_id), "active_job_id": job_id},
+                {"$set": {"active_job_id": None, "active_claim_expires_at": None}},
+            )
+
+    async def begin_ftw_job_verification(self, job_id) -> bool:
+        if not ObjectId.is_valid(job_id):
+            return False
+        result = await self.db.ftw_local_agent_jobs.update_one(
+            {"_id": ObjectId(job_id), "status": FTWLocalAgentJobStatus.SUBMITTED.value, "verification_started_at": None},
+            {"$set": {"verification_started_at": datetime.utcnow()}},
+        )
+        return bool(result.modified_count)
+
+    async def expire_ftw_agent_claims(self, account, now) -> list[FTWLocalAgentJob]:
+        selector = {"expected_account": account, "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                    "claim_expires_at": {"$lte": now}}
+        docs = await self.db.ftw_local_agent_jobs.find(selector).to_list(100)
+        held = []
+        for original in docs:
+            doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+                {**selector, "_id": original["_id"]},
+                {"$set": {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                          "result_state": "UNKNOWN_OUTCOME",
+                          "result_message": "The agent stopped before confirming this operation. Refresh FTW data to verify its outcome before retrying; it was not repeated.",
+                          "updated_at": now}}, return_document=ReturnDocument.AFTER,
+            )
+            if doc:
+                job = from_mongo(doc, FTWLocalAgentJob)
+                held.append(job)
+                await self.release_ftw_device_job(str(job.device_id), str(job.id))
+        return held
+
+    async def list_ftw_pending_agent_jobs(self, account) -> list[FTWLocalAgentJob]:
+        docs = await self.db.ftw_local_agent_jobs.find({
+            "expected_account": account, "status": FTWLocalAgentJobStatus.QUEUED.value,
+        }).sort("created_at", 1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def list_ftw_target_operation_history(self, account, year) -> list[FTWLocalAgentJob]:
+        # Target URLs can differ in nocache/order. Compare canonical plan IDs
+        # in the service, after restricting the journal to this account/year.
+        docs = await self.db.ftw_local_agent_jobs.find({
+            "expected_account": {"$regex": "^" + re.escape(account) + "$", "$options": "i"}, "expected_year": year,
+            "$or": [{"status": {"$in": ["CLAIMED", "SUBMITTED", "VERIFIED"]}},
+                    {"result_state": {"$in": ["SUBMITTED", "UNKNOWN_OUTCOME"]}},
+                    {"operation_dispatched_at": {"$ne": None}},
+                    {"status": "FAILED", "claimed_at": {"$ne": None}}],
+        }).to_list(None)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]:
+        docs = await self.db.ftw_local_agent_jobs.find({"filing_id": filing_id}).sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, FTWLocalAgentJob) for doc in docs]
+
+    async def mark_ftw_job_dispatched(self, job_id, device_id, claim_token_hash, now) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"_id": ObjectId(job_id), "status": "CLAIMED", "device_id": device_id,
+             "claim_token_hash": claim_token_hash, "claim_expires_at": {"$gt": now}},
+            {"$set": {"operation_dispatched_at": now, "preflight_retry_at": None, "updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def claim_ftw_local_agent_job(
+        self,
+        device_id: str,
+        expected_account: str,
+        claim_token_hash: str,
+        now: datetime,
+        claim_expires_at: datetime,
+        workspace_id: str | None = None,
+    ) -> FTWLocalAgentJob | None:
+        # Reserve atomically against Pause and concurrent claims on this device.
+        reserved = await self.db.ftw_local_agent_devices.find_one_and_update(
+            {"_id": ObjectId(device_id), "pause_requested": {"$ne": True},
+             "revoked_at": None, "active_job_id": None},
+            {"$set": {"active_job_id": claim_token_hash, "active_claim_expires_at": claim_expires_at}},
+            return_document=ReturnDocument.AFTER,
+        ) if ObjectId.is_valid(device_id) else None
+        if not reserved:
+            return None
+        scope_filter = (
+            {"workspace_id": workspace_id, "assigned_device_id": device_id}
+            if workspace_id
+            else {"expected_account": expected_account}
+        )
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {
+                "expires_at": {"$gt": now},
+                **scope_filter,
+                "$or": [
+                    {"status": FTWLocalAgentJobStatus.QUEUED.value},
+                    {
+                        "status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                        "result_state": "LOGIN_REQUIRED",
+                    },
+                    {"status": FTWLocalAgentJobStatus.ACTION_NEEDED.value,
+                     "result_state": {"$in": ["CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"]},
+                     "preflight_retry_at": {"$lte": now}},
+                ],
+            },
+            {
+                "$set": {
+                    "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                    "device_id": device_id,
+                    "claim_token_hash": claim_token_hash,
+                    "claim_expires_at": claim_expires_at,
+                    "claimed_at": now,
+                    "updated_at": now,
+                },
+                "$unset": {
+                    "result_state": "",
+                    "result_message": "",
+                    "completed_at": "",
+                },
+                "$inc": {"attempts": 1},
+            },
+            sort=[("created_at", 1)],
+            return_document=ReturnDocument.AFTER,
+        )
+        await self.db.ftw_local_agent_devices.update_one(
+            {"_id": ObjectId(device_id), "active_job_id": claim_token_hash},
+            {"$set": {"active_job_id": str(doc["_id"]) if doc else None,
+                      "active_claim_expires_at": claim_expires_at if doc else None}},
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def complete_ftw_local_agent_job(
+        self,
+        job_id: str,
+        device_id: str,
+        claim_token_hash: str,
+        now: datetime,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {
+                "_id": ObjectId(job_id),
+                "device_id": device_id,
+                "claim_token_hash": claim_token_hash,
+                "status": FTWLocalAgentJobStatus.CLAIMED.value,
+                "claim_expires_at": {"$gt": now},
+            },
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        doc = await self.db.ftw_local_agent_jobs.find_one({"_id": ObjectId(job_id)})
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
+    async def update_ftw_local_agent_job(
+        self,
+        job_id: str,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        if not ObjectId.is_valid(job_id):
+            return None
+        updates = {key: _mongo_update_value(value) for key, value in values.items()}
+        updates["updated_at"] = datetime.utcnow()
+        doc = await self.db.ftw_local_agent_jobs.find_one_and_update(
+            {"_id": ObjectId(job_id)},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, FTWLocalAgentJob) if doc else None
+
     def _plain_mongo_doc(self, doc: dict) -> dict:
         payload = dict(doc)
         payload["id"] = str(payload.pop("_id"))
@@ -712,6 +1613,7 @@ class MemoryRepository(Repository):
         return None
 
     def __init__(self):
+        self.ftw_browser_leases: dict[str, tuple[str, datetime]] = {}
         self.filings: dict[str, Filing] = {}
         self.fields: dict[str, ExtractedField] = {}
         self.events: list[ReviewEvent] = []
@@ -720,11 +1622,16 @@ class MemoryRepository(Repository):
         self.raw_extractions: dict[str, RawExtraction] = {}
         self.ftwilliams_reviews: dict[str, FTWilliamsReview] = {}
         self.ftwilliams_schemas: dict[str, FTWilliamsSchemaSnapshot] = {}
-        self.ftwilliams_plan_mappings: dict[tuple[str, str], FTWilliamsPlanMapping] = {}
+        self.ftwilliams_plan_mappings: dict[tuple[str, str, str], FTWilliamsPlanMapping] = {}
         self.sharefile_files: dict[str, dict] = {}
         self.sharefile_sync_state: dict[str, dict] = {}
         self.sharefile_suppressions: dict[str, dict] = {}
         self.field_rule_versions: dict[str, FieldRule] = {}
+        self.ftw_local_agent_pairing_codes: dict[str, FTWLocalAgentPairingCode] = {}
+        self.ftw_client_workspaces: dict[str, FTWClientWorkspace] = {}
+        self.ftw_workspace_plan_mappings: dict[str, FTWWorkspacePlanMapping] = {}
+        self.ftw_local_agent_devices: dict[str, FTWLocalAgentDevice] = {}
+        self.ftw_local_agent_jobs: dict[str, FTWLocalAgentJob] = {}
 
     async def list_field_rule_versions(self, key: str | None = None) -> list[FieldRule]:
         rules = [rule for rule in self.field_rule_versions.values() if key is None or rule.key == key]
@@ -745,7 +1652,10 @@ class MemoryRepository(Repository):
         return sorted(self.filings.values(), key=lambda item: item.created_at, reverse=True)
 
     async def list_dashboard_filings(self) -> list[Filing]:
-        return await self.list_filings()
+        return [
+            filing.model_copy(update=dashboard_sharefile_company_identity(filing.model_dump()))
+            for filing in await self.list_filings()
+        ]
 
     async def get_filing(self, filing_id: str) -> Filing | None:
         return self.filings.get(filing_id)
@@ -761,6 +1671,28 @@ class MemoryRepository(Repository):
             setattr(filing, key, value)
         filing.updated_at = datetime.utcnow()
         return filing
+
+    async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
+        filing = self.filings.get(filing_id)
+        if not filing:
+            return False
+        now = datetime.utcnow()
+        if (
+            filing.automation_lease_id
+            and filing.automation_lease_id != lease_id
+            and filing.automation_lease_expires_at
+            and filing.automation_lease_expires_at > now
+        ):
+            return False
+        filing.automation_lease_id = lease_id
+        filing.automation_lease_expires_at = now + timedelta(seconds=max(30, seconds))
+        return True
+
+    async def release_automation_lease(self, filing_id: str, lease_id: str) -> None:
+        filing = self.filings.get(filing_id)
+        if filing and filing.automation_lease_id == lease_id:
+            filing.automation_lease_id = None
+            filing.automation_lease_expires_at = None
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
         for field in fields:
@@ -872,6 +1804,73 @@ class MemoryRepository(Repository):
             reverse=True,
         )
 
+    async def query_ftwilliams_failures(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str = "",
+        failure_type: FTWilliamsFailureType | None = None,
+        failed_since: datetime | None = None,
+    ) -> FTWilliamsFailurePage:
+        active = {review.filing_id: review for review in await self.list_failed_ftwilliams_reviews()}
+        legacy_audits = {
+            audit.filing_id: audit
+            for audit in await self.list_unresolved_ftwilliams_failure_audits()
+            if audit.filing_id
+        }
+        records: list[FTWilliamsFailureRecord] = []
+        needle = search.strip().lower()
+        for filing_id in set(active) | set(legacy_audits):
+            review = active.get(filing_id) or self.ftwilliams_reviews.get(filing_id)
+            filing = self.filings.get(filing_id)
+            failed_audit = legacy_audits.get(filing_id)
+            if not review or not filing or filing.status in {FilingStatus.SUPERSEDED, FilingStatus.DELETED}:
+                continue
+            failed_at = review.active_failure_at or (failed_audit.created_at if failed_audit else review.updated_at)
+            if failed_since and failed_at < failed_since:
+                continue
+            classified = classify_ftwilliams_failure(review, failed_audit)
+            lookup = review.plan_lookup
+            haystack = " ".join(
+                str(value or "")
+                for value in (
+                    filing.file_name,
+                    failure_reason(review, failed_audit),
+                    lookup.plan_name if lookup else None,
+                    lookup.sponsor_name if lookup else None,
+                    lookup.company_employer_id if lookup else None,
+                    lookup.plan_number if lookup else None,
+                    review.ftw_customer_id,
+                    review.ftw_plan_id,
+                    review.year,
+                    classified.value,
+                )
+            ).lower()
+            if needle and needle not in haystack:
+                continue
+            review.active_failure_type = classified
+            records.append(FTWilliamsFailureRecord(filing=filing, review=review, failed_audit=failed_audit))
+
+        records.sort(
+            key=lambda item: item.review.active_failure_at
+            or (item.failed_audit.created_at if item.failed_audit else item.review.updated_at),
+            reverse=True,
+        )
+        counts: dict[str, int] = {}
+        for record in records:
+            key = classify_ftwilliams_failure(record.review, record.failed_audit).value
+            counts[key] = counts.get(key, 0) + 1
+        if failure_type:
+            records = [record for record in records if record.review.active_failure_type == failure_type]
+        total = len(records)
+        offset = max(0, (page - 1) * page_size)
+        return FTWilliamsFailurePage(
+            total=total,
+            counts=counts,
+            records=records[offset : offset + page_size],
+        )
+
     async def upsert_ftwilliams_review(self, review: FTWilliamsReview) -> FTWilliamsReview:
         existing = self.ftwilliams_reviews.get(review.filing_id)
         review.id = existing.id if existing and existing.id else review.id or str(uuid4())
@@ -880,11 +1879,33 @@ class MemoryRepository(Repository):
         self.ftwilliams_reviews[review.filing_id] = review
         return review
 
-    async def get_ftwilliams_plan_mapping(self, company_employer_id: str, plan_number: str) -> FTWilliamsPlanMapping | None:
-        return self.ftwilliams_plan_mappings.get((company_employer_id, plan_number))
+    async def get_ftwilliams_plan_mapping(
+        self,
+        company_employer_id: str,
+        plan_number: str,
+        plan_name_key: str | None = None,
+    ) -> FTWilliamsPlanMapping | None:
+        if plan_name_key is not None:
+            return self.ftwilliams_plan_mappings.get((company_employer_id, plan_number, plan_name_key))
+        return next(
+            (
+                mapping
+                for (employer_id, number, _name), mapping in self.ftwilliams_plan_mappings.items()
+                if employer_id == company_employer_id and number == plan_number
+            ),
+            None,
+        )
+
+    async def list_ftwilliams_plan_mappings(self, year: str | None = None) -> list[FTWilliamsPlanMapping]:
+        mappings = [
+            mapping
+            for mapping in self.ftwilliams_plan_mappings.values()
+            if year is None or mapping.year == year
+        ]
+        return sorted(mappings, key=lambda item: item.updated_at, reverse=True)
 
     async def upsert_ftwilliams_plan_mapping(self, mapping: FTWilliamsPlanMapping) -> FTWilliamsPlanMapping:
-        key = (mapping.company_employer_id, mapping.plan_number)
+        key = (mapping.company_employer_id, mapping.plan_number, mapping.plan_name_key or "")
         existing = self.ftwilliams_plan_mappings.get(key)
         mapping.id = existing.id if existing and existing.id else mapping.id or str(uuid4())
         mapping.created_at = existing.created_at if existing else mapping.created_at
@@ -1063,6 +2084,309 @@ class MemoryRepository(Repository):
         record.setdefault("id", str(uuid4()))
         self.sharefile_suppressions[item_id] = record
         return dict(record)
+
+    async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
+        stored = workspace.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_client_workspaces[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(self.ftw_client_workspaces.values(), key=lambda value: value.created_at, reverse=True)
+        ]
+
+    async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None:
+        workspace = self.ftw_client_workspaces.get(workspace_id)
+        return workspace.model_copy(deep=True) if workspace else None
+
+    async def upsert_ftw_workspace_plan_mapping(
+        self,
+        mapping: FTWWorkspacePlanMapping,
+    ) -> FTWWorkspacePlanMapping:
+        for existing in self.ftw_workspace_plan_mappings.values():
+            if (
+                existing.workspace_id == mapping.workspace_id
+                and existing.company_employer_id == mapping.company_employer_id
+                and existing.plan_number == mapping.plan_number
+                and existing.year == mapping.year
+            ):
+                stored = mapping.model_copy(deep=True)
+                stored.id = existing.id
+                stored.created_at = existing.created_at
+                stored.updated_at = datetime.utcnow()
+                self.ftw_workspace_plan_mappings[str(stored.id)] = stored
+                return stored.model_copy(deep=True)
+        stored = mapping.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_workspace_plan_mappings[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def list_ftw_workspace_plan_mappings(
+        self,
+        workspace_id: str,
+    ) -> list[FTWWorkspacePlanMapping]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(
+                (value for value in self.ftw_workspace_plan_mappings.values() if value.workspace_id == workspace_id),
+                key=lambda value: value.updated_at,
+                reverse=True,
+            )
+        ]
+
+    async def get_verified_ftw_workspace_plan_mapping(
+        self,
+        workspace_id: str,
+        company_employer_id: str,
+        plan_number: str,
+        year: str,
+    ) -> FTWWorkspacePlanMapping | None:
+        for mapping in self.ftw_workspace_plan_mappings.values():
+            if (
+                mapping.workspace_id == workspace_id
+                and mapping.company_employer_id == company_employer_id
+                and mapping.plan_number == plan_number
+                and mapping.year == year
+                and mapping.status == FTWWorkspacePlanMappingStatus.VERIFIED
+            ):
+                return mapping.model_copy(deep=True)
+        return None
+
+    async def create_ftw_local_agent_pairing_code(
+        self,
+        record: FTWLocalAgentPairingCode,
+    ) -> FTWLocalAgentPairingCode:
+        stored = record.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_pairing_codes[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def consume_ftw_local_agent_pairing_code(
+        self,
+        code_hash: str,
+        now: datetime,
+    ) -> FTWLocalAgentPairingCode | None:
+        for record in self.ftw_local_agent_pairing_codes.values():
+            if record.code_hash == code_hash and record.used_at is None and record.expires_at > now:
+                record.used_at = now
+                return record.model_copy(deep=True)
+        return None
+
+    async def create_ftw_local_agent_device(
+        self,
+        device: FTWLocalAgentDevice,
+    ) -> FTWLocalAgentDevice:
+        stored = device.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_devices[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def get_ftw_local_agent_device_by_token_hash(
+        self,
+        token_hash: str,
+    ) -> FTWLocalAgentDevice | None:
+        for device in self.ftw_local_agent_devices.values():
+            if device.token_hash == token_hash:
+                return device.model_copy(deep=True)
+        return None
+
+    async def list_ftw_local_agent_devices(self) -> list[FTWLocalAgentDevice]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(
+                self.ftw_local_agent_devices.values(),
+                key=lambda value: value.created_at,
+                reverse=True,
+            )
+        ]
+
+    async def update_ftw_local_agent_device(
+        self,
+        device_id: str,
+        values: dict,
+    ) -> FTWLocalAgentDevice | None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if not device:
+            return None
+        for key, value in values.items():
+            setattr(device, key, value)
+        device.updated_at = datetime.utcnow()
+        return device.model_copy(deep=True)
+
+    async def create_or_get_ftw_local_agent_job(
+        self,
+        job: FTWLocalAgentJob,
+    ) -> FTWLocalAgentJob:
+        for existing in self.ftw_local_agent_jobs.values():
+            if existing.idempotency_key == job.idempotency_key:
+                return existing.model_copy(deep=True)
+        stored = job.model_copy(deep=True)
+        stored.id = stored.id or str(uuid4())
+        self.ftw_local_agent_jobs[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    async def acquire_ftw_browser_lease(self, account, device_id, now, expires_at) -> bool:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        existing = self.ftw_browser_leases.get(key)
+        if existing and existing[0] != device_id and existing[1] > now:
+            return False
+        self.ftw_browser_leases[key] = (device_id, expires_at)
+        return True
+
+    async def release_ftw_browser_lease(self, account, device_id) -> None:
+        key = "".join(c for c in account.casefold() if c.isalnum())
+        if self.ftw_browser_leases.get(key, (None,))[0] == device_id:
+            self.ftw_browser_leases.pop(key, None)
+
+    async def renew_ftw_pending_jobs(self, device, expires_at) -> None:
+        for job in self.ftw_local_agent_jobs.values():
+            matches = (job.workspace_id == device.workspace_id and job.assigned_device_id == str(device.id)
+                       if device.workspace_id else not job.workspace_id and job.expected_account == device.expected_account)
+            pending = job.status == FTWLocalAgentJobStatus.QUEUED or (
+                job.status == FTWLocalAgentJobStatus.ACTION_NEEDED and job.result_state in {"LOGIN_REQUIRED", "CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"}
+            )
+            if matches and pending:
+                job.expires_at = max(job.expires_at, expires_at)
+
+    async def release_ftw_device_job(self, device_id, job_id) -> None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if device and device.active_job_id == job_id:
+            device.active_job_id = None
+            device.active_claim_expires_at = None
+
+    async def begin_ftw_job_verification(self, job_id) -> bool:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if not job or job.status != FTWLocalAgentJobStatus.SUBMITTED or job.verification_started_at:
+            return False
+        job.verification_started_at = datetime.utcnow()
+        return True
+
+    async def expire_ftw_agent_claims(self, account, now) -> list[FTWLocalAgentJob]:
+        held = []
+        for job in self.ftw_local_agent_jobs.values():
+            if (job.expected_account == account and job.status == FTWLocalAgentJobStatus.CLAIMED
+                    and job.claim_expires_at and job.claim_expires_at <= now):
+                job.status = FTWLocalAgentJobStatus.ACTION_NEEDED
+                job.result_state = "UNKNOWN_OUTCOME"
+                job.result_message = "The agent stopped before confirming this operation. Refresh FTW data to verify its outcome before retrying; it was not repeated."
+                job.updated_at = now
+                await self.release_ftw_device_job(str(job.device_id), str(job.id))
+                held.append(job.model_copy(deep=True))
+        return held
+
+    async def list_ftw_pending_agent_jobs(self, account) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in sorted(self.ftw_local_agent_jobs.values(), key=lambda j: j.created_at)
+                if job.expected_account == account and job.status == FTWLocalAgentJobStatus.QUEUED]
+
+    async def list_ftw_target_operation_history(self, account, year) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in self.ftw_local_agent_jobs.values()
+                if job.expected_account.casefold() == account.casefold() and job.expected_year == year
+                and (job.status in {FTWLocalAgentJobStatus.CLAIMED, FTWLocalAgentJobStatus.SUBMITTED, FTWLocalAgentJobStatus.VERIFIED}
+                     or job.result_state in {"SUBMITTED", "UNKNOWN_OUTCOME"}
+                     or job.operation_dispatched_at is not None
+                     or (job.status == FTWLocalAgentJobStatus.FAILED and job.claimed_at is not None))]
+
+    async def list_ftw_local_agent_jobs_for_filing(self, filing_id: str) -> list[FTWLocalAgentJob]:
+        return [job.model_copy(deep=True) for job in sorted(
+            self.ftw_local_agent_jobs.values(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        ) if job.filing_id == filing_id]
+
+    async def mark_ftw_job_dispatched(self, job_id, device_id, claim_token_hash, now) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if (not job or job.status != FTWLocalAgentJobStatus.CLAIMED or job.device_id != device_id
+                or job.claim_token_hash != claim_token_hash or not job.claim_expires_at or job.claim_expires_at <= now):
+            return None
+        job.operation_dispatched_at = now
+        job.preflight_retry_at = None
+        job.updated_at = now
+        return job.model_copy(deep=True)
+
+    async def claim_ftw_local_agent_job(
+        self,
+        device_id: str,
+        expected_account: str,
+        claim_token_hash: str,
+        now: datetime,
+        claim_expires_at: datetime,
+        workspace_id: str | None = None,
+    ) -> FTWLocalAgentJob | None:
+        device = self.ftw_local_agent_devices.get(device_id)
+        if not device or device.pause_requested or device.revoked_at or device.active_job_id:
+            return None
+        candidates = sorted(self.ftw_local_agent_jobs.values(), key=lambda value: value.created_at)
+        for job in candidates:
+            available = job.status == FTWLocalAgentJobStatus.QUEUED or (
+                job.status == FTWLocalAgentJobStatus.ACTION_NEEDED
+                and (job.result_state == "LOGIN_REQUIRED" or (
+                    job.result_state in {"CURRENT_QUERY_REQUIRED", "PRIOR_OPERATION_UNCONFIRMED"}
+                    and job.preflight_retry_at is not None and job.preflight_retry_at <= now))
+            )
+            legacy_scope_matches = not workspace_id and job.expected_account == expected_account
+            workspace_scope_matches = bool(
+                workspace_id
+                and job.workspace_id == workspace_id
+                and job.assigned_device_id == device_id
+            )
+            if not available or job.expires_at <= now or not (legacy_scope_matches or workspace_scope_matches):
+                continue
+            job.status = FTWLocalAgentJobStatus.CLAIMED
+            job.device_id = device_id
+            job.claim_token_hash = claim_token_hash
+            job.claim_expires_at = claim_expires_at
+            job.claimed_at = now
+            job.result_state = None
+            job.result_message = None
+            job.completed_at = None
+            job.attempts += 1
+            job.updated_at = now
+            device.active_job_id = str(job.id)
+            device.active_claim_expires_at = claim_expires_at
+            return job.model_copy(deep=True)
+        return None
+
+    async def complete_ftw_local_agent_job(
+        self,
+        job_id: str,
+        device_id: str,
+        claim_token_hash: str,
+        now: datetime,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if (
+            not job
+            or job.device_id != device_id
+            or job.claim_token_hash != claim_token_hash
+            or job.status != FTWLocalAgentJobStatus.CLAIMED
+            or job.claim_expires_at is None
+            or job.claim_expires_at <= now
+        ):
+            return None
+        for key, value in values.items():
+            setattr(job, key, value)
+        job.updated_at = datetime.utcnow()
+        return job.model_copy(deep=True)
+
+    async def get_ftw_local_agent_job(self, job_id: str) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        return job.model_copy(deep=True) if job else None
+
+    async def update_ftw_local_agent_job(
+        self,
+        job_id: str,
+        values: dict,
+    ) -> FTWLocalAgentJob | None:
+        job = self.ftw_local_agent_jobs.get(job_id)
+        if not job:
+            return None
+        for key, value in values.items():
+            setattr(job, key, value)
+        job.updated_at = datetime.utcnow()
+        return job.model_copy(deep=True)
 
 
 _repository: Repository | None = None

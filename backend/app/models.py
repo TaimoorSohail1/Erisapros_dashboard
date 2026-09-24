@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Literal
+from pydantic import BaseModel, Field, field_validator
 
 
 class FilingStatus(str, Enum):
@@ -57,6 +58,11 @@ class FieldRuleMappingMode(str, Enum):
     EXTRACTION_ONLY = "EXTRACTION_ONLY"
 
 
+class FieldRuleCardinality(str, Enum):
+    SCALAR = "SCALAR"
+    REPEATING_ROW = "REPEATING_ROW"
+
+
 class DocumentType(str, Enum):
     SCHEDULE_A = "SCHEDULE_A"
     PLAN_WORKSHEET = "PLAN_WORKSHEET"
@@ -87,11 +93,281 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
+class FTWilliamsQueryState(str, Enum):
+    NOT_QUERIED = "NOT_QUERIED"
+    MATCHED = "MATCHED"
+    SCHEDULE_A_MISSING = "SCHEDULE_A_MISSING"
+    PLAN_MATCH_REQUIRED = "PLAN_MATCH_REQUIRED"
+    QUERY_FAILED = "QUERY_FAILED"
+
+
+class FTWAutomationStatus(str, Enum):
+    DISABLED = "DISABLED"
+    PROCESSING = "PROCESSING"
+    ACTION_NEEDED = "ACTION_NEEDED"
+    BRING_FORWARD_REQUIRED = "BRING_FORWARD_REQUIRED"
+    SAFE_TO_SEND = "SAFE_TO_SEND"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class FTWAutomationDecision(BaseModel):
+    status: FTWAutomationStatus
+    eligible: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    next_action: str | None = None
+    policy_version: str
+    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentDeviceStatus(str, Enum):
+    CONNECTED = "CONNECTED"
+    OFFLINE = "OFFLINE"
+    LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    REVOKED = "REVOKED"
+    PAUSING = "PAUSING"
+    PAUSED = "PAUSED"
+    RESUMING = "RESUMING"
+    WAITING = "WAITING"
+
+
+class FTWLocalAgentJobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    CLAIMED = "CLAIMED"
+    SUBMITTED = "SUBMITTED"
+    VERIFIED = "VERIFIED"
+    ACTION_NEEDED = "ACTION_NEEDED"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+
+
+class FTWWorkspacePlanMappingStatus(str, Enum):
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"
+    VERIFIED = "VERIFIED"
+    DISABLED = "DISABLED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class FTWClientWorkspace(BaseModel):
+    """A client security boundary for local FT Williams agents."""
+
+    id: str | None = None
+    name: str
+    slug: str
+    expected_account: str
+    admin_subjects: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWClientWorkspaceCreateRequest(BaseModel):
+    name: str
+    slug: str
+    expected_account: str
+    admin_subjects: list[str] = Field(default_factory=list)
+
+
+class FTWWorkspacePlanMapping(BaseModel):
+    """A manually verified plan identity within one client workspace."""
+
+    id: str | None = None
+    workspace_id: str
+    expected_account: str
+    company_employer_id: str
+    plan_number: str
+    year: str
+    plan_name: str
+    ftw_customer_id: str
+    ftw_plan_id: str
+    ftw_browser_customer_id: str
+    ftw_browser_plan_id: str
+    verification_evidence: str
+    status: FTWWorkspacePlanMappingStatus = FTWWorkspacePlanMappingStatus.VERIFIED
+    verified_by: str
+    verified_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWWorkspacePlanMappingRequest(BaseModel):
+    company_employer_id: str
+    plan_number: str
+    year: str
+    plan_name: str
+    ftw_customer_id: str
+    ftw_plan_id: str
+    ftw_browser_customer_id: str
+    ftw_browser_plan_id: str
+    verification_evidence: str
+
+
+class FTWLocalAgentPairingCodeRequest(BaseModel):
+    """Optional workspace binding for a one-time local-agent pairing code."""
+
+    workspace_id: str | None = None
+
+
+class FTWLocalAgentDevice(BaseModel):
+    id: str | None = None
+    name: str
+    token_hash: str
+    token_prefix: str
+    expected_account: str
+    workspace_id: str | None = None
+    status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
+    agent_version: str | None = None
+    browser_ready: bool = False
+    pause_requested: bool = False
+    paused_at: datetime | None = None
+    active_job_id: str | None = None
+    active_claim_expires_at: datetime | None = None
+    last_error: str | None = None
+    last_seen_at: datetime | None = None
+    paired_by: str | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentPairingCode(BaseModel):
+    id: str | None = None
+    code_hash: str
+    code_prefix: str
+    expected_account: str
+    workspace_id: str | None = None
+    created_by: str | None = None
+    expires_at: datetime
+    used_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentJob(BaseModel):
+    id: str | None = None
+    filing_id: str
+    run_id: str
+    idempotency_key: str
+    status: FTWLocalAgentJobStatus = FTWLocalAgentJobStatus.QUEUED
+    target_url: str
+    expected_account: str
+    expected_plan_name: str
+    expected_ein: str
+    expected_plan_number: str
+    expected_year: str
+    workspace_id: str | None = None
+    mapping_id: str | None = None
+    assigned_device_id: str | None = None
+    before_record_ids: list[str] = Field(default_factory=list)
+    device_id: str | None = None
+    claim_token_hash: str | None = None
+    claim_expires_at: datetime | None = None
+    claimed_at: datetime | None = None
+    completed_at: datetime | None = None
+    verification_started_at: datetime | None = None
+    # Survives status/result resets. Cleared only for confirmed pre-click exits.
+    operation_dispatched_at: datetime | None = None
+    preflight_retry_at: datetime | None = None
+    result_state: str | None = None
+    result_message: str | None = None
+    attempts: int = 0
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FTWLocalAgentPairingCodeResponse(BaseModel):
+    pairing_code: str
+    expires_at: datetime
+    workspace_id: str | None = None
+
+
+class FTWLocalAgentPairRequest(BaseModel):
+    pairing_code: str
+    device_name: str
+    agent_version: str
+
+
+class FTWLocalAgentPairResponse(BaseModel):
+    device_id: str
+    device_token: str
+    expected_account: str
+    workspace_id: str | None = None
+
+
+class FTWLocalAgentHeartbeatRequest(BaseModel):
+    agent_version: str
+    browser_ready: bool
+    login_required: bool = False
+    last_error: str | None = None
+    paused: bool = False
+    waiting: bool = False
+
+
+class FTWLocalAgentControlRequest(BaseModel):
+    paused: bool
+
+
+class FTWLocalAgentStatusResponse(BaseModel):
+    enabled: bool
+    connected: bool
+    device_count: int = 0
+    status: FTWLocalAgentDeviceStatus = FTWLocalAgentDeviceStatus.OFFLINE
+    device_name: str | None = None
+    agent_version: str | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+    pause_requested: bool = False
+
+
+class FTWLocalAgentJobPayload(BaseModel):
+    id: str
+    filing_id: str
+    target_url: str
+    expected_account: str
+    expected_plan_name: str
+    expected_ein: str
+    expected_plan_number: str
+    expected_year: str
+    workspace_id: str | None = None
+    mapping_id: str | None = None
+    expires_at: datetime
+
+
+class FTWLocalAgentClaimResponse(BaseModel):
+    job: FTWLocalAgentJobPayload | None = None
+    claim_token: str | None = None
+
+
+class FTWLocalAgentCompleteRequest(BaseModel):
+    claim_token: str
+    state: Literal["SUBMITTED", "LOGIN_REQUIRED", "INVALID_TARGET", "PAGE_LAYOUT_CHANGED", "FAILED", "UNKNOWN_OUTCOME"]
+    message: str
+
+
+class FTWLocalAgentJobResultResponse(BaseModel):
+    job_id: str
+    status: FTWLocalAgentJobStatus
+    result_state: str | None = None
+    message: str | None = None
+
+
+class FTWilliamsFailureType(str, Enum):
+    NEEDS_RETRY = "NEEDS_RETRY"
+    NEEDS_DATA_FIX = "NEEDS_DATA_FIX"
+    NEEDS_PLAN_MATCH = "NEEDS_PLAN_MATCH"
+    NEEDS_SERVICE_CHECK = "NEEDS_SERVICE_CHECK"
+
+
 class ScheduleAContractType(str, Enum):
     UNKNOWN = "UNKNOWN"
     EXPERIENCE_RATED = "EXPERIENCE_RATED"
     NONEXPERIENCE_RATED = "NONEXPERIENCE_RATED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class FTWilliamsPlanYearResolution(str, Enum):
+    USE_WORKSHEET = "USE_WORKSHEET"
+    KEEP_FTW = "KEEP_FTW"
 
 
 class FTWilliamsPlanLookupStatus(str, Enum):
@@ -122,6 +398,10 @@ class FieldRule(BaseModel):
     notes: str | None = None
     client_notes: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    cardinality: FieldRuleCardinality = FieldRuleCardinality.SCALAR
+    normalization_policy: str | None = None
+    validators: list[str] = Field(default_factory=list)
+    automatic_update_allowed: bool = True
     required: bool = False
     order: int = 0
     applicability: FieldRuleApplicability = FieldRuleApplicability.BOTH
@@ -164,12 +444,31 @@ class FieldRuleTestRequest(BaseModel):
     sample_field_name: str
 
 
+class SourceEvidence(BaseModel):
+    provider: str | None = None
+    page: int | None = None
+    source_text: str | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
+    table_cell: tuple[int, int] | None = None
+
+
+class ExtractionValidationResult(BaseModel):
+    validator: str
+    status: str
+    reason: str = ""
+    normalized_value: str | None = None
+
+
 class NormalizedExtractionField(BaseModel):
     field_name: str
     value: str = ""
+    candidate_values: list[str] = Field(default_factory=list)
     confidence: float = 0
     page: int | None = None
     source_text: str | None = None
+    evidence: list[SourceEvidence] = Field(default_factory=list)
+    validation_results: list[ExtractionValidationResult] = Field(default_factory=list)
+    decision: str = "UNASSESSED"
 
 
 class ScheduleABrokerMoneyRow(BaseModel):
@@ -186,12 +485,29 @@ class ScheduleABrokerRow(BaseModel):
     state: str | None = None
     zip_code: str | None = None
     organization_code: str | None = None
+    organization_code_defaulted: bool = False
+    purpose: str | None = None
     commission_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     fee_rows: list[ScheduleABrokerMoneyRow] = Field(default_factory=list)
     commission_total: str | None = None
     fee_total: str | None = None
+    commission_source_text: str | None = None
+    fee_source_text: str | None = None
     source_page: int | None = None
     confidence: float = 0.9
+    evidence: list[SourceEvidence] = Field(default_factory=list)
+    validation_results: list[ExtractionValidationResult] = Field(default_factory=list)
+    decision: str = "UNASSESSED"
+
+
+class ScheduleABrokerMatch(BaseModel):
+    extracted_index: int
+    ftw_index: int | None = None
+    status: str
+    resolved: bool = False
+    reason: str = ""
+    candidate_ftw_indexes: list[int] = Field(default_factory=list)
+    current_row: ScheduleABrokerRow | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):
@@ -269,6 +585,12 @@ class Filing(BaseModel):
     s3_bucket: str | None = None
     storage_path: str | None = None
     package_documents: list[dict] = Field(default_factory=list)
+    workspace_id: str | None = None
+    dashboard_client_name: str | None = None
+    dashboard_client_group_key: str | None = None
+    dashboard_ein: str | None = None
+    dashboard_plan_number: str | None = None
+    dashboard_plan_name: str | None = None
     intake_source: str = "MANUAL"
     sharefile_item_id: str | None = None
     sharefile_parent_id: str | None = None
@@ -295,6 +617,22 @@ class Filing(BaseModel):
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     proposed_xml: str | None = None
+    automation_status: FTWAutomationStatus = FTWAutomationStatus.DISABLED
+    automation_reasons: list[str] = Field(default_factory=list)
+    automation_next_action: str | None = None
+    automation_policy_version: str | None = None
+    automation_last_evaluated_at: datetime | None = None
+    automation_completed_at: datetime | None = None
+    automation_run_id: str | None = None
+    automation_bring_forward_approved_target_key: str | None = None
+    automation_bring_forward_approved_at: datetime | None = None
+    automation_bring_forward_target_key: str | None = None
+    automation_bring_forward_submitted_at: datetime | None = None
+    automation_bring_forward_verified_at: datetime | None = None
+    automation_bring_forward_before_record_ids: list[str] = Field(default_factory=list)
+    automation_bring_forward_new_record_ids: list[str] = Field(default_factory=list)
+    automation_lease_id: str | None = None
+    automation_lease_expires_at: datetime | None = None
     error_message: str | None = None
     rejection_reason: str | None = None
     approved_at: datetime | None = None
@@ -545,12 +883,18 @@ class FTWilliamsHistoryResponse(BaseModel):
     items: list[FTWilliamsHistoryItem] = Field(default_factory=list)
 
 
-class FTWilliamsFailureQueueItem(BaseModel):
+class FTWilliamsFailureIssueGroup(BaseModel):
+    label: str
+    count: int = 1
+
+
+class FTWilliamsFailureQueueSummary(BaseModel):
     filing_id: str
     filing_name: str
     filing_status: FilingStatus
     review_status: FTWilliamsReviewStatus
-    failure_reason: str
+    failure_type: FTWilliamsFailureType
+    short_reason: str
     next_action: str | None = None
     plan_name: str | None = None
     sponsor_name: str | None = None
@@ -562,18 +906,42 @@ class FTWilliamsFailureQueueItem(BaseModel):
     ftw_plan_id: str | None = None
     year: str | None = None
     attempted_field_count: int = 0
+    issue_count: int = 1
+    issue_groups: list[FTWilliamsFailureIssueGroup] = Field(default_factory=list)
     failed_at: datetime
     last_action_label: str = "Update failed"
     error_code: str | None = None
+    can_dismiss: bool = True
+
+
+class FTWilliamsFailureQueueItem(FTWilliamsFailureQueueSummary):
+    failure_reason: str
     technical_details: str | None = None
     operation_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
     edit_check_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
-    can_dismiss: bool = True
+
+
+class FTWilliamsFailureCounts(BaseModel):
+    active: int = 0
+    needs_retry: int = 0
+    needs_data_fix: int = 0
+    needs_plan_match: int = 0
+    needs_service_check: int = 0
 
 
 class FTWilliamsFailureQueueResponse(BaseModel):
     total: int
-    items: list[FTWilliamsFailureQueueItem] = Field(default_factory=list)
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
+    counts: FTWilliamsFailureCounts = Field(default_factory=FTWilliamsFailureCounts)
+    items: list[FTWilliamsFailureQueueSummary] = Field(default_factory=list)
+
+
+class FTWilliamsFailureNotificationResponse(BaseModel):
+    total: int
+    counts: FTWilliamsFailureCounts = Field(default_factory=FTWilliamsFailureCounts)
+    items: list[FTWilliamsFailureQueueSummary] = Field(default_factory=list)
 
 
 class FTWilliamsComparisonField(BaseModel):
@@ -592,6 +960,11 @@ class FTWilliamsComparisonField(BaseModel):
     changed: bool = False
     update_included: bool = False
     update_exclusion_reason: str | None = None
+    validation_status: str = "VALID"
+    validation_message: str | None = None
+    validation_expected_format: str | None = None
+    validation_normalized_value: str | None = None
+    validation_blocking: bool = False
 
 
 class ClientRejectedField(BaseModel):
@@ -618,6 +991,9 @@ class FTWilliamsPlanLookup(BaseModel):
     error_message: str | None = None
     matches: list[dict] = Field(default_factory=list)
     matched_identity: dict | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
 
 
 class ClientFacingError(BaseModel):
@@ -640,6 +1016,7 @@ class FTWilliamsReview(BaseModel):
     current_query_sent: bool = False
     current_query_success: bool = False
     current_query_complete: bool | None = None
+    query_state: FTWilliamsQueryState = FTWilliamsQueryState.NOT_QUERIED
     current_year_exists: bool = False
     bring_forward_required: bool = False
     ftw_editable: bool | None = None
@@ -649,10 +1026,16 @@ class FTWilliamsReview(BaseModel):
     ftw_plan_url: str | None = None
     comparison_year: str | None = None
     comparison_year_source: str | None = None
+    plan_year_conflict: dict | None = None
+    plan_year_resolution: FTWilliamsPlanYearResolution | None = None
+    plan_year_resolution_begin: str | None = None
+    plan_year_resolution_end: str | None = None
     schedule_a_match: dict | None = None
     schedule_a_candidates: list[dict] = Field(default_factory=list)
     schedule_a_records: list[dict] = Field(default_factory=list)
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
+    schedule_a_broker_match_complete: bool = True
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
@@ -667,6 +1050,9 @@ class FTWilliamsReview(BaseModel):
     year: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
     ftw_seq_no: str | None = None
     plan_lookup: FTWilliamsPlanLookup | None = None
     query_request_xml: str | None = None
@@ -681,6 +1067,12 @@ class FTWilliamsReview(BaseModel):
     update_verification_mismatches: list[dict] = Field(default_factory=list)
     update_verification_request_xml: str | None = None
     update_verification_response_xml: str | None = None
+    schedule_a_restore_attempted: bool = False
+    schedule_a_restore_success: bool | None = None
+    schedule_a_restore_response_xml: str | None = None
+    schedule_a_restore_verification_request_xml: str | None = None
+    schedule_a_restore_verification_response_xml: str | None = None
+    schedule_a_restore_verification_mismatches: list[dict] = Field(default_factory=list)
     update_attempted_count: int = 0
     update_confirmed_count: int = 0
     update_remaining_count: int = 0
@@ -699,6 +1091,9 @@ class FTWilliamsReview(BaseModel):
     edit_check_response_xml: str | None = None
     edit_check_final_success: bool | None = None
     edit_check_final_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
+    edit_check_validation_status: str = "NOT_RUN"
+    edit_check_new_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
+    edit_check_resolved_issues: list[FTWilliamsEditCheckIssue] = Field(default_factory=list)
     audit_pdf_status: str = "NOT_REQUESTED"
     audit_pdf_key: str | None = None
     audit_pdf_bucket: str | None = None
@@ -711,12 +1106,22 @@ class FTWilliamsReview(BaseModel):
     active_failure: bool = False
     active_failure_reason: str | None = None
     active_failure_client_error: ClientFacingError | None = None
+    active_failure_type: FTWilliamsFailureType | None = None
+    active_failure_issue_count: int | None = None
+    active_failure_issue_groups: list[FTWilliamsFailureIssueGroup] = Field(default_factory=list)
     active_failure_at: datetime | None = None
     failure_dismissed_at: datetime | None = None
     failure_dismissed_reason: str | None = None
     fields: list[FTWilliamsComparisonField] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("client_error", "active_failure_client_error", mode="before")
+    @classmethod
+    def normalize_legacy_empty_client_error(cls, value):
+        # Older reviews may contain an empty embedded document. Treat it as
+        # "no friendly error" so those records remain readable in the queue.
+        return None if value == {} else value
 
 
 class FTWilliamsPrepareReviewRequest(BaseModel):
@@ -728,6 +1133,9 @@ class FTWilliamsManualMatchRequest(BaseModel):
     plan_id: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    ftw_plan_url: str | None = None
     year: str | None = None
 
 
@@ -740,19 +1148,48 @@ class FTWilliamsScheduleAMatchRequest(BaseModel):
     schedule_desc: str | None = None
 
 
+class FTWilliamsBrokerMatchDecision(BaseModel):
+    extracted_index: int
+    ftw_index: int | None = None
+    create_new: bool = False
+
+
+class FTWilliamsBrokerMatchesRequest(BaseModel):
+    decisions: list[FTWilliamsBrokerMatchDecision] = Field(default_factory=list)
+
+
+class FTWilliamsScheduleABrokerRowsRequest(BaseModel):
+    rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    edited_index: int | None = None
+    action: Literal["edited", "excluded"] = "edited"
+
+
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):
     contract_type: ScheduleAContractType
     reason: str | None = None
+
+
+class FTWilliamsPlanYearResolutionRequest(BaseModel):
+    resolution: FTWilliamsPlanYearResolution
 
 
 class FTWilliamsSendUpdateRequest(BaseModel):
     reason: str = ""
     refresh_current_before_update: bool = True
     run_edit_checks: bool = False
+    selected_field_ids: list[str] | None = None
+    include_broker_updates: bool = False
 
 
 class FTWilliamsDismissFailureRequest(BaseModel):
     reason: str = "Dismissed by operator"
+
+
+class FTWilliamsBringForwardReconcileRequest(BaseModel):
+    """Explicit operator decision for a stale/uncertain Bring Forward attempt."""
+
+    resolution: Literal["VERIFY_CURRENT", "RESET_FAILED"]
+    reason: str = ""
 
 
 class FTWilliamsPlanMapping(BaseModel):
@@ -761,11 +1198,16 @@ class FTWilliamsPlanMapping(BaseModel):
     plan_number: str
     year: str | None = None
     plan_name: str | None = None
+    plan_name_key: str | None = None
     sponsor_name: str | None = None
     customer_id: str | None = None
     plan_id: str | None = None
     ftw_customer_id: str | None = None
     ftw_plan_id: str | None = None
+    ftw_browser_customer_id: str | None = None
+    ftw_browser_plan_id: str | None = None
+    browser_mapping_confirmed: bool = False
+    browser_mapping_confirmed_at: datetime | None = None
     source: str = "MANUAL"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

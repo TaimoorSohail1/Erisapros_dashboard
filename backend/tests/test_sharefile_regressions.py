@@ -10,7 +10,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken
+from app.models import DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.services.extractor import (
     SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
     parse_schedule_a_text,
@@ -60,6 +60,94 @@ class ShareFileRegressionTests(unittest.TestCase):
 
     def tearDown(self):
         repositories._repository = None
+
+    def test_shared_folder_discovery_ignores_navigation_placeholders(self):
+        self.service._list_folder = AsyncMock(
+            return_value=[
+                {"Id": "nff2670f-e942-90f7-6dc0-8c029db3ec2c", "Name": "Virtual navigation", "ItemType": "Folder"},
+                {"Id": "fo79bf37-43d1-40f3-8e15-c26d1e4736b9", "Name": "Ohio Valley Test", "ItemType": "Folder"},
+            ]
+        )
+
+        roots = run_async(self.service._discover_shared_folder_roots(None, None))
+
+        self.assertEqual([root["id"] for root in roots], ["fo79bf37-43d1-40f3-8e15-c26d1e4736b9"])
+
+    def test_nested_navigation_placeholder_is_not_a_folder(self):
+        self.assertFalse(
+            self.service._is_folder(
+                {"Id": "na06778b-04db-f10d-d243-105ebde7c1bd", "Name": "Navigation", "ItemType": "Folder"}
+            )
+        )
+
+    def test_webhook_roots_exclude_virtual_navigation_ids(self):
+        virtual_root = {"id": "na06778b-04db-f10d-d243-105ebde7c1bd"}
+        real_root = {"id": "fo79bf37-43d1-40f3-8e15-c26d1e4736b9"}
+        self.service._discover_relevant_webhook_roots_for_root = AsyncMock(return_value=[virtual_root, real_root])
+
+        roots = run_async(self.service._discover_relevant_webhook_roots(None, None, [real_root]))
+
+        self.assertEqual(roots, [real_root])
+
+    def test_scan_status_reports_webhook_registration_health(self):
+        repo = repositories.get_repository()
+        run_async(
+            repo.upsert_sharefile_state(
+                "sharefile_webhook_registration",
+                {
+                    "last_attempt_at": datetime(2026, 9, 15, 12, 0),
+                    "registered": 3,
+                    "skipped": 7,
+                    "failed": 1,
+                    "webhook_roots": 11,
+                },
+            )
+        )
+
+        result = run_async(self.service.scan_status())
+
+        self.assertEqual(result["webhook_registration"]["registered"], 3)
+        self.assertEqual(result["webhook_registration"]["failed"], 1)
+        self.assertFalse(result["webhook_registration"]["healthy"])
+
+    def test_auto_registration_saves_successful_folder_coverage(self):
+        repo = repositories.get_repository()
+        run_async(repo.upsert_sharefile_token(ShareFileOAuthToken(subdomain="erisapros", access_token="test")))
+        self.service.status = AsyncMock(return_value=ShareFileStatus(configured=True, message="Ready"))
+        self.service._webhook_callback_url = lambda: "https://example.test/api/sharefile/webhook"
+        self.service._ensure_access_token = AsyncMock(side_effect=lambda client, token: token)
+        self.service._resolve_scan_roots = AsyncMock(return_value=[{"id": "root"}])
+        self.service._discover_relevant_webhook_roots = AsyncMock(return_value=[{"id": "folder-1"}, {"id": "folder-2"}])
+        self.service._list_webhook_subscriptions = AsyncMock(return_value=[])
+        self.service._register_missing_webhook_roots = AsyncMock(
+            return_value=([{"id": "folder-1"}], [{"id": "folder-2"}], [])
+        )
+
+        result = run_async(self.service.auto_register_relevant_webhooks())
+        state = run_async(repo.get_sharefile_state("sharefile_webhook_registration"))
+
+        self.assertEqual(result["webhook_roots"], 2)
+        self.assertEqual(state["registered"], 1)
+        self.assertEqual(state["skipped"], 1)
+        self.assertEqual(state["failed"], 0)
+        self.assertEqual(state["last_success_at"], state["last_attempt_at"])
+
+    def test_same_sharefile_version_is_unchanged_when_only_modified_timestamp_drifts(self):
+        first = sharefile_file(
+            "same-version-item",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2025 Filing", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+            modified_at="2026-09-23T12:51:00Z",
+        )
+        first["raw"] = {"Version": "7", "Hash": "same-content-hash"}
+        existing = self.service._sharefile_index_record(first, status="EXTRACTED")
+        repeated = dict(first)
+        repeated["modified_at"] = "2026-09-23T12:51:02Z"
+
+        change_type = self.service._sharefile_change_type(existing, repeated)
+
+        self.assertEqual(change_type, "UNCHANGED")
 
     def stub_package_creation(self):
         async def fake_create_filing_package(client, token, package_key, package_files):
@@ -195,6 +283,36 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(schedule_key, f"{schedule_root} > Schedule A::schedule-a")
         self.assertEqual(self.service._client_name_for(schedule_a), "Housing Counseling Services")
         self.assertEqual(self.service._filing_year_for(schedule_a), "2025")
+
+    def test_bare_year_folder_is_a_filing_boundary_for_discovery_and_pairing(self):
+        worksheet = sharefile_file(
+            "worksheet-2024",
+            "5500 Plan Worksheet.docx",
+            ["Client", "5500 Filing", "2024", "5500 Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+        )
+        schedule_a = sharefile_file(
+            "schedule-2024",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2024", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        other_year = sharefile_file(
+            "schedule-2025",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2025", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+
+        self.assertTrue(self.service._quick_scan_descend("2024", schedule_a["path_parts"][:-2], 3))
+        self.assertEqual(self.service._package_root_key(worksheet), "Client > 5500 Filing > 2024")
+        self.assertEqual(self.service._package_root_key(schedule_a), "Client > 5500 Filing > 2024")
+        self.assertNotEqual(
+            self.service._package_root_key(schedule_a),
+            self.service._package_root_key(other_year),
+        )
+        self.assertEqual(self.service._client_name_for(schedule_a), "Client")
+        self.assertEqual(self.service._filing_year_for(schedule_a), "2024")
 
     def test_nested_package_uses_deepest_filing_year_and_client_folder(self):
         schedule_a = sharefile_file(
@@ -346,7 +464,7 @@ class ShareFileRegressionTests(unittest.TestCase):
             {"schedule-a-new", "worksheet-latest"},
         )
 
-    def test_changed_schedule_a_without_worksheet_creates_waiting_row(self):
+    def test_changed_schedule_a_without_worksheet_queues_extraction_and_review_flow(self):
         changed_schedule = sharefile_file(
             "schedule-a-new",
             "Housing Life Schedule A.pdf",
@@ -358,14 +476,16 @@ class ShareFileRegressionTests(unittest.TestCase):
         async def no_root_siblings(client, token, package_root):
             return []
 
+        self.stub_package_creation()
         self.service._scan_package_root = no_root_siblings
+        background_tasks = DummyBackgroundTasks()
 
         result = run_async(
             self.service._process_changed_sharefile_files(
                 client=None,
                 token=None,
                 scanned_files=[changed_schedule],
-                background_tasks=None,
+                background_tasks=background_tasks,
                 first_scan=False,
                 process_new_files=True,
                 source="TEST_SCHEDULE_ONLY",
@@ -374,14 +494,150 @@ class ShareFileRegressionTests(unittest.TestCase):
         repo = repositories.get_repository()
         filings = run_async(repo.list_filings())
 
-        self.assertEqual(result["synced"], 0)
-        self.assertTrue(
-            any(item.get("reason") == FilingStatus.WAITING_FOR_WORKSHEET.value for item in result["skipped_files"])
-        )
+        self.assertEqual(result["synced"], 1)
+        self.assertFalse(result["failed_files"])
         self.assertEqual(len(filings), 1)
-        self.assertEqual(filings[0].status, FilingStatus.WAITING_FOR_WORKSHEET)
+        self.assertEqual(filings[0].status, FilingStatus.QUEUED)
         self.assertEqual(filings[0].package_document_count, 1)
         self.assertIn("Housing Life Schedule A.pdf", filings[0].file_name)
+        self.assertEqual(len(background_tasks.tasks), 1)
+
+    def test_four_schedule_a_files_keep_distinct_source_item_ids(self):
+        files = []
+        for index, client_name in enumerate(("Same Client", "Same Client", "Other Client", "Fourth Client"), 1):
+            name = f"Policy {index} Schedule A.pdf"
+            item = sharefile_file(
+                f"schedule-a-{index}",
+                name,
+                [client_name, "5500 Filing", "2025 Filing", "Schedule A's", name],
+                DocumentType.SCHEDULE_A,
+                f"2026-09-15T12:0{index}:00Z",
+            )
+            files.append(item)
+
+        async def no_root_siblings(client, token, package_root):
+            return []
+
+        self.stub_package_creation()
+        self.service._scan_package_root = no_root_siblings
+        result = run_async(
+            self.service._process_changed_sharefile_files(
+                client=None,
+                token=None,
+                scanned_files=files,
+                background_tasks=DummyBackgroundTasks(),
+                first_scan=False,
+                process_new_files=True,
+                source="TEST_BATCH",
+            )
+        )
+        filings = run_async(repositories.get_repository().list_filings())
+
+        self.assertEqual(result["synced"], 4)
+        self.assertEqual(len(filings), 4)
+        self.assertEqual({filing.sharefile_item_id for filing in filings}, {f"schedule-a-{index}" for index in range(1, 5)})
+
+    def test_new_renamed_schedule_a_webhook_keeps_separate_filing(self):
+        repo = repositories.get_repository()
+        run_async(repo.upsert_sharefile_token(ShareFileOAuthToken(subdomain="erisapros", access_token="test")))
+        old = sharefile_file(
+            "old-item",
+            "OVSA Hartford Schedule A.pdf",
+            ["Ohio Valley Test", "5500 Filing", "2025 Filing", "Schedule A's", "OVSA Hartford Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        newer = sharefile_file(
+            "new-item",
+            "OVSA Hartford Schedule A (1).pdf",
+            ["Ohio Valley Test", "5500 Filing", "2025 Filing", "Schedule A's", "OVSA Hartford Schedule A (1).pdf"],
+            DocumentType.SCHEDULE_A,
+            "2026-09-15T12:13:00Z",
+        )
+        items = {old["id"]: old, newer["id"]: newer}
+
+        async def no_root_siblings(client, token, package_root):
+            return []
+
+        self.stub_package_creation()
+        self.service._scan_package_root = no_root_siblings
+        self.service.status = AsyncMock(return_value=ShareFileStatus(configured=True, message="Ready"))
+        self.service._ensure_access_token = AsyncMock(side_effect=lambda client, token: token)
+        self.service._get_item = AsyncMock(side_effect=lambda client, token, item_id: {"Id": item_id})
+        self.service._is_folder = lambda item: False
+        self.service._normalize_sharefile_item = AsyncMock(side_effect=lambda client, token, item: items[item["Id"]])
+
+        for item_id in ("old-item", "new-item"):
+            result = run_async(
+                self.service.handle_webhook(
+                    {"EventType": "FileUploaded", "ItemId": item_id},
+                    DummyBackgroundTasks(),
+                )
+            )
+            self.assertEqual(result["synced"], 1)
+
+        filings = run_async(repo.list_filings())
+        self.assertEqual(len(filings), 2)
+        self.assertEqual({filing.sharefile_item_id for filing in filings}, {"old-item", "new-item"})
+
+    def test_scan_status_reports_each_schedule_a_upload_finality_by_unique_item_id(self):
+        repo = repositories.get_repository()
+        now = datetime.utcnow()
+        final = run_async(
+            repo.create_filing(
+                Filing(
+                    file_name="Final.pdf",
+                    content_type="application/pdf",
+                    file_size=1,
+                    document_type=DocumentType.SCHEDULE_A,
+                    status=FilingStatus.NEEDS_REVIEW,
+                    s3_key="final",
+                    intake_source="SHAREFILE",
+                    sharefile_item_id="item-final",
+                )
+            )
+        )
+        stalled = run_async(
+            repo.create_filing(
+                Filing(
+                    file_name="Stalled.pdf",
+                    content_type="application/pdf",
+                    file_size=1,
+                    document_type=DocumentType.SCHEDULE_A,
+                    status=FilingStatus.QUEUED,
+                    s3_key="stalled",
+                    intake_source="SHAREFILE",
+                    sharefile_item_id="item-stalled",
+                    updated_at=now - timedelta(hours=2),
+                )
+            )
+        )
+        for item_id, filing in [("item-final", final), ("item-stalled", stalled), ("item-orphan", None)]:
+            run_async(
+                repo.upsert_sharefile_file(
+                    item_id,
+                    {
+                        "status": "EXTRACTED" if filing is final else "NEW",
+                        "document_type": DocumentType.SCHEDULE_A.value,
+                        "filing_id": filing.id if filing else None,
+                    },
+                )
+            )
+
+        with patch("app.services.sharefile.get_settings") as settings:
+            settings.return_value.sharefile_deep_scan_interval_hours = 12
+            settings.return_value.sharefile_upload_finality_timeout_seconds = 1800
+            result = run_async(self.service.scan_status())
+
+        finality = result["upload_finality"]
+        self.assertEqual(finality["schedule_a_uploads"], 3)
+        self.assertEqual(finality["final"], 1)
+        self.assertEqual(finality["stalled"], 1)
+        self.assertEqual(finality["orphaned"], 1)
+        self.assertFalse(finality["all_final"])
+        self.assertEqual(
+            {item["item_id"] for item in finality["attention_items"]},
+            {"item-stalled", "item-orphan"},
+        )
 
     def test_schedule_a_then_worksheet_leaves_one_active_complete_package(self):
         schedule_a = sharefile_file(
@@ -402,6 +658,7 @@ class ShareFileRegressionTests(unittest.TestCase):
         async def no_root_siblings(client, token, package_root):
             return []
 
+        self.stub_package_creation()
         self.service._scan_package_root = no_root_siblings
         run_async(
             self.service._process_changed_sharefile_files(

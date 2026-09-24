@@ -3,6 +3,141 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+
+assert.match(
+  styles,
+  /@media \(max-height:\s*1200px\) and \(min-width:\s*821px\)[\s\S]*?\.approval-workspace-page \.approval-table-wrap\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/,
+  "Short desktop viewports must keep the field rows visible above the broker editor.",
+);
+assert.match(
+  api,
+  /case 400:[\s\S]*?message:\s*receivedDetail\s*\|\|/,
+  "Broker-save validation errors must show the server's useful field detail.",
+);
+
+assert.match(
+  source,
+  /automationNeedsNoOperatorAction\(filing\)[\s\S]*?No action required/,
+  "Approve and send controls should disappear while automation owns a safe filing.",
+);
+assert.match(
+  source,
+  /function AutomationWorkflowNotice[\s\S]*?Action Needed[\s\S]*?Automation stopped safely/,
+  "The review page should explain automated progress and exceptions in plain language.",
+);
+assert.match(
+  source,
+  /function WorkflowStepper[\s\S]*?Intake[\s\S]*?Extraction[\s\S]*?FTW loaded[\s\S]*?Review[\s\S]*?FTW update/,
+  "The filing should show one concise end-to-end progress tracker.",
+);
+assert.doesNotMatch(
+  source,
+  /<ol className="automation-progress"/,
+  "The compact automation notice must not repeat the workflow already shown by WorkflowStepper.",
+);
+assert.match(
+  source,
+  /automation-workflow-controls[\s\S]*?automation-decision-summary[\s\S]*?local-agent-status/,
+  "The compact notice should keep review actions and agent status together in one control row.",
+);
+assert.match(
+  source,
+  /automation-decision-summary[\s\S]*?Review fields[\s\S]*?View fields needing attention/,
+  "Action Needed should use a compact decision summary with a direct review action.",
+);
+assert.doesNotMatch(
+  source,
+  /filing\.automation_reasons\?\.map/,
+  "The workflow banner must not dump every raw validation message into the page.",
+);
+assert.match(
+  styles,
+  /\.automation-reason-list[\s\S]*?max-height:[^;]+;/,
+  "Expanded decision details must remain visually bounded.",
+);
+assert.match(
+  source,
+  /showAdvancedReview[\s\S]*?Open Advanced Review/,
+  "Safe automated filings should keep the detailed manual workspace behind Advanced Review.",
+);
+assert.match(
+  source,
+  /automationRequiresOperatorAction\(filing, actionRequiredCount\)[\s\S]*?<AutomationExceptionActions[\s\S]*?Resolve & Continue/,
+  "Action Needed should replace the legacy multi-button toolbar with one contextual action.",
+);
+assert.match(
+  source,
+  /function automationRequiresOperatorAction[\s\S]*?automation_next_action !== "RESOLVE_ISSUES" \|\| currentDecisionCount > 0/,
+  "A stale field-review automation status must not hide approval or FT Williams send actions after all current decisions are resolved.",
+);
+assert.match(
+  source,
+  /status === "SAFE_TO_SEND" && filing\.automation_next_action === "AUTO_SEND"/,
+  "Only true auto-send ownership may replace the manual approval and send controls.",
+);
+assert.match(
+  source,
+  /waitingForManualSend[\s\S]*?Ready to update FT Williams[\s\S]*?send them to FT Williams/,
+  "Manual-send mode should clearly present the approved filing's FT Williams update step.",
+);
+assert.match(
+  source,
+  /START_LOCAL_AGENT[\s\S]*?Check local agent[\s\S]*?Manual Bring Forward/,
+  "An offline client-local agent must keep the manual Bring Forward fallback visible.",
+);
+assert.match(
+  source,
+  /nextAction === "CONFIRM_BRING_FORWARD"[\s\S]*?Confirm Bring Forward/,
+  "Automated Bring Forward must stop for explicit user confirmation.",
+);
+assert.match(
+  source,
+  /function BringForwardConfirmationModal[\s\S]*?Confirm this plan and year/,
+  "Bring Forward confirmation must show the exact target before automation starts.",
+);
+assert.match(
+  api,
+  /export async function confirmFTWilliamsBringForward[\s\S]*?\/ftw\/confirm-bring-forward/,
+  "The client must record target-bound Bring Forward confirmation through the API.",
+);
+assert.match(
+  source,
+  /Local FT Williams agent:[\s\S]*?Connected[\s\S]*?Login required[\s\S]*?Offline/,
+  "The automated workflow should show a concise local-agent connection state.",
+);
+assert.match(
+  api,
+  /export async function getFTWLocalAgentStatus[\s\S]*?\/ftwilliams\/local-agent\/status/,
+  "The review workspace must query the local-agent heartbeat status.",
+);
+
+assert.match(
+  api,
+  /export async function resolveFTWilliamsPlanYearConflict[\s\S]*?\/ftw\/plan-year-resolution/,
+  "The client must expose the explicit FT Williams plan-year resolution endpoint.",
+);
+assert.match(
+  source,
+  /function PlanYearConflictPanel[\s\S]*?Use worksheet dates[\s\S]*?Keep FT Williams dates/,
+  "A plan-year conflict must show both coordinated reviewer choices.",
+);
+assert.match(
+  source,
+  /const planYearConflictRequired = Boolean\([\s\S]*?plan_year_conflict[\s\S]*?!ftwReview\?\.plan_year_resolution/,
+  "An unresolved plan-year conflict must be tracked as an approval blocker.",
+);
+assert.match(
+  source,
+  /const hasPendingFtwUpdate = Boolean\([\s\S]*?update_xml_5500[\s\S]*?update_xml_schedule_a/,
+  "Send readiness must require a real outgoing FT Williams payload.",
+);
+const sendReadinessSource = source.match(/const ftwReadyToSend = Boolean\(([\s\S]*?)\n  \);/)?.[1] || "";
+assert.doesNotMatch(
+  sendReadinessSource,
+  /current_query_success|current_query_complete|form5500SafetyReady|scheduleASafetyReady|scheduleABrokersReady|actionRequiredCount/,
+  "Resolved review warnings and stale current-query flags must not keep a valid approved payload disabled.",
+);
 
 assert.match(
   source,
@@ -23,9 +158,15 @@ assert.equal(
 );
 assert.doesNotMatch(source, /<th>Decision<\/th>/, "Decision controls must be inline below Proposed To Send.");
 
+const brokerRowsPosition = source.indexOf("<ScheduleABrokerRowsPanel");
+const comparisonTablePosition = source.indexOf('<table className="approval-decision-table">');
+const comparisonFooterPosition = source.indexOf('<div className="approval-preview-footer">');
+assert.ok(brokerRowsPosition > comparisonTablePosition, "Schedule A broker rows must appear below the field comparison table.");
+assert.ok(brokerRowsPosition > comparisonFooterPosition, "Schedule A broker rows must appear at the bottom of the comparison workspace.");
+
 assert.match(
   source,
-  /<td>\{row\.extracted \|\|[\s\S]*?<\/td>\s*<td>\{row\.currentFtw \|\|/,
+  /<td[^>]*>\{row\.extracted \|\|[\s\S]*?<\/td>\s*<td[^>]*>\{row\.currentFtw \|\|/,
   "Review rows must render extracted values before current FTW values.",
 );
 
@@ -66,16 +207,6 @@ assert.match(
   /bringForwardRequired \? \([\s\S]*?Open FTW Bring Forward/,
   "Bring Forward must be directly visible in the main filing actions when the current-year record is missing.",
 );
-assert.match(
-  source,
-  /const retryingFailedFtwUpdate = filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\) && ftwReadyToSend;[\s\S]*?const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate;/,
-  "Approval readiness must distinguish an active FTW retry from a failed filing that needs re-approval.",
-);
-assert.match(
-  source,
-  /\{!approved && approvalReady \? \(/,
-  "A recovered failed filing must not be excluded from the approval action solely because its stored filing status is FAILED.",
-);
 assert.doesNotMatch(
   source,
   /disabled=\{busy \|\| !ftwCurrentLoaded\}/,
@@ -85,36 +216,6 @@ assert.doesNotMatch(
   source,
   /title=\{!ftwCurrentLoaded \? "Query FTW Current before approving\." : undefined\}/,
   "Approval must not tell reviewers to query FTW when field review is already complete.",
-);
-assert.doesNotMatch(
-  source,
-  /function handleApproveClick\(\) \{[\s\S]*?if \(!ftwCurrentLoaded\)[\s\S]*?setShowApproveConfirm\(true\);/,
-  "Opening approval confirmation must not be blocked by FTW query state.",
-);
-assert.match(
-  source,
-  /\{!approved && approvalReady \? \([\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{onApprove\}/,
-  "The primary approval action must only be disabled while another review action is busy.",
-);
-assert.doesNotMatch(
-  source,
-  /!approved && !failed && approvalReady/,
-  "The approval action must not permanently disappear for recoverable failed filings.",
-);
-assert.match(
-  source,
-  /<WorkflowDetailDialog[\s\S]*?approvalReady=\{approvalReady\}[\s\S]*?onApprove=\{\(\) => \{/,
-  "The Approval workflow step must receive the same approval action and readiness used by the primary toolbar.",
-);
-assert.match(
-  source,
-  /step === "APPROVAL" && filing\.status !== "APPROVED" && approvalReady \? \([\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{onApprove\}[\s\S]*?Approve filing/,
-  "The Approval workflow step must render a working approval action when confirmation is pending.",
-);
-assert.match(
-  source,
-  /hasBlockers=\{actionRequiredRows\.length > 0\}/,
-  "The approval confirmation must warn whenever unresolved fields remain.",
 );
 assert.match(
   source,
@@ -133,12 +234,32 @@ assert.match(
 );
 assert.match(
   source,
+  /const ftwScheduleIsNew = Boolean\(filing\.ftw_review\?\.schedule_a_match\?\.create_new\);[\s\S]*?ftwScheduleIsNew \? "New Schedule A prepared" : ftwScheduleMatch \? "Best match selected"/,
+  "The compact workflow step must identify a prepared new Schedule A.",
+);
+assert.match(
+  source,
+  /<small>FTW match<\/small><strong>\{scheduleAMatchLabel\}<\/strong>/,
+  "The filing summary must report a Schedule A match only when a specific Schedule A selection exists.",
+);
+assert.match(
+  source,
+  /const scheduleAMatchLabel = scheduleAIsNew \? "New prepared" : ftwReview\?\.schedule_a_match \? "Matched" : "Pending";/,
+  "The filing summary must identify a prepared new Schedule A instead of calling it an existing match.",
+);
+assert.doesNotMatch(
+  source,
+  /<small>FTW match<\/small>[\s\S]{0,160}customer_id/,
+  "A customer or plan lookup must not be presented as a selected Schedule A match.",
+);
+assert.match(
+  source,
   /\(filing\.ftw_review\?\.schedule_a_candidates \|\| \[\]\)\.length \|\| filing\.ftw_review\?\.bring_forward_required/,
   "A missing current Schedule A that requires Bring Forward must keep FTW Loaded in the decision state.",
 );
 assert.match(
   source,
-  /label=\{scheduleMatchSelected \? "Best match selected" : scheduleDecisionRequired \? "Needs your decision"/,
+  /label=\{scheduleAIsNew \? "New Schedule A prepared" : scheduleMatchSelected \? "Best match selected" : scheduleDecisionRequired \? "Needs your decision"/,
   "The FTW Loaded dialog must repeat the Schedule A match decision clearly.",
 );
 assert.match(
@@ -150,6 +271,26 @@ assert.match(
   source,
   /Selected Schedule A[\s\S]*?Match score \{selectedScheduleScore\}/,
   "The FTW Loaded dialog must show the selected Schedule A and its match score.",
+);
+assert.match(
+  source,
+  /Create new Schedule A[\s\S]*?Existing Schedule A records stay unchanged/,
+  "The primary FTW Loaded workflow must offer a safe new Schedule A path.",
+);
+assert.match(
+  source,
+  /const canChooseScheduleA = Boolean\([\s\S]*?review\?\.current_query_success[\s\S]*?!review\?\.bring_forward_required/,
+  "The create-new path must remain available when FT Williams has no existing Schedule A candidates.",
+);
+assert.match(
+  source,
+  /Use as new Schedule A/,
+  "Creating a Schedule A must require an explicit confirmation after identity review.",
+);
+assert.match(
+  source,
+  /create_new:\s*true/,
+  "The new Schedule A choice must be sent through the existing reviewed match API.",
 );
 assert.match(
   source,
@@ -168,10 +309,153 @@ assert.match(
 );
 assert.match(
   source,
+  /comparison\.extraction_status === "LOW_CONFIDENCE"[\s\S]*?comparison\.changed && comparison\.update_included \? "LOW_CONFIDENCE" : "SAME"/,
+  "Low-confidence values that do not change FT Williams must not ask for a human decision.",
+);
+assert.match(
+  source,
+  /const brokerActionRequiredIndexes = new Set\([\s\S]*?scheduleABrokerMatches\.filter\(\(match\) => !match\.resolved\)/,
+  "Unresolved broker matches must be included in the Action Required count.",
+);
+assert.match(
+  source,
+  /No field decisions are required\. Complete the workflow action above to continue\./,
+  "A workflow-only blocker must not present an empty field table as an unexplained error.",
+);
+assert.match(
+  source,
+  /activeTab === "ALL" \|\| \(activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0\)/,
+  "Broker rows must appear by default only when they require a human decision.",
+);
+assert.match(
+  source,
   /if \(field\?\.status === "EDITED"\) return comparison\.changed && comparison\.update_included \? "WILL_UPDATE" : "SAME";/,
   "A reviewer-confirmed field must enter Will Update only when the FTW update contract includes it.",
 );
+assert.match(
+  source,
+  /mergeFieldDecisionReview\(current\.ftw_review, result\.ftw_review, fieldId\)/,
+  "Saving one field must merge only that field's FT Williams comparison instead of replacing unrelated rows.",
+);
 assert.match(source, /Review only · not supported/, "Unsupported FTW fields must be labelled as review-only rather than resolved.");
+assert.match(source, /Managed in broker rows/, "Structured multi-broker fields must not be labelled as unsupported.");
+assert.match(
+  source,
+  /hideStructuredBrokerFields && isStructuredBrokerSummaryRule\(comparison\.rule_key\)/,
+  "Structured broker rows must hide duplicate flat broker comparison fields.",
+);
+assert.match(
+  source,
+  /hideStructuredBrokerFields && isStructuredBrokerSummaryRule\(fieldRuleKey\(field\)\)/,
+  "Structured broker rows must also hide duplicate extracted-only broker fields.",
+);
+assert.match(
+  source,
+  /buildReviewDecisionRows\(fields, filing\?\.ftw_review \|\| null, scheduleAContractType, false, Boolean\(scheduleABrokerRows\.length\)\)/,
+  "The comparison workspace must enable broker-summary hiding whenever the structured broker table is present.",
+);
+assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
+assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
+assert.match(source, /Save broker row/, "Reviewers must be able to edit a broker row before sending it to FT Williams.");
+assert.match(
+  source,
+  /const displayRow = editingIndex === index && draft \? draft : row;/,
+  "The broker summary row must preview the reviewer's draft values while editing.",
+);
+assert.match(source, /Unsaved changes/, "The broker editor must clearly identify draft values that are not saved yet.");
+assert.match(
+  source,
+  /editorRef\.current\?\.scrollIntoView/,
+  "Opening a broker editor must bring its controls into view.",
+);
+assert.match(
+  styles,
+  /\.broker-edit-toolbar\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
+  "Broker Save and Cancel actions must remain visible inside the scrolling table.",
+);
+assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
+assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
+assert.match(
+  api,
+  /updateFTWilliamsScheduleABrokerRows[\s\S]*?edited_index: editedIndex/,
+  "Broker saves must identify the edited row so another invalid row cannot block incremental correction.",
+);
+assert.match(
+  source,
+  /Plan Registry[\s\S]*?One-time mapping needed/,
+  "The technical fallback must show whether the permanent FT Williams plan mapping is confirmed.",
+);
+assert.match(
+  source,
+  /FT Williams Plan URL[\s\S]*?Paste the exact FT Williams plan page URL/,
+  "A one-time plan mapping must accept the exact FT Williams plan URL instead of requiring users to extract browser IDs manually.",
+);
+assert.match(
+  source,
+  /onSaveRows\(nextRows, "edited", editingIndex\)/,
+  "The broker editor must send the exact edited row index to the validation API.",
+);
+assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
+assert.match(
+  source,
+  /const FTW_ORGANIZATION_CODE_OPTIONS[\s\S]*?value: "3", label: "Insurance agent or broker"/,
+  "Broker organization codes must come from a labelled FT Williams option list.",
+);
+assert.match(
+  source,
+  /Organization code[\s\S]*?<select required value=\{draft\.organization_code \|\| ""\}/,
+  "The broker editor must use a required organization-code dropdown instead of free text.",
+);
+assert.doesNotMatch(
+  source,
+  /<label>Organization code<input/,
+  "The broker editor must not allow arbitrary organization codes.",
+);
+assert.match(
+  source,
+  /Blank codes default to 3\. Existing codes are preserved\./,
+  "The organization-code field must explain the customer's blank-code default.",
+);
+assert.match(
+  source,
+  /Will update FT Williams:.*→/,
+  "Edited fields must clearly show the current and proposed FT Williams values.",
+);
+assert.match(
+  source,
+  /function FTWilliamsSendConfirmationModal/,
+  "FT Williams sends must show a final change-and-preservation confirmation.",
+);
+assert.match(
+  source,
+  /review\.update_verification_success === true/,
+  "The interface must require explicit read-back success before showing an FT Williams update as complete.",
+);
+assert.match(
+  source,
+  /const ftwReadyToSend = true;/,
+  "Manual selection must remain available after an earlier verified update.",
+);
+assert.match(
+  source,
+  /FT Williams accepted the update/,
+  "The interface must show vendor acceptance separately from read-back verification.",
+);
+assert.match(
+  source,
+  /Unchanged Schedule A records/,
+  "The confirmation modal must keep unchanged Schedule A identities in a collapsed summary.",
+);
+assert.match(
+  source,
+  /Send and verify/,
+  "The final FT Williams action must explain that read-back verification follows the send.",
+);
+assert.match(
+  source,
+  /onSend=\{requestFtwSend\}/,
+  "Toolbar sends must open the confirmation step instead of writing immediately.",
+);
 assert.doesNotMatch(source, /Resolved · not sent to FTW/, "Unsupported FTW fields must not appear as successfully resolved updates.");
 assert.match(
   source,
@@ -185,17 +469,17 @@ assert.match(
 );
 assert.match(
   source,
-  /const showFtwSendAction = filing\?\.status === "APPROVED" \|\| \(filing\?\.status === "FAILED" && \(ftwUpdateFailed \|\| ftwUpdateUnknown\)\);/,
-  "Approved filings must always expose the FT Williams send action, even when the UI readiness snapshot is stale.",
+  /const showFtwSendAction = true;/,
+  "Manual send visibility must not depend on approval or previous verification.",
 );
 assert.match(
   source,
-  /showFtwSendAction=\{showFtwSendAction\}[\s\S]*?onSend=\{sendFtwUpdate\}/,
-  "The toolbar must receive approved-state send visibility independently from the strict workflow readiness signal.",
+  /showFtwSendAction=\{showFtwSendAction\}[\s\S]*?onSend=\{requestFtwSend\}/,
+  "The toolbar must receive approved-state send visibility and route sends through final confirmation.",
 );
 assert.match(
   source,
-  /\{showFtwSendAction \? \([\s\S]*?Send to FT Williams/,
+  /manual-ftw-send-toolbar[\s\S]*?Send to FT Williams/,
   "An approved filing must render the send button and let the backend enforce the final safety preflight.",
 );
 assert.match(
@@ -267,11 +551,6 @@ assert.doesNotMatch(
   source,
   /This page refreshes automatically from MongoDB/,
   "Customer-facing progress copy must not expose internal database implementation details.",
-);
-assert.match(
-  source,
-  /approvalReady=\{approvalReady\}/,
-  "Approval must remain unavailable while processing is running or Schedule A selection is unresolved.",
 );
 assert.match(
   source,
@@ -427,8 +706,8 @@ assert.match(
 );
 assert.match(
   styles,
-  /\.approval-workspace-page \.approval-table-wrap\s*\{[^}]*flex:\s*1 1 auto;[^}]*height:\s*auto;[^}]*max-height:\s*none;[^}]*min-height:\s*0;/,
-  "The comparison table must consume the actual remaining viewport height.",
+  /\.approval-workspace-page \.approval-table-wrap\s*\{[^}]*flex:\s*0 0 auto;[^}]*height:\s*auto;[^}]*max-height:\s*none;[^}]*min-height:\s*0;[^}]*overflow:\s*visible;/,
+  "The comparison table must grow with its rows instead of squeezing into the remaining viewport.",
 );
 assert.doesNotMatch(
   styles,
@@ -492,5 +771,137 @@ assert.match(
   /\.compact-table-search input\s*\{[^}]*background:\s*transparent;[^}]*height:\s*100%;[^}]*min-height:\s*0;/,
   "The compact field search input must not inherit the full-size search height.",
 );
+assert.match(
+  source,
+  /aria-label="Schedule A broker rows"[\s\S]*?role="region"[\s\S]*?tabIndex=\{0\}/,
+  "The broker-row scroll region must be keyboard accessible.",
+);
+assert.match(
+  styles,
+  /\.approval-workspace-page \.schedule-a-broker-table-wrap\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/,
+  "Broker rows must remain accessible through natural page scrolling.",
+);
+assert.match(
+  styles,
+  /\.schedule-a-broker-table th\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
+  "The broker table header must remain visible while its rows scroll.",
+);
+assert.match(
+  source,
+  /validation_status === "INVALID"[\s\S]*?Invalid FT Williams format/,
+  "Invalid FT Williams values must use a specific status instead of appearing unsupported.",
+);
+assert.match(
+  source,
+  /validation-blocker-banner[\s\S]*?Correct or deselect affected values before sending/,
+  "Validation errors must explain that only selected invalid values need correction.",
+);
+assert.match(
+  source,
+  /function FTWValidationBlockerBanner[\s\S]*?affect these values only[\s\S]*?Fix issue/,
+  "A server-detected FT Williams blocker must remain visible with a direct Fix issue action.",
+);
+assert.match(
+  source,
+  /sendValidationNotice[\s\S]*?fieldLabel[\s\S]*?setSelectedFieldId/,
+  "The blocking-issue banner must identify and open the affected field.",
+);
+assert.match(
+  styles,
+  /\.ftw-validation-blocker-banner\s*\{[\s\S]*?grid-template-columns:[^;]+;/,
+  "The send-blocker banner must use a structured responsive layout.",
+);
+assert.match(
+  source,
+  /RETIRED_REVIEW_RULE_KEYS[\s\S]*?form_5500_part_i_2a_plan_administrator_name[\s\S]*?isRetiredReviewField/,
+  "Plan Administrator Name must be removed from existing and future review tables.",
+);
+assert.match(
+  source,
+  /Not updated\. Sent:[\s\S]*?FT Williams returned:/,
+  "Failed verification must show the sent and returned FT Williams values.",
+);
+assert.match(
+  source,
+  /function FTWEditabilityBanner[\s\S]*?Send disabled:[\s\S]*?Unlock the filing or use Amend Filing[\s\S]*?Open FT Williams[\s\S]*?Refresh status/,
+  "A locked FT Williams filing must show the exact reason and recovery actions beside the disabled send flow.",
+);
+assert.match(
+  source,
+  /ftwReview\?\.ftw_editable === false[\s\S]*?<FTWEditabilityBanner/,
+  "The FT Williams editability warning must be visible on the main review screen, not hidden in technical details.",
+);
+assert.match(
+  styles,
+  /\.ftw-editability-banner\s*\{[\s\S]*?grid-template-columns:[^;]+;/,
+  "The FT Williams editability warning must use a structured responsive layout.",
+);
+assert.doesNotMatch(
+  source,
+  /disabled=\{busy \|\| approvalBlocked\}/,
+  "Approval actions must stay clickable when unresolved validation issues exist.",
+);
+assert.match(
+  source,
+  /manual-ftw-send-toolbar[\s\S]*?disabled=\{reviewInteractionBusy\}[\s\S]*?onClick=\{requestFtwSend\}[\s\S]*?Send to FT Williams/,
+  "The Send action must be present independently of review/automation state and disabled only during an active request.",
+);
+assert.match(
+  source,
+  /<div className="approve-confirm-body">[\s\S]*?approve-confirm-table-wrap[\s\S]*?<\/div>\s*<footer className="approve-confirm-actions">/,
+  "The FT Williams confirmation content must scroll independently from its persistent actions.",
+);
+assert.match(
+  styles,
+  /\.ftw-send-confirm-modal\s*\{[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/,
+  "The FT Williams confirmation must reserve responsive rows for its header, content, and footer.",
+);
+assert.match(
+  styles,
+  /\.approve-confirm-body\s*\{[\s\S]*?overflow-y:\s*auto;/,
+  "Long FT Williams confirmation content must scroll inside the dialog.",
+);
+assert.match(
+  styles,
+  /@media \(max-width: 600px\)[\s\S]*?\.ftw-send-confirm-modal\s*\{[\s\S]*?height:\s*100dvh;/,
+  "The FT Williams confirmation must become a usable full-screen dialog on phones.",
+);
+assert.match(
+  source,
+  /placeholder=\{expectedFormat \|\| "Enter the FT Williams value"\}/,
+  "Field editing must show the expected FT Williams format.",
+);
+assert.match(
+  source,
+  /Use default \(3\)/,
+  "Broker organization codes must offer the customer's explicit default.",
+);
+assert.match(
+  source,
+  /brokerRowValidationIssues\(draft\)[\s\S]*?setShowDraftValidation\(true\)/,
+  "Broker rows must be validated before save.",
+);
+assert.match(
+  source,
+  /City contains street, state, or ZIP data/,
+  "Broker review must explain when address fragments leak into the city field.",
+);
+assert.match(
+  source,
+  /broker-row-validation-summary[\s\S]*?Broker row \{index \+ 1\} needs correction[\s\S]*?Fix issue/,
+  "Invalid broker rows must show a clear row-level error and direct fix action.",
+);
+assert.match(
+  source,
+  /nextAction === "LOGIN_TO_FTW"[\s\S]*?onClick=\{onRetry\}[\s\S]*?Retry automation[\s\S]*?onClick=\{onOpenBringForward\}[\s\S]*?Open FTW/,
+  "A refreshed automation login must offer Retry without removing the manual FT Williams fallback.",
+);
 
+assert.doesNotMatch(source, /Approve Filing|Approve filing|ApprovalConfirmationModal|UnapproveConfirmationModal|key: "APPROVAL"/, "Manual approval controls and workflow stage must be removed.");
+assert.match(source, /selected_field_ids: selectedSendFieldIds[\s\S]*?include_broker_updates: includeSendBrokerUpdates/, "Sending must serialize the explicit field and broker selections.");
+assert.match(source, /aria-label=\{`Send \$\{row.label\}`\}[\s\S]*?onToggleField/, "Clients must be able to deselect individual outgoing fields.");
+assert.match(source, /Other Action Required fields stay unchanged/, "Unrelated unresolved values must be clearly excluded from manual sending.");
+assert.match(styles, /\.ftw-send-confirm-modal \.approve-confirm-body\s*\{[\s\S]*?grid-auto-rows:\s*max-content;/, "Short screens must not compress field selection rows under the table header.");
+assert.match(styles, /\.ftw-send-confirm-modal \.approve-confirm-table-wrap\s*\{[\s\S]*?order:\s*-2;/, "Field selection must remain the first confirmation content.");
+assert.match(source, /needsDecisionCount=\{actionRequiredCount\}/, "A verified partial send must not hide remaining review items.");
 console.log("Guided filing review workflow passed.");

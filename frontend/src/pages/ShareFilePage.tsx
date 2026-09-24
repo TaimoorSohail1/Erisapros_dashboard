@@ -1,12 +1,15 @@
 import { FolderSync } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getShareFileAuthorizationUrl, getShareFileStatus, syncShareFileFolder } from "../api";
+import { getShareFileAuthorizationUrl, getShareFileScanStatus, getShareFileStatus, syncShareFileFolder } from "../api";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 
 type ShareFileStatusView = Awaited<ReturnType<typeof getShareFileStatus>>;
+type ShareFileScanStatusView = Awaited<ReturnType<typeof getShareFileScanStatus>>;
 
 export function ShareFilePage() {
   const [status, setStatus] = useState<ShareFileStatusView | null>(null);
+  const [scanStatus, setScanStatus] = useState<ShareFileScanStatusView | null>(null);
+  const [scanStatusUnavailable, setScanStatusUnavailable] = useState(false);
   const [message, setMessage] = useState("");
   const [syncResult, setSyncResult] = useState<{
     message: string;
@@ -25,6 +28,18 @@ export function ShareFilePage() {
           .catch(() => setAuthorizationUrl(""));
       }
     }).catch((error) => setMessage(error.message));
+
+    const refreshScanStatus = () => {
+      getShareFileScanStatus()
+        .then((nextStatus) => {
+          setScanStatus(nextStatus);
+          setScanStatusUnavailable(false);
+        })
+        .catch(() => setScanStatusUnavailable(true));
+    };
+    refreshScanStatus();
+    const timer = window.setInterval(refreshScanStatus, 60_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const handleSync = async () => {
@@ -44,6 +59,7 @@ export function ShareFilePage() {
       );
       const refreshed = await getShareFileStatus();
       setStatus(refreshed);
+      getShareFileScanStatus().then(setScanStatus).catch(() => setScanStatusUnavailable(true));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "ShareFile sync failed.");
     } finally {
@@ -80,8 +96,16 @@ export function ShareFilePage() {
               <dd>{status.configured_folder_ids?.length ? status.configured_folder_ids.join(", ") : "-"}</dd>
               <dt className="subtle">Configured shared root folder ID</dt>
               <dd>{status.shared_root_folder_id || "-"}</dd>
+              <dt className="subtle">Real-time upload detection</dt>
+              <dd>
+                {!status.connected ? "ShareFile connection needed" : scanStatusUnavailable ? "Status unavailable" :
+                  !scanStatus?.webhook_registration.last_attempt_at ? "Webhook check pending" :
+                  scanStatus.webhook_registration.healthy ? "Ready" : "Needs attention"}
+                {scanStatus?.webhook_registration.last_attempt_at ?
+                  ` · ${scanStatus.webhook_registration.webhook_roots || 0} folders checked, ${scanStatus.webhook_registration.failed || 0} failed` : null}
+              </dd>
             </dl>
-            <button className="button" disabled onClick={handleSync}>
+            <button className="button" disabled={syncing || !status.connected} onClick={handleSync}>
               {syncing ? <InlineLoader label="Syncing ShareFile" /> : <><FolderSync size={18} /> Sync ShareFile</>}
             </button>
             {!status.connected && authorizationUrl ? (

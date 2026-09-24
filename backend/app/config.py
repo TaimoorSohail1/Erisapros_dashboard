@@ -31,12 +31,20 @@ class Settings(BaseSettings):
     groundx_api_base_url: str = "https://api.groundx.ai/api/v1"
     groundx_poll_seconds: float = 3
     groundx_max_wait_seconds: int = 90
+    # Read workflow JSON when the assigned GroundX bucket supports it. Missing
+    # extract artifacts safely fall back to X-Ray/local extraction.
+    groundx_structured_extract_enabled: bool = True
     # Browser requests pass through CloudFront, whose origin response timeout is
-    # 60 seconds. Keep interactive field-rule QA below that boundary and fall
-    # back to the deterministic document parser when GroundX is still working.
-    field_rule_qa_timeout_seconds: float = 45
+    # 60 seconds. GroundX commonly needs 35-45 seconds to ingest a PDF before
+    # its structured/X-Ray artifacts are available, so leave it almost the full
+    # origin window while retaining a small response/serialization margin.
+    field_rule_qa_timeout_seconds: float = 55
     allow_pdf_text_fallback: bool = False
     low_confidence_threshold: float = 0.8
+    # The canonical Schedule A validator first runs in shadow mode so its
+    # decisions can be compared with production without changing proposals.
+    schedule_a_canonical_validation_enabled: bool = False
+    schedule_a_canonical_validation_shadow_enabled: bool = True
 
     sharefile_subdomain: str | None = "erisapros"
     sharefile_client_id: str | None = None
@@ -65,6 +73,9 @@ class Settings(BaseSettings):
     # Production sends all ShareFile scans, webhooks, and extraction work to
     # a dedicated ECS worker through SQS. The API never executes that work.
     sharefile_work_queue_url: str | None = None
+    # Surface any Schedule A upload that has not reached Review/Ready/Failed
+    # within this window. The scheduled poll remains the recovery backstop.
+    sharefile_upload_finality_timeout_seconds: int = 1800
 
     ftwlink_key_id: str | None = None
     ftwlink_endpoint_url: str | None = None
@@ -77,7 +88,11 @@ class Settings(BaseSettings):
     # Schedule A writes are replace-style at the vendor. Keep this capability
     # independently switchable so production can fail closed if FT returns an
     # ambiguous response or demonstrates destructive behavior.
-    ftwlink_schedule_a_updates_enabled: bool = True
+    ftwlink_schedule_a_updates_enabled: bool = False
+    # Emergency rollback switch for FT Williams' replace-style Schedule A API.
+    # Normal operation preserves every current sibling record and changes only
+    # the explicitly selected Schedule A, so multi-record plans stay enabled.
+    ftwlink_schedule_a_single_record_only: bool = False
     # Live checklist schemas are cached for one day. DOL Schedule A writes use
     # the separately published, versioned DOL contract until FT exposes an
     # equivalent live schema endpoint for DOL forms.
@@ -88,9 +103,44 @@ class Settings(BaseSettings):
     ftw_schema_enforcement_enabled: bool = False
     ftw_auto_edit_checks_enabled: bool = False
     ftw_pdf_audit_enabled: bool = False
+    # Straight-through FT Williams processing is released behind independent
+    # controls. All three default off so the established reviewer workflow is
+    # unchanged until a test-plan allowlist is configured explicitly.
+    ftw_automation_enabled: bool = False
+    ftw_automation_bring_forward_enabled: bool = False
+    # Demo-only convenience switch. Exact account, plan, EIN, plan number,
+    # year, browser mapping, and allowlist checks still run before a job is
+    # queued. Keep disabled everywhere except an isolated test workspace.
+    ftw_automation_auto_bring_forward_enabled: bool = False
+    ftw_automation_auto_send_enabled: bool = False
+    ftw_automation_confidence_threshold: float = 0.95
+    ftw_automation_policy_version: str = "2026-09-12-v4"
+    ftw_automation_allowed_targets_json: str = "[]"
+    ftw_automation_lease_seconds: int = 600
+    # Optional client-local Bring Forward agent. Disabled by default so the
+    # established cloud/manual workflow is unchanged until device QA passes.
+    ftw_local_agent_enabled: bool = False
+    # Keep the legacy demo canary unchanged until its mappings are migrated.
+    ftw_local_agent_workspace_routing_enabled: bool = False
+    ftw_local_agent_expected_account: str = "HighlandTech"
+    ftw_local_agent_pairing_ttl_seconds: int = 600
+    ftw_local_agent_heartbeat_ttl_seconds: int = 90
+    ftw_local_agent_job_ttl_seconds: int = 900
+    ftw_local_agent_claim_ttl_seconds: int = 180
+    # Browser credentials are never stored in application configuration. A
+    # designated operator signs into the FT Williams demo account once and saves a
+    # Playwright storage-state file outside source control.
+    ftw_browser_storage_state_path: str | None = None
+    ftw_browser_storage_state_json: str | None = None
+    ftw_browser_headless: bool = True
+    ftw_browser_timeout_seconds: int = 45
+    ftw_browser_audit_directory: str = "outputs/ftw-automation"
     # FT Williams Schedule A slots are independent. Query a small batch in
     # parallel to reduce latency without flooding the upstream service.
     ftw_slot_query_concurrency: int = 5
+    # PlanIDs_Batch can contain thousands of plans. Only probe a ranked,
+    # metadata-relevant subset; otherwise require an explicit manual match.
+    ftw_plan_lookup_probe_limit: int = 10
     # Current-data snapshots are identical for every filing that belongs to
     # the same FT Williams plan and year.
     ftw_snapshot_ttl_seconds: int = 300
@@ -99,7 +149,7 @@ class Settings(BaseSettings):
     ftw_plan_page_url_template: str = (
         "https://ftwilliam.com/cgi-bin/index.cgi?"
         "#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&"
-        "plan={ftw_customer_id},{ftw_plan_id}&Year={year}"
+        "plan={ftw_browser_customer_id},{ftw_browser_plan_id}&Year={year}"
     )
 
     @property

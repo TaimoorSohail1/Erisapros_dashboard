@@ -61,7 +61,7 @@ class FieldRuleAdminTests(unittest.TestCase):
 
         baseline, draft, before_publish, published, after_publish, history = run_async(scenario())
 
-        self.assertGreaterEqual(len(baseline), 62)
+        self.assertGreaterEqual(len(baseline), 61)
         self.assertEqual(draft.status, FieldRuleStatus.DRAFT)
         before_rule = next(rule for rule in before_publish if rule.key == draft.key)
         self.assertNotIn("Test admin alias", before_rule.aliases)
@@ -94,22 +94,31 @@ class FieldRuleAdminTests(unittest.TestCase):
         with self.assertRaisesRegex(FieldRuleValidationError, "approved FT Williams field"):
             run_async(scenario())
 
-    def test_plan_worksheet_catalog_aliases_are_fixed(self):
+    def test_plan_administrator_is_retired_from_rules_and_mapping(self):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
-            approved = next(
-                rule
-                for rule in await service.published_rules()
-                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+            published = await service.published_rules()
+            mapped = map_extraction_to_rules(
+                "filing",
+                [NormalizedExtractionField(field_name="2a. Plan Administrator Name", value="Example Admin", confidence=0.99)],
+                rules=published,
             )
-            await service.create_draft(
-                approved.model_copy(update={"aliases": [*approved.aliases, "Client-specific administrator"]}),
-                actor="admin@example.com",
-                reason="Attempt to alter a fixed Plan Worksheet label",
-            )
+            return published, mapped["fields"]
 
-        with self.assertRaisesRegex(FieldRuleValidationError, "Plan Worksheet labels are fixed"):
-            run_async(scenario())
+        published, fields = run_async(scenario())
+
+        self.assertNotIn("form_5500_part_i_2a_plan_administrator_name", {rule.key for rule in published})
+        self.assertNotIn(
+            "form_5500_part_i_2a_plan_administrator_name",
+            {field.mapped_rule_key for field in fields},
+        )
+        self.assertNotIn("2a. Plan Administrator Name", {field.source_field_name for field in fields})
+        searchable_rule_text = " ".join(
+            text
+            for rule in published
+            for text in [rule.label, rule.ftw_field, rule.xml_tag or "", rule.notes, rule.client_notes, *rule.aliases]
+        ).lower()
+        self.assertNotIn("plan administrator", searchable_rule_text)
 
     def test_extraction_only_fields_are_limited_to_schedule_a(self):
         async def scenario():
@@ -168,6 +177,48 @@ class FieldRuleAdminTests(unittest.TestCase):
         self.assertIsNone(published.xml_tag)
         self.assertIsNone(FieldRuleService.approved_update_tag(published.key))
 
+    def test_rule_rejects_unknown_extraction_validator(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            await service.create_draft(
+                FieldRule(
+                    key="custom_schedule_a_policy_category",
+                    label="Policy Category",
+                    ftw_field="",
+                    mapping_mode=FieldRuleMappingMode.EXTRACTION_ONLY,
+                    priority="MEDIUM",
+                    source="Schedule A",
+                    form_section="Schedule A - Custom",
+                    field_type="Text",
+                    existing_behavior="Review Only",
+                    new_behavior="Keep FTW",
+                    aliases=["Carrier Policy Category"],
+                    validators=["invented_validator"],
+                ),
+                actor="admin@example.com",
+                reason="Validate configured validators",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "Unknown extraction validator"):
+            run_async(scenario())
+
+    def test_rule_cannot_request_updates_when_automatic_updates_are_disabled(self):
+        async def scenario():
+            service = FieldRuleService(repositories.get_repository())
+            approved = next(
+                rule
+                for rule in await service.published_rules()
+                if rule.key == "schedule_a_part_i_1b_insurance_carrier_ein"
+            )
+            await service.create_draft(
+                approved.model_copy(update={"automatic_update_allowed": False}),
+                actor="admin@example.com",
+                reason="Require review for this field",
+            )
+
+        with self.assertRaisesRegex(FieldRuleValidationError, "automatic updates are disabled"):
+            run_async(scenario())
+
     def test_retired_discovered_ftw_fields_are_hidden_and_disabled(self):
         async def scenario():
             service = FieldRuleService(repositories.get_repository())
@@ -209,7 +260,7 @@ class FieldRuleAdminTests(unittest.TestCase):
             existing = next(
                 rule
                 for rule in await repositories.get_repository().list_field_rule_versions()
-                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+                if rule.key == "form_5500_part_i_1d_plan_sponsor_name"
             )
             await repositories.get_repository().save_field_rule_version(
                 existing.model_copy(
@@ -225,14 +276,14 @@ class FieldRuleAdminTests(unittest.TestCase):
             return next(
                 rule
                 for rule in await service.list_rules()
-                if rule.key == "form_5500_part_i_2a_plan_administrator_name"
+                if rule.key == "form_5500_part_i_1d_plan_sponsor_name"
             )
 
         rule = run_async(scenario())
 
         self.assertEqual(rule.existing_behavior, "Update")
         self.assertEqual(rule.new_behavior, "Add")
-        self.assertEqual(FieldRuleService.approved_update_tag(rule.key), "ADMINName")
+        self.assertEqual(FieldRuleService.approved_update_tag(rule.key), "SDName")
 
     def test_discovered_form_5500_field_keeps_its_fixed_catalog_label(self):
         async def scenario():

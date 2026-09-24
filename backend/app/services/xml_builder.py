@@ -1,10 +1,15 @@
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from html import escape
 import re
 import xml.etree.ElementTree as ET
 from app.config import get_settings
 from app.models import ExtractedField, FieldPriority, FormType
-from app.services.ftwilliams_contract import normalize_ftw_update_value
+from app.services.ftwilliams_contract import (
+    FTWFieldValidationIssue,
+    FTWPayloadValidationError,
+    normalize_ftw_update_value,
+)
 from app.services.ftwilliams_tags import (
     SCHEDULE_A_CURRENT_TAGS_BY_RULE,
     SCHEDULE_A_TAGS_BY_RULE,
@@ -13,6 +18,7 @@ from app.services.ftwilliams_tags import (
     resolve_ftw_update_tag,
     values_meaningfully_different,
 )
+from app.services.schedule_a_broker_matching import normalize_schedule_a_broker_subparts
 
 
 FTW_DATE_TAGS = {
@@ -205,6 +211,7 @@ def build_schedule_a_records_update_xml(
     matched_ftw_seq_no: str | None,
     fields: list[ExtractedField],
     *,
+    all_record_fields: list[ExtractedField] | None = None,
     add_new_fields: list[ExtractedField] | None = None,
     new_schedule_desc: str | None = None,
     transaction_type: str = "2",
@@ -222,7 +229,8 @@ def build_schedule_a_records_update_xml(
     documents: list[str] = []
     for record in sorted(records, key=lambda item: _record_sort_key(item.get("ftw_seq_no"))):
         record_seq = str(record.get("ftw_seq_no") or "").strip()
-        update_fields = fields if matched_seq and record_seq == matched_seq else []
+        selected_record = bool(matched_seq and record_seq == matched_seq)
+        update_fields = _merge_record_update_fields(all_record_fields or [], fields if selected_record else [])
         current_values = record.get("query_results") or {}
         if not isinstance(current_values, dict) or not current_values:
             continue
@@ -235,7 +243,7 @@ def build_schedule_a_records_update_xml(
             year=filing_year,
             ftw_customer_id=ftw_customer_id,
             ftw_plan_id=ftw_plan_id,
-            schedule_a_broker_rows=schedule_a_broker_rows if update_fields else None,
+            schedule_a_broker_rows=schedule_a_broker_rows if selected_record else None,
             query_subparts=record.get("query_subparts") or {},
         )
         if document_xml:
@@ -263,6 +271,17 @@ def build_schedule_a_records_update_xml(
 {joined}
   </DataBatch>
 </ftwLink>'''
+
+
+def _merge_record_update_fields(
+    all_record_fields: list[ExtractedField],
+    selected_record_fields: list[ExtractedField],
+) -> list[ExtractedField]:
+    merged: dict[str, ExtractedField] = {}
+    for field in [*all_record_fields, *selected_record_fields]:
+        key = str(field.mapped_rule_key or field.id or field.ftw_field or field.xml_tag or id(field))
+        merged[key] = field
+    return list(merged.values())
 
 
 def combine_ftw_update_xml(*documents: str | None) -> str:
@@ -322,6 +341,8 @@ def _document_xml(
             current_values or {},
             overrides=broker_overrides,
         )
+        if schedule_a_broker_rows is not None:
+            broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
     if not values:
         if not broker_rows:
             return ""
@@ -361,6 +382,15 @@ def _schedule_a_record_document_xml(
     }
     for tag in field_broker_overrides:
         values.pop(tag, None)
+    # QueryResults is intentionally flattened for comparison, so nested broker
+    # leaves also appear in current_values. Never echo vendor-only broker fields
+    # as top-level Schedule A fields; they belong only inside DOLSubPartData.
+    # Known editable broker fields were captured above as authoritative
+    # reviewer overrides before being removed from the top level.
+    for rows in (query_subparts or {}).values():
+        for row in rows:
+            for tag in row:
+                values.pop(str(tag), None)
     broker_overrides: dict[str, str] = {}
     if schedule_a_broker_rows:
         broker_overrides.update(schedule_a_broker_update_values(schedule_a_broker_rows))
@@ -372,6 +402,8 @@ def _schedule_a_record_document_xml(
         query_subparts=query_subparts,
         overrides=broker_overrides,
     )
+    if schedule_a_broker_rows is not None:
+        broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
     if not values and not broker_rows:
         return ""
     xml_lines = [
@@ -461,12 +493,14 @@ def _form_5500_sponsor_address_values(
     parsed = _split_form_5500_sponsor_address(proposed, current)
     candidates = {
         "SDAddressLine1": parsed.get("street", ""),
+        "SDAddressLine2": parsed.get("line2", ""),
         "SDCity": parsed.get("city", ""),
         "SDState": parsed.get("state", ""),
         "SDZipCode": parsed.get("zip", ""),
     }
     current_by_tag = {
         "SDAddressLine1": current.get("SDAddressLine1", ""),
+        "SDAddressLine2": current.get("SDAddressLine2", ""),
         "SDCity": current.get("SDCity", ""),
         "SDState": current.get("SDState", ""),
         "SDZipCode": current.get("SDZipCode", ""),
@@ -500,16 +534,23 @@ def _split_form_5500_sponsor_address(
         if city_matches:
             city_match = city_matches[-1]
             street = proposed[: city_match.start()].strip(" ,")
+            line_2 = ""
             if current_line_2:
-                street = re.sub(
+                street_without_line_2 = re.sub(
                     rf"(?:,?\s*){re.escape(current_line_2)}$",
                     "",
                     street,
                     flags=re.IGNORECASE,
                 ).strip(" ,")
+                if street_without_line_2 != street:
+                    street = street_without_line_2
+                    line_2 = current_line_2
+            if not line_2:
+                street, line_2 = _split_form_5500_street_and_line_2(street)
             if street:
                 return {
                     "street": street,
+                    "line2": line_2,
                     "city": current_city,
                     "state": current_state,
                     "zip": current_zip,
@@ -520,8 +561,12 @@ def _split_form_5500_sponsor_address(
         proposed,
     )
     if locality_match:
+        street, line_2 = _split_form_5500_street_and_line_2(
+            locality_match.group("street").strip(" ,")
+        )
         return {
-            "street": locality_match.group("street").strip(" ,"),
+            "street": street,
+            "line2": line_2,
             "city": locality_match.group("city").strip(" ,"),
             "state": locality_match.group("state"),
             "zip": locality_match.group("zip"),
@@ -532,14 +577,21 @@ def _split_form_5500_sponsor_address(
         proposed,
     )
     if suffix_match:
+        secondary = (
+            r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
+            r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
+            r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
+            r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
+        )
         street_city_match = re.fullmatch(
-            r"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?(?:\s+(?:SUITE|STE|UNIT|#)\s*[A-Za-z0-9-]+)?)\s+(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
             suffix_match.group("body"),
             flags=re.IGNORECASE,
         )
         if street_city_match:
             return {
                 "street": street_city_match.group("street").strip(" ,"),
+                "line2": str(street_city_match.group("line2") or "").strip(" ,"),
                 "city": street_city_match.group("city").strip(" ,"),
                 "state": suffix_match.group("state"),
                 "zip": suffix_match.group("zip"),
@@ -548,6 +600,23 @@ def _split_form_5500_sponsor_address(
     # With no trustworthy separator, only the street field can be changed.
     # Locality fields are deliberately omitted and therefore preserved by FTW.
     return {"street": proposed}
+
+
+def _split_form_5500_street_and_line_2(value: str) -> tuple[str, str]:
+    secondary = (
+        r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
+        r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
+        r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
+        r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
+    )
+    match = re.fullmatch(
+        rf"(?P<street>.+?)\s+(?P<line2>{secondary})",
+        str(value or "").strip(" ,"),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return str(value or "").strip(" ,"), ""
+    return match.group("street").strip(" ,"), match.group("line2").strip(" ,")
 
 
 def full_replace_values_for_schedule_a(
@@ -646,10 +715,18 @@ def current_values_for_schedule_a_update(current_values: dict[str, str]) -> dict
     return {tag: str(value or "") for tag, value in values.items() if str(value or "").strip()}
 
 
-def schedule_a_broker_update_values(rows: list) -> dict[str, str]:
+def schedule_a_broker_update_values(
+    rows: list,
+    *,
+    require_complete: bool = True,
+) -> dict[str, str]:
     values: dict[str, str] = {}
     for index, row in enumerate(rows or [], start=1):
-        row_values = _schedule_a_broker_row_update_values(row, index)
+        row_values = _schedule_a_broker_row_update_values(
+            row,
+            index,
+            require_complete=require_complete,
+        )
         if row_values:
             values.update(row_values)
     return values
@@ -661,7 +738,10 @@ def schedule_a_broker_multipart_rows(
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    source_rows = list((query_subparts or {}).get("Broker") or [])
+    source_rows = normalize_schedule_a_broker_subparts(
+        list((query_subparts or {}).get("Broker") or [])
+    )
+    source_rows_are_vendor_subparts = bool(source_rows)
     if not source_rows:
         source_rows = _broker_rows_from_flat_values(current_values)
 
@@ -669,12 +749,24 @@ def schedule_a_broker_multipart_rows(
     for index, source in enumerate(source_rows, start=1):
         multipart: dict[str, str] = {}
         for tag, value in source.items():
-            parsed = _schedule_a_broker_tag_index(tag)
             text = str(value or "").strip()
-            if not parsed or not text:
+            if not text:
+                continue
+            parsed = _schedule_a_broker_tag_index(tag)
+            if source_rows_are_vendor_subparts:
+                # A type-2 Schedule A update replaces the complete schedule.
+                # Preserve every broker field returned by FT Williams, even
+                # when a newer vendor field is not yet in our editable map.
+                multipart[_schedule_a_vendor_multipart_tag(tag)] = text
+                continue
+            if not parsed:
                 continue
             _, field_index = parsed
-            if field_index != index:
+            # FT's nested Broker records restart their field suffixes inside
+            # every row (for example every row may contain Name1). Flat legacy
+            # values use the suffix as the row number and still require the
+            # strict consistency check.
+            if not source_rows_are_vendor_subparts and field_index != index:
                 raise ValueError(
                     f"FT Williams broker field {tag} belongs to row {field_index}, not row {index}."
                 )
@@ -697,7 +789,30 @@ def schedule_a_broker_multipart_rows(
     return [row for row in rows if row]
 
 
-def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> list[str]:
+def _sort_schedule_a_broker_rows_by_payment(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Meet FT Williams' highest-to-lowest provider ordering requirement."""
+    return sorted(rows, key=_schedule_a_broker_payment_total, reverse=True)
+
+
+def _schedule_a_broker_payment_total(row: dict[str, str]) -> Decimal:
+    total = Decimal("0")
+    for tag in ("CommPdAmtXX", "FeesPdAmtXX"):
+        text = re.sub(r"[^0-9.-]", "", str(row.get(tag) or ""))
+        if not text:
+            continue
+        try:
+            total += Decimal(text)
+        except InvalidOperation:
+            continue
+    return total
+
+
+def schedule_a_replacement_data_gaps(
+    records: list[dict],
+    xml: str | None,
+    *,
+    matched_ftw_seq_no: str | None = None,
+) -> list[str]:
     if not xml:
         return ["Schedule A replacement XML is missing"]
     try:
@@ -706,6 +821,7 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
         return ["Schedule A replacement XML is malformed"]
     documents = root.findall(".//DOLScheduleAData")
     ordered_records = sorted(records or [], key=lambda item: _record_sort_key(item.get("ftw_seq_no")))
+    selected_sequence = str(matched_ftw_seq_no or "").strip()
     gaps: list[str] = []
     if len(documents) < len(ordered_records):
         gaps.append(
@@ -716,12 +832,16 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
         current_values = record.get("query_results") or {}
         expected_fields = current_values_for_schedule_a_update(current_values)
         actual_fields = {
-            child.tag
+            child.tag: str(child.text or "").strip()
             for child in list(document)
             if child.tag != "DOLSubPartData" and str(child.text or "").strip()
         }
-        for tag in sorted(set(expected_fields) - actual_fields):
+        for tag in sorted(set(expected_fields) - set(actual_fields)):
             gaps.append(f"sequence {sequence} missing field {tag}")
+        if selected_sequence and sequence != selected_sequence:
+            for tag in sorted(set(expected_fields) & set(actual_fields)):
+                if actual_fields[tag] != str(expected_fields[tag] or "").strip():
+                    gaps.append(f"sequence {sequence} changed field {tag}")
 
         expected_brokers = schedule_a_broker_multipart_rows(
             current_values,
@@ -743,6 +863,10 @@ def schedule_a_replacement_data_gaps(records: list[dict], xml: str | None) -> li
             actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
             for tag in sorted(set(expected_broker) - set(actual_broker)):
                 gaps.append(f"sequence {sequence} missing broker row {index + 1} field {tag}")
+            if selected_sequence and sequence != selected_sequence:
+                for tag in sorted(set(expected_broker) & set(actual_broker)):
+                    if actual_broker[tag] != str(expected_broker[tag] or "").strip():
+                        gaps.append(f"sequence {sequence} changed broker row {index + 1} field {tag}")
     return gaps
 
 
@@ -785,6 +909,25 @@ def _schedule_a_broker_multipart_tag(tag: object) -> str:
     return f"{base}XX"
 
 
+def _schedule_a_vendor_multipart_tag(tag: object) -> str:
+    """Convert a vendor-returned nested Broker tag to FT's XX wire format.
+
+    The query schema can gain fields before our editable broker map does. A
+    replacement must preserve those fields instead of silently deleting them.
+    """
+    text = str(tag or "").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*XX", text):
+        return text
+    parsed = _schedule_a_broker_tag_index(text)
+    if parsed:
+        base, _ = parsed
+        return f"{base}XX"
+    match = re.fullmatch(r"(?P<base>[A-Za-z_][A-Za-z0-9_.-]*?)(?P<suffix>\d{1,2})", text)
+    if match and int(match.group("suffix")) > 0:
+        return f"{match.group('base')}XX"
+    raise ValueError(f"FT Williams returned an unsupported Schedule A broker field: {text or tag}")
+
+
 def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
     if not rows:
         return []
@@ -801,15 +944,56 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
     return lines
 
 
-def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, str]:
-    name = _broker_row_attr(row, "name")
+def _schedule_a_broker_row_update_values(
+    row: object,
+    index: int,
+    *,
+    require_complete: bool = True,
+) -> dict[str, str]:
+    # A None slot means "preserve the current FT Williams row at this index".
+    # It is produced by the broker matcher and is not an incomplete new row.
+    if row is None:
+        return {}
+    name = _ftw_broker_name(_broker_row_attr(row, "name"))
+    address_line_1, address_line_2 = _ftw_broker_address_lines(
+        _broker_row_attr(row, "address_line_1"),
+        _broker_row_attr(row, "address_line_2"),
+    )
+    city = _broker_row_attr(row, "city")
+    state = _broker_row_attr(row, "state")
+    zip_code = _broker_row_attr(row, "zip_code")
     commission = _broker_row_attr(row, "commission_total")
     fees = _broker_row_attr(row, "fee_total")
-    code = _broker_row_attr(row, "organization_code")
+    code = _broker_row_attr(row, "organization_code") or "3"
     purpose = _broker_row_purpose(row, commission, fees)
+
+    required_issues: list[FTWFieldValidationIssue] = []
+    if require_complete and not name:
+        required_issues.append(
+            FTWFieldValidationIssue(
+                tag=f"Name{index}",
+                value="",
+                reason="value is required for every broker row",
+            )
+        )
+    if require_complete and not code:
+        required_issues.append(
+            FTWFieldValidationIssue(
+                tag=f"Code{index}",
+                value="",
+                reason="organization code is required for every broker row",
+            )
+        )
+    if required_issues:
+        raise FTWPayloadValidationError(required_issues)
 
     values = {
         f"Name{index}": name,
+        f"AddressLine1{index}": address_line_1,
+        f"AddressLine2{index}": address_line_2,
+        f"City{index}": city,
+        f"State{index}": state,
+        f"ZipCode{index}": zip_code,
         f"CommPdAmt{index}": commission,
         f"FeesPdAmt{index}": fees,
         f"FeesPdText{index}": purpose,
@@ -823,15 +1007,68 @@ def _schedule_a_broker_row_update_values(row: object, index: int) -> dict[str, s
     return normalized
 
 
+def _ftw_broker_name(value: str) -> str:
+    """Use the legal-name portion when a DBA suffix exceeds FTW's limit."""
+    name = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(name) <= 35:
+        return name
+    legal_name = re.split(
+        r"\s+(?:D\s*/?\s*B\s*/?\s*A|DOING\s+BUSINESS\s+AS)\s*:?\s*",
+        name,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,-:")
+    return legal_name if legal_name and len(legal_name) <= 35 else name
+
+
+def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
+    """Fit a structured broker address into FT Williams' two 35-character lines."""
+    first = re.sub(r"\s+", " ", str(address_line_1 or "")).strip(" ,")
+    second = re.sub(r"\s+", " ", str(address_line_2 or "")).strip(" ,")
+    if len(first) <= 35 and len(second) <= 35:
+        return first, second
+
+    first = re.sub(r"^(?:ATTN|ATTENTION)\s*:\s*", "", first, flags=re.IGNORECASE)
+    components: list[str] = []
+    for line in (first, second):
+        for component in re.split(r"\s*,\s*", line):
+            words = component.split()
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if current and len(candidate) > 35:
+                    components.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                components.append(current)
+
+    if len(components) <= 2:
+        return (
+            components[0] if components else "",
+            components[1] if len(components) == 2 else "",
+        )
+
+    # Do not truncate an address. Returning the cleaned original values lets the
+    # FTW contract validator fail locally before any external request is sent.
+    return first, second
+
+
 def _broker_row_attr(row: object, key: str) -> str:
     if hasattr(row, key):
-        return str(getattr(row, key) or "").strip()
+        value = getattr(row, key)
+        return "" if value is None else str(value).strip()
     if isinstance(row, dict):
-        return str(row.get(key) or "").strip()
+        value = row.get(key)
+        return "" if value is None else str(value).strip()
     return ""
 
 
 def _broker_row_purpose(row: object, commission: str, fees: str) -> str:
+    explicit = _broker_row_attr(row, "purpose")
+    if explicit:
+        return explicit.upper()
     commission_amount = _money_to_float(commission)
     fee_amount = _money_to_float(fees)
     if commission_amount > 0 and fee_amount > 0:

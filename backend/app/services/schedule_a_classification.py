@@ -148,16 +148,24 @@ def apply_schedule_a_classification(
         )
 
     classification = classify_schedule_a_fields(fields, classification_signals)
+    classification_source = _trusted_classification_source(fields, classification)
     if classification.contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
         line_10a = next((field for field in fields if field.mapped_rule_key == NONEXPERIENCE_PREMIUM_RULE), None)
         premium_source = _premium_amount_source(fields)
         if line_10a and premium_source and not _has_meaningful_amount(line_10a.proposed_value or line_10a.value):
             line_10a.proposed_value = str(premium_source.proposed_value or premium_source.value or "").strip()
-            line_10a.status = ExtractedFieldStatus.MATCHED
+            trusted_premium = _field_has_trusted_source_evidence(premium_source)
+            line_10a.status = (
+                ExtractedFieldStatus.MATCHED if trusted_premium else ExtractedFieldStatus.LOW_CONFIDENCE
+            )
+            line_10a.confidence = premium_source.confidence if trusted_premium else min(premium_source.confidence, 0.5)
             line_10a.status_reason = (
                 f"Automatically derived from premium evidence in {premium_source.source_field_name}."
+                if trusted_premium
+                else "Automatically derived from premium evidence, but needs Review because the source field lacks trusted page-level evidence."
             )
-            line_10a.source_text = premium_source.source_text or premium_source.source_field_name
+            line_10a.page = premium_source.page
+            line_10a.source_text = premium_source.source_text
             line_10a.updated_at = datetime.utcnow()
 
     zero_rules = (
@@ -168,16 +176,63 @@ def apply_schedule_a_classification(
     for field in fields:
         if field.form_type != FormType.SCHEDULE_A or field.mapped_rule_key not in zero_rules:
             continue
+        direct_source = field if _field_has_trusted_source_evidence(field) and str(field.value or "").strip() else None
+        trusted_source = direct_source or classification_source
         field.proposed_value = "0"
-        field.status = ExtractedFieldStatus.MATCHED
+        field.status = (
+            ExtractedFieldStatus.MATCHED if trusted_source else ExtractedFieldStatus.LOW_CONFIDENCE
+        )
+        field.confidence = (
+            min(field.confidence or trusted_source.confidence, trusted_source.confidence)
+            if trusted_source
+            else min(field.confidence, 0.5)
+        )
         rating_label = (
             "experience-rated"
             if classification.contract_type == ScheduleAContractType.EXPERIENCE_RATED
             else "nonexperience-rated"
         )
-        field.status_reason = f"Automatically derived as zero for a {rating_label} Schedule A."
+        if trusted_source:
+            field.page = trusted_source.page
+            field.source_text = trusted_source.source_text
+            field.status_reason = (
+                f"Automatically derived as zero for a {rating_label} Schedule A using page-level classification evidence."
+            )
+        else:
+            field.status_reason = (
+                f"Automatically derived as zero for a {rating_label} Schedule A, but needs Review because page-level classification evidence is missing or uncertain."
+            )
         field.updated_at = datetime.utcnow()
     return classification
+
+
+def _field_has_trusted_source_evidence(field: ExtractedField | None) -> bool:
+    return bool(
+        field
+        and field.status == ExtractedFieldStatus.MATCHED
+        and field.page is not None
+        and str(field.source_text or "").strip()
+    )
+
+
+def _trusted_classification_source(
+    fields: list[ExtractedField],
+    classification: ScheduleAClassification,
+) -> ExtractedField | None:
+    for field in fields:
+        if not _field_has_trusted_source_evidence(field):
+            continue
+        text = " ".join(
+            str(value or "")
+            for value in (field.mapped_rule_key, field.source_field_name, field.source_text)
+        ).lower()
+        if classification.contract_type == ScheduleAContractType.EXPERIENCE_RATED:
+            if field.mapped_rule_key in EXPERIENCE_PREMIUM_RULES or "experience rated" in text:
+                return field
+        elif classification.contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
+            if field.mapped_rule_key == NONEXPERIENCE_PREMIUM_RULE or "nonexperience rated" in text:
+                return field
+    return None
 
 
 def _premium_amount_source(fields: list[ExtractedField]) -> ExtractedField | None:

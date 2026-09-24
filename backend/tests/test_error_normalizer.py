@@ -91,6 +91,14 @@ class ErrorNormalizerTests(unittest.TestCase):
         self.assertIn("no usable response", error.title.lower())
         self.assertIn("Query FTW Current", error.next_action)
 
+    def test_unknown_ftw_failure_keeps_the_received_reason_visible(self):
+        error = normalize_client_error("FT Williams gateway rejected request 7F31 without a status payload")
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "UNKNOWN_FAILURE")
+        self.assertIn("gateway rejected request 7F31", error.reason)
+        self.assertIn("retry", error.next_action.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ import re
 
 from app.models import FormType
 from app.services.ftwilliams_tags import FORM_5500_UPDATE_TAGS_BY_RULE, SCHEDULE_A_TAGS_BY_RULE
+from app.services.schedule_a_broker_validation import broker_address_semantic_issue
 
 
 FTW_CONTRACT_VERSION = "2026-08"
@@ -31,6 +32,7 @@ class FTWPayloadValidationError(ValueError):
 
 FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     # Structured components emitted by the dashboard's combined sponsor-address rule.
+    "SDAddressLine2",
     "SDCity",
     "SDState",
     "SDZipCode",
@@ -105,6 +107,7 @@ ONE_TWO_INDICATOR_TAGS = {"InsFailProvideInfoInd"}
 TEXT_LIMITS = {
     "SDName": 70,
     "SDAddressLine1": 35,
+    "SDAddressLine2": 35,
     "SDCity": 30,
     "SDState": 2,
     "SDZipCode": 10,
@@ -166,6 +169,36 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
             _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
         return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
 
+    if re.fullmatch(r"State(?:\d+|XX)", tag):
+        if not re.fullmatch(r"[A-Za-z]{2}", text):
+            _raise(tag, text, "expected a two-letter US state code")
+        return text.upper()
+
+    broker_address_match = re.fullmatch(r"(AddressLine1|AddressLine2|City)(?:\d+|XX)", tag)
+    if broker_address_match:
+        field_name = {
+            "AddressLine1": "address_line_1",
+            "AddressLine2": "address_line_2",
+            "City": "city",
+        }[broker_address_match.group(1)]
+        semantic_issue = broker_address_semantic_issue(field_name, text)
+        if semantic_issue:
+            _raise(tag, text, semantic_issue)
+
+    if re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        digits = re.sub(r"\D", "", text)
+        if len(digits) not in {5, 9} or re.search(r"[A-Za-z]", text):
+            _raise(tag, text, "expected a 5- or 9-digit US ZIP code")
+        return digits if len(digits) == 5 else f"{digits[:5]}-{digits[5:]}"
+
+    if re.fullmatch(r"Code(?:\d+|XX)", tag):
+        if not re.fullmatch(r"\d+", text):
+            _raise(tag, text, "expected a numeric organization code")
+        normalized_code = str(int(text))
+        if normalized_code not in {str(code) for code in range(10)}:
+            _raise(tag, text, "expected an organization code from 0 to 9")
+        return normalized_code
+
     if tag in ZERO_ONE_INDICATOR_TAGS:
         choices = {"1": "1", "y": "1", "yes": "1", "true": "1", "insurance": "1", "0": "0", "n": "0", "no": "0", "false": "0"}
         if tag == "SchAAttachedInd":
@@ -203,6 +236,41 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
     if len(text) > max_length:
         _raise(tag, text, f"maximum length is {max_length} characters")
     return re.sub(r"\s+", " ", text)
+
+
+def ftw_expected_format(tag: str) -> str:
+    """Return the reviewer-facing format from the same contract used at send time."""
+    if tag in DATE_TAGS:
+        return "Valid date in MM/DD/YYYY format"
+    if tag in INTEGER_TAGS:
+        return "Non-negative whole number"
+    if tag in EIN_TAGS:
+        return "9-digit EIN (NN-NNNNNNN)"
+    if tag in NAIC_TAGS:
+        return "Exactly 5 digits"
+    if tag in PLAN_NUMBER_TAGS:
+        return "Numeric plan number with at most 3 digits"
+    if tag in BUSINESS_CODE_TAGS:
+        return "Exactly 6 digits"
+    if tag == "SDState" or re.fullmatch(r"State(?:\d+|XX)", tag):
+        return "Two-letter US state code"
+    if tag == "SDZipCode" or re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        return "5- or 9-digit US ZIP code"
+    if re.fullmatch(r"City(?:\d+|XX)", tag):
+        return "City name only (no street, state, or ZIP data)"
+    if re.fullmatch(r"AddressLine[12](?:\d+|XX)", tag):
+        return "Street/address line only (no city, state, or ZIP labels)"
+    if re.fullmatch(r"Code(?:\d+|XX)", tag):
+        return "Organization code from 0 to 9"
+    if tag in ZERO_ONE_INDICATOR_TAGS:
+        return "Yes/no value"
+    if tag in ONE_TWO_INDICATOR_TAGS:
+        return "Yes/no value"
+    if _is_money_tag(tag):
+        return "Numeric amount with at most 2 decimal places"
+    if tag == "ScheduleDesc":
+        return "1 to 8 letters or numbers"
+    return f"Text up to {_text_limit(tag)} characters"
 
 
 def _tag_is_allowed(form_type: FormType, tag: str) -> bool:
@@ -258,7 +326,15 @@ def _is_money_tag(tag: str) -> bool:
 
 def _text_limit(tag: str) -> int:
     if re.fullmatch(r"Name(?:\d+|XX)", tag):
-        return 70
+        return 35
+    if re.fullmatch(r"AddressLine[12](?:\d+|XX)", tag):
+        return 35
+    if re.fullmatch(r"City(?:\d+|XX)", tag):
+        return 30
+    if re.fullmatch(r"State(?:\d+|XX)", tag):
+        return 2
+    if re.fullmatch(r"ZipCode(?:\d+|XX)", tag):
+        return 10
     if re.fullmatch(r"FeesPdText(?:\d+|XX)", tag):
         return 70
     if re.fullmatch(r"Code(?:\d+|XX)", tag):

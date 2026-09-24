@@ -5,12 +5,27 @@ import re
 
 from app.models import FieldRule, FieldRuleApplicability, FieldRuleMappingMode, FieldRuleStatus
 from app.repositories import Repository
-from app.services.field_rules import DEFAULT_FIELD_RULES, normalize_name
-from app.services.ftw_field_catalog import RETIRED_FIELD_RULE_KEYS, field_catalog_entry
+from app.services.field_rules import DEFAULT_FIELD_RULES, RETIRED_FIELD_RULE_KEYS, normalize_name
+from app.services.ftw_field_catalog import field_catalog_entry
 
 
 class FieldRuleValidationError(ValueError):
     pass
+
+
+ALLOWED_EXTRACTION_VALIDATORS = {
+    "address",
+    "boolean",
+    "contract_id",
+    "currency",
+    "date",
+    "ein",
+    "enum",
+    "integer",
+    "naic",
+    "organization_code",
+    "text",
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,19 @@ class FieldRuleService:
     @classmethod
     def apply_catalog_capability(cls, rule: FieldRule) -> FieldRule:
         """Make the catalog, rather than stale saved behavior, authoritative."""
+        # Keep retired fields out of the searchable rule inventory even when an
+        # older persisted rule still carries one of their phrases as an alias.
+        if any("plan administrator" in normalize_name(alias) for alias in rule.aliases):
+            rule = rule.model_copy(
+                deep=True,
+                update={
+                    "aliases": [
+                        alias
+                        for alias in rule.aliases
+                        if "plan administrator" not in normalize_name(alias)
+                    ]
+                },
+            )
         if rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY:
             return rule
         if cls.approved_update_tag(rule.key):
@@ -229,6 +257,18 @@ class FieldRuleService:
         if not rule.label.strip():
             errors.append("Official field label is required.")
         extraction_only = rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY
+        unknown_validators = sorted(
+            {str(name).strip().lower() for name in rule.validators if str(name).strip()}
+            - ALLOWED_EXTRACTION_VALIDATORS
+        )
+        if unknown_validators:
+            errors.append(f"Unknown extraction validator: {unknown_validators[0]}.")
+        requests_any_update = (
+            str(rule.existing_behavior or "").strip().lower() in {"update", "add"}
+            or str(rule.new_behavior or "").strip().lower() in {"add", "update"}
+        )
+        if not rule.automatic_update_allowed and requests_any_update:
+            errors.append("This rule requests an update, but automatic updates are disabled for the field.")
         if not extraction_only and not rule.ftw_field.strip():
             errors.append("FT Williams field is required.")
         approved_rule = next((item for item in DEFAULT_FIELD_RULES if item.key == rule.key), None)
