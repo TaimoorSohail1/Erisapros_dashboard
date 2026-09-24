@@ -7,6 +7,9 @@ backend/.uploads
 logs/
 .pytest_cache/
 .tmp/
+output/
+outputs/
+tmp/
 __pycache__
 *.pyc
 *.tsbuildinfo
@@ -14,5 +17,4 @@ __pycache__
 .env.local
 *ftw*storage-state*.json
 *ftw*session*.json
-outputs/ftw-automation/
 .DS_Store
