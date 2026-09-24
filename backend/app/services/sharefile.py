@@ -2159,6 +2159,25 @@ class ShareFileService:
             change_type = "UPDATED" if existing.get("status") == "FAILED" else str(existing.get("status"))
             file_item["change_type"] = change_type
             return change_type
+        current_hash = str(self._sharefile_hash(file_item) or "")
+        existing_hash = str(existing.get("hash") or "")
+        current_version = str(self._sharefile_version(file_item) or "")
+        existing_version = str(existing.get("version") or "")
+        same_size = int(existing.get("file_size") or 0) == int(file_item.get("size") or 0)
+        same_strong_identity = (
+            bool(current_hash and existing_hash and current_hash == existing_hash)
+            or (
+                not (current_hash and existing_hash)
+                and bool(current_version and existing_version and current_version == existing_version)
+            )
+        )
+        if same_size and same_strong_identity:
+            # ShareFile can emit Upload and Update notifications for one
+            # completed version while only its modified timestamp representation
+            # changes. Do not create and extract a second dashboard filing when
+            # version/hash and byte size prove that the content is identical.
+            file_item["change_type"] = "UNCHANGED"
+            return "UNCHANGED"
         existing_signature = str(existing.get("metadata_signature") or "")
         current_signature = self._sharefile_metadata_signature(file_item)
         if existing_signature != current_signature:

@@ -132,6 +132,23 @@ class ShareFileRegressionTests(unittest.TestCase):
         self.assertEqual(state["failed"], 0)
         self.assertEqual(state["last_success_at"], state["last_attempt_at"])
 
+    def test_same_sharefile_version_is_unchanged_when_only_modified_timestamp_drifts(self):
+        first = sharefile_file(
+            "same-version-item",
+            "Schedule A.pdf",
+            ["Client", "5500 Filing", "2025 Filing", "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+            modified_at="2026-09-23T12:51:00Z",
+        )
+        first["raw"] = {"Version": "7", "Hash": "same-content-hash"}
+        existing = self.service._sharefile_index_record(first, status="EXTRACTED")
+        repeated = dict(first)
+        repeated["modified_at"] = "2026-09-23T12:51:02Z"
+
+        change_type = self.service._sharefile_change_type(existing, repeated)
+
+        self.assertEqual(change_type, "UNCHANGED")
+
     def stub_package_creation(self):
         async def fake_create_filing_package(client, token, package_key, package_files):
             repo = repositories.get_repository()
