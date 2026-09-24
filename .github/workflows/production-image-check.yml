@@ -1,0 +1,23 @@
+name: Production image check
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-production-image:
+    name: Build backend production image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build production backend image
+        run: docker build --pull --tag erisapros-backend:ci backend
