@@ -2755,7 +2755,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         stored = run_async(repo.get_filing(filing.id))
 
         self.assertEqual(stored.schedule_a_broker_rows[0].organization_code, "3")
-        self.assertEqual(stored.schedule_a_broker_rows[1].organization_code, "")
+        self.assertEqual(stored.schedule_a_broker_rows[1].organization_code, "3")
+        self.assertTrue(stored.schedule_a_broker_rows[1].organization_code_defaulted)
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertEqual(review.update_xml_schedule_a, "")
 
@@ -4834,7 +4835,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 )
             )
 
-    def test_approve_can_override_incomplete_broker_row_while_send_stays_blocked(self):
+    def test_blank_broker_code_defaults_while_missing_plan_still_blocks_send(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
         run_async(
@@ -4858,7 +4859,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(run_async(repo.get_filing(filing.id)).status, FilingStatus.APPROVED)
 
-        with self.assertRaisesRegex(ValueError, "Organization code.*required"):
+        with self.assertRaisesRegex(ValueError, "Plan lookup needs sponsor EIN and plan number"):
             run_async(
                 FTWilliamsReviewService(FakeFTWilliamsService()).approve_and_update(
                     filing.id,

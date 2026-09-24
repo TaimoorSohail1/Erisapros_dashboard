@@ -16,6 +16,7 @@ from app.models import (
     FilingDetail,
     FilingStatus,
     FTWilliamsManualMatchRequest,
+    FTWilliamsBringForwardReconcileRequest,
     FTWilliamsBrokerMatchesRequest,
     FTWilliamsScheduleABrokerRowsRequest,
     FTWilliamsPlanYearResolutionRequest,
@@ -56,6 +57,7 @@ from app.services.schedule_a_classification import (
     filter_schedule_a_fields_for_contract_type,
 )
 from app.services.ftwilliams_review import FTWilliamsReviewService
+from app.services.ftwilliams_local_agent_jobs import FTWLocalAgentService
 from app.services.storage import StorageService
 from app.services.xml_builder import build_proposed_ftw_xml, update_values_for_form
 
@@ -182,6 +184,10 @@ async def delete_filing_from_dashboard(filing_id: str):
     if not updated:
         raise HTTPException(status_code=404, detail="Filing not found")
 
+    cancelled_ftw_job_ids = await FTWLocalAgentService(
+        repo=repo
+    ).cancel_undispatched_jobs_for_filing(filing_id)
+
     await repo.add_event(ReviewEvent(filing_id=filing_id, type="DELETE_FROM_DASHBOARD"))
     await repo.add_audit(
         AuditLog(
@@ -193,6 +199,7 @@ async def delete_filing_from_dashboard(filing_id: str):
                 "intake_source": filing.intake_source,
                 "sharefile_item_id": filing.sharefile_item_id,
                 "sharefile_parent_id": filing.sharefile_parent_id,
+                "cancelled_ftw_job_ids": cancelled_ftw_job_ids,
             },
         )
     )
@@ -444,58 +451,12 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
 
 @router.post("/{filing_id}/approve")
 async def approve_filing(filing_id: str, payload: ApproveRequest):
-    repo = get_repository()
-    if not await repo.get_filing(filing_id):
-        raise HTTPException(status_code=404, detail="Filing not found")
-    try:
-        review = await FTWilliamsReviewService().approve_and_update(
-            filing_id,
-            reason=payload.reason,
-            send_to_ftw=payload.send_to_ftw,
-            refresh_current_before_update=payload.refresh_current_before_update,
-            run_edit_checks=payload.run_edit_checks,
-            override_blockers=payload.override_blockers,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    review = await continue_ftw_automation(filing_id, review)
-    updated = await repo.get_filing(filing_id)
-    return {"status": updated.status if updated else FilingStatus.APPROVED, "ftw_review": review}
+    raise HTTPException(status_code=410, detail="Filing approval has been removed. Use Send to FT Williams to send selected changes.")
 
 
 @router.post("/{filing_id}/unapprove")
 async def unapprove_filing(filing_id: str):
-    repo = get_repository()
-    filing = await repo.get_filing(filing_id)
-    if not filing:
-        raise HTTPException(status_code=404, detail="Filing not found")
-
-    fields = await repo.list_fields(filing_id)
-    has_unresolved_fields = any(
-        field.status in {ExtractedFieldStatus.MISSING, ExtractedFieldStatus.LOW_CONFIDENCE, ExtractedFieldStatus.UNMAPPED}
-        for field in fields
-    )
-    next_status = FilingStatus.NEEDS_REVIEW if has_unresolved_fields else FilingStatus.READY_FOR_APPROVAL
-    updated = await repo.update_filing(
-        filing_id,
-        {
-            "status": next_status,
-            "approved_at": None,
-            "error_message": None,
-        },
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail="Filing not found")
-    await repo.add_event(ReviewEvent(filing_id=filing_id, type="UNAPPROVE"))
-    await repo.add_audit(
-        AuditLog(
-            filing_id=filing_id,
-            event="UNAPPROVED",
-            message="Reviewer removed filing approval.",
-            details={"previous_status": filing.status, "next_status": next_status},
-        )
-    )
-    return {"status": updated.status}
+    raise HTTPException(status_code=410, detail="Filing approval has been removed. Historical approval records are unchanged.")
 
 
 @router.post("/{filing_id}/reject")
@@ -608,11 +569,12 @@ async def confirm_ftwilliams_bring_forward(filing_id: str):
     if not settings.ftw_automation_enabled or not settings.ftw_automation_bring_forward_enabled:
         raise HTTPException(status_code=409, detail="Automatic Bring Forward is disabled.")
     if (
-        not review.browser_mapping_confirmed
+        not str(review.ftw_customer_id or "").strip()
+        or not str(review.ftw_plan_id or "").strip()
         or not str(review.ftw_browser_customer_id or "").strip()
         or not str(review.ftw_browser_plan_id or "").strip()
     ):
-        raise HTTPException(status_code=409, detail="Confirm the FT Williams browser plan mapping first.")
+        raise HTTPException(status_code=409, detail="The FT Williams lookup did not return a complete client and browser plan identity.")
 
     policy = FTWAutomationPolicy(settings)
     target_error = policy._test_target_error(review)
@@ -650,6 +612,25 @@ async def confirm_ftwilliams_bring_forward(filing_id: str):
         "automation_status": decision.status,
         "automation_next_action": decision.next_action,
     }
+
+
+@router.post("/{filing_id}/ftw/reconcile-bring-forward")
+async def reconcile_ftwilliams_bring_forward(
+    filing_id: str,
+    payload: FTWilliamsBringForwardReconcileRequest,
+    _claims: dict = Depends(require_field_rule_admin),
+):
+    """Explicitly resolve a stale/uncertain Bring Forward attempt."""
+    try:
+        return await FTWLocalAgentService().reconcile_bring_forward(
+            filing_id,
+            payload.resolution,
+            payload.reason,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if message == "Filing not found" else 409
+        raise HTTPException(status_code=status_code, detail=message) from exc
 
 
 @router.post("/{filing_id}/ftw/manual-match")
@@ -734,7 +715,9 @@ async def send_approved_ftwilliams_update(filing_id: str, payload: FTWilliamsSen
         )
         detail = client_error.model_dump(mode="json") if client_error else str(exc)
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    return {"ftw_review": await continue_ftw_automation(filing_id, review)}
+    # Manual selection must not trigger a second automatic write of unselected fields.
+    # Scheduled automation and its existing opt-in policy are independent.
+    return {"ftw_review": review}
 
 
 @router.get("/{filing_id}/ftw/audit-pdf")

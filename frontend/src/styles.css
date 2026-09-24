@@ -6469,6 +6469,34 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   min-width: 0;
 }
 
+.manual-ftw-send-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.manual-ftw-send-toolbar > .review-workflow-disclosure { flex: 1 1 240px; }
+.manual-ftw-send-toolbar > .button { flex: 0 1 auto; }
+.ftw-send-broker-selection { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; }
+.ftw-send-confirm-modal .approve-confirm-body { grid-auto-rows: max-content; align-content: start; }
+.ftw-send-confirm-modal .approve-confirm-table-wrap { order: -2; }
+.ftw-send-confirm-modal .ftw-send-broker-selection { order: -1; }
+.ftw-send-confirm-modal .approve-confirm-table th { position: static; }
+.ftw-send-confirm-modal .approve-confirm-table td label { display: flex; align-items: flex-start; gap: 8px; }
+.ftw-send-confirm-modal input[type="checkbox"] { flex: 0 0 auto; width: 16px; height: 16px; accent-color: #087f5b; }
+@media (max-width: 640px) {
+  .ftw-send-confirm-modal .approve-confirm-table { min-width: 0; }
+  .ftw-send-confirm-modal .approve-confirm-table thead { display: none; }
+  .ftw-send-confirm-modal .approve-confirm-table tbody,
+  .ftw-send-confirm-modal .approve-confirm-table tr,
+  .ftw-send-confirm-modal .approve-confirm-table td { display: block; width: 100%; }
+  .ftw-send-confirm-modal .approve-confirm-table tr { border-bottom: 1px solid #dce3ea; }
+  .ftw-send-confirm-modal .approve-confirm-table td { border: 0; overflow-wrap: anywhere; }
+  .ftw-send-confirm-modal .approve-confirm-table td::before { content: attr(data-label); display: block; font-size: 10px; font-weight: 800; color: #52637a; margin-bottom: 4px; }
+}
+
 .automation-workflow-notice {
   align-items: center;
   background: #eff6ff;
@@ -6853,9 +6881,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .agent-connection-result.attention { background: #fff7e6; border-color: #efd59c; color: #8a5312; }
 .agent-connection-result svg { flex: 0 0 auto; }
 .agent-setup-card, .agent-devices-card { padding: 22px; }
-.agent-section-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; }
+.agent-section-heading { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; }
 .agent-section-heading > div { max-width: 720px; }
-.agent-setup-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 9px; }
+.agent-setup-actions { align-items: center; display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 9px; max-width: 100%; }
 .agent-workspace-select { display: grid; gap: 5px; margin-top: 14px; max-width: 430px; }
 .agent-workspace-select > span { color: #42536a; font-size: 12px; font-weight: 750; }
 .agent-workspace-select select { background: #fff; border: 1px solid #c9d5e2; border-radius: 8px; color: #26384f; font: inherit; min-height: 38px; padding: 7px 10px; }
@@ -6900,6 +6928,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .agent-device-badge.connected { background: #e5f7ed; color: #0f7d4d; }
 .agent-device-badge.attention { background: #fff2d7; color: #a86609; }
 .agent-revoke-button { white-space: nowrap; }
+.agent-device-actions { align-items: flex-start; display: flex; flex-direction: column; gap: 8px; max-width: 250px; }
+.agent-device-actions small { color: #65748a; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.agent-device-actions .agent-control-error { background: #fff2f4; border-radius: 6px; color: #b4233b; padding: 8px; }
 .agent-empty-state { align-items: center; background: #f8fafc; border: 1px dashed #cfdae6; border-radius: 10px; color: #6a7b90; display: grid; gap: 5px; justify-items: center; margin-top: 18px; padding: 28px; text-align: center; }
 .agent-empty-state strong { color: #31445b; }
 .agent-safety-note { align-items: flex-start; background: #edf7fb; border: 1px solid #cce7f3; border-radius: 10px; color: #3d6178; display: flex; gap: 10px; line-height: 1.5; padding: 14px 16px; }
@@ -6916,7 +6947,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .agent-status-meta { border-left: 0; border-top: 1px solid #e5ebf1; padding: 12px 0 0; text-align: left; }
   .agent-setup-actions { align-items: stretch; flex-direction: column; }
   .agent-device-row { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
-  .agent-device-detail, .agent-revoke-button { grid-column: 2; }
+  .agent-device-detail, .agent-revoke-button, .agent-device-actions { grid-column: 2; }
   .agent-revoke-button { justify-self: start; }
 }
 
@@ -10709,7 +10740,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .skeleton-workflow {
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   overflow: hidden;
 }
 
@@ -11248,7 +11279,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 
 .approval-workspace-page .approval-stepper {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   height: 56px;
   min-height: 56px;
 }
@@ -11434,11 +11465,11 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .compact-table-search svg { height: 10px; width: 10px; }
 
 .approval-workspace-page .approval-table-wrap {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   height: auto;
   max-height: none;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
 }
 
 @media (max-height: 1200px) and (min-width: 821px) {
@@ -11448,9 +11479,9 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .approval-workspace-page .approval-preview-shell { flex: 0 0 auto; min-height: 0; overflow: visible; }
   .approval-workspace-page .approval-table-wrap {
     flex: 0 0 auto;
-    min-height: 360px;
-    max-height: min(50dvh, 520px);
-    overflow: auto;
+    min-height: 0;
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -11589,7 +11620,7 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .approval-workspace-page { height: auto; min-height: calc(100dvh - 64px); overflow: visible; }
   .approval-workspace-page .approval-progress-card { display: block; height: 56px; min-height: 56px; overflow-x: auto; }
   .approval-workflow-source { display: none; }
-  .approval-workspace-page .approval-stepper { grid-template-columns: repeat(6, minmax(118px, 1fr)); min-width: 708px; }
+  .approval-workspace-page .approval-stepper { grid-template-columns: repeat(5, minmax(118px, 1fr)); min-width: 590px; }
   .approval-workspace-page .compact-review-header { align-items: flex-start; flex-wrap: wrap; height: auto; min-height: 106px; padding: 8px 10px; }
   .compact-review-file { flex-basis: 100%; }
   .compact-review-meta { flex: 1 1 100%; }
@@ -12790,4 +12821,158 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .extraction-progress-stage.current {
     transform: none;
   }
+}
+
+/* Review content owns its height: errors must never squeeze field rows. */
+.shell:has(.approval-workspace-page) {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+.shell:has(.approval-workspace-page) .main {
+  overflow: visible;
+  min-width: 0;
+}
+.approval-workspace-page,
+.approval-workspace-page .approval-workspace {
+  height: auto;
+  overflow: visible;
+  min-width: 0;
+}
+.approval-workspace-page .approval-preview-shell {
+  flex: 0 0 auto;
+  overflow: visible;
+  min-width: 0;
+}
+.review-workflow-disclosure { min-width: 0; }
+.review-workflow-disclosure > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  color: #46566b;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 2px;
+  width: fit-content;
+}
+.review-workflow-disclosure > summary::-webkit-details-marker { display: none; }
+.review-workflow-disclosure[open] > summary > svg:last-child { transform: rotate(180deg); }
+.approval-workspace-page .automation-workflow-notice { padding: 10px 12px; min-height: 0; }
+.approval-workspace-page .compact-review-header {
+  height: auto;
+  min-height: 58px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: 12px;
+}
+.approval-workspace-page .compact-review-file strong { white-space: normal; overflow-wrap: anywhere; }
+.approval-workspace-page .compact-review-toolbar { flex-wrap: wrap; }
+.review-issue-summary {
+  align-items: center;
+  background: #fffbeb;
+  border-block: 1px solid #f3d781;
+  color: #77420d;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.review-issue-summary > svg { flex: 0 0 auto; }
+.review-issue-summary > div { flex: 1; min-width: 0; }
+.review-issue-summary strong { display: block; font-size: 13px; }
+.review-issue-summary span { display: block; font-size: 12px; margin-top: 3px; }
+.review-issue-summary .button { flex-shrink: 0; }
+.review-status-drawer { width: min(600px, 100%); }
+.review-status-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px; }
+.review-status-body > section { margin-bottom: 14px; }
+.review-status-body .filing-guidance,
+.review-status-body .ftw-editability-banner,
+.review-status-body .ftw-validation-blocker-banner { display: flex; flex-wrap: wrap; padding: 16px; }
+.review-status-body .filing-guidance-copy,
+.review-status-body .ftw-editability-copy,
+.review-status-body .ftw-validation-blocker-copy { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.review-status-body .filing-guidance-actions,
+.review-status-body .ftw-editability-actions { flex-basis: 100%; margin-left: 0; }
+.approval-workspace-page .approval-filter-row { flex: 0 0 auto; height: auto; min-height: 48px; flex-wrap: wrap; overflow: visible; }
+.approval-workspace-page .approval-table-wrap { max-height: none; overflow: visible; }
+.approval-workspace-page .schedule-a-broker-table-wrap { max-height: none; overflow: visible; scrollbar-gutter: auto; }
+.approval-workspace-page .approval-decision-table { min-width: 0; }
+.approval-workspace-page .approval-decision-table td { overflow-wrap: anywhere; }
+.approval-workspace-page .approval-decision-table th { position: sticky; top: 0; z-index: 1; }
+.approval-workspace-page .approval-preview-footer { flex: 0 0 auto; height: auto; min-height: 48px; flex-wrap: wrap; gap: 8px; }
+.approval-workspace-page .schedule-a-broker-table { min-width: 0; }
+.approval-workspace-page .schedule-a-broker-table th,
+.approval-workspace-page .schedule-a-broker-table td { overflow-wrap: anywhere; }
+.approval-workspace-page .extraction-progress-shell { min-height: min(650px, 70dvh); }
+.review-workflow-disclosure > summary:focus-visible,
+.review-issue-summary .button:focus-visible { outline: 3px solid #0f8a5f; outline-offset: 2px; }
+@media (max-width: 1100px) {
+  .shell:has(.approval-workspace-page) .topbar { height: auto; flex-wrap: wrap; padding: 8px 12px; overflow: visible; }
+  .shell:has(.approval-workspace-page) .topbar .nav { flex-wrap: wrap; }
+  .approval-workspace-page .automation-workflow-notice { flex-wrap: wrap; gap: 8px; }
+  .approval-workspace-page .automation-workflow-controls { flex-wrap: wrap; }
+  .approval-workspace-page .approval-table-wrap,
+  .approval-workspace-page .schedule-a-broker-table-wrap { overflow-x: auto; }
+  .approval-workspace-page .approval-decision-table { min-width: 900px; }
+  .approval-workspace-page .schedule-a-broker-table { min-width: 1000px; }
+  .review-workflow-disclosure .approval-progress-card { height: auto; overflow-x: auto; }
+}
+@media (max-width: 640px) {
+  .shell:has(.approval-workspace-page) .main { padding: 10px 8px; }
+  .approval-workspace-page .field-modal-layer,
+  .approval-workspace-page .workflow-dialog-backdrop { padding: 12px; }
+  .approval-workspace-page .field-review-modal,
+  .approval-workspace-page .workflow-dialog { width: 100%; min-width: 0; max-width: 100%; max-height: calc(100dvh - 24px); }
+  .approval-workspace-page .automation-workflow-state,
+  .approval-workspace-page .automation-workflow-controls,
+  .approval-workspace-page .automation-decision-summary { width: 100%; min-width: 0; flex-wrap: wrap; }
+  .approval-workspace-page .automation-decision-summary summary { white-space: normal; }
+  .approval-workspace-page .automation-review-fields { width: auto; }
+  .approval-workspace-page .automation-reason-list { min-width: 0; width: min(300px, 80vw); }
+  .approval-workspace-page .button,
+  .approval-workspace-page .approval-count-tabs button,
+  .approval-workspace-page .proposed-value-button,
+  .approval-workspace-page .decision-actions button,
+  .approval-workspace-page .filter-dropdown-trigger { min-height: 44px; }
+  .shell:has(.approval-workspace-page) .topbar .nav { width: 100%; }
+  .approval-workspace-page .compact-review-file { flex-basis: 100%; }
+  .approval-workspace-page .compact-review-meta { margin-left: 0; flex-wrap: wrap; }
+  .approval-workspace-page .compact-review-toolbar { width: 100%; }
+  .approval-workspace-page .approval-count-tabs { height: auto; flex: 0 0 auto; flex-wrap: wrap; padding: 8px; overflow: visible; }
+  .approval-workspace-page .review-primary-actions { flex-wrap: wrap; }
+  .approval-workspace-page .approval-preview-footer { display: grid; grid-template-columns: minmax(0, 1fr); padding: 10px; }
+  .approval-workspace-page .approval-preview-footer > span { white-space: normal; min-width: 0; }
+  .approval-workspace-page .compact-table-pagination { justify-self: start; }
+  .review-issue-summary { flex-wrap: wrap; }
+  .review-issue-summary > div { flex-basis: calc(100% - 32px); }
+  .review-issue-summary .button { margin-left: 28px; }
+  .approval-workspace-page .compact-table-search { width: 100%; flex-basis: 100%; }
+  .approval-workspace-page .approval-table-wrap,
+  .approval-workspace-page .schedule-a-broker-table-wrap { overflow: visible; }
+  .approval-workspace-page .approval-decision-table,
+  .approval-workspace-page .schedule-a-broker-table { display: block; min-width: 0; }
+  .approval-workspace-page .approval-decision-table thead,
+  .approval-workspace-page .schedule-a-broker-table thead {
+    position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden;
+  }
+  .approval-workspace-page .approval-decision-table tbody,
+  .approval-workspace-page .schedule-a-broker-table tbody { display: block; }
+  .approval-workspace-page .approval-decision-table tr,
+  .approval-workspace-page .schedule-a-broker-table tr { display: block; padding: 10px; border-bottom: 1px solid #dce5ee; }
+  .approval-workspace-page .approval-decision-table td:nth-child(n),
+  .approval-workspace-page .schedule-a-broker-table td:nth-child(n) { display: block; width: 100%; height: auto; border: 0; padding: 8px 0; font-size: 14px; }
+  .approval-workspace-page td[data-label]::before {
+    content: attr(data-label); display: block; color: #526177; font-size: 11px; font-weight: 700; margin-bottom: 4px;
+  }
+  .approval-workspace-page .schedule-a-broker-table .broker-edit-row > td { padding: 0; }
+  .approval-workspace-page .broker-edit-form { grid-template-columns: minmax(0, 1fr); }
+  .approval-workspace-page .broker-edit-form > * { grid-column: 1 / -1; min-width: 0; }
+  .approval-workspace-page .broker-edit-form label { font-size: 13px; }
+  .approval-workspace-page .broker-edit-form input,
+  .approval-workspace-page .broker-edit-form select { min-height: 44px; }
+  .approval-workspace-page .broker-edit-toolbar { position: static; width: 100%; }
+  .approval-workspace-page .broker-row-validation-summary > td > div,
+  .approval-workspace-page .broker-edit-toolbar { flex-wrap: wrap; }
+  .approval-workspace-page .broker-edit-actions { display: flex; margin-left: 0; flex-wrap: wrap; }
 }

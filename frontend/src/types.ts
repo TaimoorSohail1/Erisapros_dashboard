@@ -37,11 +37,12 @@ export interface FTWLocalAgentStatus {
   enabled: boolean;
   connected: boolean;
   device_count: number;
-  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED";
+  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED" | "PAUSING" | "PAUSED" | "RESUMING" | "WAITING";
   device_name?: string | null;
   agent_version?: string | null;
   last_seen_at?: string | null;
   last_error?: string | null;
+  pause_requested?: boolean;
 }
 
 export interface FTWLocalAgentDevice {
@@ -49,9 +50,11 @@ export interface FTWLocalAgentDevice {
   name: string;
   expected_account: string;
   workspace_id?: string | null;
-  status: "CONNECTED" | "OFFLINE" | "LOGIN_REQUIRED" | "REVOKED";
+  status: FTWLocalAgentStatus["status"];
   agent_version?: string | null;
   browser_ready: boolean;
+  pause_requested?: boolean;
+  active_job_id?: string | null;
   last_error?: string | null;
   last_seen_at?: string | null;
   revoked_at?: string | null;
@@ -125,6 +128,7 @@ export interface ScheduleABrokerRow {
   state?: string | null;
   zip_code?: string | null;
   organization_code?: string | null;
+  organization_code_defaulted?: boolean;
   purpose?: string | null;
   commission_rows?: ScheduleABrokerMoneyRow[];
   fee_rows?: ScheduleABrokerMoneyRow[];
@@ -182,6 +186,7 @@ export interface Filing {
   package_document_count: number;
   package_documents: Array<Record<string, unknown>>;
   dashboard_client_name?: string | null;
+  dashboard_client_group_key?: string | null;
   dashboard_ein?: string | null;
   dashboard_plan_number?: string | null;
   dashboard_plan_name?: string | null;

@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
+from app.services.schedule_a_customer_rules import default_blank_organization_codes
 from app.models import (
     AuditLog,
     ClientFacingError,
@@ -1380,27 +1381,15 @@ class FTWilliamsReviewService:
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
-        review = await repo.get_ftwilliams_review(filing_id)
-        retrying_failed_ftw_update = bool(
-            filing.status == FilingStatus.FAILED
-            and review
-            and (
-                review.active_failure
-                or review.failure_dismissed_at is not None
-                or review.status in {
-                    FTWilliamsReviewStatus.UPDATE_FAILED,
-                    FTWilliamsReviewStatus.UPDATE_UNKNOWN,
-                }
-            )
-        )
-        if filing.status != FilingStatus.APPROVED and not retrying_failed_ftw_update:
-            raise ValueError("Approve the filing before sending approved values to FT Williams.")
+        selected_ids = payload.selected_field_ids or []
         return await self.approve_and_update(
             filing_id,
             reason=payload.reason,
             send_to_ftw=True,
             refresh_current_before_update=payload.refresh_current_before_update,
             run_edit_checks=payload.run_edit_checks,
+            selected_field_ids=selected_ids,
+            include_broker_updates=payload.include_broker_updates,
         )
 
     async def dismiss_active_failure(self, filing_id: str, reason: str) -> FTWilliamsReview:
@@ -2450,6 +2439,8 @@ class FTWilliamsReviewService:
         refresh_current_before_update: bool = True,
         run_edit_checks: bool = False,
         override_blockers: bool = False,
+        selected_field_ids: list[str] | None = None,
+        include_broker_updates: bool = False,
     ) -> FTWilliamsReview | None:
         if not send_to_ftw:
             return await self._approve_and_update_unlocked(
@@ -2459,6 +2450,8 @@ class FTWilliamsReviewService:
                 refresh_current_before_update=refresh_current_before_update,
                 run_edit_checks=run_edit_checks,
                 override_blockers=override_blockers,
+                selected_field_ids=selected_field_ids,
+                include_broker_updates=include_broker_updates,
             )
 
         repo = get_repository()
@@ -2476,6 +2469,8 @@ class FTWilliamsReviewService:
                 refresh_current_before_update=refresh_current_before_update,
                 run_edit_checks=run_edit_checks,
                 override_blockers=override_blockers,
+                selected_field_ids=selected_field_ids,
+                include_broker_updates=include_broker_updates,
             )
 
     @staticmethod
@@ -2497,6 +2492,8 @@ class FTWilliamsReviewService:
         refresh_current_before_update: bool = True,
         run_edit_checks: bool = False,
         override_blockers: bool = False,
+        selected_field_ids: list[str] | None = None,
+        include_broker_updates: bool = False,
     ) -> FTWilliamsReview | None:
         repo = get_repository()
         published_rules = await FieldRuleService(repo).published_rules()
@@ -2559,7 +2556,7 @@ class FTWilliamsReviewService:
         # Schedule A updates as a full replacement set, so sending stale XML that
         # only contains the selected schedule can remove the other Schedule A rows.
         existing_review = await repo.get_ftwilliams_review(filing_id)
-        if existing_review:
+        if existing_review and selected_field_ids is None:
             validation_error = self._review_validation_blocking_error(
                 existing_review,
                 fields=[
@@ -2619,16 +2616,26 @@ class FTWilliamsReviewService:
         # but approval must send only forms with a real proposed change. This
         # prevents a Form 5500-only edit from rewriting every Schedule A and
         # changing sibling records as a side effect.
+        if selected_field_ids is not None:
+            try:
+                self._prepare_selected_update(review, await repo.list_fields(filing_id), selected_field_ids,
+                                              include_broker_updates=include_broker_updates)
+            except ValueError as exc:
+                await self._record_update_failure(repo, filing_id, review, str(exc))
+                raise
+            await repo.update_filing(filing_id, {"proposed_xml": combine_ftw_update_xml(review.update_xml_5500, review.update_xml_schedule_a)})
         self._prune_noop_update_payloads(review)
-        contract_type_error = self._review_contract_type_block_reason(review)
+        contract_type_error = self._review_contract_type_block_reason(review) if selected_field_ids is None or review.update_xml_schedule_a else None
         if contract_type_error:
             await self._record_update_failure(repo, filing_id, review, contract_type_error)
             raise ValueError(contract_type_error)
-        plan_year_error = self._review_plan_year_block_reason(review)
+        selected_date_update = any(field.update_included and "plan_year" in str(field.rule_key) for field in review.fields)
+        plan_year_error = self._review_plan_year_block_reason(review) if selected_field_ids is None or selected_date_update else None
         if plan_year_error:
             await self._record_update_failure(repo, filing_id, review, plan_year_error)
             raise ValueError(plan_year_error)
-        validation_error = self._review_validation_blocking_error(review, action="sending to FT Williams")
+        validation_error = self._review_validation_blocking_error(review, action="sending to FT Williams",
+            selected_field_ids=selected_field_ids, include_brokers=selected_field_ids is None or include_broker_updates)
         if validation_error:
             await self._record_update_failure(repo, filing_id, review, validation_error)
             raise ValueError(validation_error)
@@ -2642,6 +2649,7 @@ class FTWilliamsReviewService:
                 filing_id,
                 review,
                 reason=reason,
+                manual_selection=selected_field_ids is not None,
             )
         if (
             review.update_xml_schedule_a
@@ -2655,7 +2663,8 @@ class FTWilliamsReviewService:
             )
             await self._record_update_failure(repo, filing_id, review, error_message)
             raise ValueError(error_message)
-        schedule_a_safety_error = self._missing_schedule_a_records_for_safe_send(review)
+        schedule_a_safety_error = self._missing_schedule_a_records_for_safe_send(review,
+            check_brokers=selected_field_ids is None or include_broker_updates)
         if schedule_a_safety_error:
             await self._record_update_failure(repo, filing_id, review, schedule_a_safety_error)
             raise ValueError(schedule_a_safety_error)
@@ -2811,6 +2820,7 @@ class FTWilliamsReviewService:
                 responses,
                 schedule_a_restore=schedule_a_restore,
                 recovery_responses=recovery_responses,
+                manual_selection=selected_field_ids is not None,
             )
 
         mixed_schedule_response = next(
@@ -3026,17 +3036,17 @@ class FTWilliamsReviewService:
         await repo.update_filing(
             filing_id,
             {
-                "status": FilingStatus.APPROVED if success else FilingStatus.FAILED,
-                "approved_at": datetime.utcnow() if success else None,
+                "status": (FilingStatus.NEEDS_REVIEW if selected_field_ids is not None else FilingStatus.APPROVED) if success else FilingStatus.FAILED,
+                **({} if selected_field_ids is not None else {"approved_at": datetime.utcnow() if success else None}),
                 "error_message": review.error_message,
             },
         )
-        await repo.add_event(ReviewEvent(filing_id=filing_id, type="APPROVE_AND_FTW_UPDATE", reason=reason))
+        await repo.add_event(ReviewEvent(filing_id=filing_id, type="FTW_UPDATE" if selected_field_ids is not None else "APPROVE_AND_FTW_UPDATE", reason=reason))
         await repo.add_audit(
             AuditLog(
                 filing_id=filing_id,
                 event="FTWILLIAMS_UPDATE_SENT" if success else "FTWILLIAMS_UPDATE_FAILED",
-                message="Approved fields were sent to FT Williams." if success else "FT Williams update failed.",
+                message="Selected fields were sent to FT Williams." if success else "FT Williams update failed.",
                 details={
                     "error": review.error_message,
                     "run_edit_checks": effective_edit_checks,
@@ -3850,6 +3860,8 @@ class FTWilliamsReviewService:
         *,
         fields: list[ExtractedField] | None = None,
         action: str = "approving this filing",
+        selected_field_ids: list[str] | None = None,
+        include_brokers: bool = True,
     ) -> str | None:
         comparisons = review.fields or []
         if fields:
@@ -3876,6 +3888,7 @@ class FTWilliamsReviewService:
             field
             for field in comparisons
             if field.validation_blocking
+            and (selected_field_ids is None or field.field_id in selected_field_ids)
             and (
                 field.form_type != FormType.SCHEDULE_A
                 or review.schedule_a_contract_type is None
@@ -3886,7 +3899,7 @@ class FTWilliamsReviewService:
             )
         ]
         broker_issue = None
-        if review.schedule_a_broker_rows:
+        if include_brokers and review.schedule_a_broker_rows:
             try:
                 schedule_a_broker_update_values(review.schedule_a_broker_rows, require_complete=True)
             except FTWPayloadValidationError as exc:
@@ -3968,7 +3981,6 @@ class FTWilliamsReviewService:
             filing_id,
             {
                 "status": FilingStatus.FAILED,
-                "approved_at": None,
                 "error_message": error_message,
             },
         )
@@ -4026,6 +4038,7 @@ class FTWilliamsReviewService:
         review: FTWilliamsReview,
         *,
         reason: str,
+        manual_selection: bool = False,
     ) -> FTWilliamsReview:
         """Close an accepted update failure without issuing a duplicate FT Williams write."""
         review.status = FTWilliamsReviewStatus.UPDATE_SENT
@@ -4053,8 +4066,8 @@ class FTWilliamsReviewService:
         await repo.update_filing(
             filing_id,
             {
-                "status": FilingStatus.APPROVED,
-                "approved_at": datetime.utcnow(),
+                "status": FilingStatus.NEEDS_REVIEW if manual_selection else FilingStatus.APPROVED,
+                **({} if manual_selection else {"approved_at": datetime.utcnow()}),
                 "error_message": None,
             },
         )
@@ -4109,6 +4122,7 @@ class FTWilliamsReviewService:
         *,
         schedule_a_restore: dict | None = None,
         recovery_responses: list | None = None,
+        manual_selection: bool = False,
     ) -> FTWilliamsReview:
         schedule_a_restore = schedule_a_restore or {
             "attempted": False,
@@ -4180,11 +4194,10 @@ class FTWilliamsReviewService:
             filing_id,
             {
                 "status": FilingStatus.FAILED,
-                "approved_at": None,
                 "error_message": error_message,
             },
         )
-        await repo.add_event(ReviewEvent(filing_id=filing_id, type="APPROVE_AND_FTW_UPDATE", reason=""))
+        await repo.add_event(ReviewEvent(filing_id=filing_id, type="FTW_UPDATE" if manual_selection else "APPROVE_AND_FTW_UPDATE", reason=""))
         await repo.add_audit(
             AuditLog(
                 filing_id=filing_id,
@@ -4594,7 +4607,7 @@ class FTWilliamsReviewService:
         # Extraction already removes parser duplicates. Rows reaching the review
         # workspace are reviewer-controlled records, so preserve their order and
         # exact values even when two recipients share the same name/address.
-        return normalized
+        return default_blank_organization_codes(normalized)
 
     def _resolve_schedule_a_brokers(
         self,
@@ -5027,6 +5040,67 @@ class FTWilliamsReviewService:
             and field.update_included
             for field in fields
         )
+
+    def _prepare_selected_update(self, review: FTWilliamsReview, fields: list[ExtractedField],
+                                 selected_field_ids: list[str], *, include_broker_updates: bool) -> None:
+        """Build a manual partial update from the fresh vendor snapshot.
+
+        Selection affects writes only; unresolved comparisons/broker decisions
+        stay visible and stored. Never patch or send the cached whole preview.
+        """
+        selected = set(selected_field_ids)
+        if not selected and not include_broker_updates:
+            raise ValueError("Select at least one field from Will Update FTW or select broker changes before sending.")
+        by_id = {field.id: field for field in fields if not is_retired_field(field)}
+        if selected - by_id.keys():
+            raise ValueError("A selected field no longer belongs to this filing. Refresh the page and select it again.")
+        comparisons = {field.field_id: field for field in review.fields}
+        chosen = []
+        for field_id in selected:
+            field = by_id[field_id]
+            comparison = comparisons.get(field_id)
+            if not comparison:
+                raise ValueError(f"{field.mapped_label or field.source_field_name}: this field is not available for an FT Williams update.")
+            if not comparison.changed:
+                continue
+            if comparison.validation_blocking or not comparison.update_included:
+                reason = comparison.validation_message or comparison.update_exclusion_reason or "no valid update value is available"
+                raise ValueError(f"{comparison.label}: {reason}. Correct this selected field or deselect it.")
+            selected_field = field.model_copy(update={"proposed_value": comparison.proposed_value})
+            self._validated_field_value(selected_field)
+            chosen.append(selected_field)
+        for comparison in review.fields:
+            comparison.update_included = bool(comparison.update_included and comparison.field_id in selected)
+        form_fields = [field for field in chosen if field.form_type == FormType.FORM_5500]
+        schedule_fields = [field for field in chosen if field.form_type == FormType.SCHEDULE_A]
+        identity = self._identity_from_review(review)
+        identity["ftw_seq_no"] = review.ftw_seq_no or (review.schedule_a_match or {}).get("ftw_seq_no")
+        review.update_xml_5500 = build_single_document_update_xml("DOL5500Data", form_fields, FormType.FORM_5500,
+            transaction_type="1", current_values=review.form_5500_current_values, **identity) if form_fields else ""
+        resolved_brokers = None
+        if include_broker_updates:
+            if not review.schedule_a_broker_rows:
+                raise ValueError("No broker changes are available to send.")
+            broker_error = self._review_validation_blocking_error(review, selected_field_ids=[], include_brokers=True,
+                action="sending the selected broker rows")
+            if broker_error:
+                raise ValueError(broker_error)
+            matches, resolved_brokers = self._resolve_schedule_a_brokers(review.schedule_a_broker_rows,
+                review.schedule_a_records, identity.get("ftw_seq_no"), review.schedule_a_broker_matches,
+                create_new=bool((review.schedule_a_match or {}).get("create_new")))
+            if not all(match.resolved for match in matches):
+                raise ValueError("Selected broker changes need matching. Complete their broker matches or deselect broker updates.")
+        review.update_xml_schedule_a = ""
+        if schedule_fields or include_broker_updates:
+            if not review.schedule_a_match:
+                raise ValueError("Select the correct FT Williams Schedule A before sending its selected fields.")
+            review.update_xml_schedule_a = self._build_schedule_a_update_xml(schedule_fields,
+                review.schedule_a_records, identity.get("ftw_seq_no"), identity,
+                add_new_schedule_a=bool(review.schedule_a_match.get("create_new")),
+                new_schedule_desc=review.schedule_a_match.get("schedule_desc"),
+                schedule_a_broker_rows=resolved_brokers)
+            if not review.update_xml_schedule_a:
+                raise ValueError("Current FT Williams Schedule A data is incomplete. Refresh it before sending the selected fields.")
 
     def _prune_noop_update_payloads(self, review: FTWilliamsReview) -> None:
         if not self._comparison_has_updates(review.fields, FormType.FORM_5500):
@@ -5555,8 +5629,8 @@ class FTWilliamsReviewService:
             **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
         )
 
-    def _missing_schedule_a_records_for_safe_send(self, review: FTWilliamsReview) -> str | None:
-        if review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete:
+    def _missing_schedule_a_records_for_safe_send(self, review: FTWilliamsReview, *, check_brokers: bool = True) -> str | None:
+        if check_brokers and review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete:
             return "Every extracted Schedule A broker must be matched to an FT Williams row or confirmed as new before sending."
         has_schedule_xml = bool(review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
         has_schedule_updates = any(

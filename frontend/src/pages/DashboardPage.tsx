@@ -894,14 +894,14 @@ function dashboardPipelineStage(filing: Filing): DashboardPipelineStage {
   }
   if (filing.status === "READY_FOR_APPROVAL") {
     return {
-      detail: "Fields reviewed. Approval is required before sending.",
+      detail: "Fields reviewed. Select changes to send to FT Williams.",
       pendingMetrics: false,
       tone: "ready",
     };
   }
   if (filing.status === "APPROVED") {
     return {
-      detail: "Approved and ready to send to FT Williams.",
+      detail: "Ready to select changes for FT Williams.",
       pendingMetrics: false,
       tone: "ready",
     };
@@ -1141,6 +1141,8 @@ function groupFilingsByCompany(filings: Filing[]): DashboardCompanyGroup[] {
 }
 
 function filingCompanyGroupKey(filing: Filing) {
+  const canonicalClient = filing.dashboard_client_group_key?.trim();
+  if (canonicalClient) return canonicalClient;
   const ein = filing.dashboard_ein || firstXmlValue(filing.proposed_xml, ["EIN", "EmployerEIN", "SponsorEIN", "SponsEIN", "SponsDfeEIN"])
     || firstStringFromPackageDocuments(filing, ["ein", "company_employer_id"]);
   const normalizedEin = ein.replace(/\D/g, "");
@@ -1151,9 +1153,8 @@ function filingCompanyGroupKey(filing: Filing) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, "-");
-  // ShareFile's client folder name is the stable company identity in this dashboard.
-  // Older filings can carry a missing or stale EIN, so including it in the primary
-  // key splits one client into duplicate company groups.
+  // Legacy/manual filings without canonical ShareFile metadata retain their
+  // name-first fallback; missing/stale EINs must not split one named client.
   if (normalizedName && clientName !== "Client pending") return `name-${normalizedName}`;
   if (normalizedEin) return `ein-${normalizedEin}`;
   return `filing-${filing.id}`;

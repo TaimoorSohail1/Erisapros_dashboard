@@ -27,11 +27,11 @@ import { useParams } from "../router";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   ApiRequestError,
-  approveFiling,
   confirmFTWilliamsBringForward,
   getFiling,
   getFTWLocalAgentStatus,
   getFTWilliamsBringForwardLink,
+  reconcileFTWilliamsBringForward,
   openFTWilliamsAuditPDF,
   prepareFTWilliamsReview,
   regenerateXml,
@@ -43,7 +43,6 @@ import {
   selectFTWilliamsScheduleAMatch,
   setFTWilliamsScheduleABrokerMatches,
   sendApprovedFTWilliamsUpdate,
-  unapproveFiling,
   updateField,
   updateFTWilliamsScheduleABrokerRows,
 } from "../api";
@@ -54,7 +53,7 @@ import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
 import { formatDate, formatFilingDisplayName, percent } from "../utils";
 
 type ReviewTab = "NEEDS_DECISION" | "WILL_UPDATE" | "SAME" | "MISSING" | "LOW_CONFIDENCE" | "ALL";
-type WorkflowStepKey = "INTAKE" | "EXTRACTION" | "FTW_LOADED" | "REVIEW" | "APPROVAL" | "FTW_UPDATE";
+type WorkflowStepKey = "INTAKE" | "EXTRACTION" | "FTW_LOADED" | "REVIEW" | "FTW_UPDATE";
 type FilterValue = "ALL" | string;
 type ContractTypeFilter = "ALL" | ScheduleAContractType;
 
@@ -183,7 +182,7 @@ export function FilingReviewPage() {
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
   const [xmlBusy, setXmlBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
-  const [decisionAction, setDecisionAction] = useState<"approve" | "reject" | "unapprove" | null>(null);
+  const [decisionAction, setDecisionAction] = useState<"reject" | null>(null);
   const [fieldSavingId, setFieldSavingId] = useState<string | null>(null);
   const [fieldValidationErrors, setFieldValidationErrors] = useState<Record<string, string>>({});
   const [rulesBusy, setRulesBusy] = useState(false);
@@ -191,10 +190,11 @@ export function FilingReviewPage() {
   const [sendValidationNotice, setSendValidationNotice] = useState<SendValidationNotice>(null);
   const [activeWorkflowStep, setActiveWorkflowStep] = useState<WorkflowStepKey | null>(null);
   const [showTechnicalDrawer, setShowTechnicalDrawer] = useState(false);
+  const [showReviewStatus, setShowReviewStatus] = useState(false);
   const [showExcludedFields, setShowExcludedFields] = useState(false);
-  const [showApproveConfirm, setShowApproveConfirm] = useState(false);
-  const [showUnapproveConfirm, setShowUnapproveConfirm] = useState(false);
   const [showFtwSendConfirm, setShowFtwSendConfirm] = useState(false);
+  const [selectedSendFieldIds, setSelectedSendFieldIds] = useState<string[]>([]);
+  const [includeSendBrokerUpdates, setIncludeSendBrokerUpdates] = useState(false);
   const [showBringForwardConfirm, setShowBringForwardConfirm] = useState(false);
   const [showAdvancedReview, setShowAdvancedReview] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState<FTWLocalAgentStatus | null>(null);
@@ -310,14 +310,14 @@ export function FilingReviewPage() {
     && !ftwReview?.plan_year_resolution,
   );
   const scheduleAWorksheetSummaries = ftwReview?.schedule_a_worksheet_summaries?.length ? ftwReview.schedule_a_worksheet_summaries : filing?.schedule_a_worksheet_summaries || [];
-  const approvalRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
+  const reviewRelevantFields = fields.filter((field) => fieldAllowedForContractType(field, scheduleAContractType));
   const excludedFields = fields.filter((field) => !fieldAllowedForContractType(field, scheduleAContractType));
-  const missingHigh = approvalRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
-  const missingOther = approvalRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
-  const lowConfidence = approvalRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
-  const unmapped = approvalRelevantFields.filter((field) => field.status === "UNMAPPED");
-  const extracted = approvalRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
-  const matched = approvalRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
+  const missingHigh = reviewRelevantFields.filter((field) => field.priority === "HIGH" && field.status === "MISSING");
+  const missingOther = reviewRelevantFields.filter((field) => field.status === "MISSING" && field.priority !== "HIGH");
+  const lowConfidence = reviewRelevantFields.filter((field) => field.status === "LOW_CONFIDENCE");
+  const unmapped = reviewRelevantFields.filter((field) => field.status === "UNMAPPED");
+  const extracted = reviewRelevantFields.filter((field) => hasValue(field) && field.status !== "UNMAPPED");
+  const matched = reviewRelevantFields.filter((field) => field.status === "MATCHED" || field.status === "EDITED");
   const actionFields = useMemo(
     () => [...missingHigh, ...lowConfidence, ...unmapped, ...missingOther].sort(compareFields),
     [missingHigh, lowConfidence, unmapped, missingOther],
@@ -366,7 +366,6 @@ export function FilingReviewPage() {
     ...(planYearConflictRequired ? ["Plan year selection"] : []),
   ].filter((label, index, labels) => Boolean(label) && labels.indexOf(label) === index);
   const verifiedUpdateComplete = isVerifiedFTWilliamsUpdate(ftwReview);
-  const approvalBlockerRows = actionRequiredRows;
   const displayRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return visibleReviewRows.filter((row) => {
@@ -410,9 +409,8 @@ export function FilingReviewPage() {
   const selectedReviewRow = selectedFieldId
     ? reviewRows.find((row) => row.fieldId === selectedFieldId)
     : undefined;
-  const approvalBlocked = missingHigh.length > 0 || unmapped.length > 0 || hardValidationBlockerCount > 0;
-  const expectsForm5500Current = expectsCurrentForForm(approvalRelevantFields, reviewRows, "FORM_5500");
-  const expectsScheduleACurrent = expectsCurrentForForm(approvalRelevantFields, reviewRows, "SCHEDULE_A");
+  const expectsForm5500Current = expectsCurrentForForm(reviewRelevantFields, reviewRows, "FORM_5500");
+  const expectsScheduleACurrent = expectsCurrentForForm(reviewRelevantFields, reviewRows, "SCHEDULE_A");
   const form5500CurrentLoaded = hasLoadedCurrentForForm(ftwReview, "FORM_5500");
   const scheduleACurrentLoaded = hasLoadedCurrentForForm(ftwReview, "SCHEDULE_A");
   const scheduleAIsNew = Boolean(ftwReview?.schedule_a_match?.create_new);
@@ -438,23 +436,12 @@ export function FilingReviewPage() {
   const ftwInteractionBusy = ftwBusy || autoFtwQueryBusy;
   const decisionBusy = Boolean(decisionAction);
   const reviewInteractionBusy = ftwInteractionBusy || xmlBusy || retryBusy || decisionBusy || Boolean(fieldSavingId);
-  const showFtwSendAction = !verifiedUpdateComplete && (
-    filing?.status === "APPROVED" || (filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown))
-  );
+  const showFtwSendAction = true;
   const hasPendingFtwUpdate = Boolean(
     ftwReview?.update_xml_5500?.includes("DOL5500Data")
     || ftwReview?.update_xml_schedule_a?.includes("DOLScheduleAData"),
   );
-  const ftwReadyToSend = Boolean(
-    showFtwSendAction &&
-    !verifiedUpdateComplete &&
-    ftwReview?.configured &&
-    ftwReview.ftw_editable !== false &&
-    !bringForwardRequired &&
-    hasPendingFtwUpdate &&
-    hardValidationBlockerCount === 0 &&
-    !planYearConflictRequired,
-  );
+  const ftwReadyToSend = true; // Selection/target checks happen on send, not on unrelated review counts.
   const scheduleAUpdateIncluded = Boolean(
     ftwReview?.update_xml_schedule_a?.includes("DOLScheduleAData"),
   );
@@ -486,20 +473,11 @@ export function FilingReviewPage() {
     (total, result) => total + (result.issues?.length || 0),
     0,
   );
-  const sendBlockingIssueCount = [
-    !ftwReview?.configured,
-    ftwReview?.ftw_editable === false,
-    bringForwardRequired,
-    !hasPendingFtwUpdate,
-    planYearConflictRequired,
-    hardValidationBlockerCount > 0,
-  ].filter(Boolean).length;
   const sendWarningCount = actionRequiredCount + schemaIssueCount;
   const foundCount = extracted.length;
-  const totalFields = approvalRelevantFields.filter((field) => field.priority !== "IGNORE").length;
+  const totalFields = reviewRelevantFields.filter((field) => field.priority !== "IGNORE").length;
   const displayFileName = formatFilingDisplayName(filing?.file_name || "");
   const isProcessing = isProcessingStatus(filing?.status ?? "UPLOADED");
-  const retryingFailedFtwUpdate = filing?.status === "FAILED" && (ftwUpdateFailed || ftwUpdateUnknown) && ftwReadyToSend;
   const scheduleMatch = formatScheduleAMatch(filing?.ftw_review?.schedule_a_match);
   const lookup = filing?.ftw_review?.plan_lookup || null;
   const clientError = filing?.ftw_review?.active_failure_client_error || filing?.ftw_review?.client_error || null;
@@ -507,7 +485,6 @@ export function FilingReviewPage() {
   const ftwFailed = !bringForwardRequired && Boolean(clientError || ftwUpdateFailed || ftwUpdateUnknown);
   const scheduleCandidates = ftwReview?.schedule_a_candidates || [];
   const scheduleSelectionRequired = scheduleCandidates.length > 0 && !ftwReview?.schedule_a_match;
-  const approvalReady = !isProcessing && !scheduleSelectionRequired && !retryingFailedFtwUpdate && !planYearConflictRequired;
 
   useEffect(() => {
     if (!toast || toast.sticky) return;
@@ -576,70 +553,12 @@ export function FilingReviewPage() {
     }
   }
 
-  async function decide(action: "approve" | "reject", options?: { overrideBlockers?: boolean }) {
+  async function decide(action: "reject") {
     if (!id) return;
-    if (action === "approve") {
-      await approveFiling(id, reason, { override_blockers: Boolean(options?.overrideBlockers) });
-    }
-    else await rejectFiling(id, reason);
+    await rejectFiling(id, reason);
     setFiling(await getFiling(id));
   }
 
-  async function approveAnyway() {
-    setShowApproveConfirm(false);
-    setDecisionAction("approve");
-    setToast(null);
-    try {
-      await decide("approve", { overrideBlockers: approvalBlocked });
-      setToast({
-        tone: "success",
-        title: "Filing approved",
-        message: `${displayFileName} is approved and ready for the remaining FT Williams safety checks.`,
-      });
-    } catch (error) {
-      setToast({
-        tone: "error",
-        title: "Could not approve filing",
-        message: error instanceof Error ? error.message : "The filing could not be approved.",
-      });
-    } finally {
-      setDecisionAction(null);
-    }
-  }
-
-  function handleApproveClick() {
-    if (filing?.status === "APPROVED") {
-      setShowUnapproveConfirm(true);
-      return;
-    }
-    setMessage("");
-    setShowApproveConfirm(true);
-  }
-
-  async function confirmUnapprove() {
-    if (!id) return;
-    setShowUnapproveConfirm(false);
-    setDecisionAction("unapprove");
-    try {
-      await unapproveFiling(id);
-      const updated = await getFiling(id);
-      setFiling(updated);
-      previousFilingRef.current = updated;
-      setToast({
-        tone: "success",
-        title: "Approval removed",
-        message: `${formatFilingDisplayName(updated.file_name)} is no longer approved. FT Williams sending is locked until approval is restored.`,
-      });
-    } catch (error) {
-      setToast({
-        tone: "error",
-        title: "Could not remove approval",
-        message: error instanceof Error ? error.message : "The filing approval could not be removed.",
-      });
-    } finally {
-      setDecisionAction(null);
-    }
-  }
 
   async function rejectDecision() {
     setDecisionAction("reject");
@@ -663,7 +582,6 @@ export function FilingReviewPage() {
   }
 
   function reviewBlockingFields() {
-    setShowApproveConfirm(false);
     setActiveTab("NEEDS_DECISION");
     setStatusFilter("ALL");
     setPriorityFilter("ALL");
@@ -870,6 +788,36 @@ export function FilingReviewPage() {
     }
   }
 
+  async function reconcileStaleBringForward(resolution: "VERIFY_CURRENT" | "RESET_FAILED") {
+    if (!id) return;
+    setFtwBusy(true);
+    setToast(null);
+    try {
+      await reconcileFTWilliamsBringForward(
+        id,
+        resolution,
+        resolution === "RESET_FAILED" ? "Operator confirmed the previous Bring Forward attempt did not complete." : "Operator verified the current FT Williams data.",
+      );
+      const updated = await getFiling(id);
+      setFiling(updated);
+      previousFilingRef.current = updated;
+      setToast({
+        tone: "success",
+        title: resolution === "RESET_FAILED" ? "Bring Forward retry authorized" : "Bring Forward state verified",
+        message: "FT Williams data was reconciled and the automation workflow was refreshed.",
+      });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        title: "Bring Forward reconciliation failed",
+        message: error instanceof Error ? error.message : "The FT Williams state could not be reconciled.",
+        sticky: true,
+      });
+    } finally {
+      setFtwBusy(false);
+    }
+  }
+
   async function resolvePlanYearConflict(resolution: "USE_WORKSHEET" | "KEEP_FTW") {
     if (!id) return;
     setFtwBusy(true);
@@ -974,6 +922,8 @@ export function FilingReviewPage() {
         reason,
         refresh_current_before_update: true,
         run_edit_checks: true,
+        selected_field_ids: selectedSendFieldIds,
+        include_broker_updates: includeSendBrokerUpdates,
       });
       const sentReview = sendResult.ftw_review;
       const updatedFiling = await getFiling(id);
@@ -1006,7 +956,7 @@ export function FilingReviewPage() {
       });
       setSendValidationNotice(null);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Could not send approved FT Williams update";
+      const errorMessage = error instanceof Error ? error.message : "Could not send selected FT Williams changes";
       const failure = error instanceof ApiRequestError
         ? error.clientError
         : clientErrorFromRaw(errorMessage, "FT Williams");
@@ -1037,14 +987,8 @@ export function FilingReviewPage() {
   }
 
   function requestFtwSend() {
-    if (!ftwReadyToSend) {
-      setToast({
-        tone: "error",
-        title: "FT Williams update is not ready",
-        message: "Load current FT Williams data and complete the Schedule A and broker decisions before sending.",
-      });
-      return;
-    }
+    setSelectedSendFieldIds(willUpdateRows.flatMap((row) => row.fieldId ? [row.fieldId] : []));
+    setIncludeSendBrokerUpdates(false);
     setShowTechnicalDrawer(false);
     setShowFtwSendConfirm(true);
   }
@@ -1127,6 +1071,10 @@ export function FilingReviewPage() {
   if (message && !filing) return <div className="card card-pad">{message}</div>;
   if (!filing) return <FilingReviewSkeleton />;
 
+  const queryStatus = ftwQueryStatusContent(ftwReview);
+  const validationIssueCount = sendValidationNotice?.issueCount || hardValidationBlockerCount;
+  const statusNeedsAttention = Boolean(queryStatus || validationIssueCount || planYearConflictRequired || (showFtwSendAction && ftwReview?.ftw_editable === false));
+
   return (
     <div className="review-page approval-workspace-page">
       {toast ? <ReviewToastMessage toast={toast} onClose={() => setToast(null)} /> : null}
@@ -1140,12 +1088,20 @@ export function FilingReviewPage() {
             onReview={reviewBlockingFields}
           />
 
-          <WorkflowStepper
-            filing={filing}
-            ftwReadyToSend={ftwReadyToSend}
-            needsDecisionCount={verifiedUpdateComplete ? 0 : actionRequiredCount}
-            onStepSelect={setActiveWorkflowStep}
-          />
+          <div className="manual-ftw-send-toolbar">
+          <details open className="review-workflow-disclosure">
+            <summary><ListChecks size={15} /> Workflow progress <ChevronDown size={14} /></summary>
+            <WorkflowStepper
+              filing={filing}
+              ftwReadyToSend={ftwReadyToSend}
+              needsDecisionCount={actionRequiredCount}
+              onStepSelect={setActiveWorkflowStep}
+            />
+          </details>
+          <button className="button" type="button" disabled={reviewInteractionBusy} onClick={requestFtwSend}>
+            {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send to FT Williams</>}
+          </button>
+          </div>
         </div>
 
         {verifiedUpdateComplete && ftwReview ? <FTWUpdateSuccessNotice review={ftwReview} reviewNoteCount={actionRequiredCount} /> : null}
@@ -1191,8 +1147,6 @@ export function FilingReviewPage() {
                 />
               ) : (
                 <ReviewPrimaryActions
-                  approvalBlocked={approvalBlocked}
-                  approvalReady={approvalReady}
                   bringForwardRequired={bringForwardRequired}
                   busy={reviewInteractionBusy}
                   decisionAction={decisionAction}
@@ -1204,7 +1158,6 @@ export function FilingReviewPage() {
                   retryBusy={retryBusy}
                   rulesBusy={rulesBusy}
                   xmlBusy={xmlBusy}
-                  onApprove={handleApproveClick}
                   onOpenBringForward={openFtwBringForward}
                   onPreviewXml={rebuildXml}
                   onQuery={() => prepareFtw(true)}
@@ -1225,11 +1178,26 @@ export function FilingReviewPage() {
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
 
+            {statusNeedsAttention ? (
+              <section className="review-issue-summary" role="status" aria-live="polite">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <strong>{queryStatus?.title || (planYearConflictRequired ? "Confirm the correct plan-year dates" : ftwReview?.ftw_editable === false ? "FT Williams filing is not editable" : `${validationIssueCount} value${validationIssueCount === 1 ? " needs" : "s need"} correction`)}</strong>
+                  <span>{validationIssueCount ? "Correct or deselect affected values. Other selected changes can still be sent." : "Selected changes require a valid, editable FT Williams target."}</span>
+                </div>
+                <button className="button secondary" type="button" onClick={() => setShowReviewStatus(true)}>Review status details</button>
+              </section>
+            ) : null}
+
+            {showReviewStatus ? (
+              <ReviewStatusDrawer onClose={() => setShowReviewStatus(false)}>
             <FTWQueryStatusBanner
               busy={ftwInteractionBusy}
-              onOpenBringForward={openFtwBringForward}
+              onOpenBringForward={() => { setShowReviewStatus(false); void openFtwBringForward(); }}
               onRetry={() => prepareFtw(true)}
-              onSelectPlan={openFtwPlanMatch}
+              onReconcile={reconcileStaleBringForward}
+              onSelectPlan={() => { setShowReviewStatus(false); openFtwPlanMatch(); }}
+              staleOperation={(filing.automation_reasons || []).some((reason) => /submitted, verified or uncertain bring forward/i.test(reason))}
               review={ftwReview}
             />
 
@@ -1258,9 +1226,12 @@ export function FilingReviewPage() {
                 onFix={() => {
                   const fieldId = sendValidationNotice?.fieldId || fieldValidationBlockerRows[0]?.fieldId;
                   const fieldLabel = sendValidationNotice?.fieldLabel || fieldValidationBlockerRows[0]?.label;
+                  setShowReviewStatus(false);
                   focusValidationIssue(fieldId, fieldLabel);
                 }}
               />
+            ) : null}
+              </ReviewStatusDrawer>
             ) : null}
 
             <div className="field-filter-row approval-filter-row">
@@ -1364,43 +1335,21 @@ export function FilingReviewPage() {
         />
       ) : null}
 
-      {showApproveConfirm ? (
-        <ApproveConfirmationModal
-          blockers={{
-            highPriorityMissing: missingHigh.length,
-            lowConfidence: lowConfidence.length,
-            needsDecision: needsDecisionRows.length,
-            unmapped: unmapped.length,
-            willKeepFtw: sameRows.length,
-            willUpdate: willUpdateRows.length,
-          }}
-          hasBlockers={actionRequiredCount > 0}
-          unresolvedRows={approvalBlockerRows}
-          onApprove={approveAnyway}
-          onClose={() => setShowApproveConfirm(false)}
-          onReviewFields={reviewBlockingFields}
-        />
-      ) : null}
-
-      {showUnapproveConfirm ? (
-        <UnapproveConfirmationModal
-          filingName={displayFileName}
-          onClose={() => setShowUnapproveConfirm(false)}
-          onConfirm={confirmUnapprove}
-        />
-      ) : null}
 
       {showFtwSendConfirm ? (
         <FTWilliamsSendConfirmationModal
           brokerRowCount={scheduleABrokerRows.length}
           busy={ftwSendBusy}
           changedRows={willUpdateRows}
-          blockingIssueCount={sendBlockingIssueCount}
           preservedScheduleARecordCount={preservedScheduleARecordCount}
           scheduleARecordCount={scheduleARecordCount}
           scheduleAUpdateIncluded={scheduleAUpdateIncluded}
           unchangedScheduleARecords={unchangedScheduleARecords}
           warningCount={sendWarningCount}
+          selectedFieldIds={selectedSendFieldIds}
+          includeBrokerUpdates={includeSendBrokerUpdates}
+          onToggleField={(fieldId) => setSelectedSendFieldIds((ids) => ids.includes(fieldId) ? ids.filter((id) => id !== fieldId) : [...ids, fieldId])}
+          onToggleBrokers={setIncludeSendBrokerUpdates}
           onClose={() => setShowFtwSendConfirm(false)}
           onConfirm={() => {
             setShowFtwSendConfirm(false);
@@ -1429,18 +1378,12 @@ export function FilingReviewPage() {
       {activeWorkflowStep ? (
         <WorkflowDetailDialog
           actionRequiredCount={actionRequiredCount}
-          approvalBlocked={approvalBlocked}
-          approvalReady={approvalReady}
           busy={reviewInteractionBusy}
           filing={filing}
           foundCount={foundCount}
           ftwCurrentLoaded={ftwCurrentLoaded}
           ftwReadyToSend={ftwReadyToSend}
           onClose={() => setActiveWorkflowStep(null)}
-          onApprove={() => {
-            setActiveWorkflowStep(null);
-            handleApproveClick();
-          }}
           onOpenBringForward={openFtwBringForward}
           onQuery={() => prepareFtw(true)}
           onViewAuditPDF={viewFtwAuditPdf}
@@ -1601,7 +1544,7 @@ function AutomationWorkflowNotice({
     : resolvedFieldException || waitingForManualSend
       ? {
           label: "Ready",
-          title: filing.status === "APPROVED" ? "Ready to update FT Williams" : "Ready for approval",
+          title: "Ready to update FT Williams",
           tone: "ready",
         }
     : status === "ACTION_NEEDED"
@@ -1770,8 +1713,8 @@ function reviewChangeToast(previous: FilingDetail | null, next: FilingDetail): R
     if (next.status === "APPROVED") {
       return {
         tone: "success",
-        title: "Filing approved",
-        message: `${displayName} is approved and ready for FT Williams.`,
+        title: "Ready to select updates",
+        message: `${displayName} is ready for selected FT Williams changes.`,
       };
     }
     if (next.status === "FAILED" || next.status === "REJECTED") {
@@ -1912,7 +1855,6 @@ function sendLockReason(
   ftwCurrentLoaded: boolean,
 ) {
   const retryingFailedFtwUpdate = filing?.status === "FAILED" && filing.ftw_review?.status === "UPDATE_FAILED";
-  if (filing?.status !== "APPROVED" && !retryingFailedFtwUpdate) return "Requires approval";
   if (filing?.ftw_review?.ftw_editable === false) return "Filing is locked in FT Williams";
   if (!ftwCurrentLoaded) return "Query FTW current data first";
   if (!form5500SafetyReady) return "Form 5500 current data missing";
@@ -1942,15 +1884,13 @@ function WorkflowStepper({
     && ((filing.ftw_review?.schedule_a_candidates || []).length || filing.ftw_review?.bring_forward_required),
   );
   const ftwScheduleStatus = ftwScheduleIsNew ? "New Schedule A prepared" : ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
-  const approved = filing.status === "APPROVED";
   const updateSent = isVerifiedFTWilliamsUpdate(filing.ftw_review);
   const steps = [
     { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
     { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
     { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwScheduleNeedsDecision ? "active" : ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
     { key: "REVIEW" as const, label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
-    { key: "APPROVAL" as const, label: "Approval", detail: processing ? "Waiting for extraction" : approved ? "Approved" : needsDecisionCount ? "Confirm unresolved items" : "Ready for approval", state: processing ? "locked" : approved ? "done" : "active" },
-    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Sent" : ftwReadyToSend ? "Ready to send" : "Locked until approval", state: updateSent ? "done" : ftwReadyToSend ? "active" : "locked" },
+    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Verified" : "Send selected changes", state: updateSent ? "done" : "active" },
   ];
   return (
     <section className="approval-progress-card">
@@ -1981,15 +1921,19 @@ function WorkflowStepper({
 function FTWQueryStatusBanner({
   busy,
   onOpenBringForward,
+  onReconcile,
   onRetry,
   onSelectPlan,
   review,
+  staleOperation,
 }: {
   busy: boolean;
   onOpenBringForward: () => void;
+  onReconcile: (resolution: "VERIFY_CURRENT" | "RESET_FAILED") => void;
   onRetry: () => void;
   onSelectPlan: () => void;
   review: FTWilliamsReview | null;
+  staleOperation: boolean;
 }) {
   const content = ftwQueryStatusContent(review);
   if (!content) return null;
@@ -2012,6 +1956,16 @@ function FTWQueryStatusBanner({
         {review?.updated_at ? <small className="filing-guidance-timestamp">Last checked: {formatDate(review.updated_at)}</small> : null}
       </div>
       <div className="filing-guidance-actions">
+        {staleOperation ? (
+          <>
+            <button className="button secondary" type="button" disabled={busy} onClick={() => onReconcile("VERIFY_CURRENT")}>
+              <RefreshCw size={15} /> Verify current FTW state
+            </button>
+            <button className="button button-warn" type="button" disabled={busy} onClick={() => onReconcile("RESET_FAILED")}>
+              <ShieldCheck size={15} /> Allow retry
+            </button>
+          </>
+        ) : null}
         {planMatchRequired ? (
           <button className="button" type="button" disabled={busy} onClick={onSelectPlan}>
             <Search size={15} /> Select plan
@@ -2029,7 +1983,6 @@ function FTWQueryStatusBanner({
 function FilingGuidancePanel({
   actionRequiredCount,
   actions,
-  approvalBlocked,
   bringForwardRequired,
   clientError,
   filingStatus,
@@ -2040,7 +1993,6 @@ function FilingGuidancePanel({
 }: {
   actionRequiredCount: number;
   actions?: ReactNode;
-  approvalBlocked: boolean;
   bringForwardRequired: boolean;
   clientError: ClientFacingError | null;
   filingStatus: string;
@@ -2050,9 +2002,9 @@ function FilingGuidancePanel({
   scheduleSelectionRequired: boolean;
 }) {
   let source = "User Review";
-  let title = "Ready for approval";
-  let message = "Review the FT Williams update preview, then approve this filing.";
-  let nextAction = "No blocking field issues remain.";
+  let title = "Ready to select updates";
+  let message = "Choose the changes you want to send to FT Williams.";
+  let nextAction = "Unselected values remain unchanged.";
   let tone = "ready";
 
   if (isProcessing) {
@@ -2065,7 +2017,7 @@ function FilingGuidancePanel({
     source = "FT Williams";
     title = "Current-year FT Williams record is missing";
     message = "Use Bring Forward for this plan in FT Williams, then refresh the current data here.";
-    nextAction = "This must be completed before approval and sending.";
+    nextAction = "The target record must exist before its selected changes can be saved.";
     tone = "warning";
   } else if (clientError) {
     source = clientError.source || "FT Williams";
@@ -2079,21 +2031,21 @@ function FilingGuidancePanel({
     message = "FT Williams returned more than one Schedule A for this plan.";
     nextAction = "Confirm the carrier, contract, year, and sequence below.";
     tone = "warning";
-  } else if (approvalBlocked) {
+  } else if (actionRequiredCount > 0) {
     title = `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`;
     message = `${missingHighCount} high-priority field${missingHighCount === 1 ? " is" : "s are"} missing or unresolved.`;
-    nextAction = "Review them now, or approve with the confirmation override.";
+    nextAction = "Review these items when needed. You can send other selected changes.";
     tone = "warning";
   } else if (filingStatus === "APPROVED" && ftwReadyToSend) {
     source = "FT Williams";
-    title = "Approved and ready to send";
-    message = "The proposed changes passed the review and FT Williams safety checks.";
+    title = "Ready to select updates";
+    message = "Select the changes to send. Existing approval history is retained.";
     nextAction = "Send the update; the dashboard will verify every field automatically.";
   } else if (filingStatus === "APPROVED") {
     source = "FT Williams";
-    title = "Approved — FT Williams check required";
-    message = "Approval is complete, but FT Williams current data must be refreshed before sending.";
-    nextAction = "Query FTW Current to unlock sending.";
+    title = "FT Williams check required";
+    message = "FT Williams current data must be refreshed before selected changes can be saved.";
+    nextAction = "Current data is checked again when you send.";
     tone = "warning";
   }
 
@@ -2168,11 +2120,11 @@ function FTWValidationBlockerBanner({
     <section className="ftw-validation-blocker-banner" role="alert" aria-label="FT Williams blocking validation issue">
       <span className="ftw-validation-blocker-icon"><AlertTriangle size={18} /></span>
       <div className="ftw-validation-blocker-copy">
-        <small>Action required before update</small>
-        <strong>{count} blocking issue{count === 1 ? "" : "s"} prevents sending</strong>
+        <small>Values needing correction</small>
+        <strong>{count} issue{count === 1 ? "" : "s"} affect these values only</strong>
         {fieldLabel ? <span className="ftw-validation-field-name">{fieldLabel}</span> : null}
-        <p>{message || "Correct the highlighted value before sending this filing to FT Williams."}</p>
-        <span className="ftw-validation-policy">Approval remains available; sending stays locked until this value is valid.</span>
+        <p>{message || "Correct or deselect the highlighted value before sending it to FT Williams."}</p>
+        <span className="ftw-validation-policy">Correct or deselect affected values before sending. Other review items do not block selected changes.</span>
       </div>
       <button className="button danger" type="button" onClick={onFix}>
         <Edit3 size={14} /> Fix issue
@@ -2182,8 +2134,6 @@ function FTWValidationBlockerBanner({
 }
 
 function ReviewPrimaryActions({
-  approvalBlocked,
-  approvalReady,
   bringForwardRequired,
   busy,
   decisionAction,
@@ -2191,7 +2141,6 @@ function ReviewPrimaryActions({
   showFtwSendAction,
   ftwReadyToSend,
   ftwSendBusy,
-  onApprove,
   onOpenBringForward,
   onPreviewXml,
   onQuery,
@@ -2205,16 +2154,13 @@ function ReviewPrimaryActions({
   rulesBusy,
   xmlBusy,
 }: {
-  approvalBlocked: boolean;
-  approvalReady: boolean;
   bringForwardRequired: boolean;
   busy: boolean;
-  decisionAction: "approve" | "reject" | "unapprove" | null;
+  decisionAction: "reject" | null;
   filingStatus: string;
   showFtwSendAction: boolean;
   ftwReadyToSend: boolean;
   ftwSendBusy: boolean;
-  onApprove: () => void;
   onOpenBringForward: () => void;
   onPreviewXml: () => void;
   onQuery: () => void;
@@ -2228,7 +2174,6 @@ function ReviewPrimaryActions({
   rulesBusy: boolean;
   xmlBusy: boolean;
 }) {
-  const approved = filingStatus === "APPROVED";
   const failed = filingStatus === "FAILED";
   return (
     <div className="review-primary-actions" aria-label="Filing actions">
@@ -2240,32 +2185,9 @@ function ReviewPrimaryActions({
       <button className="button secondary" type="button" disabled={queryBusy} onClick={onQuery}>
         {queryBusy ? <InlineLoader label="Fetching FTW" /> : <><Search size={16} /> Query FTW Current</>}
       </button>
-      {!approved && approvalReady ? (
-        <>
-          <button
-            className={`button ${approvalBlocked ? "button-warn" : ""}`}
-            disabled={busy}
-            title={approvalBlocked ? "You can approve now; unresolved issues must be fixed before sending to FT Williams." : undefined}
-            onClick={onApprove}
-          >
-            {decisionAction === "approve" ? <InlineLoader label="Approving" /> : <><CheckCircle2 size={16} /> Approve Filing</>}
-          </button>
-          <button className="button danger" disabled={busy} onClick={onReject}>
-            {decisionAction === "reject" ? <InlineLoader label="Rejecting" /> : "Reject"}
-          </button>
-        </>
-      ) : null}
-      {approved ? <span className="review-approved-badge"><CheckCircle2 size={16} /> Approved</span> : null}
-      {showFtwSendAction ? (
-        <button
-          className="button"
-          disabled={busy || !ftwReadyToSend}
-          title={!ftwReadyToSend ? "Resolve the remaining FT Williams validation issues before sending." : undefined}
-          onClick={onSend}
-        >
-          {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> {failed ? "Retry remaining" : "Send to FT Williams"}</>}
-        </button>
-      ) : null}
+      <button className="button danger" disabled={busy} onClick={onReject}>
+        {decisionAction === "reject" ? <InlineLoader label="Rejecting" /> : "Reject"}
+      </button>
       <button className="button secondary" type="button" onClick={onOpenTechnical}>
         <SlidersHorizontal size={16} /> More actions
       </button>
@@ -2275,15 +2197,12 @@ function ReviewPrimaryActions({
 
 function WorkflowDetailDialog({
   actionRequiredCount,
-  approvalBlocked,
-  approvalReady,
   busy,
   filing,
   foundCount,
   ftwCurrentLoaded,
   ftwReadyToSend,
   onClose,
-  onApprove,
   onOpenBringForward,
   onQuery,
   onViewAuditPDF,
@@ -2295,15 +2214,12 @@ function WorkflowDetailDialog({
   willUpdateCount,
 }: {
   actionRequiredCount: number;
-  approvalBlocked: boolean;
-  approvalReady: boolean;
   busy: boolean;
   filing: FilingDetail;
   foundCount: number;
   ftwCurrentLoaded: boolean;
   ftwReadyToSend: boolean;
   onClose: () => void;
-  onApprove: () => void;
   onOpenBringForward: () => void;
   onQuery: () => void;
   onViewAuditPDF: () => void;
@@ -2316,13 +2232,12 @@ function WorkflowDetailDialog({
 }) {
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
-  const stepNumber = ["INTAKE", "EXTRACTION", "FTW_LOADED", "REVIEW", "APPROVAL", "FTW_UPDATE"].indexOf(step) + 1;
+  const stepNumber = ["INTAKE", "EXTRACTION", "FTW_LOADED", "REVIEW", "FTW_UPDATE"].indexOf(step) + 1;
   const titles: Record<WorkflowStepKey, string> = {
     INTAKE: "Intake",
     EXTRACTION: "Extraction",
     FTW_LOADED: "FTW loaded",
     REVIEW: "User review",
-    APPROVAL: "Approval",
     FTW_UPDATE: "FT Williams verification",
   };
   const review = filing.ftw_review || null;
@@ -2378,7 +2293,6 @@ function WorkflowDetailDialog({
     EXTRACTION: `${foundCount} of ${totalFields} fields extracted`,
     FTW_LOADED: selectedScheduleLabel,
     REVIEW: actionRequiredCount ? `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} still require action` : "Review complete",
-    APPROVAL: filing.status === "APPROVED" ? "Filing approved" : "Approval not yet confirmed",
     FTW_UPDATE: updateVerified ? `${confirmed} field${confirmed === 1 ? "" : "s"} verified` : "Update not yet verified",
   };
 
@@ -2539,23 +2453,12 @@ function WorkflowDetailDialog({
             </>
           ) : null}
 
-          {step === "APPROVAL" ? (
-            <>
-              <WorkflowStatus tone={filing.status === "APPROVED" ? "success" : "warning"} label={filing.status === "APPROVED" ? "Filing approved" : "Approval pending"} />
-              <p className="workflow-explanation">Approval confirms the reviewed values. Any remaining issues are shown before the user confirms.</p>
-              <WorkflowActivity items={[
-                actionRequiredCount ? `${actionRequiredCount} unresolved field${actionRequiredCount === 1 ? "" : "s"} will be confirmed during approval` : "All field decisions are complete",
-                ftwCurrentLoaded ? "FT Williams current data is loaded" : "FT Williams current data is required",
-                filing.status === "APPROVED" ? "Approval recorded" : "Approval is waiting for confirmation",
-              ]} />
-            </>
-          ) : null}
 
           {step === "FTW_UPDATE" ? (
             <>
               <WorkflowStatus
                 tone={updateVerified ? "success" : review?.status === "UPDATE_UNKNOWN" || ftwReadyToSend ? "warning" : "neutral"}
-                label={updateVerified ? "Update verified" : review?.update_access_status === "GRANTED" ? "Accepted · verification needs attention" : review?.status === "UPDATE_UNKNOWN" ? "Verification required" : ftwReadyToSend ? "Ready to send" : "Waiting for approval and FTW checks"}
+                label={updateVerified ? "Update verified" : review?.update_access_status === "GRANTED" ? "Accepted · verification needs attention" : review?.status === "UPDATE_UNKNOWN" ? "Verification required" : ftwReadyToSend ? "Ready to send" : "Choose selected changes"}
               />
               <p className="workflow-explanation">After sending, ERISAPros refreshes FT Williams and verifies every returned value automatically.</p>
               <WorkflowActivity items={[
@@ -2615,17 +2518,6 @@ function WorkflowDetailDialog({
         <footer>
           <span className="workflow-dialog-footer-note">{footerNotes[step]}</span>
           <div className="workflow-dialog-footer-actions">
-            {step === "APPROVAL" && filing.status !== "APPROVED" && approvalReady ? (
-              <button
-                className={`button ${approvalBlocked ? "button-warn" : ""}`}
-                type="button"
-                disabled={busy}
-                title={approvalBlocked ? "You can approve now; unresolved issues must be fixed before sending to FT Williams." : undefined}
-                onClick={onApprove}
-              >
-                <CheckCircle2 size={15} /> Approve filing
-              </button>
-            ) : null}
             <button className="button secondary" type="button" onClick={onClose}>Done</button>
           </div>
         </footer>
@@ -2805,7 +2697,7 @@ function WorkflowReviewCenter({
             <strong>{reviewComplete ? "All field decisions are complete" : `${actionRequiredCount} field${actionRequiredCount === 1 ? "" : "s"} require attention`}</strong>
           </div>
         </header>
-        <p>{reviewComplete ? "The reviewed values are ready for approval." : "Resolve missing or different values, then confirm what should be sent to FT Williams."}</p>
+        <p>{reviewComplete ? "Choose the reviewed values you want to send." : "You can send selected changes while other fields still need review."}</p>
         <div className="workflow-review-metrics" aria-label="User review counts">
           <span><small>Action required</small><strong>{actionRequiredCount}</strong></span>
           <span><small>Will update FTW</small><strong>{willUpdateCount}</strong></span>
@@ -2817,6 +2709,22 @@ function WorkflowReviewCenter({
         </div>
       </section>
       <FTWVerificationSummary review={review} onReview={() => onShowTab("NEEDS_DECISION")} compact />
+    </div>
+  );
+}
+
+function ReviewStatusDrawer({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const drawerRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(true, drawerRef, onClose);
+  return (
+    <div className="technical-drawer-backdrop" role="presentation">
+      <aside ref={drawerRef} tabIndex={-1} className="technical-review-drawer review-status-drawer" role="dialog" aria-modal="true" aria-labelledby="review-status-title">
+        <header>
+          <div><h2 id="review-status-title">What needs attention</h2><p>Review these items or send other selected changes.</p></div>
+          <button type="button" className="icon-button" aria-label="Close review status details" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="review-status-body">{children}</div>
+      </aside>
     </div>
   );
 }
@@ -3067,9 +2975,9 @@ function verificationResultDetail(
   result: NonNullable<FTWilliamsReview["update_results"]>[number],
 ) {
   if (result.status === "VERIFIED") {
-    return `Updated and verified: ${result.returned_value || result.sent_value || "approved value"}.`;
+    return `Updated and verified: ${result.returned_value || result.sent_value || "selected value"}.`;
   }
-  const sent = result.sent_value || "approved value";
+  const sent = result.sent_value || "selected value";
   const returned = result.returned_value || "not returned";
   return `Not updated. Sent: ${sent}. FT Williams returned: ${returned}. ${result.reason || "The values do not match after refresh."}`;
 }
@@ -3084,21 +2992,21 @@ function ftwEditCheckOutcome(review: FTWilliamsReview | null | undefined): {
     case "EXISTING_ISSUES":
       return {
         title: "Update verified — existing FT Williams issues remain",
-        summary: "The approved data was updated and verified. Existing FT Williams validation issues remain.",
-        detail: "These issues existed before this update and did not prevent the approved values from being saved.",
+        summary: "The selected data was updated and verified. Existing FT Williams validation issues remain.",
+        detail: "These issues existed before this update and did not prevent the selected values from being saved.",
         tone: "warning",
       };
     case "IMPROVED":
       return {
         title: "Update verified — fewer FT Williams issues remain",
-        summary: "The approved data was updated and verified, and some existing FT Williams issues were resolved.",
+        summary: "The selected data was updated and verified, and some existing FT Williams issues were resolved.",
         detail: "Any remaining validation issues can be corrected separately.",
         tone: "warning",
       };
     case "NEW_ISSUES":
       return {
         title: "Update verified — new FT Williams validation issues need attention",
-        summary: "The approved data was updated and verified, but final FT Williams checks reported new issues.",
+        summary: "The selected data was updated and verified, but final FT Williams checks reported new issues.",
         detail: "Review the new issues before the filing is finalized. The verified update itself was successful.",
         tone: "attention",
       };
@@ -3106,7 +3014,7 @@ function ftwEditCheckOutcome(review: FTWilliamsReview | null | undefined): {
     case "CANNOT_COMPARE":
       return {
         title: "Update verified — FT Williams validation could not be confirmed",
-        summary: "The approved data was updated and verified, but FT Williams validation results were unavailable.",
+        summary: "The selected data was updated and verified, but FT Williams validation results were unavailable.",
         detail: "Run Edit Checks again before the filing is finalized.",
         tone: "attention",
       };
@@ -3211,13 +3119,13 @@ function ReviewDecisionTableRow({
   const issueClass = row.failedByFtw ? "issue-ftw-rejected" : `issue-${row.group.toLowerCase()}`;
   return (
     <tr data-field-id={row.fieldId || undefined} className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
-      <td>
+      <td data-label="Field">
         <strong>{row.label}</strong>
         <small>{row.formLabel} / {row.section}</small>
       </td>
-      <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
-      <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
-      <td className="proposed-cell">
+      <td data-label="Extracted">{row.extracted || <span className="muted-value">Not found</span>}</td>
+      <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">No current value</span>}</td>
+      <td data-label="Proposed To Send" className="proposed-cell">
         <button className="proposed-value-button" type="button" disabled={disabled || !canEdit} onClick={onInspect}>
           <span>{row.proposed || "No proposed value"}</span>
           {canEdit ? <Edit3 size={14} /> : null}
@@ -3250,7 +3158,7 @@ function ReviewDecisionTableRow({
           )}
         </div>
       </td>
-      <td>
+      <td data-label="Status">
         <span className={`review-issue-pill ${issueClass}`}>{row.statusLabel}</span>
         <small className={row.failedByFtw ? "ftw-row-error" : undefined}>{row.ftwFailureReason || row.issue}</small>
       </td>
@@ -3616,7 +3524,6 @@ function BringForwardConfirmationModal({
 }
 
 function FTWilliamsSendConfirmationModal({
-  blockingIssueCount,
   brokerRowCount,
   busy,
   changedRows,
@@ -3628,8 +3535,11 @@ function FTWilliamsSendConfirmationModal({
   scheduleAUpdateIncluded,
   unchangedScheduleARecords,
   warningCount,
+  selectedFieldIds,
+  includeBrokerUpdates,
+  onToggleField,
+  onToggleBrokers,
 }: {
-  blockingIssueCount: number;
   brokerRowCount: number;
   busy: boolean;
   changedRows: ReviewDecisionRow[];
@@ -3641,10 +3551,15 @@ function FTWilliamsSendConfirmationModal({
   scheduleAUpdateIncluded: boolean;
   unchangedScheduleARecords: ScheduleAIdentitySummary[];
   warningCount: number;
+  selectedFieldIds: string[];
+  includeBrokerUpdates: boolean;
+  onToggleField: (fieldId: string) => void;
+  onToggleBrokers: (included: boolean) => void;
 }) {
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(true, dialogRef, onClose);
-  const hasPreparedChanges = changedRows.length > 0 || scheduleAUpdateIncluded;
+  const selectedCount = changedRows.filter((row) => row.fieldId && selectedFieldIds.includes(row.fieldId)).length;
+  const scheduleChangesSelected = includeBrokerUpdates || changedRows.some((row) => row.formLabel === "Schedule A" && row.fieldId && selectedFieldIds.includes(row.fieldId));
   return (
     <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
       <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal ftw-send-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="ftw-send-confirm-title">
@@ -3652,19 +3567,18 @@ function FTWilliamsSendConfirmationModal({
           <div>
             <span className="eyebrow">Final FT Williams check</span>
             <h2 id="ftw-send-confirm-title">Confirm the values to update</h2>
-            <p>Review the changes below. The app will fetch current data again, send the complete safe payload, and verify the saved values.</p>
+            <p>Select the changes to send. Other Action Required fields stay unchanged and do not block these updates. Current FTW data is refreshed before sending.</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close FT Williams confirmation"><X size={18} /></button>
         </header>
 
         <div className="approve-confirm-body">
           <div className="approve-confirm-stats">
-            <ApprovalModalStat label="Known blockers" value={blockingIssueCount} tone={blockingIssueCount ? "danger" : "ready"} />
-            <ApprovalModalStat label="Warnings" value={warningCount} tone={warningCount ? "warn" : "ready"} />
-            <ApprovalModalStat label="Fields changing" value={changedRows.length} tone="ready" />
-            <ApprovalModalStat label="Schedule A records included" value={scheduleARecordCount} tone="info" />
-            <ApprovalModalStat label="Existing records preserved" value={preservedScheduleARecordCount} tone="info" />
-            <ApprovalModalStat label="Broker rows included" value={brokerRowCount} tone="info" />
+            <ApprovalModalStat label="Review items (not send blockers)" value={warningCount} tone={warningCount ? "warn" : "ready"} />
+            <ApprovalModalStat label="Selected fields" value={selectedCount} tone="ready" />
+            <ApprovalModalStat label="Schedule A records included" value={scheduleChangesSelected ? scheduleARecordCount : 0} tone="info" />
+            <ApprovalModalStat label="Existing records preserved" value={scheduleChangesSelected ? preservedScheduleARecordCount : "Unchanged"} tone="info" />
+            <ApprovalModalStat label="Broker changes selected" value={includeBrokerUpdates ? brokerRowCount : 0} tone="info" />
           </div>
 
           <div className="approve-confirm-warning ready">
@@ -3676,11 +3590,17 @@ function FTWilliamsSendConfirmationModal({
           </div>
 
           <ol className="ftw-send-safety-flow" aria-label="FT Williams update safety flow">
-            <li><span>1</span><strong>Validate</strong><small>Blocking errors stop the send; warnings stay visible.</small></li>
+            <li><span>1</span><strong>Validate selection</strong><small>Only selected values and the FTW target are checked; unrelated review items remain unchanged.</small></li>
             <li><span>2</span><strong>Send</strong><small>The complete, identity-checked payload is sent once.</small></li>
             <li><span>3</span><strong>Accepted</strong><small>FT Williams accepted the update is recorded separately.</small></li>
             <li><span>4</span><strong>Verify</strong><small>Complete appears only after every saved value is read back.</small></li>
           </ol>
+          {brokerRowCount > 0 ? (
+            <label className="ftw-send-broker-selection">
+              <input type="checkbox" checked={includeBrokerUpdates} disabled={busy} onChange={(event) => onToggleBrokers(event.target.checked)} />
+              Include prepared broker changes (their values and matches must be valid). Unchecked keeps current FTW broker rows unchanged.
+            </label>
+          ) : null}
 
           {unchangedScheduleARecords.length ? (
             <details className="ftw-preserved-records">
@@ -3699,17 +3619,17 @@ function FTWilliamsSendConfirmationModal({
           <div className="approve-confirm-table-wrap">
             <div className="approve-confirm-table-head">
               <strong>Values that will change</strong>
-              <span>{changedRows.length} field{changedRows.length === 1 ? "" : "s"}</span>
+              <span>{selectedCount} selected / {changedRows.length} available</span>
             </div>
             <table className="approve-confirm-table">
-              <thead><tr><th>Field</th><th>Current FTW</th><th>New value</th><th>Status</th></tr></thead>
+              <thead><tr><th>Select / Field</th><th>Current FTW</th><th>New value</th><th>Status</th></tr></thead>
               <tbody>
                 {changedRows.map((row) => (
                   <tr key={row.key}>
-                    <td><strong>{row.label}</strong><small>{row.formLabel} / {row.section}</small></td>
-                    <td>{row.currentFtw || <span className="muted-value">Blank</span>}</td>
-                    <td>{row.proposed || <span className="muted-value">Blank</span>}</td>
-                    <td><span className="review-issue-pill issue-will_update">Will update</span></td>
+                    <td data-label="Select / Field"><label><input type="checkbox" aria-label={`Send ${row.label}`} checked={Boolean(row.fieldId && selectedFieldIds.includes(row.fieldId))} disabled={busy || !row.fieldId} onChange={() => row.fieldId && onToggleField(row.fieldId)} /> <strong>{row.label}</strong></label><small>{row.formLabel} / {row.section}</small></td>
+                    <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">Blank</span>}</td>
+                    <td data-label="New value">{row.proposed || <span className="muted-value">Blank</span>}</td>
+                    <td data-label="Status"><span className="review-issue-pill issue-will_update">{row.fieldId && selectedFieldIds.includes(row.fieldId) ? "Selected" : "Keep current"}</span></td>
                   </tr>
                 ))}
                 {!changedRows.length ? <tr><td colSpan={4}>{scheduleAUpdateIncluded ? "Schedule A or broker-row changes are prepared." : "No field changes are currently prepared."}</td></tr> : null}
@@ -3721,7 +3641,7 @@ function FTWilliamsSendConfirmationModal({
         <footer className="approve-confirm-actions">
           <button className="button secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button>
           <button className="button secondary" type="button" disabled={busy} onClick={onReviewFields}><Eye size={16} /> Review fields</button>
-          <button className="button" type="button" disabled={busy || blockingIssueCount > 0 || !hasPreparedChanges} onClick={onConfirm}>
+          <button className="button" type="button" disabled={busy} onClick={onConfirm}>
             {busy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send and verify</>}
           </button>
         </footer>
@@ -3751,7 +3671,7 @@ function NewScheduleAConfirmation({
         <span><Plus aria-hidden="true" size={17} /></span>
         <div><small>New FT Williams record</small><strong>Create new Schedule A</strong></div>
       </header>
-      <p>No existing record will be selected or overwritten. The Schedule A will be created only when the approved update is sent.</p>
+      <p>No existing record will be selected or overwritten. The Schedule A will be created only when its selected changes are sent.</p>
       <div className="workflow-new-schedule-identity">
         <span><small>Carrier</small><strong>{identity.carrier || "Required"}</strong></span>
         <span><small>Carrier EIN</small><strong>{identity.carrierEin || "Required"}</strong></span>
@@ -3771,166 +3691,6 @@ function NewScheduleAConfirmation({
   );
 }
 
-function ApproveConfirmationModal({
-  blockers,
-  hasBlockers,
-  onApprove,
-  onClose,
-  onReviewFields,
-  unresolvedRows,
-}: {
-  blockers: {
-    highPriorityMissing: number;
-    lowConfidence: number;
-    needsDecision: number;
-    unmapped: number;
-    willKeepFtw: number;
-    willUpdate: number;
-  };
-  hasBlockers: boolean;
-  onApprove: () => void;
-  onClose: () => void;
-  onReviewFields: () => void;
-  unresolvedRows: ReviewDecisionRow[];
-}) {
-  const previewRows = unresolvedRows.slice(0, 3);
-  const dialogRef = useRef<HTMLElement | null>(null);
-  useDialogFocus(true, dialogRef, onClose);
-  return (
-    <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="approve-confirm-title">
-        <header className="approve-confirm-header">
-          <div>
-            <span className="eyebrow">{hasBlockers ? "Approval override" : "Approval confirmation"}</span>
-            <h2 id="approve-confirm-title">{hasBlockers ? "Approve with unresolved items?" : "Approve this filing?"}</h2>
-            <p>
-              {hasBlockers
-                ? "This will mark the filing approved even though unresolved fields remain. FT Williams sending will still stay locked unless the current data, Schedule A match, and safe XML checks are complete."
-                : "This will mark the filing approved. FT Williams sending will unlock only when the current data, Schedule A match, and safe XML checks are complete."}
-            </p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close approval confirmation">
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="approve-confirm-stats">
-          <ApprovalModalStat label="Needs decision" value={blockers.needsDecision} tone="warn" />
-          <ApprovalModalStat label="High-priority missing" value={blockers.highPriorityMissing} tone="danger" />
-          <ApprovalModalStat label="Unmapped" value={blockers.unmapped} tone="danger" />
-          <ApprovalModalStat label="Low confidence" value={blockers.lowConfidence} tone="warn" />
-          <ApprovalModalStat label="Will update" value={blockers.willUpdate} tone="ready" />
-          <ApprovalModalStat label="Ready / keep FTW" value={blockers.willKeepFtw} tone="info" />
-        </div>
-
-        <div className={`approve-confirm-warning ${hasBlockers ? "" : "ready"}`}>
-          {hasBlockers ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
-          <span>
-            <strong>{hasBlockers ? "Approving does not mean every missing field will be sent." : "Review the prepared values before approving."}</strong>
-            <small>
-              {hasBlockers
-                ? "Fields without a proposed value will remain unchanged or excluded from the FT Williams update payload."
-                : "Only approved proposed values are prepared for the FT Williams update payload."}
-            </small>
-          </span>
-        </div>
-
-        <div className="approve-confirm-table-wrap">
-          <div className="approve-confirm-table-head">
-            <strong>Highest-priority unresolved fields</strong>
-            <span>Showing {previewRows.length} of {unresolvedRows.length}</span>
-          </div>
-          <table className="approve-confirm-table">
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Extracted</th>
-                <th>Current FTW</th>
-                <th>Proposed</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {previewRows.map((row) => (
-                <tr key={row.key}>
-                  <td>
-                    <strong>{row.label}</strong>
-                    <small>{row.formLabel} / {row.section}</small>
-                  </td>
-                  <td>{row.extracted || <span className="muted-value">Not found</span>}</td>
-                  <td>{row.currentFtw || <span className="muted-value">No current value</span>}</td>
-                  <td>{row.proposed || <span className="muted-value">No proposed value</span>}</td>
-                  <td><span className={`review-issue-pill issue-${row.group.toLowerCase()}`}>{row.statusLabel}</span></td>
-                </tr>
-              ))}
-              {!previewRows.length ? (
-                <tr>
-                  <td colSpan={5}>No unresolved fields remain.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-
-        <footer className="approve-confirm-actions">
-          <button className="button secondary" type="button" onClick={onClose}>Cancel</button>
-          <button className="button secondary" type="button" onClick={onReviewFields}>
-            <Eye size={16} /> Review Fields
-          </button>
-          <button className={hasBlockers ? "button button-warn" : "button"} type="button" onClick={onApprove}>
-            <CheckCircle2 size={16} /> {hasBlockers ? "Approve with unresolved fields" : "Approve filing"}
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function UnapproveConfirmationModal({
-  filingName,
-  onClose,
-  onConfirm,
-}: {
-  filingName: string;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const dialogRef = useRef<HTMLElement | null>(null);
-  useDialogFocus(true, dialogRef, onClose);
-  return (
-    <div className="modal-backdrop approve-confirm-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="approve-confirm-modal unapprove-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="unapprove-confirm-title">
-        <header className="approve-confirm-header">
-          <div>
-            <span className="eyebrow">Approval status</span>
-            <h2 id="unapprove-confirm-title">Remove approval?</h2>
-            <p>
-              This will move the filing out of approved status and lock FT Williams sending until the filing is approved again.
-            </p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close unapprove confirmation">
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="unapprove-confirm-card">
-          <span><Ban size={18} /></span>
-          <div>
-            <strong>{filingName}</strong>
-            <small>Field decisions and prepared FT Williams data are kept. Only the approval state changes.</small>
-          </div>
-        </div>
-
-        <footer className="approve-confirm-actions">
-          <button className="button secondary" type="button" onClick={onClose}>Keep approved</button>
-          <button className="button danger" type="button" onClick={onConfirm}>
-            <Ban size={16} /> Unapprove filing
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
 
 function ApprovalModalStat({ label, tone, value }: { label: string; tone: "danger" | "info" | "ready" | "warn"; value: ReactNode }) {
   return (
@@ -4039,7 +3799,7 @@ function PlanYearConflictPanel({
       <div className="plan-year-conflict-copy">
         <AlertTriangle size={18} />
         <div>
-          <strong>Confirm the plan year before approval</strong>
+          <strong>Confirm the plan year before sending date changes</strong>
           <p>The selected dates will be applied together to Form 5500 and every attached Schedule A.</p>
         </div>
       </div>
@@ -4128,12 +3888,21 @@ function ScheduleABrokerRowsPanel({
 
   function beginEdit(row: ScheduleABrokerRow, index: number) {
     setEditingIndex(index);
-    setDraft({ ...row, purpose: formatBrokerPurpose(row) });
-    setShowDraftValidation(brokerRowValidationIssues(row).length > 0);
+    const blankCode = !String(row.organization_code ?? "").trim();
+    const nextDraft = { ...row, purpose: formatBrokerPurpose(row),
+      organization_code: blankCode ? "3" : row.organization_code,
+      organization_code_defaulted: blankCode || row.organization_code_defaulted };
+    setDraft(nextDraft);
+    setShowDraftValidation(brokerRowValidationIssues(nextDraft).length > 0);
   }
 
   function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
-    setDraft((current) => current ? { ...current, [field]: value } : current);
+    setDraft((current) => {
+      if (!current) return current;
+      if (field === "organization_code") return { ...current,
+        organization_code: value.trim() || "3", organization_code_defaulted: !value.trim() };
+      return { ...current, [field]: value };
+    });
   }
 
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
@@ -4194,18 +3963,20 @@ function ScheduleABrokerRowsPanel({
               return (
               <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
               <tr className={isEditing ? "broker-row-editing" : undefined}>
-                <td>
+                <td data-label="Broker / person">
                   {displayRow.name}
                   {isEditing ? <small className="broker-draft-badge">Unsaved changes</small> : null}
                 </td>
-                <td>{formatBrokerAddress(displayRow)}</td>
-                <td>
+                <td data-label="Address">{formatBrokerAddress(displayRow)}</td>
+                <td data-label="Org">
                   <span className={!String(displayRow.organization_code || "").trim() ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
+                  {displayRow.organization_code_defaulted && displayRow.organization_code === "3" ?
+                    <small className="broker-draft-badge">Defaulted to 3 because organizational code was blank.</small> : null}
                 </td>
-                <td>{displayRow.commission_total || "0"}</td>
-                <td>{displayRow.fee_total || "0"}</td>
-                <td>{formatBrokerPurpose(displayRow) || "-"}</td>
-                <td>
+                <td data-label="Commissions">{displayRow.commission_total || "0"}</td>
+                <td data-label="Fees">{displayRow.fee_total || "0"}</td>
+                <td data-label="Purpose">{formatBrokerPurpose(displayRow) || "-"}</td>
+                <td data-label="FT Williams row">
                   {match?.resolved ? (
                     <span className="broker-match-status broker-match-ready">
                       {match.status === "CONFIRMED_NEW" ? "New broker row" : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
@@ -4217,7 +3988,7 @@ function ScheduleABrokerRowsPanel({
                   )}
                   {match?.reason ? <small className="broker-match-reason">{match.reason}</small> : null}
                 </td>
-                <td>
+                <td data-label="Actions">
                   <div className="broker-row-actions">
                     <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
                       <Edit3 size={13} /> {rowIssues.length ? "Fix issue" : "Edit"}
@@ -4273,12 +4044,12 @@ function ScheduleABrokerRowsPanel({
                       <label>
                         Organization code
                         <select required value={draft.organization_code || ""} onChange={(event) => updateDraft("organization_code", event.target.value)}>
-                          <option value="">Select organization code</option>
+                          <option value="">Use default (3)</option>
                           {FTW_ORGANIZATION_CODE_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>{option.value} — {option.label}</option>
                           ))}
                         </select>
-                        <small>Required. Choose 3 for an insurance broker.</small>
+                        <small>Blank codes default to 3. Existing codes are preserved.</small>
                       </label>
                       <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
                       <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
@@ -4492,7 +4263,7 @@ function FTWilliamsComparisonPanel({
             <p>
               {review?.current_query_success
                 ? `${changedFields.length} proposed field${changedFields.length === 1 ? "" : "s"} differ from current FT Williams data.`
-                : "Query FT Williams current data before sending approved updates."}
+                : "Query FT Williams current data before sending selected changes."}
             </p>
           </div>
           <div className="ftw-comparison-actions">
@@ -4901,7 +4672,7 @@ function issueForComparison(comparison: FTWilliamsComparisonField, field: Extrac
   if (group === "MISSING") return "Required source value was not found.";
   if (group === "LOW_CONFIDENCE") return `Confidence ${percent(comparison.confidence)} needs review.`;
   if (group === "WILL_UPDATE") return comparison.current_value ? "Proposed value differs from current FTW." : "FTW current value is blank.";
-  if (group === "NEEDS_DECISION") return "Reviewer decision required before approval.";
+  if (group === "NEEDS_DECISION") return "Review this value when needed. Other selected changes can still be sent.";
   return "Current FTW and proposed value match.";
 }
 
@@ -5361,7 +5132,7 @@ function FilingReviewSkeleton() {
     <div className="review-page approval-workspace-page filing-review-skeleton" role="status" aria-live="polite" aria-label="Loading filing review">
       <main className="approval-workspace">
         <section className="skeleton-workflow card">
-          {Array.from({ length: 6 }, (_, index) => <div key={index}><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div>)}
+          {Array.from({ length: 5 }, (_, index) => <div key={index}><Skeleton className="skeleton-icon" /><span><Skeleton className="skeleton-line skeleton-line-medium" /><Skeleton className="skeleton-line skeleton-line-short" /></span></div>)}
         </section>
         <section className="skeleton-review-banner"><Skeleton className="skeleton-icon-small" /><div><Skeleton className="skeleton-line skeleton-line-wide" /><Skeleton className="skeleton-line skeleton-line-medium" /></div></section>
         <section className="approval-summary-strip skeleton-summary-strip">
@@ -5385,7 +5156,7 @@ function FTWilliamsLoadingPanel({ autoQuery, sendBusy }: { autoQuery: boolean; s
         <h2>{sendBusy ? "Sending Approved Data to FT Williams" : "Fetching Current FT Williams Data"}</h2>
         <p>
           {sendBusy
-            ? "Buttons are locked while the latest approved XML is sent and the response is saved."
+            ? "Buttons are locked while the selected update XML is sent and the response is saved."
             : autoQuery
               ? "Extraction is complete. ERISAPros is automatically loading current Form 5500 and Schedule A values for comparison."
               : "Buttons are locked while the current Form 5500 and Schedule A values are loaded for comparison."}

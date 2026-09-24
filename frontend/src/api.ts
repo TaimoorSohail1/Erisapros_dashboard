@@ -244,6 +244,12 @@ export async function revokeFTWLocalAgentDevice(deviceId: string): Promise<{ dev
   return request(`/ftwilliams/local-agent/devices/${encodeURIComponent(deviceId)}/revoke`, { method: "POST" });
 }
 
+export async function setFTWLocalAgentPaused(deviceId: string, paused: boolean): Promise<{ device_id: string; status: FTWLocalAgentDevice["status"]; pause_requested: boolean }> {
+  return request(`/ftwilliams/local-agent/devices/${encodeURIComponent(deviceId)}/control`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused }),
+  });
+}
+
 export async function listFTWilliamsFailureQueue(options: {
   page?: number;
   pageSize?: number;
@@ -309,21 +315,6 @@ export async function updateField(
   });
 }
 
-export async function approveFiling(
-  filingId: string,
-  reason: string,
-  options?: { send_to_ftw?: boolean; refresh_current_before_update?: boolean; run_edit_checks?: boolean; override_blockers?: boolean },
-): Promise<{ status: string; ftw_review?: FTWilliamsReview | null }> {
-  return request("/filings/" + filingId + "/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason, ...(options || {}) })
-  });
-}
-
-export async function unapproveFiling(filingId: string): Promise<{ status: string }> {
-  return request("/filings/" + filingId + "/unapprove", { method: "POST" });
-}
 
 export async function rejectFiling(filingId: string, reason: string): Promise<void> {
   await request("/filings/" + filingId + "/reject", {
@@ -360,6 +351,23 @@ export async function confirmFTWilliamsBringForward(filingId: string): Promise<{
   automation_next_action?: string | null;
 }> {
   return request("/filings/" + filingId + "/ftw/confirm-bring-forward", { method: "POST" });
+}
+
+export async function reconcileFTWilliamsBringForward(
+  filingId: string,
+  resolution: "VERIFY_CURRENT" | "RESET_FAILED",
+  reason = "",
+): Promise<{
+  ftw_review: FTWilliamsReview;
+  automation_status: string;
+  automation_next_action?: string | null;
+  reconciled_job_ids: string[];
+}> {
+  return request("/filings/" + filingId + "/ftw/reconcile-bring-forward", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resolution, reason }),
+  });
 }
 
 export async function saveManualFTWilliamsMatch(
@@ -441,6 +449,8 @@ export async function sendApprovedFTWilliamsUpdate(
     reason?: string;
     refresh_current_before_update?: boolean;
     run_edit_checks?: boolean;
+    selected_field_ids?: string[];
+    include_broker_updates?: boolean;
   },
 ): Promise<{ ftw_review: FTWilliamsReview | null }> {
   return request("/filings/" + filingId + "/ftw/send-update", {

@@ -66,7 +66,7 @@ assert.match(
 );
 assert.match(
   styles,
-  /\.automation-workflow-notice\s*\{[\s\S]*?grid-template-columns:\s*auto 1fr auto/,
+  /\.automation-workflow-notice\s*\{[^}]*display:\s*flex;[^}]*gap:/,
   "The automation summary should use a professional responsive status layout.",
 );
 

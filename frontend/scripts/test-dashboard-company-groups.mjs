@@ -1,8 +1,25 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 
 const page = await readFile(new URL("../src/pages/DashboardPage.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+
+const keySource = page.slice(page.indexOf("function filingCompanyGroupKey("), page.indexOf("function dashboardCompanySummary("));
+const runtime = ts.transpileModule(keySource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const groupKey = runInNewContext(runtime + "\nfilingCompanyGroupKey", {
+  filingClientName: (filing) => filing.dashboard_client_name || "Client pending",
+  firstXmlValue: () => "",
+  firstStringFromPackageDocuments: () => "",
+});
+const clientFilings = ["COMMUNITY LEGAL AID SOCAL", "Community Legal Aid SoCal (CLA SoCal)"].map((name, index) => ({
+  id: String(index), dashboard_client_name: name, dashboard_ein: "95-1994337",
+  dashboard_client_group_key: "sharefile:legacy:path:community legal aid socal (test) > community legal aid socal (cla socal)",
+}));
+assert.equal(new Set(clientFilings.map(groupKey)).size, 1, "The same canonical ShareFile client must remain one company across sponsor-name variants.");
+assert.notEqual(groupKey(clientFilings[0]), groupKey({ ...clientFilings[0], dashboard_client_group_key: "sharefile:another-workspace:path:other-client" }), "Distinct canonical clients must not merge even when display names and EINs match.");
+assert.equal(groupKey({ id: "manual", dashboard_client_name: "Example Company" }), "name-example-company", "Legacy/manual client grouping must retain its fallback.");
 
 assert.match(
   page,

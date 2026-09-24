@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import unittest
@@ -18,7 +19,20 @@ from app.api.filings import (
     unapprove_filing,
     update_field,
 )
-from app.models import ApproveRequest, ExtractedField, ExtractedFieldStatus, FieldEditRequest, Filing, FilingStatus, FormType, FTWilliamsReview
+from app.models import (
+    ApproveRequest,
+    ExtractedField,
+    ExtractedFieldStatus,
+    FieldEditRequest,
+    Filing,
+    FilingStatus,
+    FormType,
+    FTWLocalAgentDevice,
+    FTWLocalAgentDeviceStatus,
+    FTWLocalAgentJob,
+    FTWLocalAgentJobStatus,
+    FTWilliamsReview,
+)
 
 
 def run_async(coro):
@@ -82,6 +96,126 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(visible["filings"], [])
         self.assertEqual(suppressions["sf-item-1"]["reason"], "DASHBOARD_DELETE")
         self.assertIsNone(suppressions["sf-worksheet-1"])
+
+    def test_delete_filing_cancels_undispatched_agent_job_and_releases_device(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Delete Pending Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/delete-pending",
+                )
+            )
+            device = await repo.create_ftw_local_agent_device(
+                FTWLocalAgentDevice(
+                    name="Pending workstation",
+                    token_hash="pending-token",
+                    token_prefix="pending",
+                    expected_account="HighlandTech",
+                    status=FTWLocalAgentDeviceStatus.CONNECTED,
+                    browser_ready=True,
+                )
+            )
+            job = await repo.create_or_get_ftw_local_agent_job(
+                FTWLocalAgentJob(
+                    filing_id=str(filing.id),
+                    run_id="delete-run",
+                    idempotency_key="delete-pending-job",
+                    status=FTWLocalAgentJobStatus.ACTION_NEEDED,
+                    target_url="https://www.ftwilliam.com/cgi-bin/index.cgi?Year=2025",
+                    expected_account="HighlandTech",
+                    expected_plan_name="Delete Pending Plan",
+                    expected_ein="12-3456789",
+                    expected_plan_number="501",
+                    expected_year="2025",
+                    device_id=str(device.id),
+                    result_state="PAGE_LAYOUT_CHANGED",
+                    expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+            await repo.update_ftw_local_agent_device(
+                str(device.id),
+                {
+                    "active_job_id": str(job.id),
+                    "active_claim_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                },
+            )
+
+            await delete_filing_from_dashboard(str(filing.id))
+
+            return (
+                await repo.get_ftw_local_agent_job(str(job.id)),
+                await repo.get_ftw_local_agent_device_by_token_hash("pending-token"),
+            )
+
+        job, device = run_async(scenario())
+
+        self.assertEqual(job.status, FTWLocalAgentJobStatus.EXPIRED)
+        self.assertEqual(job.result_state, "NO_LONGER_REQUIRED")
+        self.assertIsNone(device.active_job_id)
+
+    def test_delete_filing_preserves_uncertain_operation_but_releases_stale_device_pointer(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(
+                    file_name="Delete Uncertain Schedule A.pdf",
+                    content_type="application/pdf",
+                    file_size=100,
+                    s3_key="sharefile-package/delete-uncertain",
+                )
+            )
+            device = await repo.create_ftw_local_agent_device(
+                FTWLocalAgentDevice(
+                    name="Uncertain workstation",
+                    token_hash="uncertain-token",
+                    token_prefix="uncert",
+                    expected_account="HighlandTech",
+                    status=FTWLocalAgentDeviceStatus.CONNECTED,
+                    browser_ready=True,
+                )
+            )
+            job = await repo.create_or_get_ftw_local_agent_job(
+                FTWLocalAgentJob(
+                    filing_id=str(filing.id),
+                    run_id="uncertain-run",
+                    idempotency_key="delete-uncertain-job",
+                    status=FTWLocalAgentJobStatus.ACTION_NEEDED,
+                    target_url="https://www.ftwilliam.com/cgi-bin/index.cgi?Year=2025",
+                    expected_account="HighlandTech",
+                    expected_plan_name="Delete Uncertain Plan",
+                    expected_ein="12-3456789",
+                    expected_plan_number="501",
+                    expected_year="2025",
+                    device_id=str(device.id),
+                    result_state="UNKNOWN_OUTCOME",
+                    operation_dispatched_at=datetime.utcnow(),
+                    expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+            await repo.update_ftw_local_agent_device(
+                str(device.id),
+                {
+                    "active_job_id": str(job.id),
+                    "active_claim_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                },
+            )
+
+            await delete_filing_from_dashboard(str(filing.id))
+
+            return (
+                await repo.get_ftw_local_agent_job(str(job.id)),
+                await repo.get_ftw_local_agent_device_by_token_hash("uncertain-token"),
+            )
+
+        job, device = run_async(scenario())
+
+        self.assertEqual(job.status, FTWLocalAgentJobStatus.ACTION_NEEDED)
+        self.assertEqual(job.result_state, "UNKNOWN_OUTCOME")
+        self.assertIsNotNone(job.operation_dispatched_at)
+        self.assertIsNone(device.active_job_id)
 
     def test_preview_xml_is_repeatable_and_does_not_mutate_the_filing(self):
         async def scenario():
@@ -155,7 +289,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertIn("InsPolicyFromDate:202501", str(error.detail))
         self.assertIn("expected a valid date", str(error.detail))
 
-    def test_unapprove_filing_clears_approval_and_locks_send_flow(self):
+    def test_retired_unapprove_endpoint_preserves_historical_approval(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -179,21 +313,22 @@ class FilingsApiTests(unittest.TestCase):
                 ]
             )
 
-            response = await unapprove_filing(filing.id)
+            with self.assertRaises(HTTPException) as raised:
+                await unapprove_filing(filing.id)
             updated = await repo.get_filing(filing.id)
             events = await repo.list_events(filing.id)
             audits = await repo.list_audit_logs(filing.id)
-            return response, updated, events, audits
+            return raised.exception, updated, events, audits
 
-        response, updated, events, audits = run_async(scenario())
+        error, updated, events, audits = run_async(scenario())
 
-        self.assertEqual(response["status"], FilingStatus.NEEDS_REVIEW)
-        self.assertEqual(updated.status, FilingStatus.NEEDS_REVIEW)
+        self.assertEqual(error.status_code, 410)
+        self.assertEqual(updated.status, FilingStatus.APPROVED)
         self.assertIsNone(updated.approved_at)
-        self.assertEqual(events[-1].type, "UNAPPROVE")
-        self.assertEqual(audits[-1].event, "UNAPPROVED")
+        self.assertEqual(events, [])
+        self.assertEqual(audits, [])
 
-    def test_approve_refreshes_automation_decision_before_returning(self):
+    def test_retired_approve_endpoint_does_not_start_automation(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -217,14 +352,16 @@ class FilingsApiTests(unittest.TestCase):
                     new=AsyncMock(return_value=refreshed_review),
                 ) as continue_automation,
             ):
-                response = await approve_filing(filing.id, ApproveRequest())
+                with self.assertRaises(HTTPException) as raised:
+                    await approve_filing(filing.id, ApproveRequest())
 
-            return response, continue_automation
+            return raised.exception, continue_automation, await repo.get_filing(filing.id)
 
-        response, continue_automation = run_async(scenario())
+        error, continue_automation, filing = run_async(scenario())
 
-        continue_automation.assert_awaited_once()
-        self.assertIs(response["ftw_review"], continue_automation.return_value)
+        self.assertEqual(error.status_code, 410)
+        continue_automation.assert_not_awaited()
+        self.assertEqual(filing.status, FilingStatus.READY_FOR_APPROVAL)
 
     def test_field_review_actions_distinguish_confirmed_values_from_marked_missing(self):
         async def scenario():

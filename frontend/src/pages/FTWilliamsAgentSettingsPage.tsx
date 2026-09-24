@@ -8,20 +8,24 @@ import {
   Link2,
   LoaderCircle,
   MonitorCog,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   ShieldCheck,
   Unplug,
   Wifi,
 } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiRequestError,
   createFTWLocalAgentPairingCode,
   getFTWLocalAgentStatus,
   listFTWClientWorkspaces,
   listFTWLocalAgentDevices,
   listFTWWorkspacePlanMappings,
   revokeFTWLocalAgentDevice,
+  setFTWLocalAgentPaused,
   disableFTWWorkspacePlanMapping,
   verifyFTWWorkspacePlanMapping,
 } from "../api";
@@ -64,19 +68,26 @@ export function FTWilliamsAgentSettingsPage() {
   const [pairing, setPairing] = useState<FTWLocalAgentPairingCodeResponse | null>(null);
   const [creatingCode, setCreatingCode] = useState(false);
   const [revokingId, setRevokingId] = useState("");
+  const [controllingId, setControllingId] = useState("");
+  const [controlError, setControlError] = useState<{ deviceId: string; message: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionResult, setConnectionResult] = useState<{ tone: "success" | "attention"; message: string } | null>(null);
+  const refreshSequence = useRef(0);
+  const refreshInFlight = useRef(false);
 
-  const refresh = async (quiet = false) => {
-    if (!quiet) setState("loading");
-    setMessage("");
+  const refresh = useCallback(async (quiet = false) => {
+    if (quiet && refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    const sequence = ++refreshSequence.current;
+    if (!quiet) { setState("loading"); setMessage(""); }
     try {
       const [nextStatus, nextDevices, nextWorkspaces] = await Promise.all([
         getFTWLocalAgentStatus(),
         listFTWLocalAgentDevices(),
         listFTWClientWorkspaces(),
       ]);
+      if (sequence !== refreshSequence.current) return;
       setStatus(nextStatus);
       setDevices(nextDevices.filter((device) => !device.revoked_at));
       setWorkspaces(nextWorkspaces.filter((workspace) => workspace.enabled));
@@ -87,14 +98,21 @@ export function FTWilliamsAgentSettingsPage() {
       ));
       setState("ready");
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       setState("error");
       setMessage(errorMessage(error, "Only ERISAPros administrators can manage the FT Williams Agent."));
+    } finally {
+      refreshInFlight.current = false;
     }
-  };
+  }, []);
 
   useEffect(() => {
     void refresh();
-  }, []);
+    // Poll for the agent's acknowledgement; do not label a requested stop as
+    // Paused until the Windows agent has actually closed its browser.
+    const timer = window.setInterval(() => { void refresh(true); }, 5_000);
+    return () => { window.clearInterval(timer); refreshSequence.current += 1; };
+  }, [refresh]);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -190,6 +208,24 @@ export function FTWilliamsAgentSettingsPage() {
     }
   };
 
+  const toggleAgent = async (device: FTWLocalAgentDevice) => {
+    refreshSequence.current += 1;
+    setControllingId(device.id);
+    setControlError(null);
+    setMessage("");
+    try {
+      const result = await setFTWLocalAgentPaused(device.id, !device.pause_requested);
+      setDevices((current) => current.map((item) => item.id === device.id ? {
+        ...item, status: result.status, pause_requested: result.pause_requested, browser_ready: false,
+      } : item));
+      await refresh(true);
+    } catch (error) {
+      setControlError({ deviceId: device.id, message: agentControlError(error) });
+    } finally {
+      setControllingId("");
+    }
+  };
+
   const saveMapping = async (event: FormEvent) => {
     event.preventDefault();
     if (!workspaceId) return;
@@ -249,7 +285,7 @@ export function FTWilliamsAgentSettingsPage() {
             </div>
             <div>
               <span className="eyebrow">Connection status</span>
-              <h2>{status?.connected ? "Connected and ready" : status?.status === "LOGIN_REQUIRED" ? "FT Williams login needed" : "No connected computer"}</h2>
+              <h2>{status?.pause_requested ? (status.status === "PAUSED" ? "Agent paused" : "Agent pause requested") : status?.connected ? "Connected and ready" : status?.status === "RESUMING" ? "Agent resuming" : status?.status === "WAITING" ? "Waiting for account access" : status?.status === "LOGIN_REQUIRED" ? "FT Williams login needed" : "No connected computer"}</h2>
               <p>{agentStatusMessage(status)}</p>
             </div>
             <div className="agent-status-controls">
@@ -329,7 +365,7 @@ export function FTWilliamsAgentSettingsPage() {
               <div>
                 <span className="eyebrow">Verified routing</span>
                 <h2>Plan mappings</h2>
-                <p>Only a verified client, plan, year, and FT Williams ID set can receive an automated Bring Forward job.</p>
+                <p>Only a verified client, plan, year, and FT Williams ID set can be routed to the agent. Each automated Bring Forward job uses the exact values returned by its lookup; saved mappings are optional overrides.</p>
               </div>
             </div>
             {mappings.length ? (
@@ -349,7 +385,7 @@ export function FTWilliamsAgentSettingsPage() {
                   </article>
                 ))}
               </div>
-            ) : <div className="agent-empty-state"><ShieldCheck size={22} /><strong>No verified plan mappings</strong><span>Bring Forward stays blocked until the first plan is checked and recorded below.</span></div>}
+            ) : <div className="agent-empty-state"><ShieldCheck size={22} /><strong>No saved plan mappings</strong><span>Automatic Bring Forward uses the exact client, plan, year, and browser IDs returned by the FT Williams lookup. Saved mappings are optional.</span></div>}
 
             {workspaceId ? (
               <details className="agent-mapping-form-wrap">
@@ -375,7 +411,8 @@ export function FTWilliamsAgentSettingsPage() {
               <div>
                 <span className="eyebrow">Trusted computers</span>
                 <h2>Connected devices</h2>
-                <p>Disconnect a computer immediately if it is lost, replaced, or should no longer run FT Williams.</p>
+                <p>Pause finishes active work safely, then closes only that computer’s agent browser. Pending jobs stay queued. Resume reopens it and restores sign-in where possible.</p>
+                <p>Controls apply to each computer separately. Pause every connected computer to stop all agents. Disconnect a lost or replaced computer permanently.</p>
               </div>
             </div>
             {devices.length ? (
@@ -392,9 +429,20 @@ export function FTWilliamsAgentSettingsPage() {
                       <small>{device.last_seen_at ? `Last seen ${formatDateTime(device.last_seen_at)}` : "Waiting for first connection"}</small>
                       {device.last_error ? <em>{device.last_error}</em> : null}
                     </div>
-                    <button className="button danger agent-revoke-button" type="button" disabled={revokingId === device.id} onClick={() => void revokeDevice(device)}>
+                    <div className="agent-device-actions">
+                      {controlError?.deviceId === device.id ? <small className="agent-control-error" role="alert">{controlError.message}</small> : null}
+                      <button className={`button ${device.pause_requested ? "primary" : "secondary"}`} type="button"
+                        disabled={controllingId === device.id || revokingId === device.id || !supportsAgentControl(device.agent_version)}
+                        onClick={() => void toggleAgent(device)}
+                        aria-label={`${device.pause_requested ? "Resume" : "Pause"} agent on ${device.name}`}>
+                        {controllingId === device.id ? <InlineLoader label="Updating" /> : device.pause_requested ? <><Play size={15} /> Resume Agent</> : <><Pause size={15} /> Pause Agent</>}
+                      </button>
+                      {!supportsAgentControl(device.agent_version) ? <small>Update to Agent 0.4.0+ to use these controls.</small> : null}
+                      {device.pause_requested && device.status !== "PAUSED" ? <small>{device.active_job_id ? "Finishing active work before closing." : "Waiting for this computer to confirm browser closure."}</small> : null}
+                    <button className="button danger agent-revoke-button" type="button" disabled={revokingId === device.id || controllingId === device.id} onClick={() => void revokeDevice(device)}>
                       {revokingId === device.id ? <InlineLoader label="Disconnecting" /> : <><Unplug size={15} /> Disconnect</>}
                     </button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -421,21 +469,33 @@ function AgentSettingsSkeleton() {
 
 function agentStatusMessage(status: FTWLocalAgentStatus | null) {
   if (!status?.enabled) return "The local agent rollout is currently disabled for this environment.";
+  if (status.pause_requested) return status.status === "PAUSED" ? "The agent browser is closed. Pending jobs are retained; Resume continues unfinished work." : "No new jobs will start. Active work finishes safely; an offline computer must reconnect to confirm browser closure.";
+  if (status.status === "RESUMING") return "Waiting for the computer to reopen its dedicated browser and restore sign-in. Complete MFA if requested.";
+  if (status.status === "WAITING") return "Another connected agent is using this FTW account. This agent waits with its browser closed.";
   if (status.connected) return `${status.device_name || "A trusted computer"} is signed in and ready for verified FT Williams work.`;
   if (status.status === "LOGIN_REQUIRED") return "Open the dedicated FT Williams browser. Automatic sign-in will retry safely; complete MFA or sign in manually if requested.";
   return "Connect a trusted Windows computer and optionally save its FT Williams login with Windows encryption.";
 }
 
 function deviceStateClass(device: FTWLocalAgentDevice) {
+  if (device.pause_requested || ["PAUSING", "RESUMING", "WAITING"].includes(device.status)) return "attention";
   if (device.status === "CONNECTED" && device.browser_ready) return "connected";
   if (device.status === "LOGIN_REQUIRED") return "attention";
   return "offline";
 }
 
 function deviceStateLabel(device: FTWLocalAgentDevice) {
+  if (device.pause_requested) return device.status === "PAUSED" ? "Paused · browser closed" : "Pause requested";
+  if (device.status === "RESUMING") return "Resuming";
+  if (device.status === "WAITING") return "Waiting for account";
   if (device.status === "CONNECTED" && device.browser_ready) return "Connected";
   if (device.status === "LOGIN_REQUIRED") return "Login needed";
   return "Offline";
+}
+
+function supportsAgentControl(version?: string | null) {
+  const parts = (version || "").split(".").map(Number);
+  return parts.length >= 3 && parts.every(Number.isFinite) && (parts[0] > 0 || parts[1] >= 4);
 }
 
 function formatDateTime(value: string) {
@@ -459,4 +519,16 @@ function workspaceName(workspaceId: string | null | undefined, workspaces: FTWCl
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function agentControlError(error: unknown) {
+  // These requests control ERISAPros, not an FTW send/query. Preserve their
+  // actual reason rather than the shared API's generic vendor-send wording.
+  if (error instanceof ApiRequestError) {
+    const reason = error.clientError?.reason || error.message;
+    return error.status === 0 || error.status >= 500
+      ? `Agent control response was not confirmed. ${reason} Check the refreshed state before retrying.`
+      : reason;
+  }
+  return errorMessage(error, "The agent control could not be confirmed. Check its refreshed state before retrying.");
 }

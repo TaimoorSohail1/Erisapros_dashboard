@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 const page = await readFile(new URL("../src/pages/FTWilliamsAgentSettingsPage.tsx", import.meta.url), "utf8");
 const shell = await readFile(new URL("../src/ui/AppShell.tsx", import.meta.url), "utf8");
 const guide = await readFile(new URL("../public/ftw-agent-setup-guide.html", import.meta.url), "utf8");
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
 assert.match(shell, /to="\/settings\/ftw-agent"/, "The FT Williams Agent setup page must be reachable from the main navigation.");
 assert.match(page, /createFTWLocalAgentPairingCode/, "Administrators must be able to generate one-time pairing codes from the dashboard.");
@@ -22,6 +23,14 @@ assert.match(page, /ftw-agent-setup-guide\.html/, "The settings page must link t
 assert.match(page, /Download FTW Agent/, "Clients must be able to download the one-file setup directly from the dashboard.");
 assert.match(page, /releases\/latest\/download\/ERISAProsFTWAgentSetup\.exe/, "The dashboard must use the stable latest-release installer URL.");
 assert.match(page, /Windows encrypts it on this computer/, "The setup screen must explain local encrypted automatic login.");
+assert.match(page, /setFTWLocalAgentPaused/, "Pause/Resume must use the authenticated device control API.");
+assert.match(page, /Pause Agent/, "Each computer must have its own Pause control.");
+assert.match(page, /Resume Agent/, "Pausing must be reversible without revoking the device.");
+assert.match(page, /Pending jobs stay queued/, "Clients must know Pause preserves their queue.");
+assert.match(page, /confirm browser closure/, "A request must not be mislabeled as a completed stop.");
+assert.match(page, /supportsAgentControl/, "Old Windows agents must not advertise unsupported controls.");
+assert.match(styles, /\.agent-section-heading\s*\{[^}]*flex-wrap: wrap/, "Setup headings must wrap on tablet widths.");
+assert.match(styles, /\.agent-setup-actions\s*\{[^}]*flex-wrap: wrap[^}]*max-width: 100%/, "Setup controls must fit the available width.");
 assert.match(guide, /Download and open the FT Williams Agent/, "The client guide must explain installation.");
 assert.match(guide, /Enter your one-time connection code/, "The client guide must explain pairing.");
 assert.match(guide, /Test connection/, "The client guide must end with a connection test.");
