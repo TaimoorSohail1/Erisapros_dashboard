@@ -7,6 +7,7 @@ import hashlib
 import re
 import time
 from urllib.parse import parse_qs, quote, urlsplit
+from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
@@ -35,6 +36,7 @@ from app.models import (
     FTWilliamsQueryState,
     FTWilliamsReview,
     FTWilliamsReviewStatus,
+    FTWilliamsUpdateReceipt,
     ScheduleAContractType,
     ScheduleABrokerMatch,
     ScheduleABrokerRow,
@@ -589,6 +591,7 @@ class FTWilliamsReviewService:
             update_confirmed_count=(preserved_update_outcome["confirmed_count"] if preserve_update_outcome else 0),
             update_remaining_count=(preserved_update_outcome["remaining_count"] if preserve_update_outcome else 0),
             update_results=(preserved_update_outcome["results"] if preserve_update_outcome else []),
+            update_receipt=(existing_review.update_receipt if preserve_update_outcome else None),
             update_retry_count=(existing_review.update_retry_count if preserve_update_outcome else 0),
             update_diagnostics=list(existing_review.update_diagnostics or []) if existing_review else [],
             schema_validation_results=(
@@ -2788,6 +2791,13 @@ class FTWilliamsReviewService:
             "success": review.edit_check_baseline_success,
             "issues": list(review.edit_check_baseline_issues or []),
         }
+        sent_form_5500 = bool(review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500)
+        sent_schedule_a = bool(review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
+        created_schedule_a = bool(
+            sent_schedule_a
+            and review.schedule_a_match
+            and review.schedule_a_match.get("create_new")
+        )
 
         response_parts: list[str] = []
         retry_count = 0
@@ -3003,7 +3013,23 @@ class FTWilliamsReviewService:
         ]
         review.update_retry_count = retry_count
         review.update_diagnostics = self._operation_diagnostics([*responses, *recovery_responses])
-        verified_update = bool(success)
+        verified_update = bool(
+            success
+            and attempted_count > 0
+            and remaining_count == 0
+            and verification_attempted
+            and verification_success is True
+        )
+        review.update_receipt = (
+            self._build_update_receipt(
+                review,
+                sent_form_5500=sent_form_5500,
+                sent_schedule_a=sent_schedule_a,
+                created_schedule_a=created_schedule_a,
+            )
+            if verified_update
+            else None
+        )
 
         if verified_update and effective_edit_checks:
             edit_checks = await self.ftwilliams.run_query(
@@ -3114,6 +3140,11 @@ class FTWilliamsReviewService:
                     "edit_check_resolved_issue_count": len(review.edit_check_resolved_issues),
                     "audit_pdf_status": review.audit_pdf_status,
                     "audit_pdf_sha256": review.audit_pdf_sha256,
+                    "update_receipt": (
+                        review.update_receipt.model_dump(mode="json")
+                        if review.update_receipt
+                        else None
+                    ),
                 },
             )
         )
@@ -6628,6 +6659,86 @@ class FTWilliamsReviewService:
             return url
         except (KeyError, ValueError):
             return ""
+
+    def _build_update_receipt(
+        self,
+        review: FTWilliamsReview,
+        *,
+        sent_form_5500: bool,
+        sent_schedule_a: bool,
+        created_schedule_a: bool,
+    ) -> FTWilliamsUpdateReceipt:
+        if sent_form_5500 and sent_schedule_a:
+            action = (
+                "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED"
+                if created_schedule_a
+                else "FORM_5500_AND_SCHEDULE_A_UPDATED"
+            )
+        elif sent_schedule_a:
+            action = "SCHEDULE_A_CREATED" if created_schedule_a else "SCHEDULE_A_UPDATED"
+        else:
+            action = "FORM_5500_UPDATED"
+
+        schedule_match = dict(review.schedule_a_match or {})
+        seq_no = str(schedule_match.get("ftw_seq_no") or review.ftw_seq_no or "").strip() or None
+        schedule_record = next(
+            (
+                record
+                for record in review.schedule_a_records or []
+                if str(record.get("ftw_seq_no") or "").strip() == str(seq_no or "")
+            ),
+            {},
+        )
+        query_results = dict(schedule_record.get("query_results") or {})
+
+        def first_text(*values: object) -> str | None:
+            return next((str(value).strip() for value in values if str(value or "").strip()), None)
+
+        plan_lookup = review.plan_lookup
+        plan_name = first_text(
+            review.form_5500_current_values.get("PlanName"),
+            review.form_5500_current_values.get("PLAN_NAME0"),
+            review.form_5500_current_values.get("PlanLine1"),
+            plan_lookup.plan_name if plan_lookup else None,
+        )
+        plan_number = first_text(
+            review.form_5500_current_values.get("SponsDfePlanNum"),
+            review.form_5500_current_values.get("PlanNumber"),
+            plan_lookup.plan_number if plan_lookup else None,
+        )
+        return FTWilliamsUpdateReceipt(
+            receipt_id=uuid4().hex,
+            action=action,
+            verified_at=datetime.utcnow(),
+            year=first_text(review.year, review.comparison_year),
+            ftw_seq_no=seq_no,
+            schedule_desc=first_text(
+                schedule_match.get("description"),
+                query_results.get("ScheduleDesc"),
+                query_results.get("SCHEDULE_DESC"),
+            ),
+            carrier_name=first_text(
+                schedule_match.get("carrier"),
+                schedule_record.get("carrier"),
+                query_results.get("InsCarrierName"),
+                query_results.get("INS_CARRIER_NAME"),
+            ),
+            carrier_ein=first_text(
+                schedule_match.get("carrier_ein"),
+                schedule_record.get("carrier_ein"),
+                query_results.get("InsCarrierEIN"),
+                query_results.get("INS_CARRIER_EIN"),
+            ),
+            contract_number=first_text(
+                schedule_match.get("contract"),
+                schedule_record.get("contract"),
+                query_results.get("InsContractNum"),
+                query_results.get("INS_CONTRACT_NUM"),
+            ),
+            plan_name=plan_name,
+            plan_number=plan_number,
+            ftw_plan_url=first_text(review.ftw_plan_url, self.plan_page_url_for_review(review)),
+        )
 
     def plan_page_url_for_review(self, review: FTWilliamsReview) -> str:
         return self._ftw_plan_page_url(

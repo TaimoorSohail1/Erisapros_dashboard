@@ -1028,6 +1028,27 @@ class ClientFacingError(BaseModel):
     rejected_fields: list[ClientRejectedField] = Field(default_factory=list)
 
 
+class FTWilliamsUpdateReceipt(BaseModel):
+    receipt_id: str
+    action: Literal[
+        "FORM_5500_UPDATED",
+        "SCHEDULE_A_UPDATED",
+        "SCHEDULE_A_CREATED",
+        "FORM_5500_AND_SCHEDULE_A_UPDATED",
+        "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED",
+    ]
+    verified_at: datetime
+    year: str | None = None
+    ftw_seq_no: str | None = None
+    schedule_desc: str | None = None
+    carrier_name: str | None = None
+    carrier_ein: str | None = None
+    contract_number: str | None = None
+    plan_name: str | None = None
+    plan_number: str | None = None
+    ftw_plan_url: str | None = None
+
+
 class FTWilliamsReview(BaseModel):
     id: str | None = None
     filing_id: str
@@ -1103,6 +1124,7 @@ class FTWilliamsReview(BaseModel):
     update_confirmed_count: int = 0
     update_remaining_count: int = 0
     update_results: list[dict] = Field(default_factory=list)
+    update_receipt: FTWilliamsUpdateReceipt | None = None
     update_retry_count: int = 0
     update_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
     schema_validation_results: list[FTWilliamsSchemaValidationResult] = Field(default_factory=list)

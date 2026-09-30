@@ -46,7 +46,7 @@ import {
   updateField,
   updateFTWilliamsScheduleABrokerRows,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
@@ -1102,13 +1102,23 @@ export function FilingReviewPage() {
               onStepSelect={setActiveWorkflowStep}
             />
           </details>
-          <button className="button" type="button" disabled={reviewInteractionBusy} onClick={requestFtwSend}>
-            {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send to FT Williams</>}
-          </button>
+          {verifiedUpdateComplete ? (
+            <span className="automation-no-action"><CheckCircle2 size={16} /> FT Williams verified</span>
+          ) : (
+            <button className="button" type="button" disabled={reviewInteractionBusy} onClick={requestFtwSend}>
+              {ftwSendBusy ? <InlineLoader label="Sending to FT Williams" /> : <><ShieldCheck size={16} /> Send to FT Williams</>}
+            </button>
+          )}
           </div>
         </div>
 
-        {verifiedUpdateComplete && ftwReview ? <FTWUpdateSuccessNotice review={ftwReview} reviewNoteCount={actionRequiredCount} /> : null}
+        {verifiedUpdateComplete && ftwReview ? (
+          <FTWUpdateSuccessNotice
+            onViewAuditPDF={viewFtwAuditPdf}
+            review={ftwReview}
+            reviewNoteCount={actionRequiredCount}
+          />
+        ) : null}
 
         {isProcessing && !fields.length ? (
           <ProcessingPanel filing={filing} />
@@ -1666,23 +1676,41 @@ function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined)
 }
 
 function FTWUpdateSuccessNotice({
+  onViewAuditPDF,
   review,
   reviewNoteCount,
 }: {
+  onViewAuditPDF: () => void;
   review: FTWilliamsReview;
   reviewNoteCount: number;
 }) {
+  if (!isVerifiedFTWilliamsUpdate(review)) return null;
   const confirmed = review.update_confirmed_count || review.update_attempted_count || 0;
+  const receipt = review.update_receipt;
+  const planUrl = receipt?.ftw_plan_url || ftwPlanPageUrl(review);
+  const destination = [
+    receipt?.year ? `Plan year ${receipt.year}` : null,
+    receipt?.ftw_seq_no ? `Schedule A #${receipt.ftw_seq_no}` : null,
+    receipt?.carrier_name || receipt?.schedule_desc || null,
+    receipt?.contract_number ? `Contract ${receipt.contract_number}` : null,
+  ].filter(Boolean).join(" · ");
+  const verifiedAt = receipt?.verified_at
+    ? new Date(receipt.verified_at).toLocaleString()
+    : review.updated_at
+      ? new Date(review.updated_at).toLocaleString()
+      : null;
   return (
     <section className="ftw-verification-summary complete ftw-update-success-notice" role="status" aria-live="polite">
       <div className="ftw-verification-icon"><CheckCircle2 size={22} /></div>
       <div className="ftw-verification-copy">
-        <span>FT Williams update complete</span>
-        <strong>Data updated and verified successfully</strong>
+        <span>Verified by FT Williams</span>
+        <strong>{ftwReceiptActionLabel(receipt?.action)}</strong>
         <small>
           FT Williams returned the saved values for {confirmed} field{confirmed === 1 ? "" : "s"}.
-          {reviewNoteCount ? ` ${reviewNoteCount} extraction review note${reviewNoteCount === 1 ? " remains" : "s remain"}; these do not mean the update failed.` : " No further update action is required."}
+          {reviewNoteCount ? ` ${reviewNoteCount} extraction note${reviewNoteCount === 1 ? " is" : "s are"} retained for audit; no action is required.` : " No further update action is required."}
         </small>
+        {destination ? <small className="ftw-update-receipt-destination">{destination}</small> : null}
+        {verifiedAt ? <small className="ftw-update-receipt-time">Read-back verified {verifiedAt}</small> : null}
       </div>
       <dl className="ftw-update-receipt-metrics" aria-label="Automatic filing decision summary">
         <div><dt>Updated</dt><dd>{review.will_update_count || confirmed}</dd></div>
@@ -1690,8 +1718,51 @@ function FTWUpdateSuccessNotice({
         <div><dt>Skipped</dt><dd>{review.skipped_empty_count || 0}</dd></div>
         <div><dt>Conflicts</dt><dd>{review.decision_required_count || 0}</dd></div>
       </dl>
+      <div className="ftw-update-receipt-actions" aria-label="FT Williams update evidence actions">
+        {planUrl ? (
+          <a className="button secondary" href={planUrl} target="_blank" rel="noreferrer">
+            <ExternalLink size={15} /> Open in FT Williams
+          </a>
+        ) : null}
+        {review.audit_pdf_status === "AVAILABLE" ? (
+          <button className="button secondary" type="button" onClick={onViewAuditPDF}>
+            <FileText size={15} /> View verified PDF
+          </button>
+        ) : null}
+      </div>
+      {(review.update_results || []).length ? (
+        <details className="ftw-update-receipt-details">
+          <summary>View {review.update_results?.length || 0} verified field result{review.update_results?.length === 1 ? "" : "s"}</summary>
+          <div className="ftw-update-receipt-table-wrap">
+            <table>
+              <thead><tr><th>Field</th><th>Sent</th><th>FT Williams returned</th><th>Status</th></tr></thead>
+              <tbody>
+                {(review.update_results || []).map((result, index) => (
+                  <tr key={result.field_id || result.tag || index}>
+                    <th scope="row">{result.label}</th>
+                    <td>{result.sent_value || "Blank"}</td>
+                    <td>{result.returned_value || "Blank"}</td>
+                    <td><span className={result.status === "VERIFIED" ? "receipt-status-verified" : "receipt-status-attention"}>{result.status === "VERIFIED" ? "Verified" : "Needs attention"}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : null}
     </section>
   );
+}
+
+function ftwReceiptActionLabel(action: FTWilliamsUpdateReceipt["action"] | undefined) {
+  switch (action) {
+    case "SCHEDULE_A_CREATED": return "New Schedule A created";
+    case "SCHEDULE_A_UPDATED": return "Existing Schedule A updated";
+    case "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED": return "Form 5500 updated · New Schedule A created";
+    case "FORM_5500_AND_SCHEDULE_A_UPDATED": return "Form 5500 and Existing Schedule A updated";
+    case "FORM_5500_UPDATED": return "Form 5500 updated";
+    default: return "Data updated and verified successfully";
+  }
 }
 
 function reviewChangeToast(previous: FilingDetail | null, next: FilingDetail): ReviewToast {
@@ -1899,7 +1970,7 @@ function WorkflowStepper({
     { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
     { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
     { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwScheduleNeedsDecision ? "active" : ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
-    { key: "REVIEW" as const, label: "Review", detail: processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: processing ? "pending" : needsDecisionCount ? "active" : "done" },
+    { key: "REVIEW" as const, label: "Review", detail: updateSent ? "Verified update complete" : processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: updateSent ? "done" : processing ? "pending" : needsDecisionCount ? "active" : "done" },
     { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Verified" : "Send selected changes", state: updateSent ? "done" : "active" },
   ];
   return (

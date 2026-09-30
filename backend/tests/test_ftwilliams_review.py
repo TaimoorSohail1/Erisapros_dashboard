@@ -3796,6 +3796,43 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.ftw_locked_status, "Unlocked")
         self.assertNotEqual(refreshed.client_error.code if refreshed.client_error else None, "FTW_LOCKED")
 
+    def test_verified_new_schedule_a_receipt_records_created_destination(self):
+        review = FTWilliamsReview(
+            filing_id="filing-new-schedule",
+            year="2025",
+            ftw_browser_customer_id="111",
+            ftw_browser_plan_id="222",
+            browser_mapping_confirmed=True,
+            schedule_a_match={
+                "ftw_seq_no": "8",
+                "carrier": "New Carrier",
+                "carrier_ein": "12-3456789",
+                "contract": "NEW-8",
+                "description": "NEW-8",
+            },
+            schedule_a_records=[
+                {
+                    "ftw_seq_no": "8",
+                    "query_results": {"ScheduleDesc": "NEW-8"},
+                }
+            ],
+            plan_lookup=FTWilliamsPlanLookup(plan_name="Receipt Test Plan", plan_number="501"),
+        )
+
+        receipt = FTWilliamsReviewService(FakeFTWilliamsService())._build_update_receipt(
+            review,
+            sent_form_5500=False,
+            sent_schedule_a=True,
+            created_schedule_a=True,
+        )
+
+        self.assertEqual(receipt.action, "SCHEDULE_A_CREATED")
+        self.assertEqual(receipt.ftw_seq_no, "8")
+        self.assertEqual(receipt.carrier_name, "New Carrier")
+        self.assertEqual(receipt.contract_number, "NEW-8")
+        self.assertIn("plan=111,222", receipt.ftw_plan_url or "")
+        self.assertIn("Year=2025", receipt.ftw_plan_url or "")
+
     def test_successful_ftw_update_is_read_back_and_verified(self):
         class VerifyingFTWilliamsService(FakeFTWilliamsService):
             def __init__(
@@ -3967,6 +4004,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.audit_pdf_status, "AVAILABLE")
         self.assertEqual(review.audit_pdf_key, "audit/test.pdf")
         self.assertEqual(len(review.audit_pdf_sha256 or ""), 64)
+        self.assertIsNotNone(review.update_receipt)
+        self.assertEqual(review.update_receipt.action, "FORM_5500_AND_SCHEDULE_A_UPDATED")
+        self.assertEqual(review.update_receipt.ftw_seq_no, "2")
+        self.assertEqual(review.update_receipt.carrier_name, "BlueCross BlueShield of Oklahoma")
+        self.assertEqual(review.update_receipt.contract_number, "Y00979")
+        self.assertIsNotNone(review.update_receipt.verified_at)
 
         clear_ftw_current_snapshot_cache()
         refreshed_after_success = run_async(
@@ -3980,6 +4023,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(refreshed_after_success.update_confirmed_count, 2)
         self.assertEqual(refreshed_after_success.update_remaining_count, 0)
         self.assertEqual(len(refreshed_after_success.update_results), 2)
+        self.assertIsNotNone(refreshed_after_success.update_receipt)
+        self.assertEqual(
+            refreshed_after_success.update_receipt.receipt_id,
+            review.update_receipt.receipt_id,
+        )
 
         clear_ftw_current_snapshot_cache()
         baseline_warning_ftw = VerifyingFTWilliamsService(
@@ -4045,6 +4093,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             all("returned_value" in item for item in mismatched.update_results),
             mismatched.update_results,
         )
+        self.assertIsNone(mismatched.update_receipt)
         self.assertIn("read-back verification", mismatched.error_message or "")
 
         clear_ftw_current_snapshot_cache()

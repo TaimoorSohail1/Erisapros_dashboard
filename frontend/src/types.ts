@@ -372,6 +372,26 @@ export interface FTWilliamsSchemaValidationResult {
   validated_at: string;
 }
 
+export interface FTWilliamsUpdateReceipt {
+  receipt_id: string;
+  action:
+    | "FORM_5500_UPDATED"
+    | "SCHEDULE_A_UPDATED"
+    | "SCHEDULE_A_CREATED"
+    | "FORM_5500_AND_SCHEDULE_A_UPDATED"
+    | "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED";
+  verified_at: string;
+  year?: string | null;
+  ftw_seq_no?: string | null;
+  schedule_desc?: string | null;
+  carrier_name?: string | null;
+  carrier_ein?: string | null;
+  contract_number?: string | null;
+  plan_name?: string | null;
+  plan_number?: string | null;
+  ftw_plan_url?: string | null;
+}
+
 export interface FTWilliamsReview {
   id?: string | null;
   filing_id: string;
@@ -457,6 +477,7 @@ export interface FTWilliamsReview {
     status: "VERIFIED" | "NEEDS_CORRECTION" | string;
     reason?: string | null;
   }>;
+  update_receipt?: FTWilliamsUpdateReceipt | null;
   update_retry_count?: number;
   update_diagnostics?: FTWilliamsOperationDiagnostic[];
   schema_validation_results?: FTWilliamsSchemaValidationResult[];
