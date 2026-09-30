@@ -123,10 +123,6 @@ def match_schedule_a_brokers(
         elif len(address_matches) == 1:
             selected = address_matches[0]
             reason = "Matched by a unique exact broker address."
-        elif len(extracted_rows) == 1 and len(current_rows) == 1 and available:
-            selected = available[0]
-            reason = "Matched because both documents contain one broker row."
-
         if selected is not None:
             assigned.add(selected)
             matches.append(
@@ -141,7 +137,18 @@ def match_schedule_a_brokers(
             )
             continue
 
-        candidates = identity_matches or name_matches
+        candidates = identity_matches or name_matches or address_matches
+        if not candidates:
+            matches.append(
+                ScheduleABrokerMatch(
+                    extracted_index=extracted_index,
+                    status="AUTO_NEW",
+                    resolved=True,
+                    reason="No existing FT Williams broker matched; this broker will be added as new.",
+                    candidate_ftw_indexes=[],
+                )
+            )
+            continue
         matches.append(
             ScheduleABrokerMatch(
                 extracted_index=extracted_index,
@@ -170,7 +177,7 @@ def resolved_schedule_a_broker_rows(
     aligned: list[ScheduleABrokerRow | None] = [None] * len(current_rows)
     for match in matches:
         row = extracted_rows[match.extracted_index]
-        if match.status == "CONFIRMED_NEW":
+        if match.status in {"CONFIRMED_NEW", "AUTO_NEW"}:
             aligned.append(row)
         elif match.ftw_index is not None:
             if aligned[match.ftw_index] is not None:

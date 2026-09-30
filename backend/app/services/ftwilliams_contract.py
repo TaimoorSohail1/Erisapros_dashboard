@@ -120,7 +120,13 @@ TEXT_LIMITS = {
 }
 
 
-def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> str:
+def normalize_ftw_update_value(
+    form_type: FormType,
+    tag: str,
+    value: object,
+    *,
+    uppercase_text: bool = False,
+) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
@@ -235,7 +241,8 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
         _raise(tag, text, "control characters are not allowed")
     if len(text) > max_length:
         _raise(tag, text, f"maximum length is {max_length} characters")
-    return re.sub(r"\s+", " ", text)
+    normalized_text = re.sub(r"\s+", " ", text)
+    return normalized_text.upper() if uppercase_text else normalized_text
 
 
 def ftw_expected_format(tag: str) -> str:

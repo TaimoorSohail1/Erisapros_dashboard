@@ -27,6 +27,7 @@ import { formatFilingDisplayName, percent } from "../utils";
 type StatusFilter = "ALL" | FilingStatus;
 type DateFilter = "ALL" | "TODAY" | "LAST_7" | "LAST_30";
 type ContractTypeFilter = "ALL" | ScheduleAContractType;
+type LifecycleFilter = "ACTIVE" | "COMPLETED" | "ALL";
 type DashboardToast = {
   message: string;
   title: string;
@@ -51,6 +52,7 @@ export function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
+  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>("ACTIVE");
   const ftwFailuresState = useFTWilliamsFailures();
   const ftwFailureCount = ftwFailuresState.data.total;
   const [rowsLimit, setRowsLimit] = useState(25);
@@ -124,9 +126,12 @@ export function DashboardPage() {
         const matchesStatus = statusFilter === "ALL" || filing.status === statusFilter;
         const matchesDate = matchesDateFilter(filing.created_at, dateFilter);
         const matchesContractType = contractTypeFilter === "ALL" || (filing.schedule_a_contract_type || "UNKNOWN") === contractTypeFilter;
-        return matchesSearch && matchesStatus && matchesDate && matchesContractType;
+        const completed = filing.automation_status === "COMPLETED";
+        const matchesLifecycle = lifecycleFilter === "ALL"
+          || (lifecycleFilter === "COMPLETED" ? completed : !completed);
+        return matchesSearch && matchesStatus && matchesDate && matchesContractType && matchesLifecycle;
       });
-  }, [contractTypeFilter, dateFilter, search, sortedFilings, statusFilter]);
+  }, [contractTypeFilter, dateFilter, lifecycleFilter, search, sortedFilings, statusFilter]);
 
   const groupedFilings = useMemo(() => groupFilingsByCompany(filteredFilings), [filteredFilings]);
   const totalPages = Math.max(1, Math.ceil(groupedFilings.length / rowsLimit));
@@ -136,7 +141,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, statusFilter, dateFilter, contractTypeFilter, rowsLimit]);
+  }, [search, statusFilter, dateFilter, contractTypeFilter, lifecycleFilter, rowsLimit]);
 
   useEffect(() => {
     setCurrentPage((page) => Math.min(page, totalPages));
@@ -234,6 +239,16 @@ export function DashboardPage() {
               <p>{initialLoading ? "Loading ShareFile packages…" : `${allCompanyGroups.length} compan${allCompanyGroups.length === 1 ? "y" : "ies"} · ${filings.length} filing${filings.length === 1 ? "" : "s"}`}</p>
             </div>
             <div className="dashboard-table-controls">
+              <FilterDropdown
+                label="View"
+                value={lifecycleFilter}
+                options={[
+                  { value: "ACTIVE", label: "Active" },
+                  { value: "COMPLETED", label: "Completed" },
+                  { value: "ALL", label: "All filings" },
+                ]}
+                onChange={(value) => setLifecycleFilter(value as LifecycleFilter)}
+              />
               <label className="dashboard-search">
                 <Search size={17} />
                 <span>Search</span>
@@ -302,7 +317,7 @@ export function DashboardPage() {
                   <th>Plan / EIN</th>
                   <th>Status</th>
                   <th>Coverage</th>
-                  <th>Issues</th>
+                  <th>Decisions needed</th>
                   <th>Uploaded</th>
                   <th>Action</th>
                   <th className="more-col" />
@@ -572,9 +587,8 @@ function DashboardCompanyRow({
 }) {
   const summary = dashboardCompanySummary(group);
   const coverage = dashboardCompanyCoverage(group);
-  const issues = group.filings.reduce((total, filing) => total + filingProblemCount(filing), 0);
-  const highIssues = group.filings.reduce((total, filing) => total + (filing.missing_high_priority_count || 0), 0);
-  const otherIssues = Math.max(0, issues - highIssues);
+  const decisions = group.filings.reduce((total, filing) => total + filingDecisionCount(filing), 0);
+  const blocked = group.filings.reduce((total, filing) => total + (filing.blocked_field_count || 0), 0);
   const latestFiling = group.filings[0];
   const planIdentities = new Set(group.filings.map(filingPlanIdentity).filter((value) => value !== "Plan pending"));
   return (
@@ -620,9 +634,9 @@ function DashboardCompanyRow({
       </td>
       <td>
         <div className="dashboard-issues">
-          <strong>{issues} issue{issues === 1 ? "" : "s"}</strong>
-          <small><i className="issue-dot high" /> {highIssues} high priority</small>
-          <small><i className="issue-dot medium" /> {otherIssues} other</small>
+          <strong>{decisions} decision{decisions === 1 ? "" : "s"}</strong>
+          <small><i className="issue-dot high" /> {decisions} conflict{decisions === 1 ? "" : "s"}</small>
+          <small><i className="issue-dot medium" /> {blocked} blocked</small>
         </div>
       </td>
       <td>
@@ -651,13 +665,13 @@ function DashboardFilingRow({
   onDeleteRequest: (filing: Filing) => void;
 }) {
   const missingOther = (filing.missing_medium_priority_count || 0) + (filing.missing_low_priority_count || 0);
-  const problemCount = (filing.missing_high_priority_count || 0) + missingOther + (filing.low_confidence_count || 0) + (filing.unmapped_count || 0);
+  const decisionCount = filingDecisionCount(filing);
   const totalFields = filing.review_field_count || DASHBOARD_REVIEW_FIELD_TOTAL;
   const missingFields = (filing.missing_high_priority_count || 0) + missingOther;
   const foundFields = filing.review_field_count ? (filing.found_field_count || 0) : Math.max(0, totalFields - missingFields);
   const pipelineStage = dashboardPipelineStage(filing);
   const fieldMetrics = dashboardFieldMetrics(filing, foundFields, totalFields, pipelineStage);
-  const issueMetrics = dashboardIssueMetrics(filing, problemCount, missingOther, pipelineStage);
+  const issueMetrics = dashboardIssueMetrics(filing, decisionCount, pipelineStage);
   const displayName = formatFilingDisplayName(filing.file_name);
   const clientName = filingClientName(filing);
   const planIdentity = filingPlanIdentity(filing);
@@ -983,22 +997,21 @@ function dashboardFieldMetrics(
 
 function dashboardIssueMetrics(
   filing: Filing,
-  problemCount: number,
-  missingOther: number,
+  decisionCount: number,
   stage: DashboardPipelineStage,
 ) {
   if (stage.pendingMetrics) {
     return {
       headline: "Pending",
-      highDetail: "High-priority issues not calculated yet",
-      otherDetail: "Medium / low issues pending",
+      highDetail: "Conflicts not calculated yet",
+      otherDetail: "Blocked fields pending",
     };
   }
 
   return {
-    headline: `${problemCount} issues`,
-    highDetail: `${filing.missing_high_priority_count || 0} high priority`,
-    otherDetail: `${missingOther} medium / low`,
+    headline: `${decisionCount} decision${decisionCount === 1 ? "" : "s"}`,
+    highDetail: `${decisionCount} conflict${decisionCount === 1 ? "" : "s"}`,
+    otherDetail: `${filing.blocked_field_count || 0} blocked`,
   };
 }
 
@@ -1204,12 +1217,8 @@ function dashboardCompanyCoverage(group: DashboardCompanyGroup) {
   };
 }
 
-function filingProblemCount(filing: Filing) {
-  return (filing.missing_high_priority_count || 0)
-    + (filing.missing_medium_priority_count || 0)
-    + (filing.missing_low_priority_count || 0)
-    + (filing.low_confidence_count || 0)
-    + (filing.unmapped_count || 0);
+function filingDecisionCount(filing: Filing) {
+  return filing.decision_required_count || 0;
 }
 
 function firstStringFromPackageDocuments(filing: Filing, keys: string[]) {

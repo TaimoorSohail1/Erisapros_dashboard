@@ -21,6 +21,7 @@ from app.models import (
     FilingStatus,
     FormType,
     FTWilliamsComparisonField,
+    FTWFieldDecision,
     FTWilliamsEditCheckIssue,
     FTWilliamsManualMatchRequest,
     FTWilliamsBrokerMatchesRequest,
@@ -666,6 +667,8 @@ class FTWilliamsReviewService:
             fields=comparison_fields,
             **identity,
         )
+        decision_counts = self._review_decision_count_updates(review)
+        review = review.model_copy(update=decision_counts)
         review = await repo.upsert_ftwilliams_review(review)
         filing_contract_updates = {
             "schedule_a_contract_type": extracted_contract_classification.contract_type,
@@ -680,6 +683,7 @@ class FTWilliamsReviewService:
             rules=published_rules,
         )
         filing_contract_updates |= self._review_field_count_updates(fields, classification_relevant_fields)
+        filing_contract_updates |= decision_counts
         if ftw_contract_classification:
             filing_contract_updates |= {
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type,
@@ -1096,6 +1100,8 @@ class FTWilliamsReviewService:
                 "ftw_seq_no": payload.ftw_seq_no,
             }
         )
+        decision_counts = self._review_decision_count_updates(updated_review)
+        updated_review = updated_review.model_copy(update=decision_counts)
         updated_review.id = review.id
         updated_review.created_at = review.created_at
         updated_review = await repo.upsert_ftwilliams_review(updated_review)
@@ -1112,6 +1118,7 @@ class FTWilliamsReviewService:
             rules=published_rules,
         )
         filing_updates |= self._review_field_count_updates(fields, classification_relevant_fields)
+        filing_updates |= decision_counts
         if ftw_contract_classification:
             filing_updates |= {
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type,
@@ -1345,6 +1352,39 @@ class FTWilliamsReviewService:
             "missing_low_priority_count": missing_low,
             "low_confidence_count": low_confidence,
             "unmapped_count": unmapped,
+        }
+
+    @staticmethod
+    def _review_decision_count_updates(review: FTWilliamsReview) -> dict[str, int]:
+        field_conflicts = sum(
+            1 for field in review.fields if field.decision == FTWFieldDecision.CONFLICT
+        )
+        blocked_fields = sum(
+            1 for field in review.fields if field.decision == FTWFieldDecision.BLOCKED
+        )
+        unresolved_brokers = len(
+            {
+                match.extracted_index
+                for match in review.schedule_a_broker_matches
+                if not match.resolved
+            }
+        )
+        unresolved_plan_year = int(bool(review.plan_year_conflict and not review.plan_year_resolution))
+        return {
+            "decision_required_count": field_conflicts + unresolved_brokers + unresolved_plan_year,
+            "blocked_field_count": blocked_fields,
+            "will_update_count": sum(
+                1 for field in review.fields if field.decision == FTWFieldDecision.WILL_UPDATE
+            ),
+            "kept_current_count": sum(
+                1 for field in review.fields if field.decision == FTWFieldDecision.KEEP_CURRENT
+            ),
+            "skipped_empty_count": sum(
+                1 for field in review.fields if field.decision == FTWFieldDecision.SKIP_EMPTY
+            ),
+            "unchanged_count": sum(
+                1 for field in review.fields if field.decision == FTWFieldDecision.NO_CHANGE
+            ),
         }
 
     @staticmethod
@@ -4456,6 +4496,40 @@ class FTWilliamsReviewService:
                 validation_expected_format = None
                 validation_normalized_value = None
                 validation_blocking = False
+            update_included = bool(
+                tag
+                and extracted_proposed_value.strip()
+                and update_allowed
+                and contract_type_allowed
+            )
+            if validation_blocking:
+                decision = FTWFieldDecision.BLOCKED
+                decision_reason = validation_message or "The value cannot be sent safely to FT Williams."
+            elif not contract_type_allowed:
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = "The field does not apply to the selected Schedule A contract type."
+            elif not extracted_proposed_value.strip():
+                if current_value.strip():
+                    decision = FTWFieldDecision.KEEP_CURRENT
+                    decision_reason = "Extraction is blank, so the current FT Williams value will be preserved."
+                else:
+                    decision = FTWFieldDecision.SKIP_EMPTY
+                    decision_reason = "Extraction and FT Williams are both blank, so the field will be skipped."
+            elif validation_status == "UNSUPPORTED" or not update_included:
+                decision = FTWFieldDecision.BLOCKED
+                decision_reason = validation_message or update_exclusion_reason or "The field is not safe to update."
+            elif not current_value.strip():
+                decision = FTWFieldDecision.WILL_UPDATE
+                decision_reason = "FT Williams is blank and the extracted value is valid."
+            elif not changed:
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = "The extracted and current FT Williams values match."
+            elif field.status == ExtractedFieldStatus.EDITED:
+                decision = FTWFieldDecision.WILL_UPDATE
+                decision_reason = "A reviewer confirmed the proposed FT Williams value."
+            else:
+                decision = FTWFieldDecision.CONFLICT
+                decision_reason = "The extracted and current FT Williams values are different."
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,
@@ -4471,18 +4545,15 @@ class FTWilliamsReviewService:
                     priority=field.priority,
                     extraction_status=field.status,
                     changed=changed,
-                    update_included=bool(
-                        tag
-                        and extracted_proposed_value.strip()
-                        and update_allowed
-                        and contract_type_allowed
-                    ),
+                    update_included=update_included,
                     update_exclusion_reason=update_exclusion_reason,
                     validation_status=validation_status,
                     validation_message=validation_message,
                     validation_expected_format=validation_expected_format,
                     validation_normalized_value=validation_normalized_value,
                     validation_blocking=validation_blocking,
+                    decision=decision,
+                    decision_reason=decision_reason,
                 )
             )
         return comparison

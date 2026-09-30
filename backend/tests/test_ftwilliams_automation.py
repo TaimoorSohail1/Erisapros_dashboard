@@ -19,6 +19,7 @@ from app.models import (
     FormType,
     FTWAutomationStatus,
     FTWAutomationDecision,
+    FTWFieldDecision,
     FTWilliamsComparisonField,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
@@ -199,6 +200,8 @@ class FTWAutomationPolicyTests(unittest.TestCase):
                     update_included=True,
                     validation_status="VALID",
                     validation_blocking=False,
+                    decision=FTWFieldDecision.WILL_UPDATE,
+                    decision_reason="Automation fixture has a confirmed safe update.",
                 )
             ],
         )
@@ -275,6 +278,32 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.reasons, [])
 
+    def test_valid_low_confidence_value_with_source_evidence_can_update_blank_ftw_field(self):
+        filing, review, extracted, settings = self.safe_case()
+        extracted.status = ExtractedFieldStatus.LOW_CONFIDENCE
+        extracted.confidence = 0.60
+        review.fields[0].current_value = ""
+        review.fields[0].extraction_status = ExtractedFieldStatus.LOW_CONFIDENCE
+        review.fields[0].confidence = 0.60
+        review.fields[0].decision = FTWFieldDecision.WILL_UPDATE
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
+
+    def test_different_nonblank_extracted_and_ftw_values_require_a_decision(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.fields[0].decision = FTWFieldDecision.CONFLICT
+        review.fields[0].decision_reason = "The extracted and current FT Williams values are different."
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertFalse(decision.eligible)
+        self.assertTrue(any("conflicting" in reason.lower() for reason in decision.reasons))
+
     def test_verified_multi_record_replacement_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
         review.schedule_a_records.append(
@@ -287,18 +316,18 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.reasons, [])
 
-    def test_low_confidence_required_field_stops_automatic_send(self):
+    def test_low_confidence_required_field_with_source_evidence_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.confidence = 0.90
         review.fields[0].confidence = 0.90
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
-        self.assertFalse(decision.eligible)
-        self.assertTrue(any("95%" in reason for reason in decision.reasons))
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
 
-    def test_low_confidence_changed_medium_priority_field_stops_automatic_send(self):
+    def test_low_confidence_changed_medium_priority_field_with_source_evidence_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.priority = FieldPriority.MEDIUM
         extracted.confidence = 0.80
@@ -307,9 +336,9 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
-        self.assertFalse(decision.eligible)
-        self.assertTrue(any("95%" in reason for reason in decision.reasons))
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
 
     def test_reviewer_confirmed_low_confidence_field_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
@@ -334,18 +363,22 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
         self.assertEqual(decision.next_action, "MANUAL_SEND")
 
-    def test_missing_required_field_stops_automatic_send(self):
+    def test_missing_required_extraction_preserves_current_value_without_stopping_send(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.status = ExtractedFieldStatus.MISSING
         extracted.value = extracted.proposed_value = ""
         review.fields[0].extraction_status = ExtractedFieldStatus.MISSING
         review.fields[0].extracted_value = review.fields[0].proposed_value = ""
+        review.fields[0].changed = False
+        review.fields[0].update_included = False
+        review.fields[0].decision = FTWFieldDecision.KEEP_CURRENT
+        review.fields[0].decision_reason = "Extraction is blank, so the current FT Williams value will be preserved."
         filing.missing_high_priority_count = 1
 
         decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
 
-        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
-        self.assertTrue(any("requires review" in reason for reason in decision.reasons))
+        self.assertEqual(decision.status, FTWAutomationStatus.COMPLETED)
+        self.assertTrue(decision.eligible)
 
     def test_unresolved_broker_match_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()

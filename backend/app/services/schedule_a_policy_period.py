@@ -1,7 +1,7 @@
 """Dates bound to an explicit contract-year label, never correspondence dates."""
 import calendar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 
@@ -17,6 +17,18 @@ class ContractPeriod:
     ending: str
     source_text: str
     month_precision: bool
+    original_ending: str | None = None
+    adjusted_to_twelve_months: bool = False
+
+
+def _maximum_inclusive_period_end(beginning: datetime) -> datetime:
+    try:
+        anniversary = beginning.replace(year=beginning.year + 1)
+        return anniversary - timedelta(days=1)
+    except ValueError:
+        # A period beginning on leap day ends on the last valid day of the
+        # following February rather than being shortened to February 27.
+        return beginning.replace(year=beginning.year + 1, day=28)
 
 
 def explicit_contract_periods(text: str) -> list[ContractPeriod]:
@@ -36,7 +48,16 @@ def explicit_contract_periods(text: str) -> list[ContractPeriod]:
                 continue
         except ValueError:
             continue
-        periods.append(ContractPeriod(dates[0].strftime("%m/%d/%Y"),
-            dates[1].strftime("%m/%d/%Y"), match.group(0),
-            any(token.count("/") == 1 for token in match.groups())))
+        original_ending = dates[1]
+        maximum_ending = _maximum_inclusive_period_end(dates[0])
+        adjusted = original_ending > maximum_ending
+        ending = maximum_ending if adjusted else original_ending
+        periods.append(ContractPeriod(
+            dates[0].strftime("%m/%d/%Y"),
+            ending.strftime("%m/%d/%Y"),
+            match.group(0),
+            any(token.count("/") == 1 for token in match.groups()),
+            original_ending=original_ending.strftime("%m/%d/%Y") if adjusted else None,
+            adjusted_to_twelve_months=adjusted,
+        ))
     return periods

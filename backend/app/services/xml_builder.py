@@ -453,7 +453,12 @@ def update_values_for_form(
         tag = resolve_ftw_update_tag(field)
         if not tag:
             continue
-        proposed = normalize_ftw_update_value(form_type, tag, field.proposed_value)
+        proposed = normalize_ftw_update_value(
+            form_type,
+            tag,
+            field.proposed_value,
+            uppercase_text=True,
+        )
         if not proposed:
             continue
         if current_values is not None:
@@ -509,7 +514,12 @@ def _form_5500_sponsor_address_values(
     for tag, raw_value in candidates.items():
         if not str(raw_value or "").strip():
             continue
-        normalized = normalize_ftw_update_value(FormType.FORM_5500, tag, raw_value)
+        normalized = normalize_ftw_update_value(
+            FormType.FORM_5500,
+            tag,
+            raw_value,
+            uppercase_text=True,
+        )
         if current_values is not None and not values_meaningfully_different(
             current_by_tag.get(tag, ""),
             normalized,
@@ -786,7 +796,29 @@ def schedule_a_broker_multipart_rows(
             rows[index - 1][multipart_tag] = text
         else:
             rows[index - 1].pop(multipart_tag, None)
-    return [row for row in rows if row]
+    return [
+        row
+        for row in rows
+        if row and not _schedule_a_broker_has_explicit_zero_compensation(row)
+    ]
+
+
+def _schedule_a_broker_has_explicit_zero_compensation(row: dict[str, str]) -> bool:
+    """Exclude only rows where FTW explicitly reports both amounts as zero."""
+    amounts: list[Decimal] = []
+    for tag in ("CommPdAmtXX", "FeesPdAmtXX"):
+        if tag not in row:
+            return False
+        text = re.sub(r"[^0-9().-]", "", str(row.get(tag) or "")).strip()
+        if not text:
+            return False
+        if text.startswith("(") and text.endswith(")"):
+            text = f"-{text[1:-1]}"
+        try:
+            amounts.append(Decimal(text))
+        except InvalidOperation:
+            return False
+    return all(amount == 0 for amount in amounts)
 
 
 def _sort_schedule_a_broker_rows_by_payment(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1001,7 +1033,12 @@ def _schedule_a_broker_row_update_values(
     }
     normalized: dict[str, str] = {}
     for tag, value in values.items():
-        text = normalize_ftw_update_value(FormType.SCHEDULE_A, tag, value)
+        text = normalize_ftw_update_value(
+            FormType.SCHEDULE_A,
+            tag,
+            value,
+            uppercase_text=True,
+        )
         if str(text or "").strip():
             normalized[tag] = str(text)
     return normalized

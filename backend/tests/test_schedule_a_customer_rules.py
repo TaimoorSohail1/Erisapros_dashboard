@@ -5,10 +5,65 @@ from app.services.extractor import merge_schedule_a_broker_rows
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.schedule_a_semantic_layer import SemanticDocument, enrich_schedule_a_result
 from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+from app.services.schedule_a_customer_rules import apply_customer_defaults
 from app.services.xml_builder import schedule_a_broker_update_values
 
 
 class ScheduleACustomerRulesTests(unittest.TestCase):
+    def test_brokers_with_explicit_zero_commissions_and_fees_are_excluded(self):
+        result = NormalizedExtractionResult(
+            provider="EyeLevel",
+            fields=[],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="Zero Broker",
+                    commission_total="0.00",
+                    fee_total="$0",
+                    source_page=2,
+                ),
+                ScheduleABrokerRow(
+                    name="Paid Broker",
+                    commission_total="125.50",
+                    fee_total="0",
+                    source_page=2,
+                ),
+            ],
+        )
+
+        apply_customer_defaults(result)
+
+        self.assertEqual([row.name for row in result.schedule_a_broker_rows], ["Paid Broker"])
+        exclusion = next(
+            item
+            for item in result.raw["customer_rules"]
+            if item["rule"] == "exclude_zero_compensation_broker"
+        )
+        self.assertEqual(exclusion["broker"], "Zero Broker")
+
+    def test_unlabelled_positive_broker_payment_is_classified_as_a_fee(self):
+        result = NormalizedExtractionResult(
+            provider="EyeLevel",
+            fields=[],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="Example Broker",
+                    commission_total="450.25",
+                    fee_total="0",
+                    purpose="Broker payment",
+                    commission_source_text="Example Broker $450.25",
+                    source_page=3,
+                )
+            ],
+        )
+
+        apply_customer_defaults(result)
+
+        row = result.schedule_a_broker_rows[0]
+        self.assertEqual(row.commission_total, "0")
+        self.assertEqual(row.fee_total, "450.25")
+        self.assertEqual(row.purpose, "FEES")
+        self.assertEqual(result.raw["customer_rules"][0]["rule"], "unlabelled_broker_payment_to_fee")
+
     def enrich(self, text, value="17"):
         return enrich_schedule_a_result(
             NormalizedExtractionResult(provider="EyeLevel", fields=[NormalizedExtractionField(

@@ -234,7 +234,7 @@ class SelectedSendTests(unittest.TestCase):
             schedule_a_broker_rows=[ScheduleABrokerRow(name="Unresolved broker")],
             schedule_a_broker_match_complete=False)
         FTWilliamsReviewService()._prepare_selected_update(review, fields, ["name"], include_broker_updates=False)
-        self.assertIn("New sponsor", review.update_xml_5500)
+        self.assertIn("NEW SPONSOR", review.update_xml_5500)
         self.assertEqual(review.update_xml_schedule_a, "")
         self.assertFalse(review.fields[1].update_included)
         self.assertEqual(len(review.schedule_a_broker_rows), 1)

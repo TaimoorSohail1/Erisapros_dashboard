@@ -514,6 +514,11 @@ def _reconcile_contract_period(result, document, corrections):
         source = period.source_text
         if month_precision:
             source += "\nMonth-only source: day boundaries derived; confirm exact policy dates."
+        if period.adjusted_to_twelve_months:
+            source += (
+                f"\nOriginal ending date {period.original_ending} exceeded 12 months; "
+                f"automatically limited to {period.ending}."
+            )
         item.value = value
         item.candidate_values = [value]
         item.page = page
@@ -522,7 +527,11 @@ def _reconcile_contract_period(result, document, corrections):
         item.confidence = 0.5 if month_precision else 0.9
         if before != value:
             corrections.append({"field": label, "before": before, "after": value,
-                                "reason": "explicit_contract_period"})
+                                "reason": (
+                                    "twelve_month_policy_limit"
+                                    if prefix == "1g." and period.adjusted_to_twelve_months
+                                    else "explicit_contract_period"
+                                )})
     return ([{"type": "contract_period_month_precision",
               "reason": "The source prints months, not exact days; confirm derived policy-date boundaries."}]
             if month_precision else [])

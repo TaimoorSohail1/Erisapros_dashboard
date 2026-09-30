@@ -256,6 +256,23 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertFalse(matches[0].resolved)
         self.assertEqual(matches[0].candidate_ftw_indexes, [0, 1])
 
+    def test_broker_with_no_candidate_is_automatically_added_as_new(self):
+        extracted_rows = [
+            extracted("New Broker", "99 New Street", "10003", commission="250")
+        ]
+        current_rows = [
+            current(1, "Existing Broker", "1 Main Street", "10001", commission="100")
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertEqual(matches[0].status, "AUTO_NEW")
+        self.assertTrue(matches[0].resolved)
+        self.assertEqual(matches[0].candidate_ftw_indexes, [])
+        self.assertIsNone(aligned[0])
+        self.assertEqual(aligned[1].name, "New Broker")
+
     def test_confirmed_new_row_is_appended_and_unmatched_current_row_is_preserved(self):
         extracted_rows = [
             extracted("Existing Broker", "1 Main St", "10001", "100"),
@@ -444,7 +461,7 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         )
 
         brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
-        self.assertEqual([broker.findtext("NameXX") for broker in brokers], ["Beta Broker", "Alpha Broker", "Keep Broker"])
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], ["BETA BROKER", "ALPHA BROKER", "Keep Broker"])
         self.assertEqual([broker.findtext("CommPdAmtXX") for broker in brokers], ["200", "100", "50"])
         self.assertEqual(schedule_a_replacement_data_gaps(records, xml), [])
 

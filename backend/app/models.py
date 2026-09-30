@@ -93,6 +93,15 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
+class FTWFieldDecision(str, Enum):
+    WILL_UPDATE = "WILL_UPDATE"
+    KEEP_CURRENT = "KEEP_CURRENT"
+    NO_CHANGE = "NO_CHANGE"
+    SKIP_EMPTY = "SKIP_EMPTY"
+    CONFLICT = "CONFLICT"
+    BLOCKED = "BLOCKED"
+
+
 class FTWilliamsQueryState(str, Enum):
     NOT_QUERIED = "NOT_QUERIED"
     MATCHED = "MATCHED"
@@ -606,6 +615,12 @@ class Filing(BaseModel):
     review_field_count: int = 0
     found_field_count: int = 0
     excluded_field_count: int = 0
+    decision_required_count: int = 0
+    blocked_field_count: int = 0
+    will_update_count: int = 0
+    kept_current_count: int = 0
+    skipped_empty_count: int = 0
+    unchanged_count: int = 0
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False
@@ -965,6 +980,11 @@ class FTWilliamsComparisonField(BaseModel):
     validation_expected_format: str | None = None
     validation_normalized_value: str | None = None
     validation_blocking: bool = False
+    # Optional for backward compatibility with reviews persisted before the
+    # explicit decision engine was introduced; the UI retains its legacy
+    # grouping fallback until the next review refresh computes a decision.
+    decision: FTWFieldDecision | None = None
+    decision_reason: str | None = None
 
 
 class ClientRejectedField(BaseModel):
@@ -1036,6 +1056,12 @@ class FTWilliamsReview(BaseModel):
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
     schedule_a_broker_match_complete: bool = True
+    decision_required_count: int = 0
+    blocked_field_count: int = 0
+    will_update_count: int = 0
+    kept_current_count: int = 0
+    skipped_empty_count: int = 0
+    unchanged_count: int = 0
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None

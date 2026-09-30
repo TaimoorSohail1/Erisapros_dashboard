@@ -8,12 +8,26 @@ from app.models import FieldRule, FormType
 RETIRED_FIELD_RULE_KEYS = frozenset(
     {
         "form_5500_part_i_2a_plan_administrator_name",
+        "form_5500_part_ii_9_plan_funding_arrangement",
+        "form_5500_part_ii_10a_plan_benefit_arrangement",
+        "form_5500_part_ii_10b_schedules_attached",
         "ftw_discovered_schedule_a_health_ind",
         "ftw_discovered_schedule_a_ins_fail_provide_info_text",
         "ftw_discovered_schedule_a_vision_ind",
     }
 )
-RETIRED_FIELD_NAMES = frozenset({"2a. Plan Administrator Name", "Plan Administrator Name"})
+RETIRED_FIELD_NAMES = frozenset(
+    {
+        "2a. Plan Administrator Name",
+        "Plan Administrator Name",
+        "9. Plan funding arrangement",
+        "Plan funding arrangement",
+        "10a. Plan benefit arrangement",
+        "Plan benefit arrangement",
+        "10b. Schedules attached",
+        "Schedules attached",
+    }
+)
 
 
 @lru_cache

@@ -16,6 +16,35 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_new_outbound_text_updates_are_uppercase(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1a. Name of Insurance Company",
+            normalized_field_name="carrier_name",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            mapped_label="1a. Name of Insurance Company",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="Acme Life Insurance Company",
+            proposed_value="Acme Life Insurance Company",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOLScheduleAData",
+            [field],
+            FormType.SCHEDULE_A,
+            transaction_type="2",
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn(
+            "<InsCarrierName>ACME LIFE INSURANCE COMPANY</InsCarrierName>",
+            xml,
+        )
+
     def test_selected_schedule_a_brokers_are_written_in_descending_payment_order(self):
         xml = build_schedule_a_records_update_xml(
             [
@@ -51,6 +80,39 @@ class XmlBuilderTests(unittest.TestCase):
             "RSC INS BROKERAGE INC",
             "EMERSON ROGERS LLC",
         ])
+
+    def test_existing_broker_with_explicit_zero_commissions_and_fees_is_excluded(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {"InsCarrierName": "Anthem", "InsContractNum": "300683"},
+                    "query_subparts": {
+                        "Broker": [
+                            {
+                                "Name1": "ZERO BROKER",
+                                "CommPdAmt01": "0.00",
+                                "FeesPdAmt01": "0",
+                            },
+                            {
+                                "Name1": "PAID BROKER",
+                                "CommPdAmt01": "125",
+                                "FeesPdAmt01": "0",
+                            },
+                        ]
+                    },
+                }
+            ],
+            "1",
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[],
+        )
+
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+        self.assertEqual([broker.findtext("NameXX") for broker in brokers], ["PAID BROKER"])
 
     def test_schedule_a_new_broker_row_writes_complete_address(self):
         records = [
@@ -122,8 +184,8 @@ class XmlBuilderTests(unittest.TestCase):
 
         broker = ET.fromstring(xml).find(".//DOLSubPartData/Broker")
         self.assertIsNotNone(broker)
-        self.assertEqual(broker.findtext("AddressLine1XX"), "AMS Legacy Direct Biol Lockbox")
-        self.assertEqual(broker.findtext("AddressLine2XX"), "PO Box 736061")
+        self.assertEqual(broker.findtext("AddressLine1XX"), "AMS LEGACY DIRECT BIOL LOCKBOX")
+        self.assertEqual(broker.findtext("AddressLine2XX"), "PO BOX 736061")
         self.assertLessEqual(len(broker.findtext("AddressLine1XX") or ""), 35)
         self.assertLessEqual(len(broker.findtext("AddressLine2XX") or ""), 35)
 
@@ -173,7 +235,7 @@ class XmlBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("<NameXX>Nth Insurance Agency</NameXX>", xml)
+        self.assertIn("<NameXX>NTH INSURANCE AGENCY</NameXX>", xml)
 
     def test_schedule_a_broker_reviewer_purpose_is_sent(self):
         xml = build_schedule_a_records_update_xml(
@@ -584,10 +646,10 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertNotIn("SPONS_DFE_EIN", xml)
         self.assertNotIn("SPONS_DFE_MAIL_STR_ADDRESS", xml)
         self.assertNotIn("ADMIN_NAME0", xml)
-        self.assertIn("<PlanName>New Plan Name</PlanName>", xml)
-        self.assertIn("<SDName>New Sponsor Name</SDName>", xml)
+        self.assertIn("<PlanName>NEW PLAN NAME</PlanName>", xml)
+        self.assertIn("<SDName>NEW SPONSOR NAME</SDName>", xml)
         self.assertIn("<SDEIN>12-3456789</SDEIN>", xml)
-        self.assertIn("<SDAddressLine1>490B Boston Post Road</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine1>490B BOSTON POST ROAD</SDAddressLine1>", xml)
         self.assertNotIn("<ADMINName>", xml)
 
     def test_5500_verified_sponsor_ein_uses_current_ft_tag(self):
@@ -1213,7 +1275,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(xml.count("<DOLScheduleAData>"), 2)
         self.assertNotIn("<FTWSeqNo>", xml)
         self.assertIn("<InsCarrierName>Kaiser</InsCarrierName>", xml)
-        self.assertIn("<NameXX>New Broker</NameXX>", xml)
+        self.assertIn("<NameXX>NEW BROKER</NameXX>", xml)
         self.assertIn("<InsCarrierName>Principal</InsCarrierName>", xml)
         self.assertIn("<NameXX>Principal Broker</NameXX>", xml)
         self.assertNotIn("<Name1>Old Broker</Name1>", xml)
@@ -1411,7 +1473,7 @@ class XmlBuilderTests(unittest.TestCase):
         root = ET.fromstring(xml)
         broker = root.find(".//DOLScheduleAData/DOLSubPartData/Broker")
         self.assertIsNotNone(broker)
-        self.assertEqual(broker.findtext("NameXX"), "Correct Broker")
+        self.assertEqual(broker.findtext("NameXX"), "CORRECT BROKER")
         self.assertEqual(broker.findtext("CommPdAmtXX"), "10484")
         self.assertEqual(broker.findtext("CodeXX"), "3")
 
@@ -1625,7 +1687,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<ScheduleDesc>VISION</ScheduleDesc>", xml)
         self.assertIn("<InsCarrierName>Vision Service Plan</InsCarrierName>", xml)
         self.assertIn("<ScheduleDesc>NEWCARR</ScheduleDesc>", xml)
-        self.assertIn("<InsCarrierName>New Carrier</InsCarrierName>", xml)
+        self.assertIn("<InsCarrierName>NEW CARRIER</InsCarrierName>", xml)
         self.assertIn("<InsContractNum>NEW123</InsContractNum>", xml)
 
     def test_normalizes_ftw_update_dates_to_slash_format(self):

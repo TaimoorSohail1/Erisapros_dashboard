@@ -119,6 +119,9 @@ const STRUCTURED_BROKER_SUMMARY_RULES = new Set([
 ]);
 const RETIRED_REVIEW_RULE_KEYS = new Set([
   "form_5500_part_i_2a_plan_administrator_name",
+  "form_5500_part_ii_9_plan_funding_arrangement",
+  "form_5500_part_ii_10a_plan_benefit_arrangement",
+  "form_5500_part_ii_10b_schedules_attached",
 ]);
 const FTW_ORGANIZATION_CODE_OPTIONS = [
   { value: "0", label: "Other" },
@@ -154,6 +157,7 @@ interface ReviewDecisionRow {
   validationStatus?: string;
   validationBlocking?: boolean;
   validationExpectedFormat?: string;
+  decision?: FTWilliamsComparisonField["decision"];
 }
 
 interface ScheduleAIdentitySummary {
@@ -1173,7 +1177,7 @@ export function FilingReviewPage() {
             </div>
 
             <div className="approval-count-tabs">
-              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Action Required"} count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
+              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Decisions Needed"} count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
@@ -1680,6 +1684,12 @@ function FTWUpdateSuccessNotice({
           {reviewNoteCount ? ` ${reviewNoteCount} extraction review note${reviewNoteCount === 1 ? " remains" : "s remain"}; these do not mean the update failed.` : " No further update action is required."}
         </small>
       </div>
+      <dl className="ftw-update-receipt-metrics" aria-label="Automatic filing decision summary">
+        <div><dt>Updated</dt><dd>{review.will_update_count || confirmed}</dd></div>
+        <div><dt>Kept current</dt><dd>{review.kept_current_count || 0}</dd></div>
+        <div><dt>Skipped</dt><dd>{review.skipped_empty_count || 0}</dd></div>
+        <div><dt>Conflicts</dt><dd>{review.decision_required_count || 0}</dd></div>
+      </dl>
     </section>
   );
 }
@@ -2704,7 +2714,7 @@ function WorkflowReviewCenter({
           <span><small>Compared</small><strong>{totalFields}</strong></span>
         </div>
         <div className="workflow-dialog-actions">
-          {actionRequiredCount ? <button className="button" type="button" onClick={() => onShowTab("NEEDS_DECISION")}>Review action required</button> : null}
+          {actionRequiredCount ? <button className="button" type="button" onClick={() => onShowTab("NEEDS_DECISION")}>Review decisions</button> : null}
           <button className="button secondary" type="button" onClick={() => onShowTab("WILL_UPDATE")}>Review FTW updates</button>
         </div>
       </section>
@@ -3257,7 +3267,7 @@ function FullFieldReviewDrawer({
         </header>
 
         <div className="approval-count-tabs drawer-tabs">
-          <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Action Required" count={actionRequiredCount} onClick={() => onTabChange("NEEDS_DECISION")} />
+          <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label="Decisions Needed" count={actionRequiredCount} onClick={() => onTabChange("NEEDS_DECISION")} />
           <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => onTabChange("WILL_UPDATE")} />
           <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => onTabChange("ALL")} />
         </div>
@@ -3567,7 +3577,7 @@ function FTWilliamsSendConfirmationModal({
           <div>
             <span className="eyebrow">Final FT Williams check</span>
             <h2 id="ftw-send-confirm-title">Confirm the values to update</h2>
-            <p>Select the changes to send. Other Action Required fields stay unchanged and do not block these updates. Current FTW data is refreshed before sending.</p>
+            <p>Select the changes to send. Other fields needing a decision stay unchanged and do not block these updates. Current FTW data is refreshed before sending.</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close FT Williams confirmation"><X size={18} /></button>
         </header>
@@ -4612,6 +4622,7 @@ function rowFromComparison(
     validationStatus: comparison.validation_status,
     validationBlocking: Boolean(comparison.validation_blocking),
     validationExpectedFormat: comparison.validation_expected_format || undefined,
+    decision: comparison.decision,
   };
 }
 
@@ -4638,6 +4649,10 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
   if (comparison.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "SAME";
+  if (comparison.decision === "CONFLICT" || comparison.decision === "BLOCKED") return "NEEDS_DECISION";
+  if (comparison.decision === "WILL_UPDATE") return "WILL_UPDATE";
+  if (comparison.decision === "SKIP_EMPTY") return "MISSING";
+  if (comparison.decision === "KEEP_CURRENT" || comparison.decision === "NO_CHANGE") return "SAME";
   if (comparison.validation_blocking) return "NEEDS_DECISION";
   if (field?.status === "EDITED") return comparison.changed && comparison.update_included ? "WILL_UPDATE" : "SAME";
   if (comparison.extraction_status === "MISSING" || field?.status === "MISSING") return "MISSING";
@@ -4668,6 +4683,7 @@ function issueForComparison(comparison: FTWilliamsComparisonField, field: Extrac
     return "Reviewed successfully. This field is not supported for FT Williams updates.";
   }
   if (field?.status === "EDITED" && group === "SAME") return "Reviewer confirmed the current FT Williams value.";
+  if (comparison.decision_reason) return comparison.decision_reason;
   if (field?.status_reason) return field.status_reason;
   if (group === "MISSING") return "Required source value was not found.";
   if (group === "LOW_CONFIDENCE") return `Confidence ${percent(comparison.confidence)} needs review.`;
@@ -4686,6 +4702,11 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
+  if (comparison?.decision === "CONFLICT") return "Conflict";
+  if (comparison?.decision === "BLOCKED") return "Blocked";
+  if (comparison?.decision === "KEEP_CURRENT") return "Keep current";
+  if (comparison?.decision === "SKIP_EMPTY") return "Skipped — both blank";
+  if (comparison?.decision === "NO_CHANGE") return "No change";
   if (comparison?.validation_status === "INVALID") return "Invalid FT Williams format";
   if (comparison?.validation_status === "REQUIRED") return "Required";
   if (comparison?.validation_status === "REVIEW_REQUIRED") return "Review required";
@@ -4707,6 +4728,7 @@ function displayFtwChangeValue(value?: string | null) {
 
 function isActionRequiredRow(row: ReviewDecisionRow) {
   if (row.failedByFtw) return true;
+  if (row.decision) return row.decision === "CONFLICT" || row.decision === "BLOCKED";
   if (row.validationBlocking) return true;
   if (row.extractedField?.status === "EDITED") return false;
   return Boolean(
