@@ -38,6 +38,7 @@ FTW_INDICATOR_TAGS = {
     "BenefitCdSection412Ind",
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
+    "OverrideCommissionsAndFees",
 }
 
 FTW_ONE_TWO_BOOLEAN_TAGS = {
@@ -343,6 +344,11 @@ def _document_xml(
         )
         if schedule_a_broker_rows is not None:
             broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
+        if preserve_current_values and (values or broker_rows):
+            values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
+                values,
+                broker_rows,
+            )
     if not values:
         if not broker_rows:
             return ""
@@ -404,6 +410,10 @@ def _schedule_a_record_document_xml(
     )
     if schedule_a_broker_rows is not None:
         broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
+    values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
+        values,
+        broker_rows,
+    )
     if not values and not broker_rows:
         return ""
     xml_lines = [
@@ -418,6 +428,48 @@ def _schedule_a_record_document_xml(
     return f"""    <DOLScheduleAData>
 {joined}
     </DOLScheduleAData>"""
+
+
+def _no_commissions_or_fees_indicator(
+    values: dict[str, str],
+    broker_rows: list[dict[str, str]],
+) -> str:
+    """Derive FT Williams' "No commissions or fees paid" checkbox safely.
+
+    The checkbox is selected only when the complete replace payload contains
+    no positive or negative commission/fee amount. Unknown non-empty amount
+    text is treated conservatively as a payment so automation cannot make a
+    false no-payment declaration.
+    """
+
+    amount_values = [
+        value
+        for tag, value in values.items()
+        if tag in {"InsBrokerCommTotAmt", "InsBrokerFeesTotAmt"}
+        or re.fullmatch(r"(?:CommPdAmt|FeesPdAmt)(?:\d+|XX)", tag)
+    ]
+    amount_values.extend(
+        value
+        for row in broker_rows
+        for tag, value in row.items()
+        if tag in {"CommPdAmtXX", "FeesPdAmtXX"}
+    )
+    return "0" if any(_has_nonzero_or_unknown_amount(value) for value in amount_values) else "1"
+
+
+def _has_nonzero_or_unknown_amount(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    negative_parentheses = text.startswith("(") and text.endswith(")")
+    normalized = text[1:-1].strip() if negative_parentheses else text
+    normalized = normalized.replace("$", "").replace(",", "").strip()
+    if negative_parentheses:
+        normalized = f"-{normalized}"
+    try:
+        return Decimal(normalized) != 0
+    except InvalidOperation:
+        return True
 
 
 def update_values_for_form(
@@ -453,7 +505,12 @@ def update_values_for_form(
         tag = resolve_ftw_update_tag(field)
         if not tag:
             continue
-        proposed = normalize_ftw_update_value(form_type, tag, field.proposed_value)
+        proposed = normalize_ftw_update_value(
+            form_type,
+            tag,
+            field.proposed_value,
+            uppercase_text=True,
+        )
         if not proposed:
             continue
         if current_values is not None:
@@ -509,7 +566,12 @@ def _form_5500_sponsor_address_values(
     for tag, raw_value in candidates.items():
         if not str(raw_value or "").strip():
             continue
-        normalized = normalize_ftw_update_value(FormType.FORM_5500, tag, raw_value)
+        normalized = normalize_ftw_update_value(
+            FormType.FORM_5500,
+            tag,
+            raw_value,
+            uppercase_text=True,
+        )
         if current_values is not None and not values_meaningfully_different(
             current_by_tag.get(tag, ""),
             normalized,
@@ -786,7 +848,29 @@ def schedule_a_broker_multipart_rows(
             rows[index - 1][multipart_tag] = text
         else:
             rows[index - 1].pop(multipart_tag, None)
-    return [row for row in rows if row]
+    return [
+        row
+        for row in rows
+        if row and not _schedule_a_broker_has_explicit_zero_compensation(row)
+    ]
+
+
+def _schedule_a_broker_has_explicit_zero_compensation(row: dict[str, str]) -> bool:
+    """Exclude only rows where FTW explicitly reports both amounts as zero."""
+    amounts: list[Decimal] = []
+    for tag in ("CommPdAmtXX", "FeesPdAmtXX"):
+        if tag not in row:
+            return False
+        text = re.sub(r"[^0-9().-]", "", str(row.get(tag) or "")).strip()
+        if not text:
+            return False
+        if text.startswith("(") and text.endswith(")"):
+            text = f"-{text[1:-1]}"
+        try:
+            amounts.append(Decimal(text))
+        except InvalidOperation:
+            return False
+    return all(amount == 0 for amount in amounts)
 
 
 def _sort_schedule_a_broker_rows_by_payment(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1001,7 +1085,12 @@ def _schedule_a_broker_row_update_values(
     }
     normalized: dict[str, str] = {}
     for tag, value in values.items():
-        text = normalize_ftw_update_value(FormType.SCHEDULE_A, tag, value)
+        text = normalize_ftw_update_value(
+            FormType.SCHEDULE_A,
+            tag,
+            value,
+            uppercase_text=True,
+        )
         if str(text or "").strip():
             normalized[tag] = str(text)
     return normalized

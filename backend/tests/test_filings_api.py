@@ -251,7 +251,7 @@ class FilingsApiTests(unittest.TestCase):
 
         first, second, stored, events, audits = run_async(scenario())
         self.assertEqual(first, second)
-        self.assertIn("Example Carrier", first["proposed_xml"])
+        self.assertIn("EXAMPLE CARRIER", first["proposed_xml"])
         self.assertEqual(stored.proposed_xml, "<Existing />")
         self.assertEqual(events, [])
         self.assertEqual(audits, [])

@@ -49,7 +49,12 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
     "BenefitGeneralAssetInd",
 }
 
-SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {"ScheduleDesc"}
+SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {
+    "ScheduleDesc",
+    # Verified against the 2025 FT Williams Schedule A test form. This is the
+    # HTML/ftwLink field behind the "No commissions or fees paid" checkbox.
+    "OverrideCommissionsAndFees",
+}
 
 SCHEDULE_A_REPEATABLE_BROKER_TAG_BASES = {
     "ProvinceOrState",
@@ -101,6 +106,7 @@ ZERO_ONE_INDICATOR_TAGS = {
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
     "SchAAttachedInd",
+    "OverrideCommissionsAndFees",
 }
 ONE_TWO_INDICATOR_TAGS = {"InsFailProvideInfoInd"}
 
@@ -120,7 +126,13 @@ TEXT_LIMITS = {
 }
 
 
-def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> str:
+def normalize_ftw_update_value(
+    form_type: FormType,
+    tag: str,
+    value: object,
+    *,
+    uppercase_text: bool = False,
+) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
@@ -235,7 +247,8 @@ def normalize_ftw_update_value(form_type: FormType, tag: str, value: object) -> 
         _raise(tag, text, "control characters are not allowed")
     if len(text) > max_length:
         _raise(tag, text, f"maximum length is {max_length} characters")
-    return re.sub(r"\s+", " ", text)
+    normalized_text = re.sub(r"\s+", " ", text)
+    return normalized_text.upper() if uppercase_text else normalized_text
 
 
 def ftw_expected_format(tag: str) -> str:

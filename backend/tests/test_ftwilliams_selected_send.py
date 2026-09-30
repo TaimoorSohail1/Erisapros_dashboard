@@ -26,6 +26,7 @@ class SelectedSendTests(unittest.TestCase):
                         "PlanYearEndDate": "12/31/2025", "LockedStatus": "Unlocked"})
                 if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2":
                     response.statuses[0].query_results["InsPrsnCoveredEoyCnt"] = "12" if self.updated else "10"
+                    response.statuses[0].query_results["OverrideCommissionsAndFees"] = "0"
                     response.statuses[0].query_subparts = {"Broker": [{"NameXX": "Current broker", "CodeXX": "3", "CommPdAmtXX": "25"}]}
                 return response
 
@@ -234,7 +235,7 @@ class SelectedSendTests(unittest.TestCase):
             schedule_a_broker_rows=[ScheduleABrokerRow(name="Unresolved broker")],
             schedule_a_broker_match_complete=False)
         FTWilliamsReviewService()._prepare_selected_update(review, fields, ["name"], include_broker_updates=False)
-        self.assertIn("New sponsor", review.update_xml_5500)
+        self.assertIn("NEW SPONSOR", review.update_xml_5500)
         self.assertEqual(review.update_xml_schedule_a, "")
         self.assertFalse(review.fields[1].update_included)
         self.assertEqual(len(review.schedule_a_broker_rows), 1)

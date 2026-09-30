@@ -1012,6 +1012,80 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_comparison_marks_valid_extracted_value_for_automatic_update_when_ftw_is_blank(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1d. Contract Number",
+            normalized_field_name="contract_number",
+            mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+            mapped_label="1d. Contract/Policy Number",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="HL-100",
+            proposed_value="HL-100",
+            confidence=0.99,
+            source_text="Contract number HL-100",
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"InsContractNum": ""},
+            update_fields=[field],
+        )[0]
+
+        self.assertEqual(comparison.decision, "WILL_UPDATE")
+        self.assertEqual(comparison.decision_reason, "FT Williams is blank and the extracted value is valid.")
+
+    def test_comparison_preserves_current_ftw_value_when_extraction_is_blank(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1d. Contract/Policy Number",
+            normalized_field_name="contract_number",
+            mapped_rule_key="schedule_a_part_i_1d_contract_policy_number",
+            mapped_label="1d. Contract/Policy Number",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            status=ExtractedFieldStatus.MISSING,
+            value="",
+            proposed_value="",
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"InsContractNum": "HL-099"},
+            update_fields=[],
+        )[0]
+
+        self.assertEqual(comparison.decision, "KEEP_CURRENT")
+        self.assertEqual(comparison.proposed_value, "HL-099")
+        self.assertFalse(comparison.update_included)
+
+    def test_review_summary_counts_only_conflicts_as_decisions(self):
+        review = FTWilliamsReview(
+            filing_id="filing",
+            fields=[
+                FTWilliamsComparisonField(label="Update", decision="WILL_UPDATE"),
+                FTWilliamsComparisonField(label="Keep", decision="KEEP_CURRENT"),
+                FTWilliamsComparisonField(label="Conflict", decision="CONFLICT"),
+                FTWilliamsComparisonField(label="Blocked", decision="BLOCKED"),
+                FTWilliamsComparisonField(label="Skip", decision="SKIP_EMPTY"),
+                FTWilliamsComparisonField(label="Same", decision="NO_CHANGE"),
+            ],
+        )
+
+        summary = FTWilliamsReviewService._review_decision_count_updates(review)
+
+        self.assertEqual(summary["decision_required_count"], 1)
+        self.assertEqual(summary["blocked_field_count"], 1)
+        self.assertEqual(summary["will_update_count"], 1)
+        self.assertEqual(summary["kept_current_count"], 1)
+        self.assertEqual(summary["skipped_empty_count"], 1)
+        self.assertEqual(summary["unchanged_count"], 1)
+
     def test_broker_validation_error_names_row_field_value_and_expected_format(self):
         error = FTWPayloadValidationError(
             [
@@ -2158,7 +2232,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("PLAN_NAME0", xml)
         self.assertIn("<TotPartcpBoyCnt>100</TotPartcpBoyCnt>", xml)
         self.assertIn("<DOLScheduleAData>", xml)
-        self.assertIn("<InsCarrierName>ABC Insurance</InsCarrierName>", xml)
+        self.assertIn("<InsCarrierName>ABC INSURANCE</InsCarrierName>", xml)
         self.assertNotIn("field_1a_name_of_insurance_company", xml)
 
     def test_update_xml_does_not_copy_current_ftw_fields(self):
@@ -2471,12 +2545,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual({record["ftw_seq_no"] for record in refreshed.schedule_a_records}, {"1", "3"})
         self.assertEqual(by_label["1e. Plan Sponsor EIN"].current_value, "73-1185740")
         self.assertEqual(by_label["1f. Plan Sponsor Address"].current_value, "750 E MAIN ST, STAMFORD CT 06902-3831")
-        self.assertEqual(by_label["9. Plan funding arrangement"].current_value, "Insurance")
-        self.assertEqual(by_label["10a. Plan benefit arrangement"].current_value, "Insurance")
-        self.assertEqual(by_label["10b. Schedules attached"].current_value, "A")
-        self.assertFalse(by_label["9. Plan funding arrangement"].changed)
-        self.assertFalse(by_label["10a. Plan benefit arrangement"].changed)
-        self.assertFalse(by_label["10b. Schedules attached"].changed)
+        self.assertNotIn("9. Plan funding arrangement", by_label)
+        self.assertNotIn("10a. Plan benefit arrangement", by_label)
+        self.assertNotIn("10b. Schedules attached", by_label)
         self.assertEqual(by_label["1d. Contract/Policy Number"].current_value, "1246876")
         self.assertEqual(by_label["11. Insurance company failed to provide information"].current_value, "2")
         self.assertFalse(by_label["11. Insurance company failed to provide information"].changed)
@@ -2546,7 +2617,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual({record["ftw_seq_no"] for record in review.schedule_a_records}, {"1", "3"})
         self.assertEqual(review.update_xml_schedule_a.count("<DOLScheduleAData>"), 2)
         self.assertNotIn("<FTWSeqNo>", review.update_xml_schedule_a)
-        self.assertIn("<NameXX>New Broker Name</NameXX>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NEW BROKER NAME</NameXX>", review.update_xml_schedule_a)
         self.assertIn("<InsCarrierName>Other Carrier</InsCarrierName>", review.update_xml_schedule_a)
         self.assertIn("<InsContractNum>OTHER-3</InsContractNum>", review.update_xml_schedule_a)
 
@@ -2670,28 +2741,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].update_included)
         self.assertFalse(by_label["3b. Amount of Commissions"].update_included)
-        self.assertFalse(review.schedule_a_broker_match_complete)
-        self.assertEqual([match.status for match in review.schedule_a_broker_matches], ["NEEDS_CONFIRMATION", "NEEDS_CONFIRMATION"])
-        self.assertEqual(review.update_xml_schedule_a, "")
-        self.assertIn("broker rows need confirmation", review.error_message)
-
-        confirmed = run_async(
-            service.set_schedule_a_broker_matches(
-                filing.id,
-                FTWilliamsBrokerMatchesRequest(
-                    decisions=[
-                        FTWilliamsBrokerMatchDecision(extracted_index=0, ftw_index=0),
-                        FTWilliamsBrokerMatchDecision(extracted_index=1, create_new=True),
-                    ]
-                ),
-            )
-        )
-
-        self.assertTrue(confirmed.schedule_a_broker_match_complete)
-        self.assertIn("<NameXX>NFP LLC</NameXX>", confirmed.update_xml_schedule_a)
-        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", confirmed.update_xml_schedule_a)
-        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", confirmed.update_xml_schedule_a)
-        self.assertEqual(confirmed.update_xml_schedule_a.count("<Broker>"), 2)
+        self.assertTrue(review.schedule_a_broker_match_complete)
+        self.assertEqual([match.status for match in review.schedule_a_broker_matches], ["AUTO_NEW", "AUTO_NEW"])
+        self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", review.update_xml_schedule_a)
+        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", review.update_xml_schedule_a)
+        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", review.update_xml_schedule_a)
+        self.assertEqual(review.update_xml_schedule_a.count("<Broker>"), 3)
 
     def test_reviewer_can_remove_parser_fragment_and_rebuild_broker_preview(self):
         repo = repositories.get_repository()
@@ -3740,6 +3796,43 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.ftw_locked_status, "Unlocked")
         self.assertNotEqual(refreshed.client_error.code if refreshed.client_error else None, "FTW_LOCKED")
 
+    def test_verified_new_schedule_a_receipt_records_created_destination(self):
+        review = FTWilliamsReview(
+            filing_id="filing-new-schedule",
+            year="2025",
+            ftw_browser_customer_id="111",
+            ftw_browser_plan_id="222",
+            browser_mapping_confirmed=True,
+            schedule_a_match={
+                "ftw_seq_no": "8",
+                "carrier": "New Carrier",
+                "carrier_ein": "12-3456789",
+                "contract": "NEW-8",
+                "description": "NEW-8",
+            },
+            schedule_a_records=[
+                {
+                    "ftw_seq_no": "8",
+                    "query_results": {"ScheduleDesc": "NEW-8"},
+                }
+            ],
+            plan_lookup=FTWilliamsPlanLookup(plan_name="Receipt Test Plan", plan_number="501"),
+        )
+
+        receipt = FTWilliamsReviewService(FakeFTWilliamsService())._build_update_receipt(
+            review,
+            sent_form_5500=False,
+            sent_schedule_a=True,
+            created_schedule_a=True,
+        )
+
+        self.assertEqual(receipt.action, "SCHEDULE_A_CREATED")
+        self.assertEqual(receipt.ftw_seq_no, "8")
+        self.assertEqual(receipt.carrier_name, "New Carrier")
+        self.assertEqual(receipt.contract_number, "NEW-8")
+        self.assertIn("plan=111,222", receipt.ftw_plan_url or "")
+        self.assertIn("Year=2025", receipt.ftw_plan_url or "")
+
     def test_successful_ftw_update_is_read_back_and_verified(self):
         class VerifyingFTWilliamsService(FakeFTWilliamsService):
             def __init__(
@@ -3803,6 +3896,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     )
                 if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2" and response.statuses:
                     response.statuses[0].query_results["WlfrTotChargesPaidAmt"] = "100" if self.updated and self.reflect_updates else "90"
+                    if self.updated and self.reflect_updates:
+                        response.statuses[0].query_results["OverrideCommissionsAndFees"] = "1"
                 return response
 
             async def send_xml(self, operation, request_xml):
@@ -3909,6 +4004,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.audit_pdf_status, "AVAILABLE")
         self.assertEqual(review.audit_pdf_key, "audit/test.pdf")
         self.assertEqual(len(review.audit_pdf_sha256 or ""), 64)
+        self.assertIsNotNone(review.update_receipt)
+        self.assertEqual(review.update_receipt.action, "FORM_5500_AND_SCHEDULE_A_UPDATED")
+        self.assertEqual(review.update_receipt.ftw_seq_no, "2")
+        self.assertEqual(review.update_receipt.carrier_name, "BlueCross BlueShield of Oklahoma")
+        self.assertEqual(review.update_receipt.contract_number, "Y00979")
+        self.assertIsNotNone(review.update_receipt.verified_at)
 
         clear_ftw_current_snapshot_cache()
         refreshed_after_success = run_async(
@@ -3922,6 +4023,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(refreshed_after_success.update_confirmed_count, 2)
         self.assertEqual(refreshed_after_success.update_remaining_count, 0)
         self.assertEqual(len(refreshed_after_success.update_results), 2)
+        self.assertIsNotNone(refreshed_after_success.update_receipt)
+        self.assertEqual(
+            refreshed_after_success.update_receipt.receipt_id,
+            review.update_receipt.receipt_id,
+        )
 
         clear_ftw_current_snapshot_cache()
         baseline_warning_ftw = VerifyingFTWilliamsService(
@@ -3987,6 +4093,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             all("returned_value" in item for item in mismatched.update_results),
             mismatched.update_results,
         )
+        self.assertIsNone(mismatched.update_receipt)
         self.assertIn("read-back verification", mismatched.error_message or "")
 
         clear_ftw_current_snapshot_cache()
@@ -5017,7 +5124,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(xml.count("<DOLScheduleAData>"), 1)
-        self.assertIn("<InsCarrierName>New Carrier</InsCarrierName>", xml)
+        self.assertIn("<InsCarrierName>NEW CARRIER</InsCarrierName>", xml)
 
     def test_live_schedule_a_update_uses_fresh_snapshot_and_restores_after_readback_failure(self):
         class RecordingFTWilliamsService:
@@ -5610,12 +5717,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
         by_label = {field.label: field for field in review.fields}
 
-        self.assertEqual(by_label["9. Plan funding arrangement"].current_value, "Insurance")
-        self.assertFalse(by_label["9. Plan funding arrangement"].changed)
-        self.assertEqual(by_label["10a. Plan benefit arrangement"].current_value, "Insurance")
-        self.assertFalse(by_label["10a. Plan benefit arrangement"].changed)
-        self.assertEqual(by_label["10b. Schedules attached"].current_value, "A")
-        self.assertFalse(by_label["10b. Schedules attached"].changed)
+        self.assertNotIn("9. Plan funding arrangement", by_label)
+        self.assertNotIn("10a. Plan benefit arrangement", by_label)
+        self.assertNotIn("10b. Schedules attached", by_label)
         self.assertFalse(by_label["1c. Plan Effective Date"].changed)
 
     def test_prepare_review_builds_plan_lookup_from_extracted_identifiers(self):
@@ -6628,7 +6732,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.schedule_a_match["ftw_seq_no"], "2")
         self.assertEqual(review.schedule_a_match["source"], "MANUAL")
         self.assertIn("<DOLScheduleAData>", review.update_xml_schedule_a)
-        self.assertIn("<InsCarrierName>BlueCross BlueShield of Oklahoma</InsCarrierName>", review.update_xml_schedule_a)
+        self.assertIn("<InsCarrierName>BLUECROSS BLUESHIELD OF OKLAHOMA</InsCarrierName>", review.update_xml_schedule_a)
 
     def test_current_query_accepts_explicit_new_schedule_a_without_matching_existing_sequence(self):
         field = ExtractedField(
@@ -7434,9 +7538,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("<DOL5500Data>", review.update_xml_5500 or "")
         self.assertIn("<DOLScheduleAData>", review.update_xml_schedule_a or "")
         self.assertNotIn("<FTWSeqNo>", review.update_xml_schedule_a or "")
-        self.assertIn("<InsCarrierName>UnitedHealthcare Insurance Company</InsCarrierName>", review.update_xml_schedule_a or "")
+        self.assertIn("<InsCarrierName>UNITEDHEALTHCARE INSURANCE COMPANY</InsCarrierName>", review.update_xml_schedule_a or "")
         self.assertIn("<InsContractNum>1246876</InsContractNum>", review.update_xml_schedule_a or "")
-        self.assertIn("<NameXX>New Broker Name</NameXX>", review.update_xml_schedule_a or "")
+        self.assertIn("<NameXX>NEW BROKER NAME</NameXX>", review.update_xml_schedule_a or "")
 
     def test_prepare_review_prefers_package_filing_year_for_ftw_queries(self):
         repo = repositories.get_repository()

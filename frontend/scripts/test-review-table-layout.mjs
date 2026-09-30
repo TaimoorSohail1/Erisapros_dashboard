@@ -174,8 +174,8 @@ console.log("Review table labels and column order passed.");
 
 assert.match(
   source,
-  /label="Action Required"/,
-  "The primary review view must clearly group fields that require action.",
+  /label="Decisions Needed"/,
+  "The primary review view must clearly group genuine decision conflicts.",
 );
 assert.match(
   source,
@@ -305,17 +305,17 @@ assert.match(
 assert.match(
   source,
   /if \(row\.extractedField\?\.status === "EDITED"\) return false;/,
-  "A reviewer-confirmed field must immediately leave the Action Required count.",
+  "A reviewer-confirmed field must immediately leave the Decisions Needed count.",
 );
 assert.match(
   source,
-  /comparison\.extraction_status === "LOW_CONFIDENCE"[\s\S]*?comparison\.changed && comparison\.update_included \? "LOW_CONFIDENCE" : "SAME"/,
-  "Low-confidence values that do not change FT Williams must not ask for a human decision.",
+  /comparison\.decision === "WILL_UPDATE"[\s\S]*?return "WILL_UPDATE"/,
+  "A backend-safe update must be grouped for automatic FT Williams update regardless of OCR confidence.",
 );
 assert.match(
   source,
   /const brokerActionRequiredIndexes = new Set\([\s\S]*?scheduleABrokerMatches\.filter\(\(match\) => !match\.resolved\)/,
-  "Unresolved broker matches must be included in the Action Required count.",
+  "Unresolved broker matches must be included in the Decisions Needed count.",
 );
 assert.match(
   source,
@@ -900,7 +900,7 @@ assert.match(
 assert.doesNotMatch(source, /Approve Filing|Approve filing|ApprovalConfirmationModal|UnapproveConfirmationModal|key: "APPROVAL"/, "Manual approval controls and workflow stage must be removed.");
 assert.match(source, /selected_field_ids: selectedSendFieldIds[\s\S]*?include_broker_updates: includeSendBrokerUpdates/, "Sending must serialize the explicit field and broker selections.");
 assert.match(source, /aria-label=\{`Send \$\{row.label\}`\}[\s\S]*?onToggleField/, "Clients must be able to deselect individual outgoing fields.");
-assert.match(source, /Other Action Required fields stay unchanged/, "Unrelated unresolved values must be clearly excluded from manual sending.");
+assert.match(source, /Other fields needing a decision stay unchanged/, "Unrelated unresolved values must be clearly excluded from manual sending.");
 assert.match(styles, /\.ftw-send-confirm-modal \.approve-confirm-body\s*\{[\s\S]*?grid-auto-rows:\s*max-content;/, "Short screens must not compress field selection rows under the table header.");
 assert.match(styles, /\.ftw-send-confirm-modal \.approve-confirm-table-wrap\s*\{[\s\S]*?order:\s*-2;/, "Field selection must remain the first confirmation content.");
 assert.match(source, /needsDecisionCount=\{actionRequiredCount\}/, "A verified partial send must not hide remaining review items.");

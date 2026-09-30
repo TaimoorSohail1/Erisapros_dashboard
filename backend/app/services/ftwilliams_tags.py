@@ -367,7 +367,7 @@ def values_meaningfully_different(
         proposed_indicator = _one_two_indicator_value(proposed)
         if current_indicator and proposed_indicator:
             return current_indicator != proposed_indicator
-    if tag and tag.endswith("Ind"):
+    if tag and (tag.endswith("Ind") or tag == "OverrideCommissionsAndFees"):
         current_indicator = _zero_one_indicator_value(current)
         proposed_indicator = _zero_one_indicator_value(proposed)
         if current_indicator is not None and proposed_indicator is not None:

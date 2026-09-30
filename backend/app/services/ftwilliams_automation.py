@@ -9,10 +9,10 @@ from app.config import Settings, get_settings
 from app.models import (
     ExtractedField,
     ExtractedFieldStatus,
-    FieldPriority,
     Filing,
     FTWAutomationDecision,
     FTWAutomationStatus,
+    FTWFieldDecision,
     FTWilliamsPlanLookupStatus,
     FTWilliamsQueryState,
     FTWilliamsReview,
@@ -189,43 +189,33 @@ class FTWAutomationPolicy:
             reasons.append(schedule_match_error)
 
         extracted_by_id = {str(field.id): field for field in fields if field.id}
-        threshold = min(1.0, max(0.0, self.settings.ftw_automation_confidence_threshold))
         for comparison in review.fields:
             extracted = extracted_by_id.get(str(comparison.field_id or ""))
             reviewer_confirmed = bool(
                 extracted and extracted.status == ExtractedFieldStatus.EDITED
             )
-            if comparison.validation_blocking:
+            field_decision = comparison.decision
+            if comparison.validation_blocking or field_decision == FTWFieldDecision.BLOCKED:
                 reasons.append(f"{comparison.label} has a blocking validation error.")
+            if field_decision == FTWFieldDecision.CONFLICT and not reviewer_confirmed:
+                reasons.append(f"{comparison.label} has conflicting extracted and FT Williams values.")
             if (
-                not reviewer_confirmed
-                and
-                comparison.changed
-                and comparison.update_included
-                and comparison.extraction_status in {
-                    ExtractedFieldStatus.LOW_CONFIDENCE,
-                    ExtractedFieldStatus.UNMAPPED,
-                }
+                field_decision == FTWFieldDecision.WILL_UPDATE
+                and comparison.extraction_status == ExtractedFieldStatus.UNMAPPED
+                and not reviewer_confirmed
             ):
-                reasons.append(f"{comparison.label} requires review.")
-            if (
-                comparison.priority == FieldPriority.HIGH
-                and comparison.extraction_status == ExtractedFieldStatus.MISSING
-            ):
-                reasons.append(f"{comparison.label} requires review.")
-            if comparison.changed and comparison.update_included and comparison.confidence < threshold:
-                if not reviewer_confirmed:
-                    reasons.append(
-                        f"{comparison.label} confidence {comparison.confidence:.0%} is below the {threshold:.0%} automation threshold."
-                    )
-            if comparison.changed and comparison.update_included and not reviewer_confirmed:
+                reasons.append(f"{comparison.label} is not mapped to a supported FT Williams field.")
+            if field_decision == FTWFieldDecision.WILL_UPDATE and not reviewer_confirmed:
                 if not extracted or not (str(extracted.source_text or "").strip() or extracted.page is not None):
                     reasons.append(f"{comparison.label} has no source evidence.")
 
-        if filing.missing_high_priority_count:
-            reasons.append("One or more high-priority fields are missing.")
-
-        changed_fields = [field for field in review.fields if field.changed and field.update_included]
+        changed_fields = [
+            field
+            for field in review.fields
+            if field.changed
+            and field.update_included
+            and field.decision == FTWFieldDecision.WILL_UPDATE
+        ]
         changed_forms = {field.form_type for field in changed_fields}
         if FormType.FORM_5500 in changed_forms and not review.update_xml_5500:
             reasons.append("The safe Form 5500 update payload was not generated.")

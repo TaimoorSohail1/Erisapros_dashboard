@@ -34,6 +34,55 @@ if (scenario === "customer-defaults") {
   Object.assign(filing.schedule_a_broker_rows[0], { organization_code: "3", organization_code_defaulted: true });
   Object.assign(filing.schedule_a_broker_rows[1], { organization_code: "6", organization_code_defaulted: false });
 }
+if (scenario === "verified-update") {
+  Object.assign(filing, {
+    status: "APPROVED",
+    automation_status: "COMPLETED",
+    automation_next_action: null,
+    automation_reasons: [],
+  });
+  Object.assign(filing.ftw_review, {
+    configured: true,
+    status: "UPDATE_SENT",
+    current_query_success: true,
+    current_query_complete: true,
+    current_year_exists: true,
+    bring_forward_required: false,
+    query_state: "MATCHED",
+    update_verification_attempted: true,
+    update_verification_success: true,
+    update_attempted_count: 3,
+    update_confirmed_count: 3,
+    update_remaining_count: 0,
+    will_update_count: 3,
+    kept_current_count: 25,
+    skipped_empty_count: 10,
+    decision_required_count: 0,
+    ftw_browser_customer_id: "111",
+    ftw_browser_plan_id: "222",
+    audit_pdf_status: "AVAILABLE",
+    audit_pdf_sha256: "4fcbda4c7f637104d4caab2b3734ad1a26206ca2bc8947fc3bd396cec46554a1",
+    update_receipt: {
+      receipt_id: "qa-receipt-001",
+      action: "SCHEDULE_A_UPDATED",
+      verified_at: "2026-09-30T20:45:00Z",
+      year: "2025",
+      ftw_seq_no: "2",
+      schedule_desc: "BCBS-O",
+      carrier_name: "BlueCross BlueShield of Oklahoma",
+      carrier_ein: "36-1236610",
+      contract_number: "Y00979",
+      plan_name: "Crest Discount Foods Flexible Benefits Plan",
+      plan_number: "501",
+      ftw_plan_url: "https://ftwilliam.com/cgi-bin/index.cgi?#go=iframe&page=/cgi-bin/PlanDoc2.cgi&PerformDoc5500=1&plan=111,222&Year=2025",
+    },
+    update_results: [
+      { field_id: "field-1", label: "14. Active participants at end", sent_value: "101", returned_value: "101", status: "VERIFIED" },
+      { field_id: "field-2", label: "10a. Total premiums", sent_value: "100", returned_value: "100", status: "VERIFIED" },
+      { field_id: "field-3", label: "No commissions or fees paid", sent_value: "Checked", returned_value: "Checked", status: "VERIFIED" },
+    ],
+  });
+}
 if (scenario === "selected") {
   fields.slice(0, 2).forEach((field, index) => Object.assign(field, {
     form_type: "FORM_5500", mapped_label: index ? "Selected sponsor change" : "Selected participant change",

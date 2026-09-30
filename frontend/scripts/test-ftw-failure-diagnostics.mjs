@@ -51,7 +51,7 @@ assert.match(filingReview, /comparison\.update_exclusion_reason/, "Conditionally
 assert.match(filingReview, /refreshFTWilliamsFailures/, "A send attempt must refresh the shared failure queue.");
 assert.match(filingReview, /sticky\?: boolean/, "Verified FT Williams success notifications must support remaining visible until dismissed.");
 assert.match(filingReview, /title: "FT Williams updated successfully"[\s\S]*?sticky: true/, "A verified update must show a persistent success notification.");
-assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Action Required"/, "Post-update extraction notes must not look like failed FT Williams actions.");
+assert.match(filingReview, /verifiedUpdateComplete \? "Review Notes" : "Decisions Needed"/, "Post-update extraction notes must not look like failed FT Williams actions.");
 assert.match(filingReview, /<FTWUpdateSuccessNotice[\s\S]*?review=\{ftwReview\}/, "Verified FT Williams updates must have a persistent success notice in the filing page.");
 assert.match(api, /class ApiRequestError extends Error[\s\S]*?clientError/, "API failures must preserve structured client-facing FT Williams details.");
 assert.match(api, /payload\.client_error[\s\S]*?detail\.client_error/, "The API client must recognize structured FT Williams errors at either response level.");

@@ -93,6 +93,15 @@ class FTWilliamsReviewStatus(str, Enum):
     UPDATE_UNKNOWN = "UPDATE_UNKNOWN"
 
 
+class FTWFieldDecision(str, Enum):
+    WILL_UPDATE = "WILL_UPDATE"
+    KEEP_CURRENT = "KEEP_CURRENT"
+    NO_CHANGE = "NO_CHANGE"
+    SKIP_EMPTY = "SKIP_EMPTY"
+    CONFLICT = "CONFLICT"
+    BLOCKED = "BLOCKED"
+
+
 class FTWilliamsQueryState(str, Enum):
     NOT_QUERIED = "NOT_QUERIED"
     MATCHED = "MATCHED"
@@ -606,6 +615,12 @@ class Filing(BaseModel):
     review_field_count: int = 0
     found_field_count: int = 0
     excluded_field_count: int = 0
+    decision_required_count: int = 0
+    blocked_field_count: int = 0
+    will_update_count: int = 0
+    kept_current_count: int = 0
+    skipped_empty_count: int = 0
+    unchanged_count: int = 0
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
     schedule_a_contract_type_confirmed: bool = False
@@ -965,6 +980,11 @@ class FTWilliamsComparisonField(BaseModel):
     validation_expected_format: str | None = None
     validation_normalized_value: str | None = None
     validation_blocking: bool = False
+    # Optional for backward compatibility with reviews persisted before the
+    # explicit decision engine was introduced; the UI retains its legacy
+    # grouping fallback until the next review refresh computes a decision.
+    decision: FTWFieldDecision | None = None
+    decision_reason: str | None = None
 
 
 class ClientRejectedField(BaseModel):
@@ -1008,6 +1028,27 @@ class ClientFacingError(BaseModel):
     rejected_fields: list[ClientRejectedField] = Field(default_factory=list)
 
 
+class FTWilliamsUpdateReceipt(BaseModel):
+    receipt_id: str
+    action: Literal[
+        "FORM_5500_UPDATED",
+        "SCHEDULE_A_UPDATED",
+        "SCHEDULE_A_CREATED",
+        "FORM_5500_AND_SCHEDULE_A_UPDATED",
+        "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED",
+    ]
+    verified_at: datetime
+    year: str | None = None
+    ftw_seq_no: str | None = None
+    schedule_desc: str | None = None
+    carrier_name: str | None = None
+    carrier_ein: str | None = None
+    contract_number: str | None = None
+    plan_name: str | None = None
+    plan_number: str | None = None
+    ftw_plan_url: str | None = None
+
+
 class FTWilliamsReview(BaseModel):
     id: str | None = None
     filing_id: str
@@ -1036,6 +1077,12 @@ class FTWilliamsReview(BaseModel):
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
     schedule_a_broker_match_complete: bool = True
+    decision_required_count: int = 0
+    blocked_field_count: int = 0
+    will_update_count: int = 0
+    kept_current_count: int = 0
+    skipped_empty_count: int = 0
+    unchanged_count: int = 0
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     schedule_a_contract_type_reason: str | None = None
@@ -1077,6 +1124,7 @@ class FTWilliamsReview(BaseModel):
     update_confirmed_count: int = 0
     update_remaining_count: int = 0
     update_results: list[dict] = Field(default_factory=list)
+    update_receipt: FTWilliamsUpdateReceipt | None = None
     update_retry_count: int = 0
     update_diagnostics: list[FTWilliamsOperationDiagnostic] = Field(default_factory=list)
     schema_validation_results: list[FTWilliamsSchemaValidationResult] = Field(default_factory=list)

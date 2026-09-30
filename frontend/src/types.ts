@@ -220,6 +220,12 @@ export interface Filing {
   review_field_count?: number;
   found_field_count?: number;
   excluded_field_count?: number;
+  decision_required_count?: number;
+  blocked_field_count?: number;
+  will_update_count?: number;
+  kept_current_count?: number;
+  skipped_empty_count?: number;
+  unchanged_count?: number;
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
   schedule_a_contract_type_confirmed?: boolean;
@@ -278,6 +284,8 @@ export interface FTWilliamsComparisonField {
   validation_expected_format?: string | null;
   validation_normalized_value?: string | null;
   validation_blocking?: boolean;
+  decision?: "WILL_UPDATE" | "KEEP_CURRENT" | "NO_CHANGE" | "SKIP_EMPTY" | "CONFLICT" | "BLOCKED";
+  decision_reason?: string | null;
 }
 
 export interface FTWilliamsPlanLookup {
@@ -364,6 +372,26 @@ export interface FTWilliamsSchemaValidationResult {
   validated_at: string;
 }
 
+export interface FTWilliamsUpdateReceipt {
+  receipt_id: string;
+  action:
+    | "FORM_5500_UPDATED"
+    | "SCHEDULE_A_UPDATED"
+    | "SCHEDULE_A_CREATED"
+    | "FORM_5500_AND_SCHEDULE_A_UPDATED"
+    | "FORM_5500_UPDATED_AND_SCHEDULE_A_CREATED";
+  verified_at: string;
+  year?: string | null;
+  ftw_seq_no?: string | null;
+  schedule_desc?: string | null;
+  carrier_name?: string | null;
+  carrier_ein?: string | null;
+  contract_number?: string | null;
+  plan_name?: string | null;
+  plan_number?: string | null;
+  ftw_plan_url?: string | null;
+}
+
 export interface FTWilliamsReview {
   id?: string | null;
   filing_id: string;
@@ -399,6 +427,12 @@ export interface FTWilliamsReview {
   schedule_a_broker_rows?: ScheduleABrokerRow[];
   schedule_a_broker_matches?: ScheduleABrokerMatch[];
   schedule_a_broker_match_complete?: boolean;
+  decision_required_count?: number;
+  blocked_field_count?: number;
+  will_update_count?: number;
+  kept_current_count?: number;
+  skipped_empty_count?: number;
+  unchanged_count?: number;
   schedule_a_worksheet_summaries?: ScheduleAWorksheetSummary[];
   schedule_a_contract_type?: ScheduleAContractType;
   schedule_a_contract_type_reason?: string | null;
@@ -443,6 +477,7 @@ export interface FTWilliamsReview {
     status: "VERIFIED" | "NEEDS_CORRECTION" | string;
     reason?: string | null;
   }>;
+  update_receipt?: FTWilliamsUpdateReceipt | null;
   update_retry_count?: number;
   update_diagnostics?: FTWilliamsOperationDiagnostic[];
   schema_validation_results?: FTWilliamsSchemaValidationResult[];

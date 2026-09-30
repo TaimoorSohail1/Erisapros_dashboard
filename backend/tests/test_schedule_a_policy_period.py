@@ -5,9 +5,21 @@ from app.services.extractor import extract_rules_driven_schedule_a_fields
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.schedule_a_semantic_layer import SemanticDocument, enrich_schedule_a_result
 from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+from app.services.schedule_a_policy_period import explicit_contract_periods
 
 
 class PolicyPeriodRegressionTests(unittest.TestCase):
+    def test_contract_period_longer_than_twelve_months_is_clamped(self):
+        periods = explicit_contract_periods(
+            "Contract Year from 01/01/2025 - 02/15/2026"
+        )
+
+        self.assertEqual(len(periods), 1)
+        self.assertEqual(periods[0].beginning, "01/01/2025")
+        self.assertEqual(periods[0].ending, "12/31/2025")
+        self.assertEqual(periods[0].original_ending, "02/15/2026")
+        self.assertTrue(periods[0].adjusted_to_twelve_months)
+
     def test_month_period_not_letter_date(self):
         text = "March 12, 2026\nCertification March 12, 2026\nContract Year from 01/2025 - 12/2025"
         fields = extract_rules_driven_schedule_a_fields([(3, text)], rules=DEFAULT_FIELD_RULES)
