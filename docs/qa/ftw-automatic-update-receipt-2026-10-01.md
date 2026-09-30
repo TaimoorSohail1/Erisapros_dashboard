@@ -2,9 +2,11 @@
 
 ## Release decision
 
-**Status: PR ready for review; do not merge yet.**
+**Status: GO for merge; keep production automatic sending disabled until the post-deployment demo canary passes.**
 
-The implementation and local regression gates pass. The reversible FT Williams browser-field check also passes and was restored to its original value. A final live end-to-end run through the deployed ERISAPros application still requires a disposable FTWLink-visible test plan that is safe for both existing-Schedule-A and new-Schedule-A writes.
+The implementation, complete regression suite, reversible browser check, and live ftwLink canaries pass. The live run used only the approved HighlandTech FGF test plan. It verified an existing Schedule A update and a temporary new Schedule A while preserving all original records and broker rows. The temporary value and test record were removed after verification.
+
+Merging this branch does not activate unattended production sending. Deployment and activation remain separate release decisions: deploy with the existing safety flags, run the approved demo receipt/PDF smoke test, and only then consider enabling the allowlisted automatic-send flag.
 
 ## Implemented outcome
 
@@ -51,6 +53,38 @@ The implementation and local regression gates pass. The reversible FT Williams b
 
 ## Live FT Williams reversible evidence
 
+### Automatic ftwLink existing-record canary
+
+Target: approved HighlandTech FGF test plan, filing year 2025. The baseline contained seven Schedule A records.
+
+1. Exact plan name, sponsor EIN, plan number, year, and demo account identity matched.
+2. All 20 FT Williams Schedule A slots were queried before the update; seven records were present.
+3. The replacement preflight contained seven records and reported zero preservation gaps.
+4. One controlled numeric field was increased by one and accepted by FT Williams.
+5. Read-back confirmed the controlled value and retained all seven Schedule A identities and broker rows.
+6. The numeric value was restored to its original value.
+7. The only persistent differences from the pre-release baseline were the intended `OverrideCommissionsAndFees` values: the paid record is unchecked and the six records with no commissions or fees are checked. No other field or broker value changed.
+
+The first strict comparison intentionally stopped before the new-record test because those newly derived indicators differed from the historical blank values. Read-only diagnosis proved that they were the only differences and that each value matched the approved no-payment rule.
+
+### Automatic ftwLink new-Schedule-A canary
+
+1. The normalized seven-record baseline passed identity, record-count, broker, and no-payment-indicator checks.
+2. The new-record payload contained the seven preserved records plus one uniquely identified `CODEXQA` Schedule A, with zero preservation gaps.
+3. FT Williams accepted the payload and read-back returned exactly eight records.
+4. Exactly one record matched the test contract, its `No commissions or fees paid` value was checked, and the seven original records were unchanged.
+5. The temporary test record was removed by restoring the complete seven-record normalized baseline.
+6. Final read-back returned exactly seven records and matched that baseline exactly.
+
+Machine-readable local evidence is stored in ignored QA artifacts:
+
+- `output/qa/ftw-fgf-automatic-decision-live-e2e-2026-10-01.json`
+- `output/qa/ftw-fgf-new-schedule-live-e2e-2026-10-01.json`
+- `output/qa/ftw-fgf-automatic-decision-baseline-2026-10-01.json`
+- `output/qa/ftw-fgf-normalized-baseline-2026-10-01.json`
+
+### Browser-field canary
+
 Target: the approved Brandeis 2025 browser test Schedule A, sequence 1. Only `x.OverrideCommissionsAndFees` was changed.
 
 1. Initial read: unchecked.
@@ -59,15 +93,28 @@ Target: the approved Brandeis 2025 browser test Schedule A, sequence 1. Only `x.
 4. Restored to unchecked through the same handler.
 5. Second reload read-back: unchecked (original state restored).
 
-No other FT Williams field was changed.
+No other FT Williams field was changed during the browser-field canary.
 
-## Remaining merge gate
+## Merge and activation gates
 
-Before merging, run the deployed branch against one explicitly approved disposable FTWLink-visible test plan and capture:
+| Gate | Result |
+|---|---|
+| Existing Schedule A update and read-back | Passed live against the HighlandTech FGF test plan |
+| Original Schedule A and broker preservation | Passed; seven original records retained |
+| New Schedule A creation and assigned record | Passed live; exactly one temporary test record appeared |
+| No-commissions-or-fees derivation | Passed live on existing and new records |
+| Temporary-record cleanup | Passed; exact normalized seven-record baseline restored |
+| Equal-score multi-match control | Passed in automated coverage; pauses for a decision and sends nothing |
+| Verified receipt UI | Passed backend receipt tests and frontend rendered-contract checks |
+| Full backend suite | 874 passed, 2 skipped, 64 subtests passed |
+| Frontend release checks | Typecheck, build, bundle smoke, and all UI suites passed |
+| GitHub production-image check | Passed on PR #55 |
 
-1. Existing Schedule A automatic update, FT Williams read-back, receipt, browser verification, and PDF evidence.
-2. New Schedule A automatic creation, assigned sequence, FT Williams read-back, receipt, browser verification, and PDF evidence.
-3. Equal-score multi-match control, proving the system pauses for a human decision and sends nothing.
-4. Final confirmation that the disposable test records may remain or are restored according to the test owner's instruction.
+The branch is safe to merge with the feature controls unchanged. Before enabling unattended production sending:
+
+1. Deploy the merged revision with automatic sending still disabled.
+2. Run one approved HighlandTech demo filing through the deployed UI and verify its receipt, FT Williams link, and PDF evidence.
+3. Confirm the exact demo allowlist and feature-flag values before enabling automatic sending.
+4. Monitor the first allowlisted automatic run and retain the manual fallback.
 
 Production client plans must not be used to satisfy this gate.
