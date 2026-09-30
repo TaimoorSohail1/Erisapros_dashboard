@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import ExtractedField, FieldPriority, FormType
-from app.services.ftwilliams_contract import FTWPayloadValidationError
+from app.services.ftwilliams_contract import FTWPayloadValidationError, normalize_ftw_update_value
 from app.services.xml_builder import (
     build_ftw_update_xml,
     build_single_document_update_xml,
@@ -1165,6 +1165,77 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<OtherInd>0</OtherInd>", xml)
         self.assertIn("<InsFailProvideInfoInd>2</InsFailProvideInfoInd>", xml)
         self.assertIn("<ScheduleDesc>EQUITABL</ScheduleDesc>", xml)
+
+    def test_schedule_a_checks_no_commissions_or_fees_when_final_amounts_are_empty(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {
+                        "ScheduleDesc": "TEST",
+                        "InsCarrierName": "Test Carrier",
+                        "InsCarrierEIN": "86-0222062",
+                        "InsContractNum": "EMPTY",
+                    },
+                }
+            ],
+            "1",
+            [],
+            customer_id="04-2103905",
+            plan_id="04-2103905502",
+            year="2025",
+        )
+
+        self.assertIn("<OverrideCommissionsAndFees>1</OverrideCommissionsAndFees>", xml)
+
+    def test_schedule_a_clears_no_commissions_or_fees_when_a_payment_exists(self):
+        xml = build_schedule_a_records_update_xml(
+            [
+                {
+                    "ftw_seq_no": "1",
+                    "query_results": {
+                        "ScheduleDesc": "TEST",
+                        "InsCarrierName": "Test Carrier",
+                        "InsCarrierEIN": "86-0222062",
+                        "InsContractNum": "PAID",
+                    },
+                    "query_subparts": {
+                        "Broker": [
+                            {
+                                "Name1": "Paid Broker",
+                                "CommPdAmt1": "250",
+                                "FeesPdAmt1": "0",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "1",
+            [],
+            customer_id="04-2103905",
+            plan_id="04-2103905502",
+            year="2025",
+        )
+
+        self.assertIn("<OverrideCommissionsAndFees>0</OverrideCommissionsAndFees>", xml)
+
+    def test_no_commissions_or_fees_indicator_is_normalized_as_yes_no(self):
+        self.assertEqual(
+            normalize_ftw_update_value(
+                FormType.SCHEDULE_A,
+                "OverrideCommissionsAndFees",
+                "yes",
+            ),
+            "1",
+        )
+        self.assertEqual(
+            normalize_ftw_update_value(
+                FormType.SCHEDULE_A,
+                "OverrideCommissionsAndFees",
+                "no",
+            ),
+            "0",
+        )
 
     def test_schedule_a_batch_normalizes_fail_to_provide_yes_no_to_ftw_codes(self):
         xml = build_schedule_a_records_update_xml(

@@ -38,6 +38,7 @@ FTW_INDICATOR_TAGS = {
     "BenefitCdSection412Ind",
     "BenefitTrustInd",
     "BenefitGeneralAssetInd",
+    "OverrideCommissionsAndFees",
 }
 
 FTW_ONE_TWO_BOOLEAN_TAGS = {
@@ -343,6 +344,11 @@ def _document_xml(
         )
         if schedule_a_broker_rows is not None:
             broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
+        if preserve_current_values and (values or broker_rows):
+            values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
+                values,
+                broker_rows,
+            )
     if not values:
         if not broker_rows:
             return ""
@@ -404,6 +410,10 @@ def _schedule_a_record_document_xml(
     )
     if schedule_a_broker_rows is not None:
         broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
+    values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
+        values,
+        broker_rows,
+    )
     if not values and not broker_rows:
         return ""
     xml_lines = [
@@ -418,6 +428,48 @@ def _schedule_a_record_document_xml(
     return f"""    <DOLScheduleAData>
 {joined}
     </DOLScheduleAData>"""
+
+
+def _no_commissions_or_fees_indicator(
+    values: dict[str, str],
+    broker_rows: list[dict[str, str]],
+) -> str:
+    """Derive FT Williams' "No commissions or fees paid" checkbox safely.
+
+    The checkbox is selected only when the complete replace payload contains
+    no positive or negative commission/fee amount. Unknown non-empty amount
+    text is treated conservatively as a payment so automation cannot make a
+    false no-payment declaration.
+    """
+
+    amount_values = [
+        value
+        for tag, value in values.items()
+        if tag in {"InsBrokerCommTotAmt", "InsBrokerFeesTotAmt"}
+        or re.fullmatch(r"(?:CommPdAmt|FeesPdAmt)(?:\d+|XX)", tag)
+    ]
+    amount_values.extend(
+        value
+        for row in broker_rows
+        for tag, value in row.items()
+        if tag in {"CommPdAmtXX", "FeesPdAmtXX"}
+    )
+    return "0" if any(_has_nonzero_or_unknown_amount(value) for value in amount_values) else "1"
+
+
+def _has_nonzero_or_unknown_amount(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    negative_parentheses = text.startswith("(") and text.endswith(")")
+    normalized = text[1:-1].strip() if negative_parentheses else text
+    normalized = normalized.replace("$", "").replace(",", "").strip()
+    if negative_parentheses:
+        normalized = f"-{normalized}"
+    try:
+        return Decimal(normalized) != 0
+    except InvalidOperation:
+        return True
 
 
 def update_values_for_form(

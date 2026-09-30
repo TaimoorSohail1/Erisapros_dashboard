@@ -26,6 +26,7 @@ class SelectedSendTests(unittest.TestCase):
                         "PlanYearEndDate": "12/31/2025", "LockedStatus": "Unlocked"})
                 if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2":
                     response.statuses[0].query_results["InsPrsnCoveredEoyCnt"] = "12" if self.updated else "10"
+                    response.statuses[0].query_results["OverrideCommissionsAndFees"] = "0"
                     response.statuses[0].query_subparts = {"Broker": [{"NameXX": "Current broker", "CodeXX": "3", "CommPdAmtXX": "25"}]}
                 return response
 

@@ -3859,6 +3859,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                     )
                 if payload.operation == "query_schedule_a" and payload.ftw_seq_no == "2" and response.statuses:
                     response.statuses[0].query_results["WlfrTotChargesPaidAmt"] = "100" if self.updated and self.reflect_updates else "90"
+                    if self.updated and self.reflect_updates:
+                        response.statuses[0].query_results["OverrideCommissionsAndFees"] = "1"
                 return response
 
             async def send_xml(self, operation, request_xml):
