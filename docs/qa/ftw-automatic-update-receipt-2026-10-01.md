@@ -2,11 +2,11 @@
 
 ## Release decision
 
-**Status: GO for merge; keep production automatic sending disabled until the post-deployment demo canary passes.**
+**Status: DEPLOYED to production; automatic sending is enabled only for the configured HighlandTech 2025 allowlist. The first post-deployment filing remains a monitored canary.**
 
-The implementation, complete regression suite, reversible browser check, and live ftwLink canaries pass. The live run used only the approved HighlandTech FGF test plan. It verified an existing Schedule A update and a temporary new Schedule A while preserving all original records and broker rows. The temporary value and test record were removed after verification.
+The implementation, complete regression suite, reversible browser check, and live ftwLink canaries pass. The live run used only the approved HighlandTech FGF test plan. It verified an existing Schedule A update and a temporary new Schedule A while preserving all original records and broker rows. The temporary value and test record were removed after verification. PR #55 was merged to `main` at `975d07131486dba0e96b7096f6f87784ea376b9b` and that revision was deployed successfully.
 
-Merging this branch does not activate unattended production sending. Deployment and activation remain separate release decisions: deploy with the existing safety flags, run the approved demo receipt/PDF smoke test, and only then consider enabling the allowlisted automatic-send flag.
+The user explicitly authorized enabling automatic sending before the final post-deployment demo. Both production services now run with `FTW_AUTOMATION_AUTO_SEND_ENABLED=true`; the existing allowlist remains restricted to account `HighlandTech`, filing year `2025`. Infrastructure health proves the release is running, but the next user-selected HighlandTech demo filing must still prove the deployed receipt, PDF, and FT Williams read-back path end to end.
 
 ## Implemented outcome
 
@@ -50,6 +50,20 @@ Merging this branch does not activate unattended production sending. Deployment 
 - Production frontend build: passed.
 - Production-bundle smoke render: passed.
 - Read-only visual harness: verified all five stages complete, no repeat-send button, action-specific receipt, destination metadata, counts, evidence actions, and expanded sent-versus-returned table.
+
+## Production deployment and activation evidence
+
+- Backend build: CodeBuild `erisapros-production-backend:31abd977-fbb2-47d1-99c4-d136e0291f96` succeeded.
+- Immutable backend image: `sha256:c6c15813e0115b7e58677817a623e537e8b24913a98fa0dee03ef44440785987`.
+- API task definition: `erisapros-production-api:36`; worker task definition: `erisapros-production-sharefile-worker:26`.
+- Both services stabilized at desired `1`, running `1`, pending `0`, with rollout state `COMPLETED`.
+- Both task definitions use the immutable image and have automatic sending enabled with the HighlandTech 2025 allowlist unchanged.
+- Production frontend build and bundle smoke render passed; live `index.html` version is `sl2DTmX5K6lNzD73VLBaDXCWZukqNOtn`.
+- CloudFront invalidation `I2K50PHI24PIBQDQXXLRUEHO2N` completed, and the live HTML references the new JavaScript and CSS assets.
+- `https://d3axcdlq9aydpw.cloudfront.net/api/health` returned HTTP 200 with `status: ok`.
+- API and worker error-pattern log scans after deployment returned zero matches.
+- The ShareFile worker queue was empty: zero waiting and zero in progress.
+- Rollback anchors: API task definition `35`, worker task definition `25`, and frontend `index.html` version `Esch8O7wzMp4h98zumcT9xZcztHVpjjT`.
 
 ## Live FT Williams reversible evidence
 
@@ -109,12 +123,10 @@ No other FT Williams field was changed during the browser-field canary.
 | Full backend suite | 874 passed, 2 skipped, 64 subtests passed |
 | Frontend release checks | Typecheck, build, bundle smoke, and all UI suites passed |
 | GitHub production-image check | Passed on PR #55 |
+| Production backend rollout | Passed; API revision 36 and worker revision 26 completed |
+| Production frontend rollout | Passed; new assets are live and CloudFront invalidation completed |
+| Production health and logs | Passed; health returned 200 and post-deployment error scans were clear |
+| Runtime automatic-send flag | Enabled on both services with the HighlandTech 2025 allowlist retained |
+| First deployed filing receipt/PDF/read-back | Pending a user-selected HighlandTech demo filing |
 
-The branch is safe to merge with the feature controls unchanged. Before enabling unattended production sending:
-
-1. Deploy the merged revision with automatic sending still disabled.
-2. Run one approved HighlandTech demo filing through the deployed UI and verify its receipt, FT Williams link, and PDF evidence.
-3. Confirm the exact demo allowlist and feature-flag values before enabling automatic sending.
-4. Monitor the first allowlisted automatic run and retain the manual fallback.
-
-Production client plans must not be used to satisfy this gate.
+The code and frontend deployment are complete. The only remaining release-evidence step is to monitor one user-selected HighlandTech demo filing through the deployed workflow and retain its receipt, verified PDF, and FT Williams read-back. Do not use a production client plan for that canary.
