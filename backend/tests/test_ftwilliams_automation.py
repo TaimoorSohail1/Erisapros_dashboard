@@ -11,6 +11,7 @@ from app.repositories import MemoryRepository
 
 from app.config import Settings
 from app.models import (
+    ExtractionValidationResult,
     ExtractedField,
     ExtractedFieldStatus,
     FieldPriority,
@@ -28,6 +29,8 @@ from app.models import (
     FTWilliamsReviewStatus,
     FTWLocalAgentDeviceStatus,
     FTWLocalAgentStatusResponse,
+    ScheduleABrokerRow,
+    ScheduleAContractType,
 )
 from app.services.ftwilliams_automation import (
     FTWAutomationPolicy,
@@ -304,6 +307,24 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertFalse(decision.eligible)
         self.assertTrue(any("conflicting" in reason.lower() for reason in decision.reasons))
 
+    def test_direct_experience_evidence_overrides_ftw_default_classification(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.schedule_a_contract_type = ScheduleAContractType.EXPERIENCE_RATED
+        review.schedule_a_contract_type_confidence = 0.99
+        review.schedule_a_contract_type_evidence = ["LINE_9A_AMOUNT_PRESENT"]
+        review.ftw_schedule_a_contract_type = ScheduleAContractType.NONEXPERIENCE_RATED
+        review.ftw_schedule_a_contract_type_reason = (
+            "Nonexperience-rated by the default rule because the available evidence "
+            "does not clearly establish experience rating."
+        )
+        review.schedule_a_contract_type_mismatch = True
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reasons, [])
+
     def test_verified_multi_record_replacement_is_safe_to_send(self):
         filing, review, extracted, settings = self.safe_case()
         review.schedule_a_records.append(
@@ -388,6 +409,28 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertTrue(any("broker" in reason.lower() for reason in decision.reasons))
+
+    def test_broker_row_validation_error_stops_automatic_send(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.schedule_a_broker_rows = [
+            ScheduleABrokerRow(
+                name="NFP CORPORATE SERVICES (NY) LLC",
+                commission_total="212581.85",
+                decision="REVIEW_REQUIRED",
+                validation_results=[
+                    ExtractionValidationResult(
+                        validator="broker_column_semantics",
+                        status="ERROR",
+                        reason="Broker compensation evidence is ambiguous.",
+                    )
+                ],
+            )
+        ]
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertTrue(any("broker row" in reason.lower() for reason in decision.reasons))
 
     def test_locked_ftw_filing_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()

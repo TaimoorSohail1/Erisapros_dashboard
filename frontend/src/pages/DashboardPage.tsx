@@ -775,10 +775,15 @@ type AutomationPresentation = {
 function dashboardAutomationState(filing: Filing): AutomationPresentation | null {
   const status = filing.automation_status;
   if (!status || status === "DISABLED") return null;
-  const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";
   if (status === "COMPLETED") {
+    const updatedFields = filing.will_update_count || 0;
+    const detail = filing.automation_reasons?.[0]
+      || (updatedFields
+        ? `${updatedFields} FT Williams field${updatedFields === 1 ? "" : "s"} updated and read-back verified.`
+        : "FT Williams update and read-back verified.");
     return { status, label: "Completed", detail, actionLabel: "View result", badgeClass: "ready", tone: "ready" };
   }
+  const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";
   if (status === "ACTION_NEEDED") {
     return { status, label: "Action Needed", detail, actionLabel: "Resolve issue", badgeClass: "warn", tone: "warn" };
   }

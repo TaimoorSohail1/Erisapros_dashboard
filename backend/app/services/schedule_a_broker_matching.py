@@ -105,8 +105,14 @@ def match_schedule_a_brokers(
         address_matches = [
             index
             for index in available
-            if _key(row.address_line_1)
-            and _key(row.address_line_1) == _key(normalized_current[index].address_line_1)
+            if (
+                _key(row.address_line_1)
+                and _key(row.address_line_1) == _key(normalized_current[index].address_line_1)
+            )
+            or (
+                _broker_address_key(row)
+                and _broker_address_key(row) == _broker_address_key(normalized_current[index])
+            )
         ]
 
         selected: int | None = None
@@ -429,6 +435,22 @@ def _decimal_amount(value: object) -> Decimal | None:
 
 def _key(value: object) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _broker_address_key(row: ScheduleABrokerRow) -> str:
+    """Normalize a street address across one-line and two-line FTW layouts."""
+    text = " ".join(
+        part for part in (str(row.address_line_1 or "").strip(), str(row.address_line_2 or "").strip()) if part
+    ).upper()
+    aliases = {
+        "STREET": "ST",
+        "SUITE": "STE",
+        "ROAD": "RD",
+        "AVENUE": "AVE",
+        "BOULEVARD": "BLVD",
+    }
+    words = re.findall(r"[A-Z0-9]+", text)
+    return "".join(aliases.get(word, word) for word in words)
 
 
 def _tag_index(tag: str) -> int | None:

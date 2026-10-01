@@ -943,6 +943,27 @@ def schedule_a_replacement_data_gaps(
             gaps.append(
                 f"sequence {sequence} has {len(actual_brokers)} broker row(s) for {len(expected_brokers)} current row(s)"
             )
+        if selected_sequence and sequence == selected_sequence:
+            # The selected Schedule A is intentionally sorted by total payment
+            # before send. Validate that every vendor broker field survives the
+            # replacement by occurrence count rather than by its former row
+            # position; the unselected records below remain byte-for-byte and
+            # position checked.
+            expected_field_counts = {
+                tag: sum(1 for broker in expected_brokers if tag in broker)
+                for tag in {tag for broker in expected_brokers for tag in broker}
+            }
+            actual_field_counts = {
+                tag: sum(1 for broker in actual_brokers if tag in broker)
+                for tag in {tag for broker in actual_brokers for tag in broker}
+            }
+            for tag, expected_count in sorted(expected_field_counts.items()):
+                missing_count = expected_count - actual_field_counts.get(tag, 0)
+                if missing_count > 0:
+                    gaps.append(
+                        f"sequence {sequence} missing {missing_count} broker field value(s) for {tag}"
+                    )
+            continue
         for index, expected_broker in enumerate(expected_brokers):
             actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
             for tag in sorted(set(expected_broker) - set(actual_broker)):
@@ -1097,7 +1118,13 @@ def _schedule_a_broker_row_update_values(
 
 
 def _ftw_broker_name(value: str) -> str:
-    """Use the legal-name portion when a DBA suffix exceeds FTW's limit."""
+    """Fit a broker legal name using only unambiguous standard abbreviations.
+
+    FT Williams caps broker names at 35 characters.  Keep the extracted name
+    intact everywhere else and transform only the outbound FTW value.  If the
+    legal name still cannot fit after safe substitutions, the normal contract
+    validator rejects it instead of silently truncating identity-bearing text.
+    """
     name = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(name) <= 35:
         return name
@@ -1107,7 +1134,31 @@ def _ftw_broker_name(value: str) -> str:
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0].strip(" ,-:")
-    return legal_name if legal_name and len(legal_name) <= 35 else name
+    candidate = legal_name if legal_name else name
+    if len(candidate) <= 35:
+        return candidate
+
+    standard_abbreviations = (
+        ("MANAGEMENT", "MGMT"),
+        ("COMPENSATION", "COMP"),
+        ("CORPORATION", "CORP"),
+        ("INCORPORATED", "INC"),
+        ("SERVICES", "SVCS"),
+        ("INSURANCE", "INS"),
+        ("COMPANY", "CO"),
+        ("ASSOCIATION", "ASSN"),
+        ("INTERNATIONAL", "INTL"),
+    )
+    for word, abbreviation in standard_abbreviations:
+        candidate = re.sub(
+            rf"\b{word}\b",
+            abbreviation,
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        if len(candidate) <= 35:
+            return candidate
+    return candidate
 
 
 def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:

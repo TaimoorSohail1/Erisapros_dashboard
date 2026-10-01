@@ -31,6 +31,16 @@ assert.match(
   /Schedule A received\. Extraction is queued\./,
   "Queued Schedule A rows should not claim a worksheet is required.",
 );
+assert.match(
+  page,
+  /FT Williams field.*updated and read-back verified/,
+  "Completed dashboard rows should summarize the verified FT Williams update.",
+);
+assert.match(
+  page,
+  /FT Williams update and read-back verified/,
+  "Completed no-change rows should still show clear verification evidence.",
+);
 
 assert.match(
   page,

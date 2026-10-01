@@ -18,6 +18,43 @@ from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_resul
 
 
 class ScheduleASemanticLayerTests(unittest.TestCase):
+    def test_semantic_layout_does_not_replace_authoritative_native_broker_table(self):
+        authoritative = ScheduleABrokerRow(
+            name="NFP CORPORATE SERVICES NY LLC",
+            address_line_1="PO BOX 9101",
+            city="PLAINVIEW",
+            state="NY",
+            zip_code="11803",
+            commission_total="2,762.56",
+            fee_total="860.74",
+        )
+        result = NormalizedExtractionResult(
+            provider="GroundX + local parser",
+            fields=[],
+            raw={"authoritative_broker_table": True},
+            schedule_a_broker_rows=[authoritative],
+        )
+        document = SemanticDocument.from_page_texts(
+            [
+                (
+                    2,
+                    """
+                    INSURANCE FEES AND COMMISSION INFORMATION
+                    SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                    NFP CORPORATE SERVICES NY LLC
+                    $ 860.74 $ 0.00 $ 0.00
+                    $860.74
+                    PLAINVIEW, NY 11803
+                    """,
+                )
+            ]
+        )
+
+        enriched = enrich_schedule_a_result(result, document, rules=[])
+
+        self.assertEqual(enriched.schedule_a_broker_rows, [authoritative])
+
     def test_principal_breakdown_uses_total_not_employee_count(self):
         document = SemanticDocument.from_page_texts(
             [

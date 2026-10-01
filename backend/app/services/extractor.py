@@ -848,10 +848,19 @@ def supplement_schedule_a_result_with_local(
 ) -> NormalizedExtractionResult:
     """Guarantee deterministic Schedule A values survive a partial AI response."""
     result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
-    result.schedule_a_broker_rows = merge_schedule_a_broker_rows(
-        result.schedule_a_broker_rows,
-        local_result.schedule_a_broker_rows,
-    )
+    local_raw = local_result.raw if isinstance(local_result.raw, dict) else {}
+    if local_result.schedule_a_broker_rows and local_raw.get("authoritative_broker_table"):
+        result.schedule_a_broker_rows = [
+            row.model_copy(deep=True) for row in local_result.schedule_a_broker_rows
+        ]
+        result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        result_raw["authoritative_broker_table"] = True
+        result.raw = result_raw
+    else:
+        result.schedule_a_broker_rows = merge_schedule_a_broker_rows(
+            result.schedule_a_broker_rows,
+            local_result.schedule_a_broker_rows,
+        )
     if local_result.schedule_a_worksheet_summaries:
         result.schedule_a_worksheet_summaries = local_result.schedule_a_worksheet_summaries
     result.classification_signals = sorted(
@@ -1187,7 +1196,7 @@ def _schedule_a_candidate_value_is_valid(field: NormalizedExtractionField) -> bo
     if label.startswith("1b."):
         return looks_like_ein(value)
     if label.startswith("1c."):
-        return bool(re.fullmatch(r"\d{4,6}", value))
+        return bool(re.fullmatch(r"\d{5}", value))
     if label.startswith("1d."):
         return is_valid_contract_identifier(value, allow_numeric=True)
     if label.startswith("1e."):
@@ -2071,11 +2080,22 @@ def local_schedule_a_pdf_result(
     rules=None,
 ) -> NormalizedExtractionResult:
     is_pdf = file_name.lower().endswith(".pdf")
+    page_texts = extract_pdf_text_pages(file_bytes) if is_pdf else []
+    authoritative_broker_rows = extract_columnar_broker_compensation_rows(page_texts)
+    broker_rows = (
+        authoritative_broker_rows
+        if authoritative_broker_rows
+        else (extract_schedule_a_broker_rows_from_pdf_text(file_bytes) if is_pdf else [])
+    )
     return NormalizedExtractionResult(
         provider=provider if is_pdf else "Local document parser",
         fields=extract_fields_from_document_text(file_bytes, file_name, rules=rules),
-        raw={"file_name": file_name, "source": "local_document_parser"},
-        schedule_a_broker_rows=extract_schedule_a_broker_rows_from_pdf_text(file_bytes) if is_pdf else [],
+        raw={
+            "file_name": file_name,
+            "source": "local_document_parser",
+            "authoritative_broker_table": bool(authoritative_broker_rows),
+        },
+        schedule_a_broker_rows=broker_rows,
         schedule_a_worksheet_summaries=extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes) if is_pdf else [],
     )
 
@@ -2483,6 +2503,8 @@ def extract_position_aware_schedule_a_fields(
         source_override: str | None = None,
     ) -> None:
         clean = clean_extracted_value(str(value or "")).rstrip(".")
+        if field_name.startswith("1c."):
+            clean = normalize_schedule_a_naic(clean)
         if not clean or is_blank_extraction_value(clean):
             return
         source_line = lines[max(0, row - 1)] if lines else clean
@@ -2530,7 +2552,7 @@ def extract_position_aware_schedule_a_fields(
         if ein:
             add("1b. Insurance Carrier EIN", ein[0].group(1), page=page, lines=lines, row=ein[1])
 
-        naic = line_match(r"NAIC(?:\s+Code|\s+Number)?\s*:?\s*(\d{4,6})")
+        naic = line_match(r"NAIC(?:\s+Code|\s+Number)?\s*:?\s*(\d{4,8})")
         if naic:
             add("1c. NAIC Code", naic[0].group(1), page=page, lines=lines, row=naic[1])
 
@@ -3869,9 +3891,9 @@ _COLUMNAR_BROKER_END = re.compile(
     re.IGNORECASE,
 )
 _COLUMNAR_BROKER_AMOUNTS = re.compile(
-    r"\$?\s*(?P<sales>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))\s+"
-    r"\$?\s*(?P<fees>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))\s+"
-    r"\$?\s*(?P<additional>(?:[\d,]+(?:\.\d{1,2})?|\.\d{1,2}))(?![\d.])",
+    r"\$?\s*(?P<sales>(?:\d[\d,]*(?:\.\d{1,2})?|\.\d{1,2}))\s+"
+    r"\$?\s*(?P<fees>(?:\d[\d,]*(?:\.\d{1,2})?|\.\d{1,2}))\s+"
+    r"\$?\s*(?P<additional>(?:\d[\d,]*(?:\.\d{1,2})?|\.\d{1,2}))(?![\d.])",
 )
 _COLUMNAR_CITY_STATE_ZIP = re.compile(
     r"^(?P<city>[A-Za-z .'-]+?),?\s+(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)$",
@@ -3944,6 +3966,8 @@ def extract_columnar_broker_compensation_rows(page_texts: list[tuple[int, str]])
             for line in block[amount_match.end() :].splitlines()
             if clean_extracted_value(line)
         ]
+        if address_lines and re.fullmatch(r"(?:INC\.?|LLC|L\.L\.C\.?|CORP(?:ORATION)?|LTD|LLP|LP)", address_lines[0], re.IGNORECASE):
+            name = f"{name} {address_lines.pop(0)}".strip(" ,")
         address_line_1, address_line_2, city, state, zip_code = _columnar_broker_address(address_lines)
         if not name or not is_probable_person_or_entity_name(name) or not address_line_1 or not city or not state or not zip_code:
             unresolved_paid_blocks += 1
@@ -6561,7 +6585,8 @@ def extract_schedule_a_fields_from_rule_labels(
                 "National Association of Insurance Commissioners code",
                 rules=rules,
             ),
-            r"([0-9]{4,6})",
+            r"([0-9]{4,8})",
+            transform=normalize_schedule_a_naic,
         ),
         0.93,
     )
@@ -6735,7 +6760,8 @@ def normalize_rule_label(label: str) -> str:
 
 
 def money_value(value: str) -> str:
-    return str(value or "").replace("$", "").strip()
+    clean = str(value or "").replace("$", "").strip()
+    return re.sub(r"^([+-]?)\.(\d{1,2})$", r"\g<1>0.\2", clean)
 
 
 def extract_contract_year_range(text: str) -> tuple[str, str] | None:
@@ -6743,6 +6769,15 @@ def extract_contract_year_range(text: str) -> tuple[str, str] | None:
     if len({(period.beginning, period.ending) for period in periods}) != 1:
         return None
     return periods[0].beginning, periods[0].ending
+
+
+def normalize_schedule_a_naic(value: str) -> str:
+    """Remove source padding only when it resolves to an exact FTW NAIC code."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    unpadded = digits.lstrip("0")
+    if len(digits) > 5 and len(unpadded) == 5:
+        return unpadded
+    return digits
 
 
 def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
