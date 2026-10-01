@@ -1245,7 +1245,7 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
 
 def _schedule_a_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int, int]:
     position_aware = any(
-        item.provider in {"Position-aware PDF parser", "Position-aware layout engine"}
+        item.provider in {"Position-aware PDF parser", "Position-aware layout engine", "Aetna attached listing parser"}
         and item.table_cell is not None
         for item in field.evidence
     )
@@ -2548,11 +2548,89 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *_extract_fields_from_pages(plain_pages, rules=rules),
         *extract_layout_aware_schedule_a_fields(file_bytes),
         *extract_position_aware_schedule_a_fields(layout_pages),
+        *extract_aetna_attached_listing_fields(layout_pages),
         *extract_rules_driven_schedule_a_fields(layout_pages, rules=rules),
         *schedule_a_broker_compensation_fields(positioned_brokers),
         *schedule_a_broker_compensation_fields(extract_layout_broker_rows(layout_pages)),
     ]
     return select_best_schedule_a_fields(fields)
+
+
+def extract_aetna_attached_listing_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Use an Aetna state attachment only for the plan sponsor's state.
+
+    Aetna's Schedule A form deliberately says ``EIN: See Attached`` and
+    includes every state legal entity in an appendix.  Treating the first row
+    as the carrier silently selects Arizona for California plans.  This narrow
+    parser requires the Aetna attachment heading and a sponsor address with a
+    state/ZIP before selecting exactly that state's appendix row.
+    """
+    combined = "\n".join(text or "" for _, text in page_texts)
+    if not re.search(r"\bAetna\b", combined, re.IGNORECASE):
+        return []
+
+    attachment = next(
+        (
+            (page, text)
+            for page, text in page_texts
+            if re.search(r"State\s+NAIC\s+Code\s+Service\s+Area\s+EIN", text or "", re.IGNORECASE)
+        ),
+        None,
+    )
+    if not attachment:
+        return []
+
+    sponsor_state = next(
+        (
+            match.group(1).upper()
+            for _, text in page_texts
+            for match in re.finditer(r"\b([A-Z]{2})\s{2,}(\d{5}(?:-\d{4})?)\b", text or "")
+        ),
+        None,
+    )
+    if not sponsor_state:
+        return []
+
+    page, appendix_text = attachment
+    # Preserve a legitimate all-zero NAIC code.  It is a five-character FTW
+    # value, not a missing value or numeric zero.
+    row = re.search(
+        rf"^\s*{re.escape(sponsor_state)}\s+(?P<naic>\d{{5}})\s+(?P<carrier>.+?)\s+(?P<ein>\d{{2}}-\d{{7}})\s*$",
+        appendix_text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if not row:
+        return []
+
+    source = clean_extracted_value(row.group(0))
+    values = (
+        # The parenthetical identifies the incorporation jurisdiction, not the
+        # carrier name field FTW asks for; omitting it also avoids consuming
+        # carrier-name field capacity with non-reportable text.
+        ("1a. Name of Insurance Company", re.sub(r"\s*\([^)]*\)\s*$", "", row.group("carrier")).strip()),
+        ("1b. Insurance Carrier EIN", row.group("ein")),
+        ("1c. NAIC Code", row.group("naic")),
+    )
+    return [
+        NormalizedExtractionField(
+            field_name=field_name,
+            value=normalize_schedule_a_naic(value) if field_name.startswith("1c.") else value,
+            confidence=0.99,
+            page=page,
+            source_text=source,
+            evidence=[
+                SourceEvidence(
+                    provider="Aetna attached listing parser",
+                    page=page,
+                    source_text=source,
+                    table_cell=(appendix_text[: row.start()].count("\n") + 1, 0),
+                )
+            ],
+        )
+        for field_name, value in values
+    ]
 
 
 _POSITION_DATE = r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4}"
@@ -2706,9 +2784,14 @@ def extract_position_aware_schedule_a_broker_rows(
                 continue
         if (
             re.search(r"Insurance\s+Fees\s+and\s+Commissions\s+Paid", text, re.IGNORECASE)
-            and re.search(r"Name\s+and\s+Address\s+of\s+Agent\s+or\s+Broker", text, re.IGNORECASE)
+            and re.search(r"Name\s+and\s+(?:Address\s+of\s+)?(?:the\s+)?Agents?\s+or\s+Brokers?", text, re.IGNORECASE)
         ):
             row = _positioned_combined_commission_broker(page, lines)
+            if row:
+                rows.append(row)
+                continue
+        if re.search(r"AETNA\s+LIFE\s+INSURANCE\s+COMPANY", text, re.IGNORECASE):
+            row = _positioned_aetna_broker(page, lines)
             if row:
                 rows.append(row)
     return merge_schedule_a_broker_rows([], rows)
@@ -2778,8 +2861,8 @@ def _positioned_line3_summary_broker(page: int, lines: list[str]) -> ScheduleABr
 
 
 def _positioned_combined_commission_broker(page: int, lines: list[str]) -> ScheduleABrokerRow | None:
-    header_index = next((index for index, line in enumerate(lines) if re.search(r"Name\s+and\s+Address\s+of\s+Agent\s+or\s+Broker", line, re.IGNORECASE)), None)
-    money_header_index = next((index for index, line in enumerate(lines) if index > (header_index or 0) and re.search(r"Commissions?\s+or\s+Fees\s+Paid", line, re.IGNORECASE)), None)
+    header_index = next((index for index, line in enumerate(lines) if re.search(r"Name\s+and\s+(?:Address\s+of\s+)?(?:the\s+)?Agents?\s+or\s+Brokers?", line, re.IGNORECASE)), None)
+    money_header_index = next((index for index, line in enumerate(lines) if index > (header_index or 0) and re.search(r"(?:Commissions?\s+or\s+Fees\s+Paid|Amount\s+of\s+Commissions?\s+Paid)", line, re.IGNORECASE)), None)
     if header_index is None or money_header_index is None:
         return None
     identity_lines = [clean_extracted_value(line) for line in lines[header_index + 1 : money_header_index] if clean_extracted_value(line)]
@@ -2812,6 +2895,72 @@ def _positioned_combined_commission_broker(page: int, lines: list[str]) -> Sched
         source_page=page,
         confidence=0.98,
         evidence=[SourceEvidence(provider="Position-aware PDF parser", page=page, source_text=source, table_cell=(header_index + 2, 0))],
+    )
+
+
+def _positioned_aetna_broker(page: int, lines: list[str]) -> ScheduleABrokerRow | None:
+    """Read Aetna's compact Schedule A broker row without shifting columns.
+
+    The Aetna row places contract, name, address, and commission total on one
+    visual line.  A generic column parser can mistake the contract number for
+    a name or drop the broker entirely, so require the exact Aetna table
+    labels before accepting this shape.
+    """
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.search(r"Name\s+and\s+address\s+of\s+the\s+agents?\s+or\s+brokers?", line, re.IGNORECASE)
+            and re.search(r"Amount\s+of[\s\S]{0,320}commissions?\s+paid", "\n".join(lines[index : index + 3]), re.IGNORECASE)
+        ),
+        None,
+    )
+    if header_index is None:
+        return None
+
+    row_index = None
+    match = None
+    for index, line in enumerate(lines[header_index + 1 :], start=header_index + 1):
+        candidate = re.match(
+            r"^\s*[A-Z0-9][A-Z0-9-]{3,}\s+(?P<name>[A-Z][A-Z '&.\-]+?)\s+(?P<street>\d+\s+.+?)\s+\$\s*(?P<commission>[\d,]+(?:\.\d{2})?)\s*$",
+            line,
+        )
+        if candidate:
+            row_index = index
+            match = candidate
+            break
+    if row_index is None or match is None:
+        return None
+
+    name = clean_extracted_value(match.group("name"))
+    if not is_probable_person_or_entity_name(name):
+        return None
+    commission = money_value(match.group("commission"))
+    address_lines = [match.group("street")]
+    for line in lines[row_index + 1 : row_index + 3]:
+        clean = clean_extracted_value(line)
+        if clean:
+            address_lines.append(clean)
+    address_line_1, address_line_2, city, state, zip_code = _positioned_broker_address(address_lines)
+    source = "\n".join(lines[header_index : min(len(lines), row_index + 3)]).strip()
+    return ScheduleABrokerRow(
+        name=name,
+        address_line_1=address_line_1,
+        address_line_2=address_line_2,
+        city=city,
+        state=state,
+        zip_code=zip_code,
+        organization_code="3",
+        purpose="COMMISSIONS",
+        commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
+        fee_rows=[],
+        commission_total=commission,
+        fee_total="0",
+        commission_source_text=source,
+        fee_source_text=source,
+        source_page=page,
+        confidence=0.99,
+        evidence=[SourceEvidence(provider="Aetna Schedule A table parser", page=page, source_text=source, table_cell=(row_index + 1, 0))],
     )
 
 

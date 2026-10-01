@@ -39,6 +39,8 @@ from app.services.extractor import (
     extract_prudential_broker_rows,
     extract_prudential_schedule_a_fields,
     extract_prudential_schedule_a_summaries,
+    extract_aetna_attached_listing_fields,
+    extract_position_aware_schedule_a_broker_rows,
     extract_position_aware_schedule_a_fields,
     extract_schedule_a_broker_rows,
     extract_schedule_a_fields_from_rule_labels,
@@ -69,6 +71,50 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_aetna_attached_listing_uses_plan_sponsor_state_and_compact_broker_row(self):
+        pages = [
+            (
+                1,
+                """
+                VITCO FOODS
+                715 E CALIFORNIA ST
+                ONTARIO CA       91761
+                Aetna Health, Inc.
+                """,
+            ),
+            (
+                3,
+                """
+                AETNA LIFE INSURANCE COMPANY
+                2. Insurance Fees and commissions paid to agents and brokers:
+                Contract or (a) Name and address of the agents or brokers (b) Amount of
+                Identification to whom commissions or fees were paid. commissions paid
+                0252023HNO JASON ANDREW PRATTES 8182 NOELLE DR $43,139.39
+                HUNTINGTON BEACH, CA 92646
+                """,
+            ),
+            (
+                4,
+                """
+                State NAIC Code Service Area EIN
+                AZ 95109 Aetna Health Inc. (a Pennsylvania Corporation) 23-2169745
+                CA 00000 Aetna Health of California Inc. (a California Corporation) 95-3402799
+                """,
+            ),
+        ]
+
+        attached = {field.field_name: field.value for field in extract_aetna_attached_listing_fields(pages)}
+        self.assertEqual(attached["1a. Name of Insurance Company"], "Aetna Health of California Inc.")
+        self.assertEqual(attached["1b. Insurance Carrier EIN"], "95-3402799")
+        self.assertEqual(attached["1c. NAIC Code"], "00000")
+
+        brokers = extract_position_aware_schedule_a_broker_rows(pages)
+        self.assertEqual(len(brokers), 1)
+        self.assertEqual(brokers[0].name, "JASON ANDREW PRATTES")
+        self.assertEqual(brokers[0].commission_total, "43,139.39")
+        self.assertEqual(brokers[0].fee_total, "0")
+        self.assertEqual(brokers[0].state, "CA")
+
     def test_money_value_normalizes_leading_decimal_zero(self):
         self.assertEqual(money_value("$.00"), "0.00")
 
