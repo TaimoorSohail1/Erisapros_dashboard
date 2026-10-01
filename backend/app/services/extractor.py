@@ -6760,7 +6760,8 @@ def normalize_rule_label(label: str) -> str:
 
 
 def money_value(value: str) -> str:
-    return str(value or "").replace("$", "").strip()
+    clean = str(value or "").replace("$", "").strip()
+    return re.sub(r"^([+-]?)\.(\d{1,2})$", r"\g<1>0.\2", clean)
 
 
 def extract_contract_year_range(text: str) -> tuple[str, str] | None:

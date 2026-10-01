@@ -56,6 +56,7 @@ from app.services.extractor import (
     is_obvious_template_placeholder,
     merge_schedule_a_fields,
     merge_schedule_a_broker_rows,
+    money_value,
     parse_schedule_a_text,
     schedule_a_broker_compensation_fields,
     supplement_schedule_a_result_with_local,
@@ -67,6 +68,9 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_money_value_normalizes_leading_decimal_zero(self):
+        self.assertEqual(money_value("$.00"), "0.00")
+
     def test_labeled_naic_strips_only_leading_zero_padding_to_five_digits(self):
         fields = extract_schedule_a_fields_from_rule_labels(
             "NAIC Code: 00053295",
