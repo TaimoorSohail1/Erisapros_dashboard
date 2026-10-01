@@ -1374,7 +1374,19 @@ def merge_schedule_a_fields(
         if field.field_name in existing_names:
             # Replace invalid/conflicting AI values, or an AI value for a field
             # that has a reliable format-specific document parser.
-            field = _merge_field_provenance(field, [*usable_primary, field])
+            sources = [*usable_primary, field]
+            if _has_aetna_attached_listing_evidence(field):
+                # Preserve agreeing AI evidence, but never reintroduce a
+                # generic Aetna parent-company candidate that the state row
+                # conclusively replaced.
+                expected = clean_extracted_value(field.value).casefold()
+                sources = [
+                    source
+                    for source in sources
+                    if source is field
+                    or clean_extracted_value(source.value).casefold() == expected
+                ]
+            field = _merge_field_provenance(field, sources)
             merged = [f for f in merged if f.field_name != field.field_name]
         merged.append(field)
         existing_names.add(field.field_name)
@@ -2319,7 +2331,30 @@ def extract_fields_from_document_text(
         *(extract_email_schedule_a_fields(pages) if str(file_name or "").lower().endswith("email body.txt") else []),
         *schedule_a_broker_compensation_fields(extract_tabular_broker_rows(pages)),
     ]
-    return select_best_schedule_a_fields(fields)
+    return _prefer_authoritative_aetna_attachment_fields(select_best_schedule_a_fields(fields))
+
+
+def _has_aetna_attached_listing_evidence(field: NormalizedExtractionField) -> bool:
+    return any(
+        item.provider == "Aetna attached listing parser" and item.table_cell is not None
+        for item in field.evidence
+    )
+
+
+def _prefer_authoritative_aetna_attachment_fields(
+    fields: list[NormalizedExtractionField],
+) -> list[NormalizedExtractionField]:
+    """Do not turn Aetna's generic parent company into a false conflict.
+
+    The Schedule A body says ``Aetna Health, Inc.`` while its state appendix
+    gives the legal entity FT Williams requires. Once the parser has selected
+    the appendix row for the sponsor's state, other carrier candidates are
+    supporting evidence, not competing values.
+    """
+    for field in fields:
+        if _has_aetna_attached_listing_evidence(field):
+            field.candidate_values = [field.value]
+    return fields
 
 
 def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
@@ -2559,7 +2594,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *schedule_a_broker_compensation_fields(positioned_brokers),
         *schedule_a_broker_compensation_fields(extract_layout_broker_rows(layout_pages)),
     ]
-    return select_best_schedule_a_fields(fields)
+    return _prefer_authoritative_aetna_attachment_fields(select_best_schedule_a_fields(fields))
 
 
 def extract_aetna_schedule_a_support_statement_fields(
