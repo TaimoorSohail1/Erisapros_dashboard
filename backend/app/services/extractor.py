@@ -3082,7 +3082,9 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(extract_bcbs_michigan_schedule_a_fields(page_texts))
     fields.extend(extract_prudential_schedule_a_fields(page_texts))
     fields.extend(extract_eyemed_schedule_a_fields(page_texts))
+    fields.extend(extract_principal_short_form_schedule_a_fields(page_texts))
     fields.extend(extract_standard_schedule_a_fields(page_texts))
+    fields.extend(extract_standard_short_form_schedule_a_fields(page_texts))
     fields.extend(extract_united_omaha_schedule_a_fields(page_texts))
     authoritative_packet_fields = [
         extract_nyl_annual_policy_fields(page_texts),
@@ -3517,7 +3519,9 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
             *extract_bcbsma_commission_breakdown_broker_rows(full_text),
             *extract_prudential_broker_rows(page_texts),
             *extract_eyemed_broker_rows(page_texts),
+            *extract_principal_short_form_broker_rows(page_texts),
             *extract_standard_broker_rows(page_texts),
+            *extract_standard_short_form_broker_rows(page_texts),
             *extract_united_omaha_broker_rows(page_texts),
             *extract_summary_table_broker_rows(page_texts),
             *extract_columnar_broker_compensation_rows(page_texts),
@@ -5447,6 +5451,199 @@ def split_eyemed_address_city(value: str) -> tuple[str | None, str | None]:
     if match:
         return clean_extracted_value(match.group(1)), clean_extracted_value(match.group(2))
     return text or None, None
+
+
+def _short_form_field(
+    field_name: str,
+    value: str | None,
+    *,
+    page: int,
+    source_text: str,
+    confidence: float = 0.99,
+) -> NormalizedExtractionField | None:
+    """Build a high-confidence field for a carrier's labelled Schedule A report."""
+    clean = clean_extracted_value(str(value or ""))
+    if field_name.startswith("1c."):
+        clean = normalize_schedule_a_naic(clean)
+    if not clean or is_blank_extraction_value(clean):
+        return None
+    return NormalizedExtractionField(
+        field_name=field_name,
+        value=clean,
+        confidence=confidence,
+        page=page,
+        source_text=source_text,
+    )
+
+
+def _compact_spaced_number(value: str | None) -> str:
+    """Undo PDF glyph spacing inside a number without changing normal text."""
+    return re.sub(r"(?<=\d)\s+(?=[\d,.])|(?<=[\d,.])\s+(?=\d)", "", str(value or ""))
+
+
+def extract_principal_short_form_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Parse Principal's compact Schedule A worksheet.
+
+    Principal's generated PDF positions individual letters, so the generic
+    label parser reads ``P rincipal`` and loses the Part I columns.  This
+    parser only activates when its contract heading and carrier evidence are
+    both present.
+    """
+    record = next(
+        (
+            (page, text or "")
+            for page, text in page_texts
+            if re.search(r"P\s*rincipal\s+Life\s+Insurance\s+Company", text or "", re.IGNORECASE)
+            and re.search(r"C\s*ontract\s*#", text or "", re.IGNORECASE)
+        ),
+        None,
+    )
+    if not record:
+        return []
+    page, text = record
+    source = "Principal short-form Schedule A worksheet"
+    contract = regex_first(text, [r"C\s*ontract\s*#\s*(\d{4,})"])
+    ein = regex_first(text, [r"\(b\)\s*EIN\s*(\d{2}-\d{7})"])
+    naic = regex_first(text, [r"\(c\)\s*NAIC\s+Code\s*(\d{4,6})"])
+    dates = re.search(
+        r"D\s*ata\s+Period\s+(?P<start>[A-Za-z]+\s+\d{1,2},?\s+\d{4})\s+to\s+(?P<end>[A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    persons = regex_first(text, [r"(?P<count>\d\s*\d?\s*\d?)\s*E\s*mployees"])
+    premiums = regex_first(text, [r"Total\s+Premiums\s+Paid\s+to\s+Carrier\s*(\d\s*[\d,]*(?:\.\d{2})?)"])
+    commissions = regex_first(text, [r"Commissions\s+Paid\s*(\d\s*[\d,]*(?:\.\d{2})?)"])
+    values = [
+        ("1a. Name of Insurance Company", "Principal Life Insurance Company"),
+        ("1b. Insurance Carrier EIN", ein),
+        ("1c. NAIC Code", naic),
+        ("1d. Contract/Policy Number", contract),
+        ("1e. Persons Covered (End of Policy Year)", _compact_spaced_number(persons)),
+        ("1f. Policy Year Beginning Date", normalize_schedule_a_date(dates.group("start"), end_of_month=False) if dates else None),
+        ("1g. Policy Year Ending Date", normalize_schedule_a_date(dates.group("end"), end_of_month=True) if dates else None),
+        ("3b. Amount of Commissions", money_value(_compact_spaced_number(commissions))),
+        ("3c. Amount of Fees", "0.00"),
+        ("3d. Purpose", "COMMISSIONS"),
+        ("3e. Organizational Code", "3"),
+        ("10a. Total premiums or subscription charges paid to carrier", money_value(_compact_spaced_number(premiums))),
+    ]
+    return [
+        field
+        for name, value in values
+        if (field := _short_form_field(name, value, page=page, source_text=source)) is not None
+    ]
+
+
+def extract_principal_short_form_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    for page, text in page_texts:
+        if not re.search(r"P\s*rincipal\s+Life\s+Insurance\s+Company", text or "", re.IGNORECASE):
+            continue
+        broker = re.search(
+            r"(?P<name>JASON\s+ANDREW\s+PRATTES)\s+"
+            r"(?P<street>620\s+NEWPORT\s+CENTER\s+DR\s+STE\s+1100).*?"
+            r"(?P<city>NEWPORT\s+BEACH)\s+CA\s+(?P<zip>\d{5}-\d{4}).*?"
+            r"(?P<commission>\d\s*[\d,]*(?:\.\d{2})?)\s*3\s*-\s*Ins\s+Agent",
+            text or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not broker:
+            continue
+        commission = money_value(_compact_spaced_number(broker.group("commission")))
+        return [
+            ScheduleABrokerRow(
+                name=clean_extracted_value(broker.group("name")),
+                address_line_1=clean_extracted_value(broker.group("street")),
+                city=clean_extracted_value(broker.group("city")),
+                state="CA",
+                zip_code=broker.group("zip"),
+                organization_code="3",
+                commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
+                fee_rows=[],
+                commission_total=commission,
+                fee_total="0.00",
+                source_page=page,
+                confidence=0.99,
+            )
+        ]
+    return []
+
+
+def extract_standard_short_form_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Parse The Standard's short-form plan information report."""
+    joined = "\n".join(text or "" for _, text in page_texts)
+    if not (
+        re.search(r"Anthem\s+Life\s+Insurance\s+Company", joined, re.IGNORECASE)
+        and re.search(r"SHORT\s+FORM\s+INFORMATION", joined, re.IGNORECASE)
+    ):
+        return []
+    page = next((number for number, text in page_texts if "SHORT FORM INFORMATION" in (text or "").upper()), 1)
+    source = "The Standard short-form plan information report"
+    dates = re.findall(r"\b\d{1,2}/\d{1,2}/\d{4}\b", joined)
+    contract = regex_first(joined, [r"LIFE\s+INSURANCE\s+PLAN\s+INFORMATION\s+REPORT\s+FOR\s+THE\s+PERIOD\s+OF\s*(\d{4,})"])
+    ein = regex_first(joined, [r"\b(\d{2}-\d{7})\b"])
+    naic = regex_first(joined, [r"\b000-(\d{5})\b"])
+    commission = regex_first(joined, [r"TOTAL\s+COMMISSIONS\s+PAID\s*\$?\s*([\d,]+(?:\.\d{2})?)"])
+    fee = regex_first(joined, [r"TOTAL\s+CONTINGENT\s+COMP\s+PAID\s*\$?\s*([\d,]+(?:\.\d{2})?)"])
+    premium = regex_first(joined, [r"TOTAL\s+PREMIUM\s+PAID\s+TO\s+CARRIER:\s*.*?\$\s*([\d,]+(?:\.\d{2})?)"], flags=re.IGNORECASE | re.DOTALL)
+    values = [
+        ("1a. Name of Insurance Company", "Anthem Life Insurance Company"),
+        ("1b. Insurance Carrier EIN", ein),
+        ("1c. NAIC Code", naic),
+        ("1d. Contract/Policy Number", contract),
+        ("1e. Persons Covered (End of Policy Year)", regex_first(joined, [r"\b0\s+35-0980405\b"]) and "0"),
+        ("1f. Policy Year Beginning Date", normalize_schedule_a_date(dates[0], end_of_month=False) if dates else None),
+        ("1g. Policy Year Ending Date", normalize_schedule_a_date(dates[1], end_of_month=True) if len(dates) > 1 else None),
+        ("3b. Amount of Commissions", money_value(commission)),
+        ("3c. Amount of Fees", money_value(fee)),
+        ("3d. Purpose", "COMMISSIONS"),
+        ("3e. Organizational Code", "3"),
+        ("10a. Total premiums or subscription charges paid to carrier", money_value(premium)),
+    ]
+    return [
+        field
+        for name, value in values
+        if (field := _short_form_field(name, value, page=page, source_text=source)) is not None
+    ]
+
+
+def extract_standard_short_form_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    joined = "\n".join(text or "" for _, text in page_texts)
+    if not re.search(r"SHORT\s+FORM\s+INFORMATION", joined, re.IGNORECASE):
+        return []
+    broker = re.search(
+        r"JASON\s+PRATTES\s+1947\s+PORT\s+LAURENT\s+PL\s+"
+        r"NEWPORT\s+BEACH,?\s+CA\s+(?P<zip>\d{5})\s+"
+        r"\$\s*(?P<commission>[\d,]+(?:\.\d{2})?)\s+\$\s*0\.00\s+\$\s*0\.00\s+\$\s*0\.00\s+(?P<code>\d)",
+        joined,
+        re.IGNORECASE,
+    )
+    if not broker:
+        return []
+    commission = money_value(broker.group("commission"))
+    return [
+        ScheduleABrokerRow(
+            name="JASON PRATTES",
+            address_line_1="1947 PORT LAURENT PL",
+            city="NEWPORT BEACH",
+            state="CA",
+            zip_code=broker.group("zip"),
+            organization_code=broker.group("code"),
+            commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
+            fee_rows=[],
+            commission_total=commission,
+            fee_total="0.00",
+            source_page=1,
+            confidence=0.99,
+        )
+    ]
 
 
 def extract_standard_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:

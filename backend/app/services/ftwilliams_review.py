@@ -920,6 +920,7 @@ class FTWilliamsReviewService:
         query_response_xml = review.query_response_xml
         error_message = review.error_message
         current_query_success = review.current_query_success
+        current_query_complete = review.current_query_complete
         schedule_a_broker_rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows or review.schedule_a_broker_rows)
         schedule_a_worksheet_summaries = self._normalized_schedule_a_worksheet_summaries(filing.schedule_a_worksheet_summaries or review.schedule_a_worksheet_summaries)
 
@@ -966,6 +967,18 @@ class FTWilliamsReviewService:
                 "source": "NEW_SCHEDULE_A",
             }
             error_message = None if current_query_success else error_message
+            # A new Schedule A has no row to query yet.  The query is still
+            # complete when it returned the parent Form 5500 (when present in
+            # the package) and the current Schedule A set used to check for a
+            # duplicate.  Keeping the previous ``False`` here incorrectly
+            # routes a confirmed new record to manual review.
+            expects_form_5500 = any(field.form_type == FormType.FORM_5500 for field in fields)
+            expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
+            current_query_complete = bool(
+                current_query_success
+                and (not expects_form_5500 or form_5500_current)
+                and (not expects_schedule_a or schedule_a_records)
+            )
         else:
             schedule_a_match = {
                 "ftw_seq_no": payload.ftw_seq_no,
@@ -1094,6 +1107,8 @@ class FTWilliamsReviewService:
                 **review.model_dump(exclude={"id", "created_at", "updated_at"}),
                 "status": FTWilliamsReviewStatus.CURRENT_QUERIED if current_query_success else FTWilliamsReviewStatus.PREVIEW_READY,
                 "current_query_success": current_query_success,
+                "current_query_complete": current_query_complete,
+                "query_access_verified": bool(current_query_success and current_query_complete),
                 "plan_year_conflict": plan_year_conflict,
                 "plan_year_resolution": plan_year_resolution,
                 "plan_year_resolution_begin": review.plan_year_resolution_begin if plan_year_resolution else None,

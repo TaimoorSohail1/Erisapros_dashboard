@@ -39,6 +39,8 @@ from app.services.extractor import (
     extract_prudential_broker_rows,
     extract_prudential_schedule_a_fields,
     extract_prudential_schedule_a_summaries,
+    extract_principal_short_form_broker_rows,
+    extract_principal_short_form_schedule_a_fields,
     extract_aetna_attached_listing_fields,
     extract_aetna_schedule_a_support_statement_fields,
     extract_position_aware_schedule_a_broker_rows,
@@ -47,6 +49,8 @@ from app.services.extractor import (
     extract_schedule_a_fields_from_rule_labels,
     extract_summary_table_broker_rows,
     extract_standard_broker_rows,
+    extract_standard_short_form_broker_rows,
+    extract_standard_short_form_schedule_a_fields,
     extract_standard_schedule_a_fields,
     extract_standard_schedule_a_records,
     extract_standard_schedule_a_summaries,
@@ -145,6 +149,75 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "06-6033492")
         self.assertEqual(by_name["1c. NAIC Code"], "60054")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "0252023")
+
+    def test_principal_short_form_extracts_part_i_and_broker_values(self):
+        pages = [
+            (1, """
+                C ontract # 1205934
+                D ata Period September 1, 2025 to December 31, 2025
+                P rincipal Life Insurance Company
+                (b) EIN 42-0127290 (c) NAIC Code 61271
+                3 62 E mployees
+                Section 10: Non-Experience Rated Contracts (a) Total Premiums Paid to Carrier 1 4,655
+                Total (from below) (a) Commissions Paid 1 ,897
+                JASON ANDREW PRATTES
+                620 NEWPORT CENTER DR STE 1100
+                NEWPORT BEACH CA 92660-8011 1 ,897 3 - Ins Agent or Broker
+            """),
+        ]
+
+        values = {field.field_name: field.value for field in extract_principal_short_form_schedule_a_fields(pages)}
+        rows = extract_principal_short_form_broker_rows(pages)
+
+        self.assertEqual(values["1d. Contract/Policy Number"], "1205934")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "362")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "14,655")
+        self.assertEqual(values["3b. Amount of Commissions"], "1,897")
+        self.assertEqual(rows[0].name, "JASON ANDREW PRATTES")
+        self.assertEqual(rows[0].commission_total, "1,897")
+        self.assertEqual(rows[0].organization_code, "3")
+
+    def test_standard_short_form_extracts_part_i_and_broker_values(self):
+        pages = [
+            (1, """
+                JASON PRATTES
+                1947 PORT LAURENT PL
+                NEWPORT BEACH, CA 92660
+                $3,638.32 $0.00 $0.00 $0.00 3
+                TOTAL COMMISSIONS PAID $3,638.32
+                TOTAL CONTINGENT COMP PAID $0.00
+                Anthem Life Insurance Company
+                VITCO DISTRIBUTORS
+                1/1/2025
+                12/31/2025
+                0
+                35-0980405
+                000-61069
+                LIFE INSURANCE
+                PLAN INFORMATION REPORT FOR THE PERIOD OF
+                282802
+                SHORT FORM INFORMATION
+            """),
+            (2, """
+                (a) TOTAL PREMIUM PAID TO CARRIER:
+                Anthem Life Insurance Company HEREBY CERTIFIES THAT THIS INFORMATION IS COMPLETE
+                282802
+                LIFE INSURANCE
+                $33,126.32
+                SHORT FORM INFORMATION
+            """),
+        ]
+
+        values = {field.field_name: field.value for field in extract_standard_short_form_schedule_a_fields(pages)}
+        rows = extract_standard_short_form_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Anthem Life Insurance Company")
+        self.assertEqual(values["1c. NAIC Code"], "61069")
+        self.assertEqual(values["1d. Contract/Policy Number"], "282802")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "33,126.32")
+        self.assertEqual(rows[0].name, "JASON PRATTES")
+        self.assertEqual(rows[0].commission_total, "3,638.32")
+        self.assertEqual(rows[0].fee_total, "0.00")
 
     def test_money_value_normalizes_leading_decimal_zero(self):
         self.assertEqual(money_value("$.00"), "0.00")
