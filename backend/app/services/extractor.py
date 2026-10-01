@@ -128,6 +128,23 @@ class ExtractionService:
         )
 
     async def extract_schedule_a(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
+        template_pages = extract_document_text_pages(file_bytes, file_name)
+        if is_unfilled_schedule_a_template(template_pages):
+            # Do not run customer defaults or semantic enrichment here: even a
+            # harmless default would make a blank form look partially filled.
+            return NormalizedExtractionResult(
+                provider="Unfilled Schedule A template - manual review required",
+                fields=[],
+                raw={
+                    "file_name": file_name,
+                    "source": "document_quality_preflight",
+                    "manual_review_required": True,
+                    "document_quality_issue": (
+                        "The Schedule A is an unfilled IRS template containing sample placeholders."
+                    ),
+                },
+                classification_signals=["UNFILLED_SCHEDULE_A_TEMPLATE"],
+            )
         result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
         semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
         if semantic_pages:
@@ -1151,6 +1168,38 @@ def is_obvious_template_placeholder(value: Any) -> bool:
         "123456789012345",
         "0123456789012345",
     }
+
+
+def is_unfilled_schedule_a_template(page_texts: list[tuple[int, str]]) -> bool:
+    """Detect the IRS sample form before an OCR provider mistakes labels for values.
+
+    Completed PDFs can retain the sample layer underneath the entered overlay,
+    so placeholder volume alone is not enough. A document is rejected only
+    when the official Schedule A markers and several independent placeholder
+    families are present and no real dated/EIN overlay is visible.
+    """
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    upper = text.upper()
+    if not all(marker in upper for marker in ("SCHEDULE A", "FORM 5500", "INSURANCE INFORMATION")):
+        return False
+
+    placeholder_families = sum(
+        (
+            len(re.findall(r"ABCDEFGHI", upper)) >= 8,
+            len(re.findall(r"123456789012345", upper)) >= 3,
+            len(re.findall(r"YYYY-MM-DD", upper)) >= 2,
+            "012345678" in upper,
+        )
+    )
+    if placeholder_families < 3:
+        return False
+
+    has_real_date = bool(
+        re.search(r"\b(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])[/\-](?:20)?\d{2}\b", text)
+        or re.search(r"\b20\d{2}[/\-](?:0[1-9]|1[0-2])[/\-](?:0[1-9]|[12]\d|3[01])\b", text)
+    )
+    has_real_ein = bool(re.search(r"\b\d{2}[- ]\d{7}\b", text))
+    return not has_real_date and not has_real_ein
 
 
 def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> list[NormalizedExtractionField]:

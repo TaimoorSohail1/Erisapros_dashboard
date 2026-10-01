@@ -54,6 +54,7 @@ from app.services.extractor import (
     build_groundx_schema_query,
     extract_fields_from_document_text,
     is_obvious_template_placeholder,
+    is_unfilled_schedule_a_template,
     merge_schedule_a_fields,
     merge_schedule_a_broker_rows,
     money_value,
@@ -596,6 +597,63 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertTrue(is_obvious_template_placeholder("123456789012345"))
         self.assertFalse(is_obvious_template_placeholder("Federal Insurance Company"))
         self.assertFalse(is_obvious_template_placeholder("0927447"))
+
+    def test_unfilled_irs_schedule_a_template_is_detected(self):
+        pages = [
+            (
+                1,
+                """
+                SCHEDULE A (Form 5500) Insurance Information
+                ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI
+                ABCDEFGHI ABCDEFGHI ABCDEFGHI
+                012345678 ABCDE 123456789012345 123456789012345
+                Policy or contract year YYYY-MM-DD YYYY-MM-DD
+                Fees paid 123456789012345
+                """,
+            )
+        ]
+
+        self.assertTrue(is_unfilled_schedule_a_template(pages))
+
+    def test_completed_overlay_is_not_rejected_when_template_layer_remains(self):
+        pages = [
+            (
+                1,
+                """
+                SCHEDULE A (Form 5500) Insurance Information
+                ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI ABCDEFGHI
+                ABCDEFGHI ABCDEFGHI ABCDEFGHI
+                012345678 ABCDE 123456789012345 123456789012345
+                Policy or contract year YYYY-MM-DD YYYY-MM-DD
+                01/01/2025 12/31/2025 Carrier EIN 13-4029115
+                """,
+            )
+        ]
+
+        self.assertFalse(is_unfilled_schedule_a_template(pages))
+
+    def test_unfilled_template_preflight_skips_groundx(self):
+        service = ExtractionService()
+        pages = [
+            (
+                1,
+                "SCHEDULE A (Form 5500) Insurance Information "
+                + "ABCDEFGHI " * 9
+                + "012345678 123456789012345 " * 3
+                + "YYYY-MM-DD YYYY-MM-DD",
+            )
+        ]
+
+        with (
+            patch("app.services.extractor.extract_document_text_pages", return_value=pages),
+            patch.object(service, "_extract_schedule_a_unresolved", new=AsyncMock()) as groundx,
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "blank-schedule-a.pdf"))
+
+        groundx.assert_not_awaited()
+        self.assertEqual(result.fields, [])
+        self.assertTrue(result.raw["manual_review_required"])
+        self.assertEqual(result.classification_signals, ["UNFILLED_SCHEDULE_A_TEMPLATE"])
 
     def test_local_parser_uses_discovered_ftw_aliases_for_explicit_benefits(self):
         health_rule = FieldRule(
