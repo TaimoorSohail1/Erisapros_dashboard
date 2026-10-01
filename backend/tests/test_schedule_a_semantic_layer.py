@@ -55,6 +55,57 @@ class ScheduleASemanticLayerTests(unittest.TestCase):
 
         self.assertEqual(enriched.schedule_a_broker_rows, [authoritative])
 
+    def test_authoritative_broker_table_replaces_stale_aggregate_totals(self):
+        authoritative = ScheduleABrokerRow(
+            name="NFP CORPORATE SERVICES (NY) LLC",
+            address_line_1="200 PARK AVE",
+            city="NEW YORK",
+            state="NY",
+            zip_code="10166",
+            organization_code="3",
+            commission_total="0",
+            fee_total="48,230.78",
+            source_page=1,
+            commission_source_text="Commissions paid $0.00 Fees paid $48,230.78",
+            fee_source_text="Commissions paid $0.00 Fees paid $48,230.78",
+        )
+        result = NormalizedExtractionResult(
+            provider="GroundX + local parser",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="3b. Amount of Commissions",
+                    value="48,230.78",
+                    confidence=0.95,
+                ),
+                NormalizedExtractionField(
+                    field_name="3c. Amount of Fees",
+                    value="0",
+                    confidence=0.95,
+                ),
+            ],
+            raw={"authoritative_broker_table": True},
+            schedule_a_broker_rows=[authoritative],
+        )
+        document = SemanticDocument.from_page_texts(
+            [
+                (
+                    1,
+                    "Insurance fees and commissions information\n"
+                    "Name Commissions paid Fees paid\n"
+                    "NFP CORPORATE SERVICES (NY) LLC $0.00 $48,230.78",
+                )
+            ]
+        )
+
+        enriched = enrich_schedule_a_result(result, document, rules=[])
+
+        by_name = {field.field_name: field.value for field in enriched.fields}
+        self.assertEqual(by_name["3b. Amount of Commissions"], "0")
+        self.assertEqual(by_name["3c. Amount of Fees"], "48,230.78")
+        self.assertEqual(len(enriched.schedule_a_broker_rows), 1)
+        self.assertEqual(enriched.schedule_a_broker_rows[0].name, authoritative.name)
+        self.assertEqual(enriched.schedule_a_broker_rows[0].fee_total, "48,230.78")
+
     def test_principal_breakdown_uses_total_not_employee_count(self):
         document = SemanticDocument.from_page_texts(
             [
@@ -367,6 +418,68 @@ Policy or Contract Year (f) From 01/01/2025 (g) To 12/31/2025
         self.assertIn("Carrier Risk Assessment", field.source_text)
         self.assertTrue(field.evidence)
         self.assertEqual(field.evidence[0].page, 4)
+
+    def test_field_evidence_uses_unique_labelled_page_when_value_is_far_from_label(self):
+        document = SemanticDocument.from_page_texts(
+            [
+                (
+                    2,
+                    "Part II Experience-Rated Contract Information\n"
+                    "9b(3). Incurred claims (add (1) and (2))\n"
+                    "Unrelated explanatory row\n"
+                    "Another explanatory row\n"
+                    "Third explanatory row\n"
+                    "Fourth explanatory row\n"
+                    "Total incurred claims                                 $2,683,562.19",
+                )
+            ]
+        )
+        result = NormalizedExtractionResult(
+            provider="GroundX",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="9b(3). Incurred claims (add (1) and (2))",
+                    value="2,683,562.19",
+                    confidence=0.96,
+                )
+            ],
+        )
+
+        enriched = enrich_schedule_a_result(result, document, rules=[])
+
+        field = enriched.fields[0]
+        self.assertEqual(field.page, 2)
+        self.assertIn("9b(3). Incurred claims", field.source_text)
+        self.assertIn("2,683,562.19", field.source_text)
+        self.assertTrue(field.evidence)
+
+    def test_field_evidence_does_not_guess_when_labelled_value_occurs_on_multiple_pages(self):
+        page_text = (
+            "Part II Experience-Rated Contract Information\n"
+            "9b(3). Incurred claims (add (1) and (2))\n"
+            "Several rows separate the label from its value\n"
+            "Another row\n"
+            "Another row\n"
+            "Another row\n"
+            "Total incurred claims $2,683,562.19"
+        )
+        document = SemanticDocument.from_page_texts([(2, page_text), (3, page_text)])
+        result = NormalizedExtractionResult(
+            provider="GroundX",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="9b(3). Incurred claims (add (1) and (2))",
+                    value="2,683,562.19",
+                    confidence=0.96,
+                )
+            ],
+        )
+
+        enriched = enrich_schedule_a_result(result, document, rules=[])
+
+        field = enriched.fields[0]
+        self.assertIsNone(field.page)
+        self.assertFalse(field.evidence)
 
     def test_dynamic_alias_adds_missing_published_field(self):
         rule = FieldRule(

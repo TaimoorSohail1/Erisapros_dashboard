@@ -447,9 +447,10 @@ def _reconcile_carrier_worksheets(result, document, corrections):
                 existing.decision = "REVIEW_REQUIRED"
 
     result_raw = result.raw if isinstance(result.raw, dict) else {}
+    authoritative_rows = bool(result_raw.get("authoritative_broker_table"))
     rows = (
-        []
-        if result_raw.get("authoritative_broker_table")
+        result.schedule_a_broker_rows
+        if authoritative_rows
         else extract_columnar_broker_compensation_rows(list(document.pages.items()))
     )
     if rows:
@@ -461,14 +462,15 @@ def _reconcile_carrier_worksheets(result, document, corrections):
               rows[0].source_page, source)
         apply("3c. Amount of Fees", sum_money_values(*(r.fee_total for r in rows)) or "0",
               rows[0].source_page, source, review=has_additional)
-        for row in rows:
-            row.commission_source_text = source
-            row.fee_source_text = source
-            row.evidence = [SourceEvidence(provider="Schedule A labelled carrier table", page=row.source_page, source_text=source)]
-            if has_additional:
-                row.confidence = .5
-                row.decision = "REVIEW_REQUIRED"
-        result.schedule_a_broker_rows = rows
+        if not authoritative_rows:
+            for row in rows:
+                row.commission_source_text = source
+                row.fee_source_text = source
+                row.evidence = [SourceEvidence(provider="Schedule A labelled carrier table", page=row.source_page, source_text=source)]
+                if has_additional:
+                    row.confidence = .5
+                    row.decision = "REVIEW_REQUIRED"
+            result.schedule_a_broker_rows = rows
         if has_additional:
             ambiguities.append({"type": "additional_compensation_classification_required",
                                 "reason": "Separate additional compensation is retained in the existing fee total; review its classification. Explicit paid-fee column is preserved in source evidence."})
@@ -813,7 +815,59 @@ def _find_field_evidence(
         )
         if best is None or score > best[0]:
             best = (score, candidate)
-    return best[1] if best else None
+    if best is not None:
+        return best[1]
+
+    # Some carrier worksheets render the line label and its amount in distant
+    # rows on the same page.  The provider has already mapped the field; this
+    # fallback only corroborates that mapping when exactly one page contains
+    # the value, a matching field label, and the expected Schedule A section.
+    # Multiple matching pages remain unresolved rather than guessing.
+    page_candidates: list[SemanticCandidate] = []
+    normalized_aliases = [
+        normalize_name(alias)
+        for alias in aliases
+        if len(normalize_name(alias)) >= 4
+    ]
+    for page in sorted(document.pages):
+        page_lines = document.page_lines(page)
+        value_lines = [
+            line for line in page_lines if _line_contains_value(line.text, field_item.value)
+        ]
+        if not value_lines:
+            continue
+        page_text = document.pages.get(page, "")
+        page_key = normalize_name(page_text)
+        if not any(alias in page_key for alias in normalized_aliases):
+            continue
+        if _section_score(field_item.field_name, page_text) <= 0:
+            continue
+
+        evidence_lines: list[str] = []
+        for line in page_lines:
+            line_key = normalize_name(line.text)
+            is_label = any(alias in line_key for alias in normalized_aliases)
+            is_section = bool(
+                re.search(
+                    r"\bpart\s+(?:ii|iii)\b|experience[- ]rated|non[- ]?experience|\bline\s*(?:9|10)\b",
+                    line.text,
+                    re.IGNORECASE,
+                )
+            )
+            if is_label or is_section or line in value_lines:
+                rendered = line.normalized
+                if rendered and rendered not in evidence_lines:
+                    evidence_lines.append(rendered)
+        page_candidates.append(
+            SemanticCandidate(
+                value=field_item.value,
+                page=page,
+                row=value_lines[0].row,
+                source_text="\n".join(evidence_lines),
+                reason="unique_labelled_page_evidence",
+            )
+        )
+    return page_candidates[0] if len(page_candidates) == 1 else None
 
 
 def _premium_candidates(document: SemanticDocument) -> list[SemanticCandidate]:
