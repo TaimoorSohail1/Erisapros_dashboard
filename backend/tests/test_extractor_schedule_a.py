@@ -40,6 +40,7 @@ from app.services.extractor import (
     extract_prudential_schedule_a_fields,
     extract_prudential_schedule_a_summaries,
     extract_aetna_attached_listing_fields,
+    extract_aetna_schedule_a_support_statement_fields,
     extract_position_aware_schedule_a_broker_rows,
     extract_position_aware_schedule_a_fields,
     extract_schedule_a_broker_rows,
@@ -114,6 +115,36 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(brokers[0].commission_total, "43,139.39")
         self.assertEqual(brokers[0].fee_total, "0")
         self.assertEqual(brokers[0].state, "CA")
+
+    def test_aetna_support_statement_uses_the_matching_naic_appendix_row(self):
+        pages = [
+            (
+                3,
+                """
+                AETNA LIFE INSURANCE COMPANY
+                (a) Name of Insurance Carrier: (d) Contract Number
+                Aetna Life Insurance Co. or Identification:
+                (b) EIN: 06-6033492 0252023 of policy or contract year
+                """,
+            ),
+            (
+                4,
+                """
+                NAIC Code Service Area
+                95094 Aetna Health Inc. (a Georgia Corporation)
+                60054 Aetna Life Insurance Company
+                """,
+            ),
+        ]
+        by_name = {
+            field.field_name: field.value
+            for field in extract_aetna_schedule_a_support_statement_fields(pages)
+        }
+
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Aetna Life Insurance Co.")
+        self.assertEqual(by_name["1b. Insurance Carrier EIN"], "06-6033492")
+        self.assertEqual(by_name["1c. NAIC Code"], "60054")
+        self.assertEqual(by_name["1d. Contract/Policy Number"], "0252023")
 
     def test_money_value_normalizes_leading_decimal_zero(self):
         self.assertEqual(money_value("$.00"), "0.00")

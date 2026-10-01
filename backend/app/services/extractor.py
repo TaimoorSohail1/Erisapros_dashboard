@@ -1245,7 +1245,12 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
 
 def _schedule_a_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int, int]:
     position_aware = any(
-        item.provider in {"Position-aware PDF parser", "Position-aware layout engine", "Aetna attached listing parser"}
+        item.provider in {
+            "Position-aware PDF parser",
+            "Position-aware layout engine",
+            "Aetna attached listing parser",
+            "Aetna Schedule A parser",
+        }
         and item.table_cell is not None
         for item in field.evidence
     )
@@ -2548,12 +2553,88 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *_extract_fields_from_pages(plain_pages, rules=rules),
         *extract_layout_aware_schedule_a_fields(file_bytes),
         *extract_position_aware_schedule_a_fields(layout_pages),
+        *extract_aetna_schedule_a_support_statement_fields(layout_pages),
         *extract_aetna_attached_listing_fields(layout_pages),
         *extract_rules_driven_schedule_a_fields(layout_pages, rules=rules),
         *schedule_a_broker_compensation_fields(positioned_brokers),
         *schedule_a_broker_compensation_fields(extract_layout_broker_rows(layout_pages)),
     ]
     return select_best_schedule_a_fields(fields)
+
+
+def extract_aetna_schedule_a_support_statement_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Extract Aetna's two-line Part I values without crossing columns.
+
+    Aetna puts the Part I labels on one visual line and the carrier, EIN and
+    contract values on the next.  Flattened PDF text can otherwise turn the
+    policy year into a NAIC code or the EIN prefix into a contract number.
+    """
+    main_page = next(
+        (
+            (page, text)
+            for page, text in page_texts
+            if re.search(r"AETNA\s+LIFE\s+INSURANCE\s+COMPANY", text or "", re.IGNORECASE)
+            and re.search(r"Name\s+of\s+Insurance\s+Carrier", text or "", re.IGNORECASE)
+        ),
+        None,
+    )
+    if not main_page:
+        return []
+    page, text = main_page
+    carrier_match = re.search(
+        r"Name\s+of\s+Insurance\s+Carrier:.*?\n\s*(?P<carrier>Aetna\s+[^\n]+?)\s+or\s+Identification",
+        text,
+        re.IGNORECASE,
+    )
+    ein_contract = re.search(
+        r"\(b\)\s*EIN:\s*(?:See\s+Attached\s+)?(?P<ein>\d{2}-\d{7})?\s*(?P<contract>[A-Za-z0-9][A-Za-z0-9-]{4,})\s+of\s+policy",
+        text,
+        re.IGNORECASE,
+    )
+    if not ein_contract:
+        # The HMO layout puts the contract directly after "See Attached" but
+        # before the next wrapped label.
+        ein_contract = re.search(
+            r"\(b\)\s*EIN:\s*(?:See\s+Attached\s+)?(?P<ein>\d{2}-\d{7})?\s*(?P<contract>[A-Za-z0-9][A-Za-z0-9-]{4,})",
+            text,
+            re.IGNORECASE,
+        )
+
+    source = "\n".join(line for line in text.splitlines() if "EIN:" in line or "Name of Insurance Carrier" in line or "Aetna " in line)[:1200]
+    values: list[tuple[str, str | None]] = [
+        ("1a. Name of Insurance Company", carrier_match.group("carrier") if carrier_match else None),
+        ("1b. Insurance Carrier EIN", ein_contract.group("ein") if ein_contract and ein_contract.group("ein") else None),
+        ("1d. Contract/Policy Number", ein_contract.group("contract") if ein_contract else None),
+    ]
+
+    appendix = next(
+        (
+            appendix_text
+            for _, appendix_text in page_texts
+            if re.search(r"NAIC\s+Code\s+Service\s+Area", appendix_text or "", re.IGNORECASE)
+        ),
+        "",
+    )
+    carrier = clean_extracted_value(carrier_match.group("carrier")) if carrier_match else ""
+    if carrier and appendix and re.search(r"Aetna\s+Life\s+Insurance\s+Co", carrier, re.IGNORECASE):
+        naic = re.search(r"^\s*(\d{5})\s+Aetna\s+Life\s+Insurance\s+Company\s*$", appendix, re.IGNORECASE | re.MULTILINE)
+        if naic:
+            values.append(("1c. NAIC Code", naic.group(1)))
+
+    return [
+        NormalizedExtractionField(
+            field_name=field_name,
+            value=normalize_schedule_a_naic(value) if field_name.startswith("1c.") else clean_extracted_value(value),
+            confidence=0.99,
+            page=page,
+            source_text=source,
+            evidence=[SourceEvidence(provider="Aetna Schedule A parser", page=page, source_text=source, table_cell=(1, 0))],
+        )
+        for field_name, value in values
+        if value and clean_extracted_value(value)
+    ]
 
 
 def extract_aetna_attached_listing_fields(
