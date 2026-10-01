@@ -112,6 +112,21 @@ def clear_ftw_current_snapshot_cache() -> None:
     _PLAN_LOOKUP_INFLIGHT.clear()
 
 
+def _is_source_less_zero_default(field: ExtractedField) -> bool:
+    """Treat an unsourced parser default of zero as missing, not extracted data."""
+    if field.status == ExtractedFieldStatus.EDITED:
+        return False
+    if str(field.source_text or "").strip() or field.page is not None:
+        return False
+    text = re.sub(r"[$,\s]", "", str(field.proposed_value or field.value or ""))
+    if text.startswith("(") and text.endswith(")"):
+        text = f"-{text[1:-1]}"
+    try:
+        return bool(text) and float(text) == 0
+    except ValueError:
+        return False
+
+
 class FTWilliamsReviewService:
     _SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN = 4
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
@@ -4481,7 +4496,8 @@ class FTWilliamsReviewService:
             update_tag = resolve_ftw_update_tag(field)
             current_values = form_5500_current if field.form_type == FormType.FORM_5500 else schedule_a_current
             current_value = resolve_ftw_current_value(field, current_values)
-            extracted_proposed_value = str(field.proposed_value or "")
+            source_less_zero_default = _is_source_less_zero_default(field)
+            extracted_proposed_value = "" if source_less_zero_default else str(field.proposed_value or "")
             # A blank extraction must never visually suggest that an existing FTW
             # value will be erased. Show the retained current value in the review
             # column while still excluding blank extraction fields from updates.
@@ -4570,7 +4586,7 @@ class FTWilliamsReviewService:
                     source_document_type=field.source_document_type,
                     ftw_tag=tag,
                     current_value=current_value,
-                    extracted_value=field.value,
+                    extracted_value="" if source_less_zero_default else field.value,
                     proposed_value=proposed_value,
                     confidence=field.confidence,
                     priority=field.priority,

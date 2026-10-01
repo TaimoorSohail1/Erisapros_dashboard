@@ -1093,6 +1093,61 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(comparison.proposed_value, "HL-099")
         self.assertFalse(comparison.update_included)
 
+    def test_comparison_skips_source_less_zero_default_when_ftw_is_blank(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="9a(4). Earned",
+            normalized_field_name="earned",
+            mapped_rule_key="schedule_a_part_iii_9a_4_earned_1_2_3",
+            mapped_label="9a(4). Earned ((1) + (2) - (3))",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="0",
+            proposed_value="0.00",
+            confidence=0.5,
+            source_text="",
+            page=None,
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"WlfrEarnedAmt": ""},
+            update_fields=[field],
+        )[0]
+
+        self.assertEqual(comparison.decision, "SKIP_EMPTY")
+        self.assertEqual(comparison.proposed_value, "")
+        self.assertFalse(comparison.update_included)
+
+    def test_comparison_keeps_sourced_zero_when_ftw_is_blank(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="10a. Premiums",
+            normalized_field_name="premiums",
+            mapped_rule_key="schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+            mapped_label="10a. Total premiums",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="0",
+            proposed_value="0.00",
+            confidence=0.95,
+            source_text="Total premiums paid 0.00",
+            page=1,
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"WlfrTotChargesPaidAmt": ""},
+            update_fields=[field],
+        )[0]
+
+        self.assertEqual(comparison.decision, "WILL_UPDATE")
+        self.assertTrue(comparison.update_included)
+
     def test_review_summary_counts_only_conflicts_as_decisions(self):
         review = FTWilliamsReview(
             filing_id="filing",
