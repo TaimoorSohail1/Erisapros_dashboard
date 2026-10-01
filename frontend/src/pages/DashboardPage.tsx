@@ -106,7 +106,9 @@ export function DashboardPage() {
     () => [...filings].sort(compareDashboardFilings),
     [filings],
   );
-  const needsReview = filings.filter((item) => item.status === "NEEDS_REVIEW");
+  const needsReview = filings.filter(
+    (item) => item.status === "NEEDS_REVIEW" && item.automation_status !== "COMPLETED",
+  );
   const readyToSend = filings.filter((item) => item.status === "APPROVED");
   const allCompanyGroups = useMemo(() => groupFilingsByCompany(sortedFilings), [sortedFilings]);
 
@@ -780,7 +782,7 @@ function dashboardAutomationState(filing: Filing): AutomationPresentation | null
     const detail = filing.automation_reasons?.[0]
       || (updatedFields
         ? `${updatedFields} FT Williams field${updatedFields === 1 ? "" : "s"} updated and read-back verified.`
-        : "FT Williams update and read-back verified.");
+        : "No FT Williams changes were needed; current values already match.");
     return { status, label: "Completed", detail, actionLabel: "View result", badgeClass: "ready", tone: "ready" };
   }
   const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";
@@ -1179,11 +1181,14 @@ function filingCompanyGroupKey(filing: Filing) {
 }
 
 function dashboardCompanySummary(group: DashboardCompanyGroup) {
-  const failed = group.filings.filter((filing) => filing.status === "FAILED" || filing.status === "REJECTED").length;
-  const needsReview = group.filings.filter((filing) => filing.status === "NEEDS_REVIEW").length;
-  const ready = group.filings.filter((filing) => filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL").length;
-  const processing = group.filings.filter((filing) => isProcessingStatus(filing.status)).length;
+  const completed = group.filings.filter((filing) => filing.automation_status === "COMPLETED").length;
+  const activeFilings = group.filings.filter((filing) => filing.automation_status !== "COMPLETED");
+  const failed = activeFilings.filter((filing) => filing.status === "FAILED" || filing.status === "REJECTED").length;
+  const needsReview = activeFilings.filter((filing) => filing.status === "NEEDS_REVIEW").length;
+  const ready = activeFilings.filter((filing) => filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL").length;
+  const processing = activeFilings.filter((filing) => isProcessingStatus(filing.status)).length;
 
+  if (completed === group.filings.length) return { label: "Completed", detail: "All filings completed", tone: "ready" as const };
   if (failed) return { label: "Needs attention", detail: `${failed} filing${failed === 1 ? "" : "s"} failed`, tone: "danger" as const };
   if (needsReview) return { label: "Needs review", detail: `${needsReview} filing${needsReview === 1 ? " requires" : "s require"} decisions`, tone: "warn" as const };
   if (processing) return { label: "Processing", detail: `${processing} filing${processing === 1 ? "" : "s"} in progress`, tone: "info" as const };

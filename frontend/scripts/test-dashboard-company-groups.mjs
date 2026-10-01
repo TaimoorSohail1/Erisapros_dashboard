@@ -38,8 +38,18 @@ assert.match(
 );
 assert.match(
   page,
-  /FT Williams update and read-back verified/,
-  "Completed no-change rows should still show clear verification evidence.",
+  /No FT Williams changes were needed; current values already match/,
+  "Completed no-change rows should clearly explain that FT Williams already matched.",
+);
+assert.match(
+  page,
+  /item\.status === "NEEDS_REVIEW" && item\.automation_status !== "COMPLETED"/,
+  "Completed automation must not remain in the Needs Review KPI.",
+);
+assert.match(
+  page,
+  /if \(completed === group\.filings\.length\) return \{ label: "Completed", detail: "All filings completed"/,
+  "A company containing only completed automation must have a Completed summary.",
 );
 
 assert.match(

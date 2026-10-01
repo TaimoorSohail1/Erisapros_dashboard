@@ -95,4 +95,15 @@ The branch does not auto-resolve factual disagreements. CA-S, CA-N, YI, Ameritas
 
 ## Merge recommendation
 
-The implementation, regression tests, deployed runtime, automatic ShareFile intake, plan worksheet packaging, FT Williams write, receipt, read-back, and PDF evidence gates all passed. The branch is ready for review and merge. No merge was performed as part of this QA run.
+The implementation, regression tests, deployed runtime, automatic ShareFile intake, plan worksheet packaging, FT Williams write, receipt, read-back, and PDF evidence gates all passed. The branch was approved for merge and subsequently completed the post-merge verification below.
+
+## Post-merge production verification
+
+- The branch was merged into `main` as commit `724abb1` and pushed to GitHub.
+- The merged backend image is `sha256:6956c58f018e743dafa48c92e7f1639892bea02d22f17c538b8c8dede82b8719`.
+- Production API revision `46` and ShareFile worker revision `36` both completed rollout with 1/1 tasks running.
+- The merged frontend was uploaded and CloudFront invalidation `I3LL2BK764K74GKQ6BSJ8NBEOF` completed.
+- Post-merge ShareFile upload `POSTMERGE-QA-20261001-R8-NFP-Provident-Accident-160168.pdf` was automatically discovered and processed as filing `6abe7e7a96eb8dc34f9f2ea9`.
+- The package used the NFP PY25 plan worksheet and the uploaded Schedule A, selected existing Schedule A sequence `9`, confirmed nonexperience rating and complete broker matching, and finished automation with zero decisions, zero blockers, and zero pending updates.
+- The no-op comparison result was 49 unchanged fields, 3 kept-current fields, and 3 safely skipped blank fields. No duplicate FT Williams write was sent because current values already matched the previously verified source.
+- This run exposed and corrected a dashboard-only inconsistency: completed no-change automation is no longer counted in the Needs Review KPI or company summary, and its row now says that no FT Williams changes were needed because current values already match.
