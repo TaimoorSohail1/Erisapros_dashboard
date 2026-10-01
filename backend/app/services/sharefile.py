@@ -1547,8 +1547,8 @@ class ShareFileService:
     async def _cleanup_duplicate_active_packages(self, source: str) -> int:
         repo = get_repository()
         grouped: dict[str, list[Filing]] = defaultdict(list)
-        for filing in await repo.list_filings():
-            if not filing.id or filing.status in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}:
+        for filing in await repo.list_filing_package_summaries():
+            if not filing.id:
                 continue
             for package_key in self._filing_package_keys(filing):
                 grouped[package_key].append(filing)

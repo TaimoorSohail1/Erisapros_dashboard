@@ -235,6 +235,7 @@ class Repository:
     async def ensure_indexes(self) -> None: ...
     async def create_filing(self, filing: Filing) -> Filing: ...
     async def list_filings(self) -> list[Filing]: ...
+    async def list_filing_package_summaries(self) -> list[Filing]: ...
     async def list_dashboard_filings(self) -> list[Filing]: ...
     async def get_filing(self, filing_id: str) -> Filing | None: ...
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
@@ -516,6 +517,28 @@ class MongoRepository(Repository):
 
     async def list_filings(self) -> list[Filing]:
         docs = await self.db.filings.find().sort("created_at", -1).to_list(100)
+        return [from_mongo(doc, Filing) for doc in docs]
+
+    async def list_filing_package_summaries(self) -> list[Filing]:
+        """Return only the fields needed to identify duplicate ShareFile packages.
+
+        Intake calls this before a new package is created.  Keeping the query
+        narrow prevents large extraction payloads from delaying an upload.
+        """
+        projection = {
+            "file_name": 1,
+            "content_type": 1,
+            "file_size": 1,
+            "s3_key": 1,
+            "status": 1,
+            "package_documents.package_key": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        }
+        docs = await self.db.filings.find(
+            {"status": {"$nin": ["DELETED", "SUPERSEDED"]}},
+            projection,
+        ).sort("created_at", -1).to_list(100)
         return [from_mongo(doc, Filing) for doc in docs]
 
     async def list_dashboard_filings(self) -> list[Filing]:
@@ -1656,6 +1679,13 @@ class MemoryRepository(Repository):
 
     async def list_filings(self) -> list[Filing]:
         return sorted(self.filings.values(), key=lambda item: item.created_at, reverse=True)
+
+    async def list_filing_package_summaries(self) -> list[Filing]:
+        return [
+            filing
+            for filing in await self.list_filings()
+            if filing.status not in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}
+        ]
 
     async def list_dashboard_filings(self) -> list[Filing]:
         return [
