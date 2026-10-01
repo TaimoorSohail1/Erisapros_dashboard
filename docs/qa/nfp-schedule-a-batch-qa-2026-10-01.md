@@ -1,7 +1,8 @@
 # NFP Schedule A batch QA and production-sandbox verification
 
-**Date:** 2026-10-01  
-**Branch:** `codex/nfp-broker-auto-send-fix`  
+**Date:** 2026-10-01
+
+**Branch:** `codex/nfp-broker-auto-send-fix`
 **Result:** **PASS WITH SOURCE-DEPENDENT REVIEW ITEMS.** The implemented feedback fixes are deployed and verified. Clean, unambiguous NFP Schedule A records now update FT Williams automatically and produce a receipt, read-back verification, and a downloadable FT Williams PDF. Records with real source/current conflicts still pause safely for a decision.
 
 ## Release under test
