@@ -1081,12 +1081,15 @@ class MongoRepository(Repository):
         if not ObjectId.is_valid(job_id):
             return None
         values["updated_at"] = datetime.utcnow()
-        doc = await self.db.extraction_jobs.find_one_and_update(
+        # The extraction pipeline uses this as a progress checkpoint only; it
+        # never consumes the updated document. Avoid a post-write read here:
+        # on Atlas that read can time out after raw extraction was successfully
+        # saved, causing the whole package to be needlessly retried.
+        await self.db.extraction_jobs.update_one(
             {"_id": ObjectId(job_id)},
             {"$set": values},
-            return_document=ReturnDocument.AFTER,
         )
-        return from_mongo(doc, ExtractionJob) if doc else None
+        return None
 
     async def list_extraction_jobs(self, filing_id: str) -> list[ExtractionJob]:
         docs = await self.db.extraction_jobs.find({"filing_id": filing_id}).sort("created_at", -1).to_list(50)
