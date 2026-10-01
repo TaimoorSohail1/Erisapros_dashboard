@@ -4698,6 +4698,9 @@ class FTWilliamsReviewService:
                 comparison.validation_status = "VALID"
                 comparison.validation_message = comparison.update_exclusion_reason
                 comparison.validation_blocking = False
+                comparison.changed = False
+                comparison.decision = FTWFieldDecision.NO_CHANGE
+                comparison.decision_reason = comparison.update_exclusion_reason
 
     def _normalized_schedule_a_broker_rows(self, rows) -> list:
         normalized: list[ScheduleABrokerRow] = []

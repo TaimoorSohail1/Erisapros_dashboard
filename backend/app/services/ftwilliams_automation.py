@@ -183,6 +183,15 @@ class FTWAutomationPolicy:
             reasons.append("The Schedule A contract type is not safely confirmed.")
         if not review.schedule_a_broker_match_complete:
             reasons.append("One or more broker rows need a matching decision.")
+        if any(
+            str(row.decision or "").strip().upper() == "REVIEW_REQUIRED"
+            or any(
+                str(result.status or "").strip().upper() == "ERROR"
+                for result in row.validation_results
+            )
+            for row in review.schedule_a_broker_rows
+        ):
+            reasons.append("One or more broker rows have blocking validation errors.")
 
         schedule_match_error = self._schedule_match_error(review)
         if schedule_match_error:

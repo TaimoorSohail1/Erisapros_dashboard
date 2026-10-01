@@ -459,6 +459,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             schedule_a_broker_rows=[
                 ScheduleABrokerRow(
                     name="Example Broker LLC",
+                    purpose="COMMISSIONS & FEES",
                     commission_total="200",
                     fee_total="100",
                     commission_source_text="Fees Paid $200",
@@ -482,6 +483,56 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
         self.assertIn(
             "broker_column_semantics",
             resolved.raw["extraction_quality"]["cross_field_errors"],
+        )
+
+    def test_zero_fee_does_not_treat_commission_evidence_as_crossed_columns(self):
+        source = (
+            "Commission Information Total Commissions Paid: $212,581.85 "
+            "NFP CORPORATE SERVICES (NY) LLC $212,581.85"
+        )
+        result = NormalizedExtractionResult(
+            provider="table extraction",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="3b. Amount of Commissions",
+                    value="212,581.85",
+                    confidence=0.98,
+                ),
+                NormalizedExtractionField(
+                    field_name="3c. Amount of Fees",
+                    value="0",
+                    confidence=0.98,
+                ),
+            ],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES (NY) LLC",
+                    commission_total="212581.85",
+                    fee_total="0",
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=1,
+                    evidence=[
+                        SourceEvidence(
+                            provider="table extraction",
+                            page=1,
+                            source_text=source,
+                        )
+                    ],
+                    confidence=0.98,
+                )
+            ],
+        )
+
+        resolved = resolve_schedule_a_result(result)
+
+        row = resolved.schedule_a_broker_rows[0]
+        self.assertEqual(row.decision, "AUTOMATIC")
+        self.assertFalse(
+            any(item.validator == "broker_column_semantics" and item.status == "ERROR" for item in row.validation_results)
+        )
+        self.assertFalse(
+            any(item.validator == "broker_total_reconciliation" and item.status == "ERROR" for item in row.validation_results)
         )
 
     def test_combined_compensation_amount_is_not_duplicated_as_commission_and_fee(self):

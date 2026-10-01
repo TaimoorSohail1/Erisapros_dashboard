@@ -11,6 +11,7 @@ from app.repositories import MemoryRepository
 
 from app.config import Settings
 from app.models import (
+    ExtractionValidationResult,
     ExtractedField,
     ExtractedFieldStatus,
     FieldPriority,
@@ -28,6 +29,7 @@ from app.models import (
     FTWilliamsReviewStatus,
     FTWLocalAgentDeviceStatus,
     FTWLocalAgentStatusResponse,
+    ScheduleABrokerRow,
 )
 from app.services.ftwilliams_automation import (
     FTWAutomationPolicy,
@@ -388,6 +390,28 @@ class FTWAutomationPolicyTests(unittest.TestCase):
 
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertTrue(any("broker" in reason.lower() for reason in decision.reasons))
+
+    def test_broker_row_validation_error_stops_automatic_send(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.schedule_a_broker_rows = [
+            ScheduleABrokerRow(
+                name="NFP CORPORATE SERVICES (NY) LLC",
+                commission_total="212581.85",
+                decision="REVIEW_REQUIRED",
+                validation_results=[
+                    ExtractionValidationResult(
+                        validator="broker_column_semantics",
+                        status="ERROR",
+                        reason="Broker compensation evidence is ambiguous.",
+                    )
+                ],
+            )
+        ]
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertTrue(any("broker row" in reason.lower() for reason in decision.reasons))
 
     def test_locked_ftw_filing_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()

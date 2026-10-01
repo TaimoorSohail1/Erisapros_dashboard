@@ -831,13 +831,17 @@ def _validate_broker_rows(
         )
         commission_source = str(row.commission_source_text or "").lower()
         fee_source = str(row.fee_source_text or "").lower()
+        commission_amount = parse_decimal(row.commission_total)
+        fee_amount = parse_decimal(row.fee_total)
         commission_crossed = bool(
-            commission_source
+            commission_amount not in (None, Decimal("0"))
+            and commission_source
             and re.search(r"\bfees?\b", commission_source)
             and not re.search(r"\bcommissions?\b", commission_source)
         )
         fee_crossed = bool(
-            fee_source
+            fee_amount not in (None, Decimal("0"))
+            and fee_source
             and re.search(r"\bcommissions?\b", fee_source)
             and not re.search(r"\bfees?\b", fee_source)
         )
@@ -929,7 +933,7 @@ def _validate_broker_rows(
                 "but the broker rows do not support both allocations."
             ),
         )
-    if errors:
+    if commission_error or fee_error:
         for row in rows:
             row.validation_results.append(
                 ExtractionValidationResult(

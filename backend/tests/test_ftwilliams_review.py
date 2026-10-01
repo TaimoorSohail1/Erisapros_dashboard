@@ -22,6 +22,7 @@ from app.models import (
     FTWilliamsScheduleABrokerRowsRequest,
     FTWilliamsManualMatchRequest,
     FTWilliamsComparisonField,
+    FTWFieldDecision,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
     FTWilliamsPlanMapping,
@@ -1012,6 +1013,34 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_structured_broker_section_supersedes_blocked_flat_broker_comparison(self):
+        comparison = FTWilliamsComparisonField(
+            label="3a. Name of Agent/Broker/Person",
+            rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            current_value="NFP CORPORATE SERVICES LLC",
+            extracted_value="NFP CORPORATE SERVICES (NY) LLC",
+            proposed_value="NFP CORPORATE SERVICES (NY) LLC",
+            confidence=0.98,
+            extraction_status=ExtractedFieldStatus.MATCHED,
+            changed=True,
+            update_included=False,
+            validation_status="VALID",
+            validation_blocking=False,
+            decision=FTWFieldDecision.BLOCKED,
+            decision_reason="The field is not safe to update.",
+        )
+
+        FTWilliamsReviewService()._mark_structured_broker_comparisons(
+            [comparison],
+            [ScheduleABrokerRow(name="NFP CORPORATE SERVICES (NY) LLC")],
+        )
+
+        self.assertEqual(comparison.decision, FTWFieldDecision.NO_CHANGE)
+        self.assertFalse(comparison.changed)
+        self.assertFalse(comparison.validation_blocking)
+
     def test_comparison_marks_valid_extracted_value_for_automatic_update_when_ftw_is_blank(self):
         field = ExtractedField(
             filing_id="filing",
@@ -2741,6 +2770,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].update_included)
         self.assertFalse(by_label["3b. Amount of Commissions"].update_included)
+        self.assertEqual(by_label["3a. Name of Agent/Broker/Person"].decision, "NO_CHANGE")
+        self.assertEqual(by_label["3b. Amount of Commissions"].decision, "NO_CHANGE")
+        self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].validation_blocking)
         self.assertTrue(review.schedule_a_broker_match_complete)
         self.assertEqual([match.status for match in review.schedule_a_broker_matches], ["AUTO_NEW", "AUTO_NEW"])
         self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
