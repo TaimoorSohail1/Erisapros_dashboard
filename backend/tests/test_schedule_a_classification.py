@@ -32,6 +32,8 @@ from app.services.schedule_a_classification import (
 
 
 LINE_9A = "schedule_a_part_iii_9a_premiums_1_amount_received"
+LINE_9A2 = "schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid"
+LINE_9A3 = "schedule_a_part_iii_9a_3_increase_decrease_in_unearned_premium_reserve"
 LINE_9C = "schedule_a_part_iii_9c_1_a_commissions"
 LINE_9_REMAINDER_RULES = (
     "schedule_a_part_iii_9c_2_dividends_or_retroactive_rate_refunds",
@@ -91,6 +93,25 @@ class ScheduleAClassificationTests(unittest.TestCase):
             ["EXPLICIT_NONEXPERIENCE_RATED"],
         )
 
+    def test_non_participating_premium_heading_is_nonexperience_rated(self):
+        line_10a = extracted_field(LINE_10A, "758,204.74")
+        line_10a.source_text = (
+            "7. NON-PARTICIPATING CONTRACTS (PREMIUMS): "
+            "TOTAL PREMIUM OR SUBSCRIPTION CHARGES PAID TO CARRIER $758,204.74"
+        )
+        incorrect_line_9_total = extracted_field(LINE_9A4, "758,204.74")
+        incorrect_line_9_total.page = None
+        incorrect_line_9_total.source_text = ""
+
+        classification = apply_schedule_a_classification(
+            [line_10a, incorrect_line_9_total],
+            classification_signals_from_text(line_10a.source_text),
+        )
+
+        self.assertEqual(classification.contract_type, ScheduleAContractType.NONEXPERIENCE_RATED)
+        self.assertEqual(line_10a.proposed_value, "758,204.74")
+        self.assertEqual(incorrect_line_9_total.proposed_value, "0")
+
     def test_not_applicable_experience_heading_does_not_override_nonexperience_record(self):
         signals = classification_signals_from_text(
             "9. Experience-Rated Contracts This section not applicable for this Plan "
@@ -136,6 +157,27 @@ class ScheduleAClassificationTests(unittest.TestCase):
         self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
         self.assertEqual(line_10a.proposed_value, "0")
         self.assertIn("automatically derived", (line_10a.status_reason or "").lower())
+
+    def test_experience_earned_total_is_calculated_from_sourced_components(self):
+        line_9a1 = extracted_field(LINE_9A, "758,204.74")
+        line_9a2 = extracted_field(LINE_9A2, "$ .00")
+        line_9a3 = extracted_field(LINE_9A3, "0")
+        line_9a4 = extracted_field(LINE_9A4, "758,204.74")
+        line_9a4.page = None
+        line_9a4.source_text = ""
+        line_9a4.status = ExtractedFieldStatus.LOW_CONFIDENCE
+        line_9a4.confidence = 0.5
+
+        classification = apply_schedule_a_classification(
+            [line_9a1, line_9a2, line_9a3, line_9a4]
+        )
+
+        self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+        self.assertEqual(line_9a4.proposed_value, "758204.74")
+        self.assertEqual(line_9a4.status, ExtractedFieldStatus.MATCHED)
+        self.assertIsNotNone(line_9a4.page)
+        self.assertTrue(line_9a4.source_text)
+        self.assertIn("automatically calculated", (line_9a4.status_reason or "").lower())
 
     def test_uncertain_fallback_classification_derived_zero_stays_in_review(self):
         line_9a = extracted_field(LINE_9A, "170074")

@@ -1256,6 +1256,16 @@ class XmlBuilderTests(unittest.TestCase):
             "0",
         )
 
+    def test_money_value_with_currency_symbol_and_leading_decimal_is_normalized(self):
+        self.assertEqual(
+            normalize_ftw_update_value(
+                FormType.SCHEDULE_A,
+                "WlfrUnpaidDueAmt",
+                "$ .00",
+            ),
+            "0",
+        )
+
     def test_schedule_a_batch_normalizes_fail_to_provide_yes_no_to_ftw_codes(self):
         xml = build_schedule_a_records_update_xml(
             [

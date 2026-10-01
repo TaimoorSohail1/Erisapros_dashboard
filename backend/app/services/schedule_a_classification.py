@@ -88,7 +88,11 @@ def classification_signals_from_text(text: str | None) -> list[str]:
     normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower())
     signals: set[str] = set()
     nonexperience_pattern = r"\bnon\s*experience\s*rated\b"
-    if re.search(nonexperience_pattern, normalized):
+    nonparticipating_premium_pattern = r"\bnon\s*participating\s+contracts?\s+premiums?\b"
+    if re.search(nonexperience_pattern, normalized) or re.search(
+        nonparticipating_premium_pattern,
+        normalized,
+    ):
         signals.add("EXPLICIT_NONEXPERIENCE_RATED")
     without_nonexperience = re.sub(nonexperience_pattern, " ", normalized)
     # A carrier worksheet may print the line 9 heading followed by "not
@@ -149,6 +153,8 @@ def apply_schedule_a_classification(
 
     classification = classify_schedule_a_fields(fields, classification_signals)
     classification_source = _trusted_classification_source(fields, classification)
+    if classification.contract_type == ScheduleAContractType.EXPERIENCE_RATED:
+        _derive_experience_calculated_totals(fields)
     if classification.contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
         line_10a = next((field for field in fields if field.mapped_rule_key == NONEXPERIENCE_PREMIUM_RULE), None)
         premium_source = _premium_amount_source(fields)
@@ -206,6 +212,60 @@ def apply_schedule_a_classification(
     return classification
 
 
+def _derive_experience_calculated_totals(fields: list[ExtractedField]) -> None:
+    """Attach source evidence to Schedule A totals calculated from line items."""
+    by_rule = {str(field.mapped_rule_key or ""): field for field in fields}
+    formulas = (
+        (
+            "schedule_a_part_iii_9a_4_earned_1_2_3",
+            (
+                ("schedule_a_part_iii_9a_premiums_1_amount_received", Decimal("1")),
+                ("schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid", Decimal("1")),
+                ("schedule_a_part_iii_9a_3_increase_decrease_in_unearned_premium_reserve", Decimal("-1")),
+            ),
+        ),
+        (
+            "schedule_a_part_iii_9b_3_incurred_claims_add_1_and_2",
+            (
+                ("schedule_a_part_iii_9b_1_benefit_charges_1_claims_paid", Decimal("1")),
+                ("schedule_a_part_iii_9b_2_increase_decrease_in_claim_reserves", Decimal("1")),
+            ),
+        ),
+    )
+    for target_rule, component_rules in formulas:
+        target = by_rule.get(target_rule)
+        if not target or _field_has_trusted_source_evidence(target):
+            continue
+        components = [by_rule.get(rule) for rule, _ in component_rules]
+        if any(
+            component is None
+            or component.page is None
+            or not str(component.source_text or "").strip()
+            or _decimal_from_text(str(component.proposed_value or component.value or "")) is None
+            for component in components
+        ):
+            continue
+        total = sum(
+            (
+                _decimal_from_text(str(component.proposed_value or component.value or "")) * multiplier
+                for component, (_, multiplier) in zip(components, component_rules)
+            ),
+            Decimal("0"),
+        )
+        rendered = format(total, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        target.proposed_value = rendered
+        target.status = ExtractedFieldStatus.MATCHED
+        target.confidence = min(component.confidence for component in components)
+        target.page = components[0].page
+        target.source_text = "\n".join(
+            dict.fromkeys(str(component.source_text or "").strip() for component in components)
+        )
+        target.status_reason = "Automatically calculated from page-level Schedule A component evidence."
+        target.updated_at = datetime.utcnow()
+
+
 def _field_has_trusted_source_evidence(field: ExtractedField | None) -> bool:
     return bool(
         field
@@ -261,12 +321,12 @@ def classify_schedule_a_values(
     has_generic_premium = has_10a or "PREMIUM_AMOUNT_PRESENT" in signals
     has_generic_claims = "CLAIM_AMOUNT_PRESENT" in signals
 
-    if has_premium:
+    if "EXPLICIT_NONEXPERIENCE_RATED" in signals:
         return ScheduleAClassification(
-            ScheduleAContractType.EXPERIENCE_RATED,
-            "Experience-rated because a meaningful Schedule A line 9a premium value is present.",
-            0.99,
-            ("LINE_9A_AMOUNT_PRESENT",),
+            ScheduleAContractType.NONEXPERIENCE_RATED,
+            "Nonexperience-rated because the Schedule A explicitly labels the premiums as nonexperience rated.",
+            0.98,
+            ("EXPLICIT_NONEXPERIENCE_RATED",),
         )
     if "EXPLICIT_EXPERIENCE_RATED" in signals:
         return ScheduleAClassification(
@@ -275,19 +335,19 @@ def classify_schedule_a_values(
             0.98,
             ("EXPLICIT_EXPERIENCE_RATED",),
         )
+    if has_premium:
+        return ScheduleAClassification(
+            ScheduleAContractType.EXPERIENCE_RATED,
+            "Experience-rated because a meaningful Schedule A line 9a premium value is present.",
+            0.99,
+            ("LINE_9A_AMOUNT_PRESENT",),
+        )
     if has_generic_premium and (has_claims or has_generic_claims):
         return ScheduleAClassification(
             ScheduleAContractType.EXPERIENCE_RATED,
             "Experience-rated because the Schedule A contains both premium and claim amounts.",
             0.95,
             ("PREMIUM_AMOUNT_PRESENT", "CLAIM_AMOUNT_PRESENT"),
-        )
-    if "EXPLICIT_NONEXPERIENCE_RATED" in signals:
-        return ScheduleAClassification(
-            ScheduleAContractType.NONEXPERIENCE_RATED,
-            "Nonexperience-rated because the Schedule A explicitly labels the premiums as nonexperience rated.",
-            0.98,
-            ("EXPLICIT_NONEXPERIENCE_RATED",),
         )
     if has_10a or has_generic_premium:
         return ScheduleAClassification(

@@ -20,6 +20,7 @@ from app.models import (
     FTWilliamsScheduleAMatchRequest,
     FormType,
     AuditLog,
+    ScheduleAContractType,
 )
 from app.repositories import Repository, get_repository
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -179,7 +180,7 @@ class FTWAutomationPolicy:
             reasons.append("FT Williams has not confirmed that the filing is editable.")
         if review.plan_year_conflict and not review.plan_year_resolution:
             reasons.append("The plan-year conflict needs a user decision.")
-        if review.schedule_a_contract_type_mismatch or not review.schedule_a_contract_type_confirmed:
+        if self._contract_type_mismatch_requires_decision(review) or not review.schedule_a_contract_type_confirmed:
             reasons.append("The Schedule A contract type is not safely confirmed.")
         if not review.schedule_a_broker_match_complete:
             reasons.append("One or more broker rows need a matching decision.")
@@ -276,6 +277,25 @@ class FTWAutomationPolicy:
             else "MANUAL_SEND"
         )
         return self._decision(FTWAutomationStatus.SAFE_TO_SEND, True, [], next_action)
+
+    @staticmethod
+    def _contract_type_mismatch_requires_decision(review: FTWilliamsReview) -> bool:
+        if not review.schedule_a_contract_type_mismatch:
+            return False
+        direct_experience_evidence = {
+            "LINE_9A_AMOUNT_PRESENT",
+            "EXPLICIT_EXPERIENCE_RATED",
+        }
+        evidence = {str(item or "").strip().upper() for item in review.schedule_a_contract_type_evidence}
+        ftw_used_default = "default rule" in str(review.ftw_schedule_a_contract_type_reason or "").lower()
+        if (
+            review.schedule_a_contract_type == ScheduleAContractType.EXPERIENCE_RATED
+            and float(review.schedule_a_contract_type_confidence or 0) >= 0.95
+            and evidence.intersection(direct_experience_evidence)
+            and ftw_used_default
+        ):
+            return False
+        return True
 
     def _schedule_match_error(self, review: FTWilliamsReview) -> str | None:
         selected = review.schedule_a_match or {}

@@ -316,6 +316,7 @@ def _normalize_money(tag: str, value: str) -> str:
     negative_parentheses = value.startswith("(") and value.endswith(")")
     inner = value[1:-1].strip() if negative_parentheses else value
     inner = inner.replace("$", "").strip()
+    inner = re.sub(r"^([+-]?)\.(\d{1,2})$", r"\g<1>0.\2", inner)
     if not re.fullmatch(r"-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?", inner):
         _raise(tag, value, "expected a numeric amount with at most 2 decimal places")
     normalized = inner.replace(",", "")
