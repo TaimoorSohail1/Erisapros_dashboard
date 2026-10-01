@@ -1,6 +1,6 @@
 import unittest
 
-from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerRow, SourceEvidence
+from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline, resolve_schedule_a_result
 
 
@@ -361,6 +361,72 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             any(
                 item.validator == "broker_total_reconciliation" and item.status == "ERROR"
                 for item in commission_field.validation_results
+            )
+        )
+
+    def test_separate_benefit_broker_rows_are_not_reconciled_as_one_schedule(self):
+        source = "Broker fees paid $48,230.78 and $26,143.92"
+        result = NormalizedExtractionResult(
+            provider="The Standard local parser",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="3b. Amount of Commissions",
+                    value="0",
+                    confidence=0.97,
+                    page=1,
+                    source_text=source,
+                ),
+                NormalizedExtractionField(
+                    field_name="3c. Amount of Fees",
+                    value="48,230.78",
+                    confidence=0.97,
+                    page=1,
+                    source_text=source,
+                ),
+            ],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES (NY) LLC",
+                    fee_total="48,230.78",
+                    fee_rows=[
+                        ScheduleABrokerMoneyRow(
+                            coverage="LIFE INSURANCE",
+                            amount="48,230.78",
+                            purpose="Contingent Compensation",
+                        )
+                    ],
+                    source_page=1,
+                    evidence=[SourceEvidence(page=1, source_text=source)],
+                    confidence=0.97,
+                ),
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES (NY) LLC",
+                    fee_total="26,143.92",
+                    fee_rows=[
+                        ScheduleABrokerMoneyRow(
+                            coverage="LONG TERM DISABILITY",
+                            amount="26,143.92",
+                            purpose="Contingent Compensation",
+                        )
+                    ],
+                    source_page=3,
+                    evidence=[SourceEvidence(page=3, source_text=source)],
+                    confidence=0.97,
+                ),
+            ],
+        )
+
+        resolved = resolve_schedule_a_result(result)
+
+        errors = resolved.raw["extraction_quality"]["cross_field_errors"]
+        self.assertNotIn("broker_commission_total", errors)
+        self.assertNotIn("broker_fee_total", errors)
+        self.assertFalse(
+            any(
+                validation.validator == "broker_total_reconciliation"
+                and validation.status == "ERROR"
+                for row in resolved.schedule_a_broker_rows
+                for validation in row.validation_results
             )
         )
 

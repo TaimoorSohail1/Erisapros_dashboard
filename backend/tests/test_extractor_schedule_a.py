@@ -1177,6 +1177,57 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].address_line_1, "PO BOX 3009")
         self.assertEqual(rows[1].address_line_1, "PO BOX 95287")
 
+    def test_broker_rows_same_recipient_remain_separate_by_coverage(self):
+        address = {
+            "name": "NFP CORPORATE SERVICES (NY) LLC",
+            "address_line_1": "200 PARK AVE",
+            "city": "NEW YORK",
+            "state": "NY",
+            "zip_code": "10166",
+        }
+        rows = merge_schedule_a_broker_rows(
+            [
+                ScheduleABrokerRow(
+                    **address,
+                    fee_total="48,230.78",
+                )
+            ],
+            [
+                ScheduleABrokerRow(
+                    **address,
+                    fee_total="48,230.78",
+                    fee_rows=[
+                        ScheduleABrokerMoneyRow(
+                            coverage="LIFE INSURANCE",
+                            amount="48,230.78",
+                            purpose="Contingent Compensation",
+                        )
+                    ],
+                ),
+                ScheduleABrokerRow(
+                    **address,
+                    fee_total="26,143.92",
+                    fee_rows=[
+                        ScheduleABrokerMoneyRow(
+                            coverage="LONG TERM DISABILITY",
+                            amount="26,143.92",
+                            purpose="Contingent Compensation",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row.fee_total for row in rows], ["48,230.78", "26,143.92"])
+
+        service = FTWilliamsReviewService()
+        life_rows = service._broker_rows_for_schedule_desc(rows, "Schedule A-LIFE")
+        ltd_rows = service._broker_rows_for_schedule_desc(rows, "Schedule A-LTD")
+
+        self.assertEqual([row.fee_total for row in life_rows], ["48,230.78"])
+        self.assertEqual([row.fee_total for row in ltd_rows], ["26,143.92"])
+
     def test_schedule_a_parser_stops_last_broker_before_part_iii(self):
         text = """
         Name and address of the agents, brokers or other persons to whom commissions or fees were paid
@@ -1598,27 +1649,118 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(dental["persons_covered"], "63")
         self.assertEqual(dental["ein"], "93-0242990")
         self.assertEqual(dental["naic_code"], "69019")
-        self.assertEqual(dental["commission_total"], "1,704.75")
-        self.assertEqual(dental["fee_total"], "0.00")
+        self.assertEqual(dental["commission_total"], "1,506.01")
+        self.assertEqual(dental["fee_total"], "198.74")
         self.assertEqual(dental["experience_values"]["9a. Premiums: (1) Amount Received"], "30,312.84")
         self.assertEqual(dental["experience_values"]["9b(1). Benefit Charges (1) Claims paid"], "22,882.90")
         self.assertEqual(dental["experience_values"]["9c(1)(H). Total retention"], "9,627.22")
 
         life = by_coverage["LIFE INSURANCE"]
         self.assertEqual(life["persons_covered"], "107")
-        self.assertEqual(life["commission_total"], "1,967.56")
+        self.assertEqual(life["commission_total"], "1,731.10")
+        self.assertEqual(life["fee_total"], "236.46")
         self.assertEqual(life["experience_values"]["9a(3). Increase (decrease) in unearned premium reserve"], "-2,104.00")
 
         ltd = by_coverage["LONG TERM DISABILITY"]
-        self.assertEqual(ltd["commission_total"], "1,456.88")
+        self.assertEqual(ltd["commission_total"], "1,308.98")
+        self.assertEqual(ltd["fee_total"], "147.90")
         self.assertEqual(ltd["experience_values"]["9b(2). Increase (decrease) in claim reserves"], "1,610.73")
 
         self.assertEqual(len(summaries), 3)
         self.assertEqual([summary.coverage for summary in summaries], ["DENTAL", "LIFE INSURANCE", "LONG TERM DISABILITY"])
         self.assertEqual(len(rows), 3)
-        self.assertEqual([row.commission_total for row in rows], ["1,704.75", "1,967.56", "1,456.88"])
+        self.assertEqual([row.commission_total for row in rows], ["1,506.01", "1,731.10", "1,308.98"])
+        self.assertEqual([row.fee_total for row in rows], ["198.74", "236.46", "147.90"])
         self.assertEqual(rows[0].name, "LEAHY CONSULTING SERVICES")
         self.assertEqual(rows[0].organization_code, "3")
+
+    def test_schedule_a_parser_extracts_standard_life_new_york_long_form(self):
+        pages = [
+            (
+                1,
+                """PAGE: 1
+PART I
+2) INSURANCE FEES AND COMMISSIONS PAID TO AGENTS, BROKERS AND OTHER PERSONS:
+E) ORG.
+CODE
+NFP CORPORATE SERVICES (NY) LLC
+200 PARK AVE 32ND FL
+NEW YORK, NY 10166
+$0.00 $48,230.78 $0.00 $0.00 3
+Standard Life Ins Co of NY
+NFP CORP
+1/1/2025
+12/31/2025
+6,159
+13-4119477
+000-89009
+$48,230.78
+$0.00
+THE FINANCIAL DATA BELOW IS PROVIDED FOR YOUR INFORMATION
+LIFE INSURANCE
+PLAN INFORMATION REPORT FOR THE PERIOD OF
+753370
+LONG FORM INFORMATION
+1/1/2025
+12/31/2025""",
+            ),
+            (
+                2,
+                """PART III -
+EXPERIENCE RATED CONTRACTS
+PLAN INFORMATION REPORT FOR THE PERIOD OF
+Standard Life Ins Co of NY HEREBY CERTIFIES THAT THIS INFORMATION IS COMPLETE AND ACCURATE
+($184,736.00)
+$2,101.00
+$2,683,562.19
+$2,250,000.00
+$230,723.00
+$2,480,723.00
+$2,480,723.00
+$48,230.78
+$0.00
+$1,200.00
+$251,041.00
+$58,189.19
+$151,268.05
+$0.00
+$509,929.02
+$0.00
+$0.00
+$84,300.00
+$0.00
+$0.00
+753370
+LIFE INSURANCE
+$2,870,399.19
+LONG FORM INFORMATION
+1/1/2025
+12/31/2025""",
+            ),
+        ]
+
+        records = extract_standard_schedule_a_records(pages)
+        rows = extract_standard_broker_rows(pages)
+
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["carrier_name"], "Standard Life Ins Co of NY")
+        self.assertEqual(record["contract_number"], "753370")
+        self.assertEqual(record["persons_covered"], "6,159")
+        self.assertEqual(record["commission_total"], "0.00")
+        self.assertEqual(record["fee_total"], "48,230.78")
+        self.assertEqual(
+            record["experience_values"]["9a. Premiums: (1) Amount Received"],
+            "2,870,399.19",
+        )
+        self.assertEqual(
+            record["experience_values"]["9b(3). Incurred claims (add(1) and (2))"],
+            "2,480,723.00",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].commission_total, "0.00")
+        self.assertEqual(rows[0].fee_total, "48,230.78")
+        self.assertEqual(rows[0].fee_rows[0].purpose, "Contingent Compensation")
 
     def test_schedule_a_parser_maps_standard_fields_and_overrides_selected_ftw_schedule(self):
         pages = self._standard_long_form_pages()
@@ -1633,7 +1775,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
 
         self.assertEqual(mapped_by_label["1d. Contract/Policy Number"], "168262")
         self.assertEqual(mapped_by_label["1e. Persons Covered (End of Policy Year)"], "63")
-        self.assertEqual(mapped_by_label["3b. Amount of Commissions"], "1,704.75")
+        self.assertEqual(mapped_by_label["3b. Amount of Commissions"], "1,506.01")
+        self.assertEqual(mapped_by_label["3c. Amount of Fees"], "198.74")
         self.assertEqual(mapped_by_label["9a. Premiums: (1) Amount Received"], "30,312.84")
 
         summaries = extract_standard_schedule_a_summaries(pages)
@@ -1641,14 +1784,16 @@ class ScheduleAExtractionTests(unittest.TestCase):
         life_fields = service._fields_with_schedule_a_summary_override(mapped, summaries, "Schedule A-LIFE")
         life_by_label = {field.mapped_label: field.proposed_value for field in life_fields}
         self.assertEqual(life_by_label["1e. Persons Covered (End of Policy Year)"], "107")
-        self.assertEqual(life_by_label["3b. Amount of Commissions"], "1,967.56")
+        self.assertEqual(life_by_label["3b. Amount of Commissions"], "1,731.10")
+        self.assertEqual(life_by_label["3c. Amount of Fees"], "236.46")
         self.assertEqual(life_by_label["9a. Premiums: (1) Amount Received"], "23,945.79")
         self.assertEqual(life_by_label["9a(3). Increase (decrease) in unearned premium reserve"], "-2,104.00")
 
         ltd_fields = service._fields_with_schedule_a_summary_override(mapped, summaries, "Schedule A-LTD")
         ltd_by_label = {field.mapped_label: field.proposed_value for field in ltd_fields}
         self.assertEqual(ltd_by_label["1e. Persons Covered (End of Policy Year)"], "107")
-        self.assertEqual(ltd_by_label["3b. Amount of Commissions"], "1,456.88")
+        self.assertEqual(ltd_by_label["3b. Amount of Commissions"], "1,308.98")
+        self.assertEqual(ltd_by_label["3c. Amount of Fees"], "147.90")
         self.assertEqual(ltd_by_label["9a. Premiums: (1) Amount Received"], "12,383.55")
         self.assertEqual(ltd_by_label["9b(2). Increase (decrease) in claim reserves"], "1,610.73")
 

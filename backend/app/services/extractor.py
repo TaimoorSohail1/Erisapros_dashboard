@@ -874,13 +874,14 @@ def merge_schedule_a_broker_rows(
     fallback_rows: list[ScheduleABrokerRow],
 ) -> list[ScheduleABrokerRow]:
     """Preserve every recipient while preferring the stronger copy of a row."""
-    merged: dict[tuple[str, str, str], ScheduleABrokerRow] = {}
-    order: list[tuple[str, str, str]] = []
+    merged: dict[tuple[str, str, str, str], ScheduleABrokerRow] = {}
+    order: list[tuple[str, str, str, str]] = []
     for row in [*primary_rows, *fallback_rows]:
         identity = (
             _canonical_broker_name(row.name),
             _canonical_broker_address(row.address_line_1 or ""),
             normalize_rule_label(row.zip_code or ""),
+            _broker_row_coverage_key(row),
         )
         if not identity[0]:
             continue
@@ -897,7 +898,16 @@ def merge_schedule_a_broker_rows(
                 str(merged[key].zip_code or "") + " " + str(merged[key].address_line_1 or "")
             )
         ]
-        if _broker_row_is_parser_fragment(row) and len(matching_fragment_keys) == 1:
+        matching_unclassified_keys = [
+            key
+            for key in same_name_keys
+            if not key[3]
+            and (key[1] == identity[1] or key[2] == identity[2])
+            and _broker_row_amounts_match(merged[key], row)
+        ]
+        if identity[3] and len(matching_unclassified_keys) == 1:
+            identity = matching_unclassified_keys[0]
+        elif _broker_row_is_parser_fragment(row) and len(matching_fragment_keys) == 1:
             identity = matching_fragment_keys[0]
         elif _broker_row_is_parser_fragment(row) and len(same_name_keys) == 1:
             identity = same_name_keys[0]
@@ -973,6 +983,24 @@ def _broker_row_is_parser_fragment(row: ScheduleABrokerRow) -> bool:
         and re.search(r"\bST\s*:\s*[A-Z]{2}\b", city, flags=re.IGNORECASE)
         and re.search(r"\bZIP\s*:\s*\d{5}(?:-\d{4})?\b", city, flags=re.IGNORECASE)
     )
+
+
+def _broker_row_coverage_key(row: ScheduleABrokerRow) -> str:
+    coverages = {
+        normalize_rule_label(money_row.coverage or "")
+        for money_row in [*row.commission_rows, *row.fee_rows]
+        if normalize_rule_label(money_row.coverage or "")
+    }
+    return "|".join(sorted(coverages))
+
+
+def _broker_row_amounts_match(first: ScheduleABrokerRow, second: ScheduleABrokerRow) -> bool:
+    for attribute in ("commission_total", "fee_total"):
+        first_amount = parse_numeric_amount(getattr(first, attribute)) or 0.0
+        second_amount = parse_numeric_amount(getattr(second, attribute)) or 0.0
+        if abs(first_amount - second_amount) > 0.01:
+            return False
+    return True
 
 
 _BROKER_LEGAL_SUFFIX = r"(?:LLC|L\.L\.C\.?|INC(?:ORPORATED)?|CORP(?:ORATION)?|LTD|LLP|LP)"
@@ -5230,13 +5258,23 @@ def extract_standard_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
         coverage = record.get("coverage")
         if base_commission and not is_zero_money(base_commission):
             commission_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=base_commission, purpose="Commissions"))
+        fee_rows = []
         if contingent_commission and not is_zero_money(contingent_commission):
-            commission_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=contingent_commission, purpose="Contingent Compensation"))
+            fee_rows.append(
+                ScheduleABrokerMoneyRow(
+                    coverage=coverage,
+                    amount=contingent_commission,
+                    purpose="Contingent Compensation",
+                )
+            )
         if not commission_rows and record.get("commission_total"):
             commission_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=record.get("commission_total"), purpose="Commissions"))
-        fee_rows = []
+        for key, purpose in (("ga_override", "General Agency Override"), ("explicit_fee", "Fees")):
+            amount = record.get(key)
+            if amount and not is_zero_money(amount):
+                fee_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=amount, purpose=purpose))
         fee_total = record.get("fee_total")
-        if fee_total and not is_zero_money(fee_total):
+        if not fee_rows and fee_total and not is_zero_money(fee_total):
             fee_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=fee_total, purpose="Fees"))
         rows.append(
             ScheduleABrokerRow(
@@ -5282,6 +5320,10 @@ STANDARD_EXPERIENCE_FIELD_LABELS = [
     "9e. Dividends or retroactive rate refunds due",
 ]
 
+_STANDARD_LONG_FORM_CARRIER = (
+    r"Standard(?:\s+Life)?\s+Ins(?:urance)?\s+Co(?:mpany)?(?:\s+of\s+NY)?"
+)
+
 
 def extract_standard_schedule_a_records(page_texts: list[tuple[int, str]]) -> list[dict[str, Any]]:
     part_i_records: list[dict[str, Any]] = []
@@ -5323,7 +5365,11 @@ def extract_standard_schedule_a_records(page_texts: list[tuple[int, str]]) -> li
 
 def is_standard_long_form_schedule_a(text: str) -> bool:
     upper = text.upper()
-    return "LONG FORM INFORMATION" in upper and "STANDARD INSURANCE COMPANY" in upper and "PLAN INFORMATION REPORT FOR THE PERIOD" in upper
+    return bool(
+        "LONG FORM INFORMATION" in upper
+        and "PLAN INFORMATION REPORT FOR THE PERIOD" in upper
+        and re.search(_STANDARD_LONG_FORM_CARRIER, text, re.IGNORECASE)
+    )
 
 
 def extract_standard_part_i_record(text: str, page: int | None = None) -> dict[str, Any] | None:
@@ -5331,7 +5377,7 @@ def extract_standard_part_i_record(text: str, page: int | None = None) -> dict[s
     if "PART I" not in upper or "INSURANCE FEES AND COMMISSIONS" not in upper:
         return None
     tail = re.search(
-        r"(Standard\s+Insurance\s+Company)\s*\n"
+        rf"({_STANDARD_LONG_FORM_CARRIER})\s*\n"
         r"(.+?)\s*\n"
         r"([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s*\n"
         r"([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s*\n"
@@ -5352,6 +5398,18 @@ def extract_standard_part_i_record(text: str, page: int | None = None) -> dict[s
     if not tail:
         return None
     broker = extract_standard_broker_info(text)
+    reported_commission = standard_money_value(tail.group(8))
+    reported_fee = standard_money_value(tail.group(9))
+    if broker.get("broker_name"):
+        commission_total = broker.get("base_commission") or reported_commission
+        fee_total = sum_money_values(
+            broker.get("contingent_commission"),
+            broker.get("ga_override"),
+            broker.get("explicit_fee"),
+        ) or "0.00"
+    else:
+        commission_total = reported_commission
+        fee_total = reported_fee
     return {
         "source": "The Standard long form information",
         "carrier_name": clean_extracted_value(tail.group(1)),
@@ -5361,8 +5419,8 @@ def extract_standard_part_i_record(text: str, page: int | None = None) -> dict[s
         "persons_covered": money_value(tail.group(5)),
         "ein": clean_extracted_value(tail.group(6)),
         "naic_code": normalize_standard_naic(tail.group(7)),
-        "commission_total": standard_money_value(tail.group(8)),
-        "fee_total": standard_money_value(tail.group(9)),
+        "commission_total": commission_total,
+        "fee_total": fee_total,
         "coverage": clean_extracted_value(tail.group(10)).upper(),
         "contract_number": clean_extracted_value(tail.group(11)),
         "part_i_page": page,
@@ -5380,6 +5438,8 @@ def extract_standard_broker_info(text: str) -> dict[str, str | None]:
         "broker_zip": None,
         "base_commission": None,
         "contingent_commission": None,
+        "ga_override": None,
+        "explicit_fee": None,
         "organization_code": None,
     }
     match = re.search(
@@ -5413,6 +5473,8 @@ def extract_standard_broker_info(text: str) -> dict[str, str | None]:
             info["broker_address_line_2"] = " ".join(lines[2:])
     info["base_commission"] = standard_money_value(match.group("base"))
     info["contingent_commission"] = standard_money_value(match.group("contingent"))
+    info["ga_override"] = standard_money_value(match.group("ga"))
+    info["explicit_fee"] = standard_money_value(match.group("fees"))
     info["organization_code"] = match.group("org")
     return info
 
@@ -5422,7 +5484,7 @@ def extract_standard_part_iii_record(text: str, page: int | None = None) -> dict
     if "PART III" not in upper or "EXPERIENCE RATED CONTRACTS" not in upper:
         return None
     tail = re.search(
-        r"Standard\s+Insurance\s+Company\s+HEREBY\s+CERTIFIES.+?\n(?P<body>.+?)\n"
+        rf"{_STANDARD_LONG_FORM_CARRIER}\s+HEREBY\s+CERTIFIES.+?\n(?P<body>.+?)\n"
         r"(?P<contract>[A-Za-z0-9-]+)\s*\n"
         r"(?P<coverage>DENTAL|LIFE\s+INSURANCE|LONG\s+TERM\s+DISABILITY|VISION|[A-Z][A-Z ]+)\s*\n"
         r"(?P<premium>\$?\s*[0-9,]+(?:\.\d{2})?)\s*\n"

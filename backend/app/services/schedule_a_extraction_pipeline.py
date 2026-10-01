@@ -889,8 +889,13 @@ def _validate_broker_rows(
     ):
         errors.append("broker_source_evidence")
 
-    commission_error = _reconcile_broker_total(result.fields, rows, "3b.", "commission_total")
-    fee_error = _reconcile_broker_total(result.fields, rows, "3c.", "fee_total")
+    separate_benefit_rows = len(_broker_coverage_keys(rows)) > 1
+    commission_error = False if separate_benefit_rows else _reconcile_broker_total(
+        result.fields, rows, "3b.", "commission_total"
+    )
+    fee_error = False if separate_benefit_rows else _reconcile_broker_total(
+        result.fields, rows, "3c.", "fee_total"
+    )
     if commission_error:
         errors.append("broker_commission_total")
         _mark_fields_review(
@@ -999,3 +1004,12 @@ def _reconcile_broker_total(
     actual_values = [parse_decimal(getattr(row, row_attribute)) for row in rows]
     actual = sum((value or Decimal("0") for value in actual_values), Decimal("0"))
     return abs(expected - actual) > Decimal("0.01")
+
+
+def _broker_coverage_keys(rows: list[ScheduleABrokerRow]) -> set[str]:
+    return {
+        re.sub(r"[^A-Z0-9]+", "", str(money_row.coverage or "").upper())
+        for row in rows
+        for money_row in [*row.commission_rows, *row.fee_rows]
+        if str(money_row.coverage or "").strip()
+    }

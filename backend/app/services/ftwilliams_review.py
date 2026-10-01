@@ -329,6 +329,10 @@ class FTWilliamsReviewService:
                 or existing_review.schedule_a_match.get("ScheduleDesc")
                 or ""
             ).strip()
+        schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
+            schedule_a_broker_rows,
+            selected_schedule_desc,
+        )
         if apply_automatic_derivations:
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
 
@@ -976,6 +980,10 @@ class FTWilliamsReviewService:
             review.schedule_a_broker_matches
             if self._same_schedule_a_selection(review.schedule_a_match, schedule_a_match)
             else []
+        )
+        schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
+            schedule_a_broker_rows,
+            new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
         )
         broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
             schedule_a_broker_rows,
@@ -4782,6 +4790,27 @@ class FTWilliamsReviewService:
             elif isinstance(row, dict):
                 normalized.append(row)
         return normalized
+
+    def _broker_rows_for_schedule_desc(self, rows: list, schedule_desc: object) -> list:
+        desc_key = self._standard_schedule_desc_key(str(schedule_desc or ""))
+        if not desc_key:
+            return rows
+        matched = []
+        for row in rows:
+            money_rows = [
+                *(self._summary_attr(row, "commission_rows") or []),
+                *(self._summary_attr(row, "fee_rows") or []),
+            ]
+            coverage_keys = {
+                self._standard_schedule_desc_key(
+                    str(self._summary_attr(money_row, "coverage") or "")
+                )
+                for money_row in money_rows
+                if self._summary_attr(money_row, "coverage")
+            }
+            if desc_key in coverage_keys:
+                matched.append(row)
+        return matched or rows
 
     def _fields_with_schedule_a_summary_override(
         self,
