@@ -237,6 +237,25 @@ class XmlBuilderTests(unittest.TestCase):
 
         self.assertIn("<NameXX>NTH INSURANCE AGENCY</NameXX>", xml)
 
+    def test_schedule_a_new_broker_safely_abbreviates_standard_legal_name_words(self):
+        xml = build_schedule_a_records_update_xml(
+            [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
+            "1",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=[
+                {
+                    "name": "MANAGEMENT COMPENSATION GROUP/NORTHEAST INC",
+                    "organization_code": "3",
+                    "fee_total": "3446.58",
+                }
+            ],
+        )
+
+        self.assertIn("<NameXX>MGMT COMP GROUP/NORTHEAST INC</NameXX>", xml)
+
     def test_schedule_a_broker_reviewer_purpose_is_sent(self):
         xml = build_schedule_a_records_update_xml(
             [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
