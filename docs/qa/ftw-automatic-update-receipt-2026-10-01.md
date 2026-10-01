@@ -2,11 +2,11 @@
 
 ## Release decision
 
-**Status: DEPLOYED to production; automatic sending is enabled only for the configured HighlandTech 2025 allowlist. The first post-deployment filing remains a monitored canary.**
+**Status: PASS. The clean NFP 2025 production canary completed extraction, automatic FT Williams submission, receipt creation, and FT Williams read-back with zero conflicts. A fresh FT Williams Schedule A PDF was also generated and verified.**
 
 The implementation, complete regression suite, reversible browser check, and live ftwLink canaries pass. The live run used only the approved HighlandTech FGF test plan. It verified an existing Schedule A update and a temporary new Schedule A while preserving all original records and broker rows. The temporary value and test record were removed after verification. PR #55 was merged to `main` at `975d07131486dba0e96b7096f6f87784ea376b9b` and that revision was deployed successfully.
 
-The user explicitly authorized enabling automatic sending before the final post-deployment demo. Both production services now run with `FTW_AUTOMATION_AUTO_SEND_ENABLED=true`; the existing allowlist remains restricted to account `HighlandTech`, filing year `2025`. Infrastructure health proves the release is running, but the next user-selected HighlandTech demo filing must still prove the deployed receipt, PDF, and FT Williams read-back path end to end.
+The user explicitly authorized enabling automatic sending before the final post-deployment demo. Both production services run with `FTW_AUTOMATION_AUTO_SEND_ENABLED=true`. The allowlist retains the HighlandTech 2025 test scope and now includes the exact NFP 2025 FT Williams customer/plan target used for this canary. The earlier FGF filing continues to prove fail-closed behavior for conflicts; the NFP canary closes the successful receipt/PDF/read-back gate. The NFP broker-validation correction is commit `4c8c9fa` on branch `codex/nfp-broker-auto-send-fix`; it is deployed for validation but is not yet merged.
 
 ## Implemented outcome
 
@@ -43,7 +43,7 @@ The user explicitly authorized enabling automatic sending before the final post-
 
 ## Automated test evidence
 
-- Backend full suite: **874 passed, 2 skipped, 1 GroundX SDK deprecation warning**.
+- Backend full suite after the NFP broker correction: **877 passed, 2 skipped, 1 GroundX SDK deprecation warning, 64 subtests passed**.
 - FT Williams review suite: **119 passed**.
 - Frontend TypeScript check: passed.
 - Frontend review, dashboard, field-rules, ShareFile, agent-control, and shared-polling suites: passed.
@@ -52,6 +52,17 @@ The user explicitly authorized enabling automatic sending before the final post-
 - Read-only visual harness: verified all five stages complete, no repeat-send button, action-specific receipt, destination metadata, counts, evidence actions, and expanded sent-versus-returned table.
 
 ## Production deployment and activation evidence
+
+### Current NFP canary deployment
+
+- Backend build: CodeBuild `erisapros-production-backend:e61e3fea-1a29-43ce-92ad-ca9016786ccf` succeeded from `codex/nfp-broker-auto-send-fix`.
+- Immutable backend image: `sha256:642b4361ccd7f0828707aedc2fe9142d05c4ffcd430d5b38a4f711316f944e09`.
+- API task definition: `erisapros-production-api:39`; worker task definition: `erisapros-production-sharefile-worker:29`.
+- Both services stabilized at desired `1`, running `1`, pending `0`, with rollout state `COMPLETED`.
+- Both services run the immutable image with `FTW_AUTOMATION_AUTO_SEND_ENABLED=true` and `FTW_PDF_AUDIT_ENABLED=true`.
+- The exact NFP FT Williams target is allowlisted for 2025; unrelated customer/plan targets remain blocked.
+
+### Original production release
 
 - Backend build: CodeBuild `erisapros-production-backend:31abd977-fbb2-47d1-99c4-d136e0291f96` succeeded.
 - Immutable backend image: `sha256:c6c15813e0115b7e58677817a623e537e8b24913a98fa0dee03ef44440785987`.
@@ -66,6 +77,50 @@ The user explicitly authorized enabling automatic sending before the final post-
 - Rollback anchors: API task definition `35`, worker task definition `25`, and frontend `index.html` version `Esch8O7wzMp4h98zumcT9xZcztHVpjjT`.
 
 ## Live FT Williams reversible evidence
+
+### Clean NFP production canary — automatic receipt, PDF, and read-back
+
+Target: NFP TEST 2025 ShareFile folder and the exact NFP FT Williams 2025 plan target.
+
+- ShareFile upload: `CANARY-20261001-NFP-Continental-American-0000024819.pdf`.
+- Source PDF SHA-256: `388D11CA4598624AF32A56D24B176F29E5588DA0A75A43E5411E1C470953FE91`.
+- Plan worksheet SHA-256: `3D064EAEA9C29B0AB6B034C14EEAC150B6EEE56550E3B7DD52834ECABDAF95AD`.
+- Production filing: `6abe3757340793f1e1ea8a81`.
+- Extraction found 33 of 37 configured fields and selected existing Schedule A sequence 11 with exact contract, carrier EIN, NAIC, carrier name, and policy-date identity evidence.
+- The structured broker row matched FT Williams row 1 by unique exact address. Broker name, address semantics, source evidence, commission/fee column semantics, and organization-code validation all passed; the row decision was `AUTOMATIC`.
+- Automatic submission attempted and FT Williams read-back confirmed all three proposed changes:
+  1. Schedule A line 10a premiums: sent `943,913.44`; returned `943,913.44`.
+  2. Form 5500 active participants at end: sent `6,159`; returned `6,159`.
+  3. Schedule A line 1e persons covered: sent `1,777`; returned `1,777`.
+- Final database state: filing `APPROVED`, automation `COMPLETED`, review `UPDATE_SENT`, attempted `3`, confirmed `3`, remaining `0`, verification attempted `true`, verification success `true`, active failure `false`.
+- A durable update receipt was persisted for plan year 2025, existing Schedule A sequence 11, carrier `CONTINENTAL AMERICAN INSURANCE COMPANY`, and contract `0000024819`.
+- FT Williams generated a valid four-page Schedule A PDF after the write. SHA-256: `016a27286f8b5f5e9b9b5f518e60b80d1d9ec7aecd29c3995e41949724faaea2`. Visual and text inspection confirmed the carrier identity, contract, `1,777` covered persons, broker/address, `212,582` rounded commissions, zero fees, organization code `3`, and `943,913` rounded line 10a premiums.
+- Result: `Completed — FT Williams update verified`; UI counts were updated `3`, kept current `1`, skipped `3`, conflicts `0`.
+
+Ignored local QA evidence:
+
+- `output/qa/nfp-ftw-schedule-a-seq11-verified.pdf`
+- `output/qa/nfp-ftw-schedule-a-seq11-page1.png`
+- `output/qa/nfp-ftw-schedule-a-seq11-page4.png`
+
+### Monitored deployed ShareFile canary
+
+Target: approved HighlandTech `FGF LLC TEST` 2025 ShareFile folder.
+
+- Uploaded source: `CANARY-20261001-FGF-Schedule-A.pdf`
+- SHA-256: `6550FF8A999611B2BD4CF1EC4B809C8BFDAF13A0F4E43A4AE7B230E08F652852`
+- Production filing: `6abd92e2340793f1e1ea8919`
+- Intake and extraction completed; 36 of 37 fields were found.
+- FT Williams loaded successfully and selected the best matching Schedule A.
+- Nine non-conflicting fields were classified as `Will Update FTW`.
+- Automatic sending stopped safely on four review items:
+  1. Insurance company conflict: extracted `Continental American Insurance Company`; current FT Williams `AFLAC`.
+  2. Plan sponsor address conflict: extracted `122 Stribling SAN ANTONIO, TX 78204`; current FT Williams `146 EAST ZAVALLA, SAN ANTONIO TX 78204`.
+  3. Plan sponsor name conflict: extracted `FGF, LLC EMPLOYEE BENEFITS PLAN`; current FT Williams `FGF,LLC`.
+  4. Broker fee validation: `RICHARD LEE JONES JR` extracted fee `2228.48405`, which exceeds FT Williams' two-decimal precision.
+- Result: `Action Needed — Automation paused safely`. No value was forced, no FT Williams update was sent, and therefore no receipt, verified PDF, or FT Williams read-back was produced.
+
+This is positive evidence that the deployed workflow does not silently overwrite conflicting values or send an invalid amount. It is not evidence of a successful fully automatic send.
 
 ### Automatic ftwLink existing-record canary
 
@@ -120,13 +175,15 @@ No other FT Williams field was changed during the browser-field canary.
 | Temporary-record cleanup | Passed; exact normalized seven-record baseline restored |
 | Equal-score multi-match control | Passed in automated coverage; pauses for a decision and sends nothing |
 | Verified receipt UI | Passed backend receipt tests and frontend rendered-contract checks |
-| Full backend suite | 874 passed, 2 skipped, 64 subtests passed |
+| Full backend suite | 877 passed, 2 skipped, 64 subtests passed |
 | Frontend release checks | Typecheck, build, bundle smoke, and all UI suites passed |
 | GitHub production-image check | Passed on PR #55 |
-| Production backend rollout | Passed; API revision 36 and worker revision 26 completed |
+| Production backend rollout | Passed; API revision 39 and worker revision 29 completed on immutable image `642b4361...` |
 | Production frontend rollout | Passed; new assets are live and CloudFront invalidation completed |
 | Production health and logs | Passed; health returned 200 and post-deployment error scans were clear |
-| Runtime automatic-send flag | Enabled on both services with the HighlandTech 2025 allowlist retained |
-| First deployed filing receipt/PDF/read-back | Pending a user-selected HighlandTech demo filing |
+| Runtime automatic-send flag | Enabled on both services; HighlandTech 2025 scope retained and exact NFP 2025 canary target added |
+| Runtime PDF-evidence flag | Enabled on both services; fresh NFP FT Williams PDF generated and verified |
+| First deployed filing intake/extraction/match/safety gate | Passed on production filing `6abd92e2340793f1e1ea8919` |
+| Clean deployed filing receipt/PDF/read-back | Passed on NFP filing `6abe3757340793f1e1ea8a81`: receipt persisted, PDF verified, 3/3 values confirmed by read-back |
 
-The code and frontend deployment are complete. The only remaining release-evidence step is to monitor one user-selected HighlandTech demo filing through the deployed workflow and retain its receipt, verified PDF, and FT Williams read-back. Do not use a production client plan for that canary.
+The NFP clean-canary gate is closed. The branch is ready for normal code review and merge; the earlier FGF conflicts remain intentionally unresolved and continue to demonstrate fail-closed behavior rather than a release blocker.
