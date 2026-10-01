@@ -1589,7 +1589,7 @@ class ShareFileService:
         repo = get_repository()
         active_filings = [
             filing
-            for filing in await repo.list_filings()
+            for filing in await repo.list_filing_package_summaries()
             if filing.id and filing.status not in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}
         ]
         complete_roots = {
@@ -2806,7 +2806,7 @@ class ShareFileService:
 
     async def _find_active_filing_by_package_key(self, package_key: str) -> Filing | None:
         repo = get_repository()
-        for filing in await repo.list_filings():
+        for filing in await repo.list_filing_package_summaries():
             if not filing.id or filing.status in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}:
                 continue
             if package_key in self._filing_package_keys(filing):
@@ -2827,7 +2827,7 @@ class ShareFileService:
     async def _find_waiting_filing_for_package(self, package_key: str, package_files: list[dict]) -> Filing | None:
         repo = get_repository()
         package_item_ids = {str(file_item.get("id")) for file_item in package_files if file_item.get("id")}
-        for filing in await repo.list_filings():
+        for filing in await repo.list_filing_package_summaries():
             if not filing.id or filing.status not in {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}:
                 continue
             filing_item_ids = {
@@ -2855,7 +2855,7 @@ class ShareFileService:
         repo = get_repository()
         identity_files = [item for item in package_files if item.get("document_type") == DocumentType.SCHEDULE_A] or package_files
         package_item_ids = {str(file_item.get("id")) for file_item in identity_files if file_item.get("id")}
-        for filing in await repo.list_filings():
+        for filing in await repo.list_filing_package_summaries():
             if not filing.id or filing.id == exclude_filing_id:
                 continue
             if filing.status in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}:
@@ -2892,7 +2892,7 @@ class ShareFileService:
     ) -> None:
         repo = get_repository()
         package_item_ids = {str(file_item.get("id")) for file_item in package_files if file_item.get("id")}
-        for filing in await repo.list_filings():
+        for filing in await repo.list_filing_package_summaries():
             if not filing.id or filing.status not in {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}:
                 continue
             filing_item_ids = {
@@ -2950,7 +2950,7 @@ class ShareFileService:
     async def _mark_deleted_sharefile_filings(self, active_sharefile_item_ids: set[str]) -> int:
         repo = get_repository()
         deleted = 0
-        for filing in await repo.list_filings():
+        for filing in await repo.list_filing_package_summaries():
             if filing.status in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}:
                 continue
             if filing.intake_source != "SHAREFILE" and not filing.sharefile_item_id:
