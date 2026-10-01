@@ -183,6 +183,38 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertEqual(aligned[0].address_line_1, "10833 VALLEY VIEW STREET")
         self.assertEqual(aligned[0].commission_total, "2340.80")
 
+    def test_split_ftw_address_matches_combined_extracted_address(self):
+        extracted_rows = [
+            extracted(
+                "MANAGEMENT COMPENSATION GROUP/NORTHEAST INC",
+                "55 BROADWAY SUITE 701",
+                "10006",
+                commission="0",
+            )
+        ]
+        current_rows = [
+            {
+                "Name1": "MANAGEMENT COMPENSATION GROUP/NE",
+                "AddressLine101": "55 BROADWAY",
+                "AddressLine201": "SUITE 701",
+                "City01": "NEW YORK",
+                "State01": "NY",
+                "ZipCode01": "10006",
+                "FeesPdAmt01": "3447",
+                "Code01": "3",
+            }
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertEqual(matches[0].status, "AUTO_MATCHED")
+        self.assertEqual(matches[0].ftw_index, 0)
+        self.assertEqual(matches[0].reason, "Matched by a unique exact broker address.")
+        self.assertEqual(aligned[0].name, "MANAGEMENT COMPENSATION GROUP/NE")
+        self.assertEqual(aligned[0].address_line_1, "55 BROADWAY")
+        self.assertEqual(aligned[0].address_line_2, "SUITE 701")
+
     def test_multipart_placeholder_tags_keep_current_broker_identity(self):
         extracted_rows = [
             extracted(

@@ -943,6 +943,27 @@ def schedule_a_replacement_data_gaps(
             gaps.append(
                 f"sequence {sequence} has {len(actual_brokers)} broker row(s) for {len(expected_brokers)} current row(s)"
             )
+        if selected_sequence and sequence == selected_sequence:
+            # The selected Schedule A is intentionally sorted by total payment
+            # before send. Validate that every vendor broker field survives the
+            # replacement by occurrence count rather than by its former row
+            # position; the unselected records below remain byte-for-byte and
+            # position checked.
+            expected_field_counts = {
+                tag: sum(1 for broker in expected_brokers if tag in broker)
+                for tag in {tag for broker in expected_brokers for tag in broker}
+            }
+            actual_field_counts = {
+                tag: sum(1 for broker in actual_brokers if tag in broker)
+                for tag in {tag for broker in actual_brokers for tag in broker}
+            }
+            for tag, expected_count in sorted(expected_field_counts.items()):
+                missing_count = expected_count - actual_field_counts.get(tag, 0)
+                if missing_count > 0:
+                    gaps.append(
+                        f"sequence {sequence} missing {missing_count} broker field value(s) for {tag}"
+                    )
+            continue
         for index, expected_broker in enumerate(expected_brokers):
             actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
             for tag in sorted(set(expected_broker) - set(actual_broker)):

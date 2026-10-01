@@ -1589,6 +1589,51 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
         self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
 
+    def test_schedule_a_replace_preflight_allows_selected_brokers_to_be_sorted_by_payment(self):
+        broker_rows = [
+            {
+                "Name1": "LOW PAYMENT BROKER",
+                "AddressLine101": "1 MAIN ST",
+                "AddressLine201": "SUITE 100",
+                "ZipCode01": "10001",
+                "CommPdAmt01": "100",
+                "Code01": "3",
+            },
+            {
+                "Name02": "HIGH PAYMENT BROKER",
+                "AddressLine102": "2 MAIN ST",
+                "ZipCode02": "10002",
+                "CommPdAmt02": "200",
+                "Code02": "3",
+            },
+        ]
+        records = [
+            {
+                "ftw_seq_no": "1",
+                "query_results": {
+                    "InsCarrierName": "Cigna",
+                    **broker_rows[0],
+                    **broker_rows[1],
+                },
+                "query_subparts": {"Broker": broker_rows},
+            }
+        ]
+
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "1",
+            [],
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+            schedule_a_broker_rows=[None, None],
+        )
+
+        self.assertEqual(
+            schedule_a_replacement_data_gaps(records, xml, matched_ftw_seq_no="1"),
+            [],
+        )
+
     def test_schedule_a_replace_preserves_vendor_broker_fields_outside_editable_map(self):
         records = [
             {
