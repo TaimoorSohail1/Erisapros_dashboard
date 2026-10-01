@@ -20,6 +20,17 @@ class PolicyPeriodRegressionTests(unittest.TestCase):
         self.assertEqual(periods[0].original_ending, "02/15/2026")
         self.assertTrue(periods[0].adjusted_to_twelve_months)
 
+    def test_carrier_date_range_longer_than_twelve_months_is_clamped(self):
+        periods = explicit_contract_periods(
+            "4. DATE RANGE FOR PERIOD: 01/01/2025 TO 01/01/2026"
+        )
+
+        self.assertEqual(len(periods), 1)
+        self.assertEqual(periods[0].beginning, "01/01/2025")
+        self.assertEqual(periods[0].ending, "12/31/2025")
+        self.assertEqual(periods[0].original_ending, "01/01/2026")
+        self.assertTrue(periods[0].adjusted_to_twelve_months)
+
     def test_month_period_not_letter_date(self):
         text = "March 12, 2026\nCertification March 12, 2026\nContract Year from 01/2025 - 12/2025"
         fields = extract_rules_driven_schedule_a_fields([(3, text)], rules=DEFAULT_FIELD_RULES)

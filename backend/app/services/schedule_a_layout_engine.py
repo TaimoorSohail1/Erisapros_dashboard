@@ -278,6 +278,7 @@ def is_layout_label_text(value: str) -> bool:
     if not normalized:
         return False
     if normalized in {
+        "due",
         "of america",
         "insurance company",
         "life insurance company",

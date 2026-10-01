@@ -39,7 +39,9 @@ from app.services.extractor import (
     extract_prudential_broker_rows,
     extract_prudential_schedule_a_fields,
     extract_prudential_schedule_a_summaries,
+    extract_position_aware_schedule_a_fields,
     extract_schedule_a_broker_rows,
+    extract_schedule_a_fields_from_rule_labels,
     extract_summary_table_broker_rows,
     extract_standard_broker_rows,
     extract_standard_schedule_a_fields,
@@ -56,6 +58,7 @@ from app.services.extractor import (
     merge_schedule_a_broker_rows,
     parse_schedule_a_text,
     schedule_a_broker_compensation_fields,
+    supplement_schedule_a_result_with_local,
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -64,6 +67,34 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_labeled_naic_strips_only_leading_zero_padding_to_five_digits(self):
+        fields = extract_schedule_a_fields_from_rule_labels(
+            "NAIC Code: 00053295",
+            page=1,
+            rules=DEFAULT_FIELD_RULES,
+        )
+
+        by_name = {field.field_name: field.value for field in fields}
+        self.assertEqual(by_name["1c. NAIC Code"], "53295")
+
+    def test_labeled_naic_does_not_hide_a_nonzero_six_digit_source_error(self):
+        fields = extract_schedule_a_fields_from_rule_labels(
+            "NAIC Code: 624190",
+            page=1,
+            rules=DEFAULT_FIELD_RULES,
+        )
+
+        by_name = {field.field_name: field.value for field in fields}
+        self.assertEqual(by_name["1c. NAIC Code"], "624190")
+
+    def test_position_aware_naic_uses_full_zero_padded_source_value(self):
+        fields = extract_position_aware_schedule_a_fields(
+            [(1, "c. NAIC Code: 00053295")]
+        )
+
+        by_name = {field.field_name: field.value for field in fields}
+        self.assertEqual(by_name["1c. NAIC Code"], "53295")
+
     def test_new_york_life_annual_policy_report_keeps_full_contract_and_totals(self):
         pages = [
             (
@@ -228,6 +259,38 @@ class ScheduleAExtractionTests(unittest.TestCase):
 
         self.assertEqual(rows, [])
 
+    def test_columnar_broker_disclosure_handles_comma_name_and_cross_page_address(self):
+        rows = extract_columnar_broker_compensation_rows(
+            [
+                (
+                    2,
+                    """
+                    5. INSURANCE FEES AND COMMISSION INFORMATION:
+                    SALES COMMISSION PAID FEES PAID ADDITIONAL COMPENSATION PAID
+
+                    NFP INSURANCE SERVICES, $ 0.00 $ 0.00 $ 1,867.72
+                    """,
+                ),
+                (
+                    3,
+                    """
+                    INC
+                    1250 CAPITAL OF TEXAS HWY
+                    BLDG 2 STE 125
+                    AUSTIN, TX 78746
+
+                    6. COVERAGE/BENEFITS PROVIDED: DISABILITY
+                    """,
+                ),
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "NFP INSURANCE SERVICES INC")
+        self.assertEqual(rows[0].address_line_1, "1250 CAPITAL OF TEXAS HWY")
+        self.assertEqual(rows[0].address_line_2, "BLDG 2 STE 125")
+        self.assertEqual(rows[0].fee_total, "1,867.72")
+
     def test_verified_broker_table_replaces_incorrect_ai_broker_values(self):
         ai_fields = [
             NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value="March", confidence=0.99),
@@ -249,6 +312,55 @@ class ScheduleAExtractionTests(unittest.TestCase):
 
         self.assertEqual(merged["3a. Name of Agent/Broker/Person"], "NFP CORPORATE SERVICES (NY) LLC")
         self.assertEqual(merged["3b. Amount of Commissions"], "2,725.73")
+
+    def test_numeric_schedule_a_field_drops_due_label_fragment(self):
+        merged = merge_schedule_a_fields(
+            [
+                NormalizedExtractionField(
+                    field_name="9c(2). Dividends or retroactive rate refunds due",
+                    value="DUE",
+                    confidence=0.99,
+                )
+            ],
+            [],
+        )
+
+        self.assertEqual(merged, [])
+
+    def test_authoritative_local_broker_table_replaces_provider_rows(self):
+        provider = NormalizedExtractionResult(
+            provider="GroundX",
+            fields=[],
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="NFP CORPORATE SERVICES NY LLC",
+                    address_line_1="$860.74",
+                    commission_total="860.74",
+                    fee_total="0",
+                    confidence=0.99,
+                )
+            ],
+        )
+        local_row = ScheduleABrokerRow(
+            name="NFP CORPORATE SERVICES NY LLC",
+            address_line_1="PO BOX 9101",
+            city="PLAINVIEW",
+            state="NY",
+            zip_code="11803",
+            commission_total="2,762.56",
+            fee_total="860.74",
+            confidence=0.96,
+        )
+        local = NormalizedExtractionResult(
+            provider="Local PDF parser",
+            fields=[],
+            raw={"authoritative_broker_table": True},
+            schedule_a_broker_rows=[local_row],
+        )
+
+        result = supplement_schedule_a_result_with_local(provider, local)
+
+        self.assertEqual(result.schedule_a_broker_rows, [local_row])
 
     def test_cigna_summary_page_wins_over_state_appendices(self):
         pages = [

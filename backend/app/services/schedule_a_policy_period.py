@@ -6,7 +6,7 @@ import re
 
 
 _PERIOD = re.compile(
-    r"\b(?:Contract/Policy|Contract|Policy)\s+Year\s+from\s*:?\s*"
+    r"\b(?:(?:Contract/Policy|Contract|Policy)\s+Year\s+from|Date\s+Range\s+for\s+Period)\s*:?\s*"
     r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})\s*(?:[-–—]|to|through)\s*"
     r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})\b", re.IGNORECASE)
 

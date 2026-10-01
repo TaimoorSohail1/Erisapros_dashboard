@@ -446,7 +446,12 @@ def _reconcile_carrier_worksheets(result, document, corrections):
                 existing.confidence = .5
                 existing.decision = "REVIEW_REQUIRED"
 
-    rows = extract_columnar_broker_compensation_rows(list(document.pages.items()))
+    result_raw = result.raw if isinstance(result.raw, dict) else {}
+    rows = (
+        []
+        if result_raw.get("authoritative_broker_table")
+        else extract_columnar_broker_compensation_rows(list(document.pages.items()))
+    )
     if rows:
         # Keep the established classification of additional compensation in
         # fee totals, but expose its separate component and require review.

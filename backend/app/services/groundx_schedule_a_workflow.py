@@ -682,7 +682,10 @@ def _normalize_rule_value(rule: FieldRule, value: Any) -> str | None:
         return f"{digits[:2]}-{digits[2:]}" if len(digits) == 9 else None
     if "naic" in validators or label.startswith("1c."):
         digits = re.sub(r"\D", "", clean)
-        return digits if 4 <= len(digits) <= 6 else None
+        unpadded = digits.lstrip("0")
+        if len(digits) > 5 and len(unpadded) == 5:
+            return unpadded
+        return digits if 4 <= len(digits) <= 8 else None
     return clean
 
 
