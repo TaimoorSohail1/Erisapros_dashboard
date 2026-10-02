@@ -180,6 +180,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "JASON ANDREW PRATTES")
         self.assertEqual(rows[0].commission_total, "1,897")
         self.assertEqual(rows[0].organization_code, "3")
+        self.assertIn("1,897", rows[0].commission_source_text or "")
+        self.assertEqual(rows[0].evidence[0].provider, "Principal compact Schedule A broker parser")
 
     def test_principal_short_form_restores_labelled_values_after_semantic_enrichment(self):
         pages = [(1, """

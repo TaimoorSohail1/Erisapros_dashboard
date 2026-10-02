@@ -5630,6 +5630,13 @@ def extract_principal_short_form_broker_rows(
         if not broker:
             continue
         commission = money_value(_compact_spaced_number(broker.group("commission")))
+        source = (
+            "Principal compact Schedule A broker row. "
+            f"Name: {clean_extracted_value(broker.group('name'))}; "
+            f"Address: {clean_extracted_value(broker.group('street'))}, "
+            f"{clean_extracted_value(broker.group('city'))}, CA {broker.group('zip')}; "
+            f"Commissions: {commission}; Organization code: 3."
+        )
         return [
             ScheduleABrokerRow(
                 name=clean_extracted_value(broker.group("name")),
@@ -5638,12 +5645,22 @@ def extract_principal_short_form_broker_rows(
                 state="CA",
                 zip_code=broker.group("zip"),
                 organization_code="3",
+                purpose="COMMISSIONS",
                 commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
                 fee_rows=[],
                 commission_total=commission,
                 fee_total="0.00",
+                commission_source_text=source,
+                fee_source_text=source,
                 source_page=page,
                 confidence=0.99,
+                evidence=[
+                    SourceEvidence(
+                        provider="Principal compact Schedule A broker parser",
+                        page=page,
+                        source_text=source,
+                    )
+                ],
             )
         ]
     return []
