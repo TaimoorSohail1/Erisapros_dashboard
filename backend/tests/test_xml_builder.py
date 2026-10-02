@@ -863,6 +863,36 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("<SDState>NY</SDState>", xml)
         self.assertIn("<SDZipCode>10017-4503</SDZipCode>", xml)
 
+    def test_5500_combined_address_splits_square_and_floor_for_homes_client(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1f. Plan Sponsor Address",
+            normalized_field_name="sponsor_address",
+            mapped_rule_key="form_5500_part_i_1f_plan_sponsor_address",
+            mapped_label="1f. Plan Sponsor Address",
+            form_type=FormType.FORM_5500,
+            priority=FieldPriority.HIGH,
+            value="36 COOPER SQUARE 3RD FLOOR NEW YORK CITY NY 10003",
+            proposed_value="36 COOPER SQUARE 3RD FLOOR NEW YORK CITY NY 10003",
+        )
+
+        xml = build_single_document_update_xml(
+            "DOL5500Data",
+            [field],
+            FormType.FORM_5500,
+            transaction_type="1",
+            customer_id="13-3351420",
+            plan_id="13-3351420501",
+            year="2025",
+            current_values={},
+        )
+
+        self.assertIn("<SDAddressLine1>36 COOPER SQUARE</SDAddressLine1>", xml)
+        self.assertIn("<SDAddressLine2>3RD FLOOR</SDAddressLine2>", xml)
+        self.assertIn("<SDCity>NEW YORK CITY</SDCity>", xml)
+        self.assertIn("<SDState>NY</SDState>", xml)
+        self.assertIn("<SDZipCode>10003</SDZipCode>", xml)
+
     def test_5500_combined_address_splits_comma_before_suite_without_current_snapshot(self):
         field = ExtractedField(
             filing_id="filing",

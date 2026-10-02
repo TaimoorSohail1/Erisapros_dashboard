@@ -335,6 +335,7 @@ class FTWilliamsReviewService:
         )
         if apply_automatic_derivations:
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
+            fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
 
         ftw_editability = self._ftw_editability_status(form_5500_current)
         if ftw_editability["editable"] is None and existing_review and not send_queries:
@@ -421,6 +422,7 @@ class FTWilliamsReviewService:
             update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
+        self._mark_plan_worksheet_conflicts(comparison_fields, fields, schedule_a_worksheet_summaries)
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
         include_5500_update = not bring_forward_required and self._should_build_update_payload(send_queries, form_5500_current)
         include_schedule_a_update = not bring_forward_required and (
@@ -1017,6 +1019,7 @@ class FTWilliamsReviewService:
             schedule_a_worksheet_summaries,
             new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
         )
+        fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
         plan_year_conflict = self._plan_year_conflict(fields, form_5500_current, schedule_a_current)
         plan_year_resolution = self._effective_plan_year_resolution(review, fields, form_5500_current, schedule_a_current)
         plan_year_update_confirmed = plan_year_resolution is not None
@@ -1059,6 +1062,7 @@ class FTWilliamsReviewService:
             update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
         )
+        self._mark_plan_worksheet_conflicts(comparison_fields, fields, schedule_a_worksheet_summaries)
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
         include_5500_update = self._should_build_update_payload(review.current_query_sent, form_5500_current)
         include_schedule_a_update = self._should_build_update_payload(review.current_query_sent, schedule_a_current) or (
@@ -4805,6 +4809,163 @@ class FTWilliamsReviewService:
             elif isinstance(row, dict):
                 normalized.append(row)
         return normalized
+
+    def _fields_with_plan_worksheet_identity(
+        self,
+        fields: list[ExtractedField],
+        summaries: list,
+    ) -> list[ExtractedField]:
+        """Use a matching worksheet row to make the outbound carrier name canonical.
+
+        The Schedule A remains the extraction evidence.  We only change the
+        proposed FT Williams value after the worksheet carrier and policy row
+        match the document.  A policy mismatch is deliberately left untouched
+        so the decision engine can surface it as a real conflict.
+        """
+        summary = self._matching_plan_worksheet_summary(fields, summaries)
+        if not summary:
+            return fields
+        extracted_policy = self._field_value_by_rule(
+            fields,
+            "schedule_a_part_i_1d_contract_policy_number",
+        )
+        worksheet_policy = str(self._summary_attr(summary, "account_number") or "").strip()
+        if (
+            extracted_policy
+            and worksheet_policy
+            and self._identity_key(extracted_policy) != self._identity_key(worksheet_policy)
+        ):
+            return fields
+        canonical_carrier = str(self._summary_attr(summary, "carrier_name") or "").strip()
+        if not canonical_carrier:
+            return fields
+
+        now = datetime.utcnow()
+        updated: list[ExtractedField] = []
+        for field in fields:
+            if field.mapped_rule_key != "schedule_a_part_i_1a_name_of_insurance_company":
+                updated.append(field)
+                continue
+            updated.append(
+                field.model_copy(
+                    update={
+                        "proposed_value": canonical_carrier,
+                        "confidence": max(float(field.confidence or 0), 0.98),
+                        "status": ExtractedFieldStatus.MATCHED,
+                        "status_reason": "Carrier identity cross-checked against the Plan Worksheet policy row.",
+                        "updated_at": now,
+                    }
+                )
+            )
+        return updated
+
+    def _mark_plan_worksheet_conflicts(
+        self,
+        comparisons: list[FTWilliamsComparisonField],
+        fields: list[ExtractedField],
+        summaries: list,
+    ) -> None:
+        """Surface genuine worksheet/document identity conflicts as decisions."""
+        summary = self._matching_plan_worksheet_summary(fields, summaries)
+        if not summary:
+            return
+        checks = (
+            (
+                "schedule_a_part_i_1d_contract_policy_number",
+                str(self._summary_attr(summary, "account_number") or "").strip(),
+                lambda left, right: self._identity_key(left) == self._identity_key(right),
+                "policy number",
+            ),
+            (
+                "schedule_a_part_i_1f_policy_year_beginning_date",
+                str(self._summary_attr(summary, "period_begin") or "").strip(),
+                self._same_date,
+                "policy beginning date",
+            ),
+            (
+                "schedule_a_part_i_1g_policy_year_ending_date",
+                str(self._summary_attr(summary, "period_end") or "").strip(),
+                self._same_date,
+                "policy ending date",
+            ),
+        )
+        extracted_by_rule = {
+            str(field.mapped_rule_key or ""): str(field.value or field.proposed_value or "").strip()
+            for field in fields
+        }
+        comparison_by_rule = {
+            str(comparison.rule_key or ""): comparison
+            for comparison in comparisons
+        }
+        for rule_key, worksheet_value, same_value, label in checks:
+            extracted_value = extracted_by_rule.get(rule_key, "")
+            if not extracted_value or not worksheet_value or same_value(extracted_value, worksheet_value):
+                continue
+            comparison = comparison_by_rule.get(rule_key)
+            if not comparison:
+                continue
+            reason = (
+                f"The Plan Worksheet {label} ({worksheet_value}) differs from "
+                f"the Schedule A value ({extracted_value})."
+            )
+            comparison.changed = True
+            comparison.update_included = False
+            comparison.update_exclusion_reason = reason
+            comparison.validation_status = "REVIEW_REQUIRED"
+            comparison.validation_message = reason
+            comparison.validation_blocking = False
+            comparison.decision = FTWFieldDecision.CONFLICT
+            comparison.decision_reason = reason
+
+    def _matching_plan_worksheet_summary(self, fields: list[ExtractedField], summaries: list):
+        worksheet_rows = [
+            summary
+            for summary in summaries or []
+            if "plan worksheet" in str(self._summary_attr(summary, "source") or "").lower()
+        ]
+        if not worksheet_rows:
+            return None
+        extracted_policy = self._field_value_by_rule(
+            fields,
+            "schedule_a_part_i_1d_contract_policy_number",
+        )
+        policy_key = self._identity_key(extracted_policy)
+        if policy_key:
+            policy_matches = [
+                summary
+                for summary in worksheet_rows
+                if self._identity_key(self._summary_attr(summary, "account_number")) == policy_key
+            ]
+            if len(policy_matches) == 1:
+                return policy_matches[0]
+
+        extracted_carrier = self._field_value_by_rule(
+            fields,
+            "schedule_a_part_i_1a_name_of_insurance_company",
+        )
+        carrier_key = self._carrier_identity_key(extracted_carrier)
+        if not carrier_key:
+            return None
+        carrier_matches = [
+            summary
+            for summary in worksheet_rows
+            if self._carrier_identity_key(self._summary_attr(summary, "carrier_name")) == carrier_key
+        ]
+        return carrier_matches[0] if len(carrier_matches) == 1 else None
+
+    @staticmethod
+    def _identity_key(value: object) -> str:
+        return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+    @classmethod
+    def _carrier_identity_key(cls, value: object) -> str:
+        text = re.sub(
+            r"\b(?:AND\s+)?AFFILIATES?\b.*$",
+            "",
+            str(value or "").upper(),
+        )
+        text = re.sub(r"[\(\[\{].*$", "", text).strip()
+        return cls._identity_key(text)
 
     def _broker_rows_for_schedule_desc(self, rows: list, schedule_desc: object) -> list:
         desc_key = self._standard_schedule_desc_key(str(schedule_desc or ""))

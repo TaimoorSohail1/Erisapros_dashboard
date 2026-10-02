@@ -35,6 +35,7 @@ from app.models import (
     ScheduleABrokerMatch,
     ScheduleABrokerRow,
     ScheduleAContractType,
+    ScheduleAWorksheetSummary,
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
@@ -1014,6 +1015,84 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    @staticmethod
+    def _schedule_identity_field(rule_key: str, label: str, value: str) -> ExtractedField:
+        return ExtractedField(
+            filing_id="filing",
+            source_field_name=label,
+            normalized_field_name=label.lower(),
+            mapped_rule_key=rule_key,
+            mapped_label=label,
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value=value,
+            proposed_value=value,
+            source_text=value,
+        )
+
+    def test_plan_worksheet_identity_canonicalizes_cigna_carrier_only_after_policy_match(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "Cigna Health and Life Insurance Company and affiliates",
+        )
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "3346625",
+        )
+        summary = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name="CIGNA HEALTH AND LIFE INSURANCE COMPANY",
+            account_number="3346625",
+            period_begin="01/01/2025",
+            period_end="12/31/2025",
+        )
+
+        updated = service._fields_with_plan_worksheet_identity([carrier, policy], [summary])
+        updated_carrier = next(field for field in updated if field.mapped_rule_key == carrier.mapped_rule_key)
+
+        self.assertEqual(carrier.value, "Cigna Health and Life Insurance Company and affiliates")
+        self.assertEqual(updated_carrier.value, carrier.value)
+        self.assertEqual(updated_carrier.proposed_value, "CIGNA HEALTH AND LIFE INSURANCE COMPANY")
+        comparison = service._comparison_fields(updated, {}, {}, update_fields=updated)
+        carrier_comparison = next(item for item in comparison if item.rule_key == carrier.mapped_rule_key)
+        self.assertEqual(carrier_comparison.decision, FTWFieldDecision.WILL_UPDATE)
+        self.assertFalse(carrier_comparison.validation_blocking)
+
+    def test_plan_worksheet_policy_mismatch_is_a_real_conflict(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "AFLAC",
+        )
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "52-0807803",
+        )
+        summary = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name="AFLAC",
+            account_number="NBX36",
+            period_begin="01/01/2025",
+            period_end="12/31/2025",
+        )
+        fields = [carrier, policy]
+        comparisons = service._comparison_fields(fields, {}, {}, update_fields=fields)
+
+        service._mark_plan_worksheet_conflicts(comparisons, fields, [summary])
+
+        policy_comparison = next(item for item in comparisons if item.rule_key == policy.mapped_rule_key)
+        self.assertEqual(policy_comparison.decision, FTWFieldDecision.CONFLICT)
+        self.assertFalse(policy_comparison.update_included)
+        self.assertFalse(policy_comparison.validation_blocking)
+        self.assertIn("NBX36", policy_comparison.decision_reason)
+        self.assertIn("52-0807803", policy_comparison.decision_reason)
+
     def test_structured_broker_section_supersedes_blocked_flat_broker_comparison(self):
         comparison = FTWilliamsComparisonField(
             label="3a. Name of Agent/Broker/Person",
