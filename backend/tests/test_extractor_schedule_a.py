@@ -2247,6 +2247,40 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertLessEqual(result.fields[0].confidence, 0.5)
         self.assertLessEqual(result.schedule_a_broker_rows[0].confidence, 0.5)
 
+    def test_groundx_stall_is_bounded_and_uses_local_fallback(self):
+        fallback = NormalizedExtractionResult(
+            provider="Local PDF parser fallback",
+            fields=[
+                NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="TEST CARRIER", confidence=0.96),
+                NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="12-3456789", confidence=0.98),
+                NormalizedExtractionField(field_name="1c. NAIC Code", value="12345", confidence=0.98),
+                NormalizedExtractionField(field_name="1d. Contract/Policy Number", value="ABC123", confidence=0.97),
+                NormalizedExtractionField(field_name="1e. Persons Covered (End of Policy Year)", value="10", confidence=0.97),
+                NormalizedExtractionField(field_name="1f. Policy Year Beginning Date", value="01/01/2025", confidence=0.97),
+                NormalizedExtractionField(field_name="1g. Policy Year Ending Date", value="12/31/2025", confidence=0.97),
+            ],
+        )
+        settings = SimpleNamespace(
+            groundx_api_key="test",
+            groundx_bucket_id="test",
+            groundx_max_wait_seconds=1,
+        )
+
+        async def stalled_groundx(*_args, **_kwargs):
+            await asyncio.sleep(5)
+
+        service = ExtractionService()
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=fallback),
+            patch.object(service, "_extract_with_groundx", side_effect=stalled_groundx),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"pdf", "schedule-a.pdf"))
+
+        self.assertIn("verified local fallback", result.provider.lower())
+        self.assertIn("TimeoutError", result.raw["fallback_reason"])
+
     def test_groundx_failure_keeps_complete_local_fallback_trusted(self):
         fallback = NormalizedExtractionResult(
             provider="Local PDF parser fallback",

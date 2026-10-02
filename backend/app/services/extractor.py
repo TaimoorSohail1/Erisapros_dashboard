@@ -113,11 +113,14 @@ class ExtractionService:
         settings = get_settings()
         if settings.groundx_api_key and settings.groundx_bucket_id:
             try:
-                return await self._extract_with_groundx(
-                    file_bytes,
-                    file_name,
-                    FormType.FORM_5500,
-                    "Plan Worksheet",
+                return await asyncio.wait_for(
+                    self._extract_with_groundx(
+                        file_bytes,
+                        file_name,
+                        FormType.FORM_5500,
+                        "Plan Worksheet",
+                    ),
+                    timeout=max(1.0, float(getattr(settings, "groundx_max_wait_seconds", 90))),
                 )
             except Exception as exc:
                 return NormalizedExtractionResult(
@@ -178,7 +181,10 @@ class ExtractionService:
         document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
             try:
-                result = await self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A")
+                result = await asyncio.wait_for(
+                    self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A"),
+                    timeout=max(1.0, float(getattr(settings, "groundx_max_wait_seconds", 90))),
+                )
                 local_result = local_schedule_a_pdf_result(file_bytes, file_name, rules=self.field_rules)
                 result = supplement_schedule_a_result_with_local(result, local_result)
                 result.classification_signals = sorted(set(result.classification_signals) | set(document_signals))
@@ -790,7 +796,8 @@ def safe_error_summary(exc: Exception) -> str:
         except ValueError:
             detail = exc.response.text[:300]
         return redact_sensitive_text(f"HTTP {status_code}: {detail}")
-    return redact_sensitive_text(str(exc)[:500])
+    detail = str(exc).strip() or type(exc).__name__
+    return redact_sensitive_text(detail[:500])
 
 
 def mark_schedule_a_fallback_for_manual_review(
