@@ -1108,6 +1108,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
     def test_compare_treats_single_digit_and_zero_padded_dates_as_equal(self):
         self.assertFalse(values_meaningfully_different("01/01/2022", "1/1/2022", tag="PLAN_EFF_DATE"))
 
+    def test_compare_treats_carrier_brand_spacing_as_equal(self):
+        self.assertFalse(
+            values_meaningfully_different(
+                "UNITED HEALTHCARE INSURANCE COMPANY",
+                "UnitedHealthcare Insurance Company",
+                tag="InsCarrierName",
+            )
+        )
+
     def test_plan_worksheet_policy_mismatch_is_a_real_conflict(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(

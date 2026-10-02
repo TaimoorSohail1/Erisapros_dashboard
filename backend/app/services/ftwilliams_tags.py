@@ -364,6 +364,11 @@ def values_meaningfully_different(
 ) -> bool:
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
+    if tag == "InsCarrierName":
+        current_carrier = re.sub(r"[^a-z0-9]", "", current.casefold())
+        proposed_carrier = re.sub(r"[^a-z0-9]", "", proposed.casefold())
+        if current_carrier and proposed_carrier:
+            return current_carrier != proposed_carrier
     if tag and "address" in tag.casefold():
         current_address = _normalize_address_compare(current)
         proposed_address = _normalize_address_compare(proposed)
