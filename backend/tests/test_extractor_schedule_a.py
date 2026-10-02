@@ -41,6 +41,7 @@ from app.services.extractor import (
     extract_prudential_schedule_a_summaries,
     extract_principal_short_form_broker_rows,
     extract_principal_short_form_schedule_a_fields,
+    restore_principal_short_form_fields,
     extract_aetna_attached_listing_fields,
     extract_aetna_schedule_a_support_statement_fields,
     extract_position_aware_schedule_a_broker_rows,
@@ -166,16 +167,50 @@ class ScheduleAExtractionTests(unittest.TestCase):
             """),
         ]
 
-        values = {field.field_name: field.value for field in extract_principal_short_form_schedule_a_fields(pages)}
+        fields = extract_principal_short_form_schedule_a_fields(pages)
+        values = {field.field_name: field.value for field in fields}
         rows = extract_principal_short_form_broker_rows(pages)
 
         self.assertEqual(values["1d. Contract/Policy Number"], "1205934")
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "362")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "14,655")
         self.assertEqual(values["3b. Amount of Commissions"], "1,897")
+        contract = next(field for field in fields if field.field_name == "1d. Contract/Policy Number")
+        self.assertIn("1205934", contract.source_text or "")
         self.assertEqual(rows[0].name, "JASON ANDREW PRATTES")
         self.assertEqual(rows[0].commission_total, "1,897")
         self.assertEqual(rows[0].organization_code, "3")
+
+    def test_principal_short_form_restores_labelled_values_after_semantic_enrichment(self):
+        pages = [(1, """
+            C ontract # 1205934
+            D ata Period September 1, 2025 to December 31, 2025
+            P rincipal Life Insurance Company
+            (b) EIN 42-0127290 (c) NAIC Code 61271
+        """)]
+        result = NormalizedExtractionResult(
+            provider="test",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1a. Name of Insurance Company",
+                    value="Principal Life Insurance Company (b)",
+                    confidence=0.99,
+                ),
+                NormalizedExtractionField(
+                    field_name="1d. Contract/Policy Number",
+                    value="1205934",
+                    confidence=0.99,
+                ),
+            ],
+        )
+
+        restored = restore_principal_short_form_fields(result, pages)
+        values = {field.field_name: field.value for field in restored.fields}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Principal Life Insurance Company")
+        self.assertEqual(values["1d. Contract/Policy Number"], "1205934")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "09/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
 
     def test_standard_short_form_extracts_part_i_and_broker_values(self):
         pages = [

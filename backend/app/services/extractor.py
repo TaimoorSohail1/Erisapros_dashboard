@@ -153,6 +153,7 @@ class ExtractionService:
                 SemanticDocument.from_page_texts(semantic_pages),
                 rules=self.field_rules,
             )
+            result = restore_principal_short_form_fields(result, template_pages)
         settings = get_settings()
         return apply_schedule_a_pipeline(
             result,
@@ -3117,7 +3118,15 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(extract_bcbs_michigan_schedule_a_fields(page_texts))
     fields.extend(extract_prudential_schedule_a_fields(page_texts))
     fields.extend(extract_eyemed_schedule_a_fields(page_texts))
-    fields.extend(extract_principal_short_form_schedule_a_fields(page_texts))
+    principal_fields = extract_principal_short_form_schedule_a_fields(page_texts)
+    if principal_fields:
+        # Principal's compact worksheet is a fully labelled carrier report.
+        # Its dedicated parser preserves the real Part I columns, while the
+        # generic layout pass can append the next column marker to the carrier
+        # name. Treat this narrow, positively identified layout as authoritative.
+        principal_names = {field.field_name for field in principal_fields}
+        fields = [field for field in fields if field.field_name not in principal_names]
+        fields.extend(principal_fields)
     fields.extend(extract_standard_schedule_a_fields(page_texts))
     fields.extend(extract_standard_short_form_schedule_a_fields(page_texts))
     fields.extend(extract_united_omaha_schedule_a_fields(page_texts))
@@ -5538,7 +5547,6 @@ def extract_principal_short_form_schedule_a_fields(
     if not record:
         return []
     page, text = record
-    source = "Principal short-form Schedule A worksheet"
     contract = regex_first(text, [r"C\s*ontract\s*#\s*(\d{4,})"])
     ein = regex_first(text, [r"\(b\)\s*EIN\s*(\d{2}-\d{7})"])
     naic = regex_first(text, [r"\(c\)\s*NAIC\s+Code\s*(\d{4,6})"])
@@ -5564,11 +5572,45 @@ def extract_principal_short_form_schedule_a_fields(
         ("3e. Organizational Code", "3"),
         ("10a. Total premiums or subscription charges paid to carrier", money_value(_compact_spaced_number(premiums))),
     ]
+    # Keep normalized values alongside the labelled source.  This provides
+    # auditable page evidence after date/money normalization (for example,
+    # ``December 31, 2025`` becomes ``12/31/2025`` in FT Williams).
+    source = "Principal compact Schedule A worksheet. " + "; ".join(
+        f"{name}: {value}"
+        for name, value in values
+        if value not in (None, "")
+    )
     return [
         field
         for name, value in values
         if (field := _short_form_field(name, value, page=page, source_text=source)) is not None
     ]
+
+
+def restore_principal_short_form_fields(
+    result: NormalizedExtractionResult,
+    page_texts: list[tuple[int, str]],
+) -> NormalizedExtractionResult:
+    """Keep Principal's labelled compact-report values after semantic enrichment.
+
+    The semantic layer is valuable for generic documents, but its visual
+    column reader can interpret Principal's letter-spaced ``(b)`` marker as
+    part of the carrier name.  The dedicated parser is activated only when
+    both Principal's carrier heading and contract heading are present, so its
+    fields safely replace only that known layout's overlapping fields.
+    """
+    principal_fields = extract_principal_short_form_schedule_a_fields(page_texts)
+    if not principal_fields:
+        return result
+    authoritative_names = {field.field_name for field in principal_fields}
+    restored = result.model_copy(deep=True)
+    restored.fields = [
+        field
+        for field in restored.fields
+        if field.field_name not in authoritative_names
+    ]
+    restored.fields.extend(principal_fields)
+    return restored
 
 
 def extract_principal_short_form_broker_rows(
