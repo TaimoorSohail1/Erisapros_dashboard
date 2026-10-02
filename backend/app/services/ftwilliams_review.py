@@ -4978,6 +4978,21 @@ class FTWilliamsReviewService:
             ]
             if len(policy_matches) == 1:
                 return policy_matches[0]
+            # Some carrier reports append a one-character group suffix that
+            # the plan worksheet omits (for example 922556G vs 922556). When
+            # exactly one worksheet row is that near-match, pair the records
+            # so the normal conflict marker can surface the discrepancy.
+            near_policy_matches = [
+                summary
+                for summary in worksheet_rows
+                if (
+                    (summary_key := self._identity_key(self._summary_attr(summary, "account_number")))
+                    and abs(len(summary_key) - len(policy_key)) == 1
+                    and (summary_key.startswith(policy_key) or policy_key.startswith(summary_key))
+                )
+            ]
+            if len(near_policy_matches) == 1:
+                return near_policy_matches[0]
 
         extracted_carrier = self._field_value_by_rule(
             fields,

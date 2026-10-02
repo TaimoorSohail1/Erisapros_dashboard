@@ -1148,6 +1148,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("NBX36", policy_comparison.decision_reason)
         self.assertIn("52-0807803", policy_comparison.decision_reason)
 
+    def test_plan_worksheet_single_character_policy_suffix_mismatch_is_a_real_conflict(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "HARTFORD LIFE AND ACCIDENT",
+        )
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "922556G",
+        )
+        summaries = [
+            ScheduleAWorksheetSummary(
+                source="Plan Worksheet fully-insured benefit table",
+                carrier_name="Hartford",
+                account_number=number,
+                period_begin="01/01/2025",
+                period_end="12/31/2025",
+            )
+            for number in ("922556", "922557", "922558")
+        ]
+        fields = [carrier, policy]
+        comparisons = service._comparison_fields(fields, {}, {}, update_fields=fields)
+
+        service._mark_plan_worksheet_conflicts(comparisons, fields, summaries)
+
+        policy_comparison = next(item for item in comparisons if item.rule_key == policy.mapped_rule_key)
+        self.assertEqual(policy_comparison.decision, FTWFieldDecision.CONFLICT)
+        self.assertIn("922556", policy_comparison.decision_reason)
+        self.assertIn("922556G", policy_comparison.decision_reason)
+
     def test_structured_broker_section_supersedes_blocked_flat_broker_comparison(self):
         comparison = FTWilliamsComparisonField(
             label="3a. Name of Agent/Broker/Person",
