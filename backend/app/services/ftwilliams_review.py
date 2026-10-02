@@ -3978,6 +3978,18 @@ class FTWilliamsReviewService:
     ) -> str | None:
         comparisons = review.fields or []
         if fields:
+            # Approval reloads the immutable extraction evidence from storage.
+            # Reapply the same cross-document identity reconciliation used to
+            # prepare the review before validating or sending.  Otherwise a
+            # source phrase such as "and affiliates" can incorrectly block a
+            # worksheet-confirmed legal carrier name that is already present
+            # in the prepared comparison and outbound XML.
+            fields = self._fields_with_plan_worksheet_identity(
+                fields,
+                self._normalized_schedule_a_worksheet_summaries(
+                    review.schedule_a_worksheet_summaries
+                ),
+            )
             safe_form_fields = self._safe_update_fields(
                 fields,
                 FormType.FORM_5500,
@@ -3995,6 +4007,11 @@ class FTWilliamsReviewService:
                 review.schedule_a_current_values or {},
                 update_fields=[*safe_form_fields, *safe_schedule_fields],
                 schedule_a_contract_type=review.schedule_a_contract_type,
+            )
+            self._mark_plan_worksheet_conflicts(
+                comparisons,
+                fields,
+                review.schedule_a_worksheet_summaries,
             )
             self._mark_structured_broker_comparisons(comparisons, review.schedule_a_broker_rows)
         field_issues = [

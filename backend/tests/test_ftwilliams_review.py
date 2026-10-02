@@ -1062,6 +1062,20 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(carrier_comparison.decision, FTWFieldDecision.WILL_UPDATE)
         self.assertFalse(carrier_comparison.validation_blocking)
 
+        review = FTWilliamsReview(
+            filing_id="filing",
+            schedule_a_worksheet_summaries=[summary],
+            schedule_a_contract_type=ScheduleAContractType.NONEXPERIENCE_RATED,
+        )
+        self.assertIsNone(
+            service._review_validation_blocking_error(
+                review,
+                fields=[carrier, policy],
+                include_brokers=False,
+                action="sending to FT Williams",
+            )
+        )
+
     def test_plan_worksheet_policy_mismatch_is_a_real_conflict(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(
