@@ -32,6 +32,7 @@ from app.models import (
     FTWilliamsReviewStatus,
     FTWilliamsScheduleAMatchRequest,
     FTWilliamsStatusItem,
+    ScheduleABrokerMatch,
     ScheduleABrokerRow,
     ScheduleAContractType,
 )
@@ -1720,6 +1721,26 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(review.update_xml_5500, "<DOL5500Data />")
         self.assertEqual(review.update_xml_schedule_a, "")
+
+    def test_auto_new_broker_keeps_schedule_a_payload(self) -> None:
+        service = FTWilliamsReviewService()
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            update_xml_schedule_a="<DOLScheduleAData />",
+            schedule_a_broker_rows=[ScheduleABrokerRow(name="NEW BROKER", organization_code="3")],
+            schedule_a_broker_matches=[
+                ScheduleABrokerMatch(
+                    extracted_index=0,
+                    status="AUTO_NEW",
+                    resolved=True,
+                    reason="No existing FT Williams broker matched; this broker will be added as new.",
+                )
+            ],
+        )
+
+        service._prune_noop_update_payloads(review)
+
+        self.assertEqual(review.update_xml_schedule_a, "<DOLScheduleAData />")
 
     def test_schedule_a_readback_matches_preserved_records_by_ftw_sequence(self) -> None:
         service = FTWilliamsReviewService()

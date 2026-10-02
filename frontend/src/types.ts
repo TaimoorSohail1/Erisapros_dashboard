@@ -141,7 +141,7 @@ export interface ScheduleABrokerRow {
 export interface ScheduleABrokerMatch {
   extracted_index: number;
   ftw_index?: number | null;
-  status: "AUTO_MATCHED" | "CONFIRMED" | "CONFIRMED_NEW" | "NEEDS_CONFIRMATION" | string;
+  status: "AUTO_MATCHED" | "AUTO_NEW" | "CONFIRMED" | "CONFIRMED_NEW" | "NEEDS_CONFIRMATION" | string;
   resolved: boolean;
   reason: string;
   candidate_ftw_indexes?: number[];

@@ -4060,7 +4060,9 @@ function ScheduleABrokerRowsPanel({
                 <td data-label="FT Williams row">
                   {match?.resolved ? (
                     <span className="broker-match-status broker-match-ready">
-                      {match.status === "CONFIRMED_NEW" ? "New broker row" : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
+                      {match.status === "CONFIRMED_NEW" || match.status === "AUTO_NEW"
+                        ? "New broker row"
+                        : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
                     </span>
                   ) : match ? (
                     <BrokerMatchDecision match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />

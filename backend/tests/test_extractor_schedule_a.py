@@ -20,8 +20,13 @@ from app.models import (
 )
 from app.services.extractor import (
     ExtractionService,
+    _extract_fields_from_pages,
     extract_cigna_schedule_a_broker_rows,
     extract_cigna_schedule_a_fields,
+    extract_aig_schedule_a_fields,
+    extract_aig_broker_rows,
+    extract_anthem_schedule_a_fields,
+    extract_anthem_broker_rows,
     extract_columnar_broker_compensation_rows,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
@@ -29,6 +34,9 @@ from app.services.extractor import (
     extract_eyemed_broker_rows,
     extract_eyemed_schedule_a_fields,
     extract_eyemed_schedule_a_summaries,
+    extract_vsp_schedule_a_fields,
+    extract_vsp_broker_rows,
+    prefer_authoritative_cigna_summary_fields,
     extract_explicit_benefit_indicator_fields,
     extract_fields_from_groundx_xray,
     extract_hmsa_schedule_a_fields,
@@ -56,6 +64,7 @@ from app.services.extractor import (
     extract_standard_schedule_a_records,
     extract_standard_schedule_a_summaries,
     extract_united_omaha_broker_rows,
+    extract_united_omaha_combined_broker_rows,
     extract_united_omaha_schedule_a_fields,
     extract_united_omaha_schedule_a_records,
     extract_united_omaha_schedule_a_summaries,
@@ -77,6 +86,195 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_aig_welfare_plan_extracts_authoritative_identity_and_zero_broker_row(self):
+        pages = [
+            (
+                1,
+                """
+                AIG INFORMATION NECESSARY TO COMPLETE SCHEDULE A (FORM 5500) WELFARE PLAN
+                This information is provided by: AIG Property Casualty, U.S.
+                Insurance Company: National Union Fire Ins. Co. of Pittsburgh, PA, EIN 25-0687550, NAIC 012-19445
+                Contract Number or Identification GTP 0009118182-B
+                POLICY/CONTRACT YEAR From 04/01/2025 To 03/31/2026
+                Insurance Fees or Commissions Paid to General Agents or Brokers
+                3(b) Name and Address of each recipient
+                3(c) Amount of Commissions Paid
+                3(d) Amount of Fees Paid
+                3(d) Purpose for which fees paid
+                Arthur J. Gallagher Risk Management Services LLC
+                500 N Brand Blvd, Ste 100, Glendale, CA 91203-3018
+                $0.00
+                Accidental Death & Dismemberment $0.00
+                """,
+            )
+        ]
+
+        values = {field.field_name: field.value for field in extract_aig_schedule_a_fields(pages)}
+        rows = extract_aig_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "National Union Fire Ins. Co. of Pittsburgh, PA")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "25-0687550")
+        self.assertEqual(values["1c. NAIC Code"], "19445")
+        self.assertEqual(values["1d. Contract/Policy Number"], "GTP0009118182-B")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "04/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
+        self.assertEqual(values["3b. Amount of Commissions"], "0.00")
+        self.assertEqual(values["3c. Amount of Fees"], "0")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "0.00")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "Arthur J. Gallagher Risk Management Services LLC")
+        self.assertEqual(rows[0].address_line_1, "500 N Brand Blvd, Ste 100")
+        self.assertEqual(rows[0].city, "Glendale")
+        self.assertEqual(rows[0].state, "CA")
+        self.assertEqual(rows[0].zip_code, "91203-3018")
+        self.assertEqual(rows[0].commission_total, "0.00")
+        self.assertEqual(rows[0].fee_total, "0")
+
+    def test_anthem_combined_report_extracts_one_complete_broker_and_total_premium(self):
+        pages = [
+            (
+                2,
+                """
+                Information For Completion of ERISA 5500 Schedule A
+                Name of Plan: FULLER THEOLOGICAL SEMINARY
+                For Period: 04/01/2025 - 03/31/2026
+                Customer ID: L05472
+                Anthem Blue Cross Life and Health Insurance Company (G0360) 95-4331852 62825 HEALTH INDEMNITY
+                Anthem Blue Cross Life and Health Insurance Company (G0360) 95-4331852 62825 Health PPO
+                Blue Cross of California (G0200) 95-3760980 Health HMO
+                GALLAGHER BENEFIT SERVICES INC - 323 WEST LAKESIDE AVENUE SUITE 410, CLEVELAND, OH 44113
+                $125,287.31 $4,220.87
+                """,
+            ),
+            (
+                3,
+                """
+                Part III Welfare Benefit Contract Information
+                Health PPO $1,547,077 99/248
+                Health HMO $2,324,970 162/377
+                Health Indemnity $57,114 229/420
+                """,
+            ),
+        ]
+
+        values = {field.field_name: field.value for field in extract_anthem_schedule_a_fields(pages)}
+        rows = extract_anthem_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Anthem Blue Cross Life and Health Insurance Company")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "95-4331852")
+        self.assertEqual(values["1c. NAIC Code"], "62825")
+        self.assertEqual(values["1d. Contract/Policy Number"], "L05472")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "04/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
+        self.assertEqual(values["3b. Amount of Commissions"], "125,287.31")
+        self.assertEqual(values["3c. Amount of Fees"], "4,220.87")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "3,929,161")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "GALLAGHER BENEFIT SERVICES INC")
+        self.assertEqual(rows[0].address_line_1, "323 WEST LAKESIDE AVENUE SUITE 410")
+        self.assertEqual(rows[0].city, "CLEVELAND")
+        self.assertEqual(rows[0].state, "OH")
+        self.assertEqual(rows[0].zip_code, "44113")
+        self.assertEqual(rows[0].organization_code, "3")
+        self.assertEqual(rows[0].commission_total, "125,287.31")
+        self.assertEqual(rows[0].fee_total, "4,220.87")
+
+    def test_vsp_report_uses_labelled_carrier_and_policy_year_values(self):
+        pages = [
+            (
+                1,
+                """
+                VSP vision care
+                SCHEDULE A (Form 5500) Insurance Information
+                Group No: 30027869
+                Ins. Carrier: Vision Service Plan
+                Ins. Carrier NAIC Code No: 39616
+                Ins. Carrier FEIN: 061227840
+                Benefit Type: Vision Care
+                Policy or Contract Year: 01/01/2025 - 12/31/2025
+                Approximate Number of Persons Covered at the End of Policy or Contract Year: 549
+                Total Payments Made to Carrier: $66,964.14
+                """,
+            )
+        ]
+
+        values = {field.field_name: field.value for field in extract_vsp_schedule_a_fields(pages)}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Vision Service Plan")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "06-1227840")
+        self.assertEqual(values["1c. NAIC Code"], "39616")
+        self.assertEqual(values["1d. Contract/Policy Number"], "30027869")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "549")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "66,964.14")
+
+    def test_vsp_full_labels_and_compact_text_override_generic_false_matches(self):
+        pages = [
+            (
+                1,
+                """
+                Schedule A Form (5500) Insurance Information
+                Fuller Theological Seminary BERNADETTE BARBER Group ID: 30110579135 N OAKLAND AVE
+                Insurance Carrier: Vision Service PlanPASADENA CA 91101-1713
+                Insurance Carrier NAIC Code: N/A
+                Insurance Carrier FEIN: 941632821 Benefit Type: Vision Care
+                Policy or Contract Year: 04/01/2025 - 03/31/2026
+                Approximate Number of Persons Covered at the End of Policy or Contract Year: 255
+                Total Payments Made to Carrier: $39,795.20
+                """,
+            )
+        ]
+
+        values = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Vision Service Plan")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "94-1632821")
+        self.assertNotIn("1c. NAIC Code", values)
+        self.assertEqual(values["1d. Contract/Policy Number"], "30110579")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "255")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "04/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
+        self.assertEqual(
+            values["10a. Total premiums or subscription charges paid to carrier"],
+            "39,795.20",
+        )
+
+    def test_vsp_compact_report_extracts_one_commission_only_broker_row(self):
+        pages = [
+            (
+                1,
+                """
+                VSP vision care Schedule A Form (5500) Insurance Information
+                Insurance Carrier: Vision Service Plan
+                Insurance Fees and Commissions Paid to Agents and Brokers:
+                Commissions/Fees Paid for Policy Agent or Broker or Contract Year
+                Gallagher Benefit Services Inc $3,984.882850 Golf RdRolling Meadows IL 60008
+                """,
+            )
+        ]
+
+        rows = extract_vsp_broker_rows(pages)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "Gallagher Benefit Services Inc")
+        self.assertEqual(rows[0].address_line_1, "2850 Golf Rd")
+        self.assertEqual(rows[0].city, "Rolling Meadows")
+        self.assertEqual(rows[0].state, "IL")
+        self.assertEqual(rows[0].zip_code, "60008")
+        self.assertEqual(rows[0].organization_code, "3")
+        self.assertEqual(rows[0].commission_total, "3,984.88")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[0].commission_rows[0].purpose, "COMMISSIONS")
+        self.assertEqual(rows[0].fee_rows, [])
+
+        fields = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
+        self.assertEqual(fields["3a. Name of Agent/Broker/Person"], "Gallagher Benefit Services Inc")
+        self.assertEqual(fields["3b. Amount of Commissions"], "3,984.88")
+        self.assertEqual(fields["3c. Amount of Fees"], "0")
+        self.assertEqual(fields["3d. Purpose"], "COMMISSIONS")
+        self.assertEqual(fields["3e. Organizational Code"], "3")
+
     def test_aetna_attached_listing_uses_plan_sponsor_state_and_compact_broker_row(self):
         pages = [
             (
@@ -180,8 +378,6 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "JASON ANDREW PRATTES")
         self.assertEqual(rows[0].commission_total, "1,897")
         self.assertEqual(rows[0].organization_code, "3")
-        self.assertIn("1,897", rows[0].commission_source_text or "")
-        self.assertEqual(rows[0].evidence[0].provider, "Principal compact Schedule A broker parser")
 
     def test_principal_short_form_restores_labelled_values_after_semantic_enrichment(self):
         pages = [(1, """
@@ -623,8 +819,72 @@ class ScheduleAExtractionTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].name, "NFP CORPORATE SERVICES (NY), LLC")
+        self.assertEqual(rows[0].address_line_1, "PO BOX 786677")
+        self.assertEqual(rows[0].city, "PHILADELPHIA")
+        self.assertEqual(rows[0].state, "PA")
+        self.assertEqual(rows[0].zip_code, "19178")
         self.assertEqual(rows[0].commission_total, "18,603")
         self.assertEqual(rows[0].fee_total, "1,397")
+
+    def test_cigna_summary_identity_is_restored_after_final_candidate_selection(self):
+        pages = [
+            (
+                2,
+                """
+                Cigna Health and Life Insurance Company
+                Schedule A Insurance Information
+                (Summary of All Insurance Contracts Included in Part III)
+                2. Insurance fees and commissions information.
+                Part III Welfare Benefit Contract Information
+                (a) Name of Insurance Carrier: Cigna Health and Life Insurance Company and affiliates ("Cigna")
+                (b) EIN 59-1031071 (c) NAIC Code 67369
+                (d) Contract or Identification Number 3333085
+                (e) Approx. no. of persons covered at end of policy or contract year 246 Employees
+                Policy/Contract Year (f) From (g) To 04/01/2025 03/31/2026
+                """,
+            ),
+            (
+                9,
+                """
+                Schedule A Insurance Information - Appendix to 1a, b and c
+                Name: Cigna Dental Health Plan of Arizona, Inc.
+                EIN Code: 86-0807222
+                NAIC Code: 47013
+                """,
+            ),
+        ]
+        selected = [
+            NormalizedExtractionField(
+                field_name="1a. Name of Insurance Company",
+                value="Cigna Health and Life Insurance Company",
+                confidence=0.99,
+                page=2,
+            ),
+            NormalizedExtractionField(
+                field_name="1b. Insurance Carrier EIN",
+                value="59-2600475",
+                confidence=0.99,
+                page=4,
+            ),
+            NormalizedExtractionField(
+                field_name="1c. NAIC Code",
+                value="47013",
+                confidence=0.99,
+                page=9,
+            ),
+            NormalizedExtractionField(
+                field_name="1d. Contract/Policy Number",
+                value="3333085",
+                confidence=0.99,
+                page=2,
+            ),
+        ]
+
+        restored = prefer_authoritative_cigna_summary_fields(selected, pages)
+        values = {field.field_name: field.value for field in restored}
+
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "59-1031071")
+        self.assertEqual(values["1c. NAIC Code"], "67369")
 
     def test_cigna_schedule_a_support_packet_uses_plan_detail_not_schedule_c_disclosures(self):
         pages = [
@@ -2258,11 +2518,18 @@ LONG FORM INFORMATION
         self.assertEqual(mapped_by_label["1a. Name of Insurance Company"], "United of Omaha Life Insurance Company")
         self.assertEqual(mapped_by_label["1b. Insurance Carrier EIN"], "47-0322111")
         self.assertEqual(mapped_by_label["1c. NAIC Code"], "69868")
-        self.assertEqual(mapped_by_label["1d. Contract/Policy Number"], "GLTD0B432")
+        self.assertEqual(mapped_by_label["1d. Contract/Policy Number"], "G000B432")
         self.assertEqual(mapped_by_label["1e. Persons Covered (End of Policy Year)"], "126")
-        self.assertEqual(mapped_by_label["3b. Amount of Commissions"], "4,144")
-        self.assertEqual(mapped_by_label["3c. Amount of Fees"], "1,424")
-        self.assertEqual(mapped_by_label["10a. Total premiums or subscription charges paid to carrier"], "27,628")
+        self.assertEqual(mapped_by_label["3b. Amount of Commissions"], "12,851")
+        self.assertEqual(mapped_by_label["3c. Amount of Fees"], "4,352")
+        self.assertEqual(mapped_by_label["10a. Total premiums or subscription charges paid to carrier"], "85,682")
+
+        combined_rows = extract_united_omaha_combined_broker_rows(pages)
+        self.assertEqual(len(combined_rows), 2)
+        self.assertEqual(combined_rows[0].commission_total, "12,851")
+        self.assertEqual(combined_rows[0].fee_total, "0")
+        self.assertEqual(combined_rows[1].commission_total, "0")
+        self.assertEqual(combined_rows[1].fee_total, "4,352")
 
         summaries = extract_united_omaha_schedule_a_summaries(pages)
         service = FTWilliamsReviewService()

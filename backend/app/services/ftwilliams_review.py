@@ -5284,7 +5284,11 @@ class FTWilliamsReviewService:
         for match in review.schedule_a_broker_matches or []:
             if not match.resolved:
                 continue
-            if match.status == "CONFIRMED_NEW":
+            # AUTO_NEW is the deterministic outcome when no FT Williams row
+            # matches the extracted broker. It is already resolved and must be
+            # treated exactly like a reviewer-confirmed new row when deciding
+            # whether a Schedule A update payload is needed.
+            if match.status in {"CONFIRMED_NEW", "AUTO_NEW"}:
                 return True
             if match.extracted_index < 0 or match.extracted_index >= len(extracted_rows):
                 continue
