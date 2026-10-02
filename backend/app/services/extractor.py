@@ -2177,6 +2177,7 @@ def local_schedule_a_pdf_result(
     is_pdf = file_name.lower().endswith(".pdf")
     page_texts = extract_pdf_text_pages(file_bytes) if is_pdf else []
     provider_broker_rows = [
+        *extract_cigna_schedule_a_broker_rows(page_texts),
         *extract_anthem_broker_rows(page_texts),
         *extract_aig_broker_rows(page_texts),
         *extract_vsp_broker_rows(page_texts),
@@ -4304,7 +4305,7 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
                 )
             )
 
-    add("1a. Name of Insurance Company", "Cigna Health and Life Insurance Company")
+    add("1a. Name of Insurance Company", "Cigna Health and Life Insurance Company and affiliates")
     coverage = re.search(
         r"(?P<ein>\d{2}-\d{7})\s+(?P<naic>\d{4,6})\s+"
         r"(?P<contract>[A-Za-z0-9-]+)\s+(?P<covered>[\d,]+)\s+Employees?\s+"
@@ -5616,9 +5617,13 @@ def extract_aig_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
             add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
             add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
         if rows:
-            add("3a. Name of Agent/Broker/Person", rows[0].name)
             add("3b. Amount of Commissions", rows[0].commission_total)
             add("3c. Amount of Fees", rows[0].fee_total)
+            if any(
+                (parse_numeric_amount(value) or 0) != 0
+                for value in (rows[0].commission_total, rows[0].fee_total)
+            ):
+                add("3a. Name of Agent/Broker/Person", rows[0].name)
         add("10a. Total premiums or subscription charges paid to carrier", money_value(premium or ""))
     return fields
 
@@ -6748,6 +6753,11 @@ def extract_united_omaha_combined_schedule_a_fields(
 
     first = records[0]
     group_id = next(iter(group_ids))
+    normalized_periods = explicit_contract_periods(
+        f"Contract Year from {first.get('period_begin') or ''} to {first.get('period_end') or ''}"
+    )
+    period_begin = normalized_periods[0].beginning if normalized_periods else first.get("period_begin")
+    period_end = normalized_periods[0].ending if normalized_periods else first.get("period_end")
     persons = [parse_numeric_amount(record.get("persons_covered")) for record in records]
     persons_covered = max((value for value in persons if value is not None), default=None)
     broker_rows = extract_united_omaha_combined_broker_rows(page_texts)
@@ -6762,8 +6772,8 @@ def extract_united_omaha_combined_schedule_a_fields(
         "1e. Persons Covered (End of Policy Year)": (
             f"{int(persons_covered):,}" if persons_covered is not None else None
         ),
-        "1f. Policy Year Beginning Date": first.get("period_begin"),
-        "1g. Policy Year Ending Date": first.get("period_end"),
+        "1f. Policy Year Beginning Date": period_begin,
+        "1g. Policy Year Ending Date": period_end,
         "3a. Name of Agent/Broker/Person": primary_broker,
         "3b. Amount of Commissions": commission_total,
         "3c. Amount of Fees": fee_total,

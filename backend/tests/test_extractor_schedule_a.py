@@ -75,6 +75,7 @@ from app.services.extractor import (
     merge_schedule_a_fields,
     merge_schedule_a_broker_rows,
     money_value,
+    local_schedule_a_pdf_result,
     parse_schedule_a_text,
     schedule_a_broker_compensation_fields,
     supplement_schedule_a_result_with_local,
@@ -120,6 +121,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
         self.assertEqual(values["3b. Amount of Commissions"], "0.00")
         self.assertEqual(values["3c. Amount of Fees"], "0")
+        self.assertNotIn("3a. Name of Agent/Broker/Person", values)
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "0.00")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].name, "Arthur J. Gallagher Risk Management Services LLC")
@@ -801,7 +803,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
         by_name = {field.field_name: field.value for field in fields}
         rows = extract_cigna_schedule_a_broker_rows(pages)
 
-        self.assertEqual(by_name["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company")
+        self.assertEqual(by_name["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company and affiliates")
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "59-1031071")
         self.assertEqual(by_name["1c. NAIC Code"], "67369")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "3341244")
@@ -825,6 +827,15 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].zip_code, "19178")
         self.assertEqual(rows[0].commission_total, "18,603")
         self.assertEqual(rows[0].fee_total, "1,397")
+
+        with (
+            patch("app.services.extractor.extract_pdf_text_pages", return_value=pages),
+            patch("app.services.extractor.extract_fields_from_document_text", return_value=[]),
+        ):
+            local_result = local_schedule_a_pdf_result(b"%PDF", "cigna.pdf")
+        self.assertTrue(local_result.raw["authoritative_broker_table"])
+        self.assertEqual(len(local_result.schedule_a_broker_rows), 1)
+        self.assertEqual(local_result.schedule_a_broker_rows[0].commission_total, "18,603")
 
     def test_cigna_summary_identity_is_restored_after_final_candidate_selection(self):
         pages = [
@@ -2520,6 +2531,8 @@ LONG FORM INFORMATION
         self.assertEqual(mapped_by_label["1c. NAIC Code"], "69868")
         self.assertEqual(mapped_by_label["1d. Contract/Policy Number"], "G000B432")
         self.assertEqual(mapped_by_label["1e. Persons Covered (End of Policy Year)"], "126")
+        self.assertEqual(mapped_by_label["1f. Policy Year Beginning Date"], "12/01/2024")
+        self.assertEqual(mapped_by_label["1g. Policy Year Ending Date"], "11/30/2025")
         self.assertEqual(mapped_by_label["3b. Amount of Commissions"], "12,851")
         self.assertEqual(mapped_by_label["3c. Amount of Fees"], "4,352")
         self.assertEqual(mapped_by_label["10a. Total premiums or subscription charges paid to carrier"], "85,682")
