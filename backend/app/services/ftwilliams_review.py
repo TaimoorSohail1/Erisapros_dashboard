@@ -5588,7 +5588,10 @@ class FTWilliamsReviewService:
                 )
                 if preferred_is_current_best:
                     return preferred_status
-        safe_identity_match = top_match["strong_matches"] > 0
+        safe_identity_match = top_match["strong_matches"] > 0 or (
+            "Carrier name" in top_match["reasons"]
+            and top_match["reasons"].count("Policy date") >= 2
+        )
         if (
             top_match["score"] <= 0
             or not safe_identity_match

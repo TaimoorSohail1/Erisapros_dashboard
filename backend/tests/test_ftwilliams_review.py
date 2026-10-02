@@ -5419,6 +5419,54 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(matched["ftw_seq_no"], "9")
 
+    def test_schedule_match_accepts_unique_exact_carrier_with_policy_dates_when_ids_are_blank(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                "ALLONE HEALTH",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1f_policy_year_beginning_date",
+                "1f. Policy Year Beginning Date",
+                "01/01/2025",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1g_policy_year_ending_date",
+                "1g. Policy Year Ending Date",
+                "12/31/2025",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="5",
+                query_results={
+                    "InsCarrierName": "ALLONE HEALTH",
+                    "InsCarrierEIN": "87-1479566",
+                    "InsContractNum": "00",
+                    "InsPolicyFromDate": "01/01/2025",
+                    "InsPolicyToDate": "12/31/2025",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="6",
+                query_results={
+                    "InsCarrierName": "METLIFE INSURANCE COMPANY",
+                    "InsPolicyFromDate": "01/01/2025",
+                    "InsPolicyToDate": "12/31/2025",
+                },
+            ),
+        ]
+
+        matched = service._match_schedule_a_status(fields, statuses)
+
+        self.assertEqual(matched.ftw_seq_no, "5")
+
     def test_live_schedule_a_update_uses_fresh_snapshot_and_restores_after_readback_failure(self):
         class RecordingFTWilliamsService:
             def __init__(self):
