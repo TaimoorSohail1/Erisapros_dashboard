@@ -305,7 +305,13 @@ class FTWAutomationPolicy:
             return None
         score = int(selected.get("score") or 0)
         strong_matches = int(selected.get("strong_matches") or 0)
-        if score < 12 or strong_matches < 1:
+        match_reasons = [str(reason or "") for reason in selected.get("match_reasons") or []]
+        trusted_carrier_date_match = (
+            "Carrier name" in match_reasons
+            and match_reasons.count("Policy date") >= 2
+            and score >= 6
+        )
+        if (score < 12 or strong_matches < 1) and not trusted_carrier_date_match:
             return "The selected Schedule A match is not strong enough for automatic sending."
         selected_seq = str(selected.get("ftw_seq_no") or "").strip()
         runner_scores = [

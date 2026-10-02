@@ -474,6 +474,30 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertTrue(any("too close" in reason.lower() for reason in decision.reasons))
 
+    def test_unique_exact_carrier_and_policy_date_match_is_safe_without_carrier_ids(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.schedule_a_match = {
+            "ftw_seq_no": "5",
+            "score": 8,
+            "strong_matches": 0,
+            "match_reasons": [
+                "Carrier name",
+                "Policy date",
+                "Policy date",
+                "Policy date",
+                "Policy date",
+            ],
+        }
+        review.schedule_a_candidates = [
+            {"ftw_seq_no": "5", "score": 8, "strong_matches": 0},
+            {"ftw_seq_no": "6", "score": 4, "strong_matches": 0},
+        ]
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+
     def test_missing_current_year_requires_manual_action_when_browser_automation_is_off(self):
         filing, review, extracted, settings = self.safe_case()
         review.current_year_exists = False
