@@ -18,6 +18,7 @@ export function ShareFilePage() {
   } | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [targetFolderId, setTargetFolderId] = useState("");
 
   useEffect(() => {
     getShareFileStatus().then((nextStatus) => {
@@ -42,12 +43,12 @@ export function ShareFilePage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const handleSync = async () => {
+  const handleSync = async (folderId?: string) => {
     setMessage("");
     setSyncResult(null);
     setSyncing(true);
     try {
-      const result = await syncShareFileFolder();
+      const result = await syncShareFileFolder(folderId);
       setSyncResult(
         {
           message: result.queued
@@ -105,9 +106,30 @@ export function ShareFilePage() {
                   ` · ${scanStatus.webhook_registration.webhook_roots || 0} folders checked, ${scanStatus.webhook_registration.failed || 0} failed` : null}
               </dd>
             </dl>
-            <button className="button" disabled={syncing || !status.connected} onClick={handleSync}>
+            <button className="button" disabled={syncing || !status.connected} onClick={() => handleSync()}>
               {syncing ? <InlineLoader label="Syncing ShareFile" /> : <><FolderSync size={18} /> Sync ShareFile</>}
             </button>
+            <div style={{ marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+              <strong>Targeted client recovery</strong>
+              <p className="subtle" style={{ marginTop: 6 }}>Use this only when a valid client folder did not appear after the full sync. It scans that client only and does not reconcile or delete other clients.</p>
+              <label className="subtle" htmlFor="target-sharefile-folder">ShareFile client folder ID</label>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6 }}>
+                <input
+                  id="target-sharefile-folder"
+                  value={targetFolderId}
+                  onChange={(event) => setTargetFolderId(event.target.value)}
+                  placeholder="fo…"
+                  style={{ minWidth: 280, flex: "1 1 280px" }}
+                />
+                <button
+                  className="button secondary"
+                  disabled={syncing || !status.connected || !targetFolderId.trim()}
+                  onClick={() => handleSync(targetFolderId.trim())}
+                >
+                  {syncing ? <InlineLoader label="Scanning client" /> : <><FolderSync size={18} /> Rescan client</>}
+                </button>
+              </div>
+            </div>
             {!status.connected && authorizationUrl ? (
               <p>
                 <a className="button secondary" href={authorizationUrl} target="_blank" rel="noreferrer">

@@ -592,7 +592,7 @@ export async function getShareFileAuthorizationUrl(): Promise<{ configured: bool
   return request("/sharefile/oauth/start");
 }
 
-export async function syncShareFileFolder(): Promise<{
+export async function syncShareFileFolder(folderId?: string): Promise<{
   connected: boolean;
   folder_access: boolean;
   found: number;
@@ -609,7 +609,8 @@ export async function syncShareFileFolder(): Promise<{
   scan_errors?: Array<{ folder_id: string; path: string; status_code: number; response: string }>;
   message: string;
 }> {
-  return request("/sharefile/sync-folder", { method: "POST" });
+  const query = folderId ? `?folder_id=${encodeURIComponent(folderId)}` : "";
+  return request(`/sharefile/sync-folder${query}`, { method: "POST" });
 }
 
 export async function pollShareFileFolder(): Promise<{

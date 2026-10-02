@@ -379,6 +379,7 @@ class ShareFileService:
         background_tasks: BackgroundTasks | None = None,
         process_new_files: bool = True,
         scan_mode: str = SCAN_MODE_AUTO,
+        target_folder_id: str | None = None,
     ) -> dict:
         status = await self.status()
         if not status.configured:
@@ -403,6 +404,26 @@ class ShareFileService:
         async with httpx.AsyncClient(timeout=90) as client:
             token = await self._ensure_access_token(client, token)
             scan_roots = await self._resolve_scan_roots(client, token)
+            targeted_scan = bool(target_folder_id)
+            if target_folder_id:
+                target = await self._get_item(client, token, target_folder_id)
+                target_name = target.get("Name") or target.get("FileName") or target_folder_id
+                if not self._is_folder(target):
+                    return {
+                        "connected": True,
+                        "folder_access": False,
+                        "found": 0,
+                        "supported": 0,
+                        "synced": 0,
+                        "message": "The selected ShareFile item is not a client folder.",
+                    }
+                scan_roots = [
+                    self._scan_root(
+                        target_folder_id,
+                        "Manual targeted ShareFile scan",
+                        [str(target_name)],
+                    )
+                ]
             if not scan_roots:
                 return {
                     "connected": True,
@@ -445,23 +466,44 @@ class ShareFileService:
                     return []
 
             state = await repo.get_sharefile_state(SHAREFILE_INCREMENTAL_STATE_KEY) or {}
-            first_scan = not bool(state.get("baseline_completed"))
+            # A targeted recovery is an explicit operator request to process a
+            # known client folder. It must not turn into a metadata-only
+            # baseline simply because the broader account has never scanned.
+            first_scan = not bool(state.get("baseline_completed")) and not targeted_scan
             known_folder_ids = set(state.get("known_folder_ids") or [])
 
             # Cheap pass on every scan: walk the filing structure only. It
             # tells us what documents are there now and whether any folder
             # appeared that has never been scanned.
-            quick_files, folder_index = await self._quick_scan(client, token, scan_roots, scan_errors)
-            scanned_files.extend(quick_files)
-            new_folder_ids = [folder_id for folder_id in folder_index if folder_id not in known_folder_ids]
-
-            deep = self._deep_scan_due(scan_mode, state, first_scan, known_folder_ids)
-            if deep:
+            if targeted_scan:
+                # This is deliberately a complete scan of just one client.
+                # Do not run the account-wide quick pass first, and never use
+                # its result to reconcile deletions in other client folders.
+                quick_files, folder_index = [], {
+                    root["id"]: {
+                        "id": root["id"],
+                        "name": root["name"],
+                        "source": root["source"],
+                        "path_parts": list(root.get("path_parts") or []),
+                        "parent_id": None,
+                    }
+                    for root in scan_roots
+                }
+                new_folder_ids = [folder_id for folder_id in folder_index if folder_id not in known_folder_ids]
+                deep = True
                 scan_targets = list(scan_roots)
             else:
-                # Only walk the subtrees that are actually new. Everything
-                # else was scanned before and is kept current by webhooks.
-                scan_targets = self._new_scan_targets(folder_index, new_folder_ids)
+                quick_files, folder_index = await self._quick_scan(client, token, scan_roots, scan_errors)
+                scanned_files.extend(quick_files)
+                new_folder_ids = [folder_id for folder_id in folder_index if folder_id not in known_folder_ids]
+
+                deep = self._deep_scan_due(scan_mode, state, first_scan, known_folder_ids)
+                if deep:
+                    scan_targets = list(scan_roots)
+                else:
+                    # Only walk the subtrees that are actually new. Everything
+                    # else was scanned before and is kept current by webhooks.
+                    scan_targets = self._new_scan_targets(folder_index, new_folder_ids)
 
             # Client folder trees are independent - scan them concurrently.
             # The shared semaphore inside _scan_folder bounds ShareFile load.
@@ -476,11 +518,15 @@ class ShareFileService:
                 background_tasks,
                 first_scan=first_scan,
                 process_new_files=process_new_files,
-                source="SHAREFILE_INCREMENTAL_POLL" if deep else "SHAREFILE_QUICK_POLL",
+                source=(
+                    "SHAREFILE_TARGETED_DEEP_SYNC"
+                    if targeted_scan
+                    else "SHAREFILE_INCREMENTAL_POLL" if deep else "SHAREFILE_QUICK_POLL"
+                ),
                 scan_errors=scan_errors,
                 # A quick scan only looked at part of the account, so it must
                 # never conclude that the folders it did not visit are gone.
-                partial_scan=not deep,
+                partial_scan=targeted_scan or not deep,
             )
             scan_finished_at = datetime.utcnow()
             scan_error_list = list(result.get("scan_errors") or [])
@@ -514,7 +560,7 @@ class ShareFileService:
                 "folder_access": True,
                 "folder_id": settings.sharefile_intake_folder_id,
                 "folder_ids": [root["id"] for root in scan_roots],
-                "scan_mode": SCAN_MODE_DEEP if deep else SCAN_MODE_QUICK,
+                "scan_mode": "TARGETED" if targeted_scan else SCAN_MODE_DEEP if deep else SCAN_MODE_QUICK,
                 "new_folders": len(new_folder_ids),
                 "scanned_targets": len(scan_targets),
                 "scan_scope": self._scan_scope_label(),
@@ -805,9 +851,18 @@ class ShareFileService:
             "attention_items": attention_items[:100],
         }
 
-    async def sync_folder(self, background_tasks: BackgroundTasks | None = None) -> dict:
+    async def sync_folder(
+        self,
+        background_tasks: BackgroundTasks | None = None,
+        target_folder_id: str | None = None,
+    ) -> dict:
         # The manual "Sync ShareFile" button means "look at everything now".
-        return await self.sync_changes(background_tasks, process_new_files=True, scan_mode=SCAN_MODE_DEEP)
+        return await self.sync_changes(
+            background_tasks,
+            process_new_files=True,
+            scan_mode=SCAN_MODE_DEEP,
+            target_folder_id=target_folder_id,
+        )
 
     async def complete_oauth(
         self,

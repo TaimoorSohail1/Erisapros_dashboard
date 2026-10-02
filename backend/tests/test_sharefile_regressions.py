@@ -73,6 +73,19 @@ class ShareFileRegressionTests(unittest.TestCase):
 
         self.assertEqual([root["id"] for root in roots], ["fo79bf37-43d1-40f3-8e15-c26d1e4736b9"])
 
+    def test_targeted_sync_delegates_to_a_single_folder_without_global_reconciliation(self):
+        self.service.sync_changes = AsyncMock(return_value={"scan_mode": "TARGETED"})
+
+        result = run_async(self.service.sync_folder(target_folder_id="fo-vitco"))
+
+        self.assertEqual(result["scan_mode"], "TARGETED")
+        self.service.sync_changes.assert_awaited_once_with(
+            None,
+            process_new_files=True,
+            scan_mode="deep",
+            target_folder_id="fo-vitco",
+        )
+
     def test_nested_navigation_placeholder_is_not_a_folder(self):
         self.assertFalse(
             self.service._is_folder(

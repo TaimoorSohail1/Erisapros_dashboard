@@ -35,10 +35,11 @@ async def sharefile_scan_status():
 
 
 @router.post("/sync-folder")
-async def sync_sharefile_folder():
+async def sync_sharefile_folder(folder_id: str | None = Query(default=None, min_length=1)):
     settings = get_settings()
+    payload = {"folder_id": folder_id.strip()} if folder_id else None
     queued = (
-        await enqueue_sharefile_work("deep_sync")
+        await enqueue_sharefile_work("deep_sync", payload)
         if settings.sharefile_work_queue_url
         else start_sharefile_sync_process()
     )
@@ -51,7 +52,13 @@ async def sync_sharefile_folder():
         "synced": 0,
         "skipped": 0,
         "queued": queued,
-        "message": "ShareFile deep sync started." if queued else "A ShareFile scan is already running.",
+        "message": (
+            "Targeted ShareFile scan started."
+            if queued and folder_id
+            else "ShareFile deep sync started."
+            if queued
+            else "A ShareFile scan is already running."
+        ),
     }
 
 

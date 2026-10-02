@@ -56,7 +56,8 @@ async def dispatch_sharefile_work(
     if work_type == "poll":
         return await service.poll_folder(None)
     if work_type == "deep_sync":
-        return await service.sync_folder(None)
+        payload = message.get("payload") or {}
+        return await service.sync_folder(None, target_folder_id=payload.get("folder_id"))
     if work_type == "auto_register":
         return await service.auto_register_relevant_webhooks()
     if work_type == "webhook":

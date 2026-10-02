@@ -316,6 +316,35 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.get("scan_mode"), "deep")
         self.assertIn("f_a_sa", self.listed)
 
+    async def test_targeted_sync_processes_one_new_client_without_reconciling_others(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        self.tree["f_target"] = [_folder("f_target_5500", "5500 Filing")]
+        self.tree["f_target_5500"] = [_folder("f_target_2025", "2025 Filing")]
+        self.tree["f_target_2025"] = [
+            _folder("f_target_sa", "Schedule A's"),
+            _pdf("d_target_ws", "5500 Plan Worksheet - Target Client 5500 - PY25 (501).docx"),
+        ]
+        self.tree["f_target_sa"] = [_pdf("d_target_sa", "TargetClient_Schedule_A.pdf")]
+
+        self.listed.clear()
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_target", "Target Client (Test)")),
+        ):
+            result = await service.sync_folder(BackgroundTasks(), target_folder_id="f_target")
+
+        self.assertEqual(result.get("scan_mode"), "TARGETED")
+        self.assertEqual(result.get("synced"), 1)
+        self.assertEqual(result.get("deleted"), 0)
+        self.assertEqual(result.get("scanned_targets"), 1)
+        self.assertIn("f_target_sa", self.listed)
+        self.assertNotIn("f_a_junk_q1", self.listed)
+        existing = await self.repo.get_sharefile_file("d_a_sa")
+        self.assertNotEqual((existing or {}).get("status"), "DELETED")
+
     async def test_quick_poll_never_marks_unvisited_files_deleted(self):
         service = ShareFileService()
         await self._baseline(service)

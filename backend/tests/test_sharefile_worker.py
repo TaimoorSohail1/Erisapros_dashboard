@@ -116,7 +116,22 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
         for work_type, method_name in cases.items():
             service.reset_mock()
             await dispatch_sharefile_work({"type": work_type}, service=service)
-            getattr(service, method_name).assert_awaited_once_with(None) if method_name != "auto_register_relevant_webhooks" else getattr(service, method_name).assert_awaited_once_with()
+            if method_name == "sync_folder":
+                service.sync_folder.assert_awaited_once_with(None, target_folder_id=None)
+            elif method_name == "auto_register_relevant_webhooks":
+                getattr(service, method_name).assert_awaited_once_with()
+            else:
+                getattr(service, method_name).assert_awaited_once_with(None)
+
+    async def test_dispatches_targeted_deep_sync(self):
+        service = AsyncMock()
+
+        await dispatch_sharefile_work(
+            {"type": "deep_sync", "payload": {"folder_id": "fo-vitco"}},
+            service=service,
+        )
+
+        service.sync_folder.assert_awaited_once_with(None, target_folder_id="fo-vitco")
 
     async def test_dispatches_webhook_payload(self):
         service = AsyncMock()
