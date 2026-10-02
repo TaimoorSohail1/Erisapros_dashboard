@@ -345,6 +345,27 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         existing = await self.repo.get_sharefile_file("d_a_sa")
         self.assertNotEqual((existing or {}).get("status"), "DELETED")
 
+    async def test_targeted_recovery_restores_a_dashboard_deleted_source_file(self):
+        service = ShareFileService()
+        await self._baseline(service)
+        await self.repo.upsert_sharefile_suppression(
+            "d_a_sa",
+            {"reason": "DASHBOARD_DELETE", "filing_id": "deleted-filing"},
+        )
+
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_a", "Client A (Test)")),
+        ):
+            result = await service.sync_folder(BackgroundTasks(), target_folder_id="f_a")
+
+        self.assertEqual(result.get("scan_mode"), "TARGETED")
+        self.assertEqual(result.get("synced"), 1)
+        self.assertIsNone(await self.repo.get_sharefile_suppression("d_a_sa"))
+        filings = await self.repo.list_filings()
+        self.assertTrue(any("ClientA_Schedule_A" in filing.file_name for filing in filings))
+
     async def test_quick_poll_never_marks_unvisited_files_deleted(self):
         service = ShareFileService()
         await self._baseline(service)

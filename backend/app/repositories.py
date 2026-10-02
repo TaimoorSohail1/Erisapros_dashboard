@@ -308,6 +308,7 @@ class Repository:
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
     async def get_sharefile_suppression(self, item_id: str) -> dict | None: ...
     async def upsert_sharefile_suppression(self, item_id: str, values: dict) -> dict: ...
+    async def delete_sharefile_suppression(self, item_id: str) -> bool: ...
     async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace: ...
     async def list_ftw_client_workspaces(self) -> list[FTWClientWorkspace]: ...
     async def get_ftw_client_workspace(self, workspace_id: str) -> FTWClientWorkspace | None: ...
@@ -1290,6 +1291,10 @@ class MongoRepository(Repository):
         )
         return self._plain_mongo_doc(doc)
 
+    async def delete_sharefile_suppression(self, item_id: str) -> bool:
+        result = await self.db.sharefile_suppressions.delete_one({"item_id": item_id})
+        return bool(result.deleted_count)
+
     async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
         record = workspace.model_copy(deep=True)
         result = await self.db.ftw_client_workspaces.insert_one(to_mongo_bson(record))
@@ -2131,6 +2136,9 @@ class MemoryRepository(Repository):
         record.setdefault("id", str(uuid4()))
         self.sharefile_suppressions[item_id] = record
         return dict(record)
+
+    async def delete_sharefile_suppression(self, item_id: str) -> bool:
+        return self.sharefile_suppressions.pop(item_id, None) is not None
 
     async def create_ftw_client_workspace(self, workspace: FTWClientWorkspace) -> FTWClientWorkspace:
         stored = workspace.model_copy(deep=True)

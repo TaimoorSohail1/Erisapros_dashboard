@@ -511,6 +511,31 @@ class ShareFileService:
                 for root_files in await asyncio.gather(*(scan_one_root(root) for root in scan_targets)):
                     scanned_files.extend(root_files)
 
+            # A normal dashboard deletion deliberately suppresses a source file
+            # so routine polling cannot recreate it. A targeted client recovery
+            # is the explicit opposite instruction: restore only files inside
+            # the selected client folder and process them again.
+            restored_suppression_ids: set[str] = set()
+            if targeted_scan:
+                for file_item in self._dedupe_scanned_files(scanned_files):
+                    item_id = str(file_item.get("id") or "")
+                    if not item_id or not await repo.get_sharefile_suppression(item_id):
+                        continue
+                    if await repo.delete_sharefile_suppression(item_id):
+                        restored_suppression_ids.add(item_id)
+                if restored_suppression_ids:
+                    await repo.add_audit(
+                        AuditLog(
+                            event="SHAREFILE_TARGETED_RECOVERY_RESTORED",
+                            message="Targeted ShareFile recovery restored dashboard-deleted source files.",
+                            details={
+                                "source": "SHAREFILE_TARGETED_DEEP_SYNC",
+                                "folder_id": target_folder_id,
+                                "item_count": len(restored_suppression_ids),
+                            },
+                        )
+                    )
+
             result = await self._process_changed_sharefile_files(
                 client,
                 token,
@@ -527,6 +552,7 @@ class ShareFileService:
                 # A quick scan only looked at part of the account, so it must
                 # never conclude that the folders it did not visit are gone.
                 partial_scan=targeted_scan or not deep,
+                force_reprocess_item_ids=restored_suppression_ids,
             )
             scan_finished_at = datetime.utcnow()
             scan_error_list = list(result.get("scan_errors") or [])
@@ -982,6 +1008,7 @@ class ShareFileService:
         event: str | None = None,
         scan_errors: list[dict] | None = None,
         partial_scan: bool = False,
+        force_reprocess_item_ids: set[str] | None = None,
     ) -> dict:
         repo = get_repository()
         scanned_files = self._dedupe_scanned_files(scanned_files)
@@ -1089,6 +1116,8 @@ class ShareFileService:
                 continue
 
             change_type = self._sharefile_change_type(existing, file_item)
+            if item_id in (force_reprocess_item_ids or set()):
+                change_type = "UPDATED"
             if existing_filing and existing_filing.status in {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}:
                 change_type = existing_filing.status.value
             if change_type == "NEW":
