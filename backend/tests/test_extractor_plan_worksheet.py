@@ -1,15 +1,18 @@
 import unittest
 
+from io import BytesIO
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField, NormalizedExtractionResult
 from app.services.extractor import (
     ExtractionService,
+    extract_plan_worksheet_docx_schedule_a_summaries,
     extract_plan_worksheet_schedule_a_summaries,
     parse_plan_worksheet_text,
 )
@@ -155,6 +158,61 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
             "16. Other retired/separated participants entitled to benefits": "0",
         }
         self.assertEqual({name: by_name.get(name) for name in expected}, expected)
+
+    def test_short_plan_year_dates_use_filename_year(self):
+        fields = parse_plan_worksheet_text(
+            """
+            Plan sponsor name CareQuest Plan sponsor address Boston Plan sponsor phone number 617-000-0000
+            EIN 38-4016550 Business code 813000 Plan number(s) 506
+            Plan name(s) CareQuest Health Plan Plan year begin /end 1/1 12/31
+            Original ERISA plan effective date 1/1/2022
+            """,
+            default_year="2025",
+        )
+
+        by_name = {field.field_name: field.value for field in fields}
+        self.assertEqual(by_name["6. Plan Year Beginning Date"], "01-01-2025")
+        self.assertEqual(by_name["7. Plan Year Ending Date"], "12-31-2025")
+
+    def test_native_docx_table_extracts_short_dates_and_multivalue_hartford_row(self):
+        def cell(*paragraphs: str) -> str:
+            body = "".join(f"<w:p><w:r><w:t>{value}</w:t></w:r></w:p>" for value in paragraphs)
+            return f"<w:tc>{body}</w:tc>"
+
+        header = "".join(cell(value) for value in ("Benefit", "Carrier", "Policy #", "Begin Policy Year", "End Policy Year"))
+        medical = "".join(cell(value) for value in ("Medical", "United Healthcare", "913136", "1/1", "12/31"))
+        hartford = "".join(
+            (
+                cell("Basic Life / AD&amp;D", "Optional Life / AD&amp;D", "STD / LTD"),
+                cell("The Hartford"),
+                cell("922556", "922557", "922558"),
+                cell("1/1"),
+                cell("12/31"),
+            )
+        )
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:body><w:tbl><w:tr>{header}</w:tr><w:tr>{medical}</w:tr><w:tr>{hartford}</w:tr></w:tbl></w:body>"
+            "</w:document>"
+        )
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("word/document.xml", xml)
+
+        summaries = extract_plan_worksheet_docx_schedule_a_summaries(
+            buffer.getvalue(),
+            default_year="2025",
+        )
+
+        self.assertEqual(len(summaries), 4)
+        by_policy = {summary.account_number: summary for summary in summaries}
+        self.assertEqual(by_policy["913136"].carrier_name, "United Healthcare")
+        self.assertEqual(by_policy["913136"].period_begin, "01/01/2025")
+        self.assertEqual(by_policy["913136"].period_end, "12/31/2025")
+        self.assertEqual(by_policy["922556"].coverage, "Basic Life / AD&D")
+        self.assertEqual(by_policy["922557"].coverage, "Optional Life / AD&D")
+        self.assertEqual(by_policy["922558"].coverage, "STD / LTD")
 
 
 class PlanWorksheetFallbackTests(unittest.IsolatedAsyncioTestCase):

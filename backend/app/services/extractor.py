@@ -96,8 +96,25 @@ class ExtractionService:
             context_text = "\n\n".join(text for _, text in extract_pdf_text_pages(file_bytes))
 
         worksheet_rules = rules_for_form(self.field_rules, FormType.FORM_5500)
-        local_fields = parse_plan_worksheet_text(context_text, rules=worksheet_rules) if context_text else []
-        worksheet_summaries = extract_plan_worksheet_schedule_a_summaries(context_text) if context_text else []
+        default_year_match = re.search(r"\b(20\d{2})\b", file_name)
+        default_year = default_year_match.group(1) if default_year_match else None
+        local_fields = (
+            parse_plan_worksheet_text(context_text, rules=worksheet_rules, default_year=default_year)
+            if context_text
+            else []
+        )
+        worksheet_summaries = (
+            extract_plan_worksheet_schedule_a_summaries(context_text, default_year=default_year)
+            if context_text
+            else []
+        )
+        if file_name.lower().endswith(".docx"):
+            table_summaries = extract_plan_worksheet_docx_schedule_a_summaries(
+                file_bytes,
+                default_year=default_year,
+            )
+            if table_summaries:
+                worksheet_summaries = table_summaries
         fields = dedupe_fields(local_fields)
         if fields:
             return NormalizedExtractionResult(
@@ -156,18 +173,49 @@ class ExtractionService:
         result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
         semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
         if semantic_pages:
+            authoritative_pages = (
+                template_pages
+                if any(str(text or "").strip() for _, text in template_pages)
+                else semantic_pages
+            )
             result = enrich_schedule_a_result(
                 result,
                 SemanticDocument.from_page_texts(semantic_pages),
                 rules=self.field_rules,
             )
-            result = restore_principal_short_form_fields(result, template_pages)
-            result.fields = prefer_authoritative_anthem_fields(result.fields, template_pages)
-            result.fields = prefer_authoritative_aig_fields(result.fields, template_pages)
-            result.fields = prefer_authoritative_aflac_fields(result.fields, template_pages)
-            result.fields = prefer_authoritative_prudential_fields(result.fields, template_pages)
-            result.fields = prefer_authoritative_cigna_summary_fields(result.fields, template_pages)
-            result.fields = prefer_authoritative_united_omaha_fields(result.fields, template_pages)
+            result = restore_principal_short_form_fields(result, authoritative_pages)
+            result.fields = prefer_authoritative_anthem_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_aig_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_aflac_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_prudential_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_cigna_summary_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_united_omaha_fields(result.fields, authoritative_pages)
+            hartford_fields = extract_hartford_schedule_a_fields(authoritative_pages)
+            if hartford_fields:
+                authoritative_names = {field.field_name for field in hartford_fields}
+                result.fields = [field for field in result.fields if field.field_name not in authoritative_names]
+                result.fields.extend(hartford_fields)
+                result.schedule_a_broker_rows = extract_hartford_broker_rows(authoritative_pages)
+            metlife_fields = extract_metlife_bay_bridge_schedule_a_fields(authoritative_pages)
+            if metlife_fields:
+                authoritative_names = {field.field_name for field in metlife_fields}
+                result.fields = [field for field in result.fields if field.field_name not in authoritative_names]
+                result.fields.extend(metlife_fields)
+                result.schedule_a_broker_rows = extract_metlife_bay_bridge_broker_rows(authoritative_pages)
+                result.schedule_a_worksheet_summaries = extract_metlife_bay_bridge_schedule_a_summaries(authoritative_pages)
+            allone_fields = extract_allone_eap_schedule_a_fields(authoritative_pages)
+            if allone_fields:
+                authoritative_names = {
+                    *{field.field_name for field in allone_fields},
+                    "3a. Name of Agent/Broker/Person",
+                    "3b. Amount of Commissions",
+                    "3c. Amount of Fees",
+                    "3d. Purpose",
+                    "3e. Organizational Code",
+                }
+                result.fields = [field for field in result.fields if field.field_name not in authoritative_names]
+                result.fields.extend(allone_fields)
+            result = remove_inapplicable_experience_rated_fields(result, authoritative_pages)
         settings = get_settings()
         return apply_schedule_a_pipeline(
             result,
@@ -2085,7 +2133,12 @@ def extract_docx_text(file_bytes: bytes) -> str:
         return ""
 
 
-def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtractionField]:
+def parse_plan_worksheet_text(
+    text: str,
+    *,
+    rules=None,
+    default_year: str | None = None,
+) -> list[NormalizedExtractionField]:
     fields: list[NormalizedExtractionField] = []
     compact = re.sub(r"\s+", " ", text).strip()
 
@@ -2108,8 +2161,17 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     business_code = regex_first(compact, [r"Business code\s+([0-9]{4,6})\b"], flags=re.IGNORECASE)
     plan_number = regex_first(compact, [r"Plan number\(s\)\s+([0-9]{3})\b"], flags=re.IGNORECASE)
     plan_name = regex_first(compact, [r"Plan name\(s\)\s+(.+?)\s+Plan year"], flags=re.IGNORECASE)
-    effective_date = regex_first(compact, [r"Original ERISA plan effective date\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})"], flags=re.IGNORECASE)
-    plan_year = regex_first(compact, [r"Plan year\s+begin\s*/\s*end\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})\s+([0-9]{2}[-/][0-9]{2}[-/][0-9]{4})"], flags=re.IGNORECASE, groups=True)
+    effective_date = regex_first(compact, [r"Original ERISA plan effective date\s+([0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{4})"], flags=re.IGNORECASE)
+    plan_year = regex_first(
+        compact,
+        [
+            r"Plan year\s+begin\s*/?\s*end\s+"
+            r"([0-9]{1,2}[-/][0-9]{1,2}(?:[-/][0-9]{4})?)\s+"
+            r"([0-9]{1,2}[-/][0-9]{1,2}(?:[-/][0-9]{4})?)"
+        ],
+        flags=re.IGNORECASE,
+        groups=True,
+    )
     add("1a. Plan Name", plan_name, 0.95)
     add("1b. Plan Number (PN)", plan_number, 0.95)
     add("1c. Plan Effective Date", effective_date, 0.93)
@@ -2118,8 +2180,10 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     add("1f. Plan Sponsor Address", sponsor_address, 0.92)
     add("1g. Business Code", business_code, 0.94)
     if isinstance(plan_year, tuple) and len(plan_year) >= 2:
-        add("6. Plan Year Beginning Date", plan_year[0], 0.95)
-        add("7. Plan Year Ending Date", plan_year[1], 0.95)
+        plan_year_begin = normalize_worksheet_date(plan_year[0], default_year, end_of_month=False)
+        plan_year_end = normalize_worksheet_date(plan_year[1], default_year, end_of_month=True)
+        add("6. Plan Year Beginning Date", plan_year_begin.replace("/", "-"), 0.95)
+        add("7. Plan Year Ending Date", plan_year_end.replace("/", "-"), 0.95)
 
     beginning_total = regex_first(
         compact,
@@ -2188,7 +2252,11 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     return dedupe_fields(fields)
 
 
-def extract_plan_worksheet_schedule_a_summaries(text: str) -> list[ScheduleAWorksheetSummary]:
+def extract_plan_worksheet_schedule_a_summaries(
+    text: str,
+    *,
+    default_year: str | None = None,
+) -> list[ScheduleAWorksheetSummary]:
     """Extract and deduplicate the fully-insured benefit table from a worksheet."""
     normalized = normalize_ocr_text(text)
     section_match = re.search(
@@ -2202,9 +2270,9 @@ def extract_plan_worksheet_schedule_a_summaries(text: str) -> list[ScheduleAWork
     row_pattern = re.compile(
         r"(?m)^\s*(?P<benefit>[A-Z][A-Z0-9 &;,/.'()-]*?)\s*\n"
         r"\s*(?P<carrier>[A-Z][A-Z0-9 &.,'()-]+?)\s*\n"
-        r"\s*(?P<policy>[A-Z0-9-]{3,})\s*\n"
-        r"\s*(?P<begin>\d{2}[-/]\d{2}[-/]\d{4})\s*\n"
-        r"\s*(?P<end>\d{2}[-/]\d{2}[-/]\d{4})\s*$"
+        r"\s*(?P<policy>[A-Z0-9/-]{1,})\s*\n"
+        r"\s*(?P<begin>\d{1,2}[-/]\d{1,2}(?:[-/]\d{4})?)\s*\n"
+        r"\s*(?P<end>\d{1,2}[-/]\d{1,2}(?:[-/]\d{4})?)\s*$"
     )
     summaries: list[ScheduleAWorksheetSummary] = []
     seen: set[tuple[str, str, str, str, str]] = set()
@@ -2212,8 +2280,8 @@ def extract_plan_worksheet_schedule_a_summaries(text: str) -> list[ScheduleAWork
         benefit = clean_extracted_value(match.group("benefit")).rstrip(";")
         carrier = clean_extracted_value(match.group("carrier"))
         policy = clean_extracted_value(match.group("policy"))
-        begin = normalize_schedule_a_date(match.group("begin").replace("-", "/"), end_of_month=False)
-        end = normalize_schedule_a_date(match.group("end").replace("-", "/"), end_of_month=True)
+        begin = normalize_worksheet_date(match.group("begin"), default_year, end_of_month=False)
+        end = normalize_worksheet_date(match.group("end"), default_year, end_of_month=True)
         key = tuple(normalize_compare_key(value) for value in (benefit, carrier, policy, begin, end))
         if key in seen:
             continue
@@ -2237,6 +2305,98 @@ def extract_plan_worksheet_schedule_a_summaries(text: str) -> list[ScheduleAWork
                 notes=["Carrier, policy number, and policy dates were read from the Plan Worksheet table."],
             )
         )
+    return summaries
+
+
+def normalize_worksheet_date(value: str, default_year: str | None, *, end_of_month: bool) -> str:
+    clean = str(value or "").strip().replace("-", "/")
+    if re.fullmatch(r"\d{1,2}/\d{1,2}", clean) and default_year:
+        clean = f"{clean}/{default_year}"
+    return normalize_schedule_a_date(clean, end_of_month=end_of_month)
+
+
+def extract_docx_table_rows(file_bytes: bytes) -> list[list[str]]:
+    """Read DOCX table rows without losing merged-cell or line boundaries."""
+    try:
+        with zipfile.ZipFile(BytesIO(file_bytes)) as archive:
+            root = ET.fromstring(archive.read("word/document.xml"))
+    except Exception:
+        return []
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    rows: list[list[str]] = []
+    for table in root.findall(".//w:tbl", namespace):
+        for row in table.findall("./w:tr", namespace):
+            cells: list[str] = []
+            for cell in row.findall("./w:tc", namespace):
+                paragraphs: list[str] = []
+                for paragraph in cell.findall(".//w:p", namespace):
+                    value = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
+                    if value:
+                        paragraphs.append(value)
+                cells.append("\n".join(paragraphs).strip())
+            if cells:
+                rows.append(cells)
+    return rows
+
+
+def extract_plan_worksheet_docx_schedule_a_summaries(
+    file_bytes: bytes,
+    *,
+    default_year: str | None = None,
+) -> list[ScheduleAWorksheetSummary]:
+    """Extract the native worksheet table, including short dates and multi-value cells."""
+    rows = extract_docx_table_rows(file_bytes)
+    summaries: list[ScheduleAWorksheetSummary] = []
+    in_fully_insured_table = False
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for cells in rows:
+        normalized_headers = [normalize_compare_key(cell) for cell in cells]
+        if {"benefit", "carrier", "policynumber"}.issubset(set(normalized_headers)) or (
+            len(cells) >= 5
+            and normalize_compare_key(cells[0]) == "benefit"
+            and normalize_compare_key(cells[1]) == "carrier"
+            and normalize_compare_key(cells[2]).startswith("policy")
+        ):
+            in_fully_insured_table = True
+            continue
+        if not in_fully_insured_table or len(cells) < 5:
+            continue
+        benefit_cell, carrier, policy_cell, begin_cell, end_cell = [str(value or "").strip() for value in cells[:5]]
+        if not benefit_cell or not carrier or not policy_cell or not begin_cell or not end_cell:
+            continue
+        begin = normalize_worksheet_date(begin_cell, default_year, end_of_month=False)
+        end = normalize_worksheet_date(end_cell, default_year, end_of_month=True)
+        if not begin or not end:
+            continue
+        benefits = [clean_extracted_value(value) for value in benefit_cell.splitlines() if clean_extracted_value(value)]
+        policies = [clean_extracted_value(value) for value in policy_cell.splitlines() if clean_extracted_value(value)]
+        pairs = list(zip(benefits, policies)) if len(benefits) == len(policies) and len(policies) > 1 else [
+            ("; ".join(benefits), "; ".join(policies))
+        ]
+        for benefit, policy in pairs:
+            key = tuple(normalize_compare_key(value) for value in (benefit, carrier, policy, begin, end))
+            if key in seen:
+                continue
+            seen.add(key)
+            summaries.append(
+                ScheduleAWorksheetSummary(
+                    source="Plan Worksheet fully-insured benefit table",
+                    carrier_name=carrier,
+                    account_number=policy,
+                    period_begin=begin,
+                    period_end=end,
+                    coverage=benefit,
+                    values=[
+                        ScheduleAWorksheetValue(
+                            label="Worksheet policy number",
+                            value=policy,
+                            source="Fully-Insured Benefits table",
+                            coverage=benefit,
+                        )
+                    ],
+                    notes=["Carrier, policy number, and policy dates were read from the native Plan Worksheet table."],
+                )
+            )
     return summaries
 
 
@@ -2267,6 +2427,8 @@ def local_schedule_a_pdf_result(
         *extract_anthem_broker_rows(page_texts),
         *extract_aig_broker_rows(page_texts),
         *extract_vsp_broker_rows(page_texts),
+        *extract_hartford_broker_rows(page_texts),
+        *extract_metlife_bay_bridge_broker_rows(page_texts),
         *extract_prudential_broker_rows(broker_page_texts),
         *extract_aflac_broker_rows(broker_page_texts),
     ]
@@ -2760,6 +2922,12 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
     vsp_rows = extract_vsp_broker_rows(page_texts)
     if vsp_rows or any(_is_vsp_schedule_a_report(normalize_ocr_text(text)) for _, text in page_texts):
         return vsp_rows
+    hartford_rows = extract_hartford_broker_rows(page_texts)
+    if hartford_rows or any(_is_hartford_annual_statement(normalize_ocr_text(text)) for _, text in page_texts):
+        return hartford_rows
+    metlife_rows = extract_metlife_bay_bridge_broker_rows(page_texts)
+    if metlife_rows or any(_is_metlife_bay_bridge_report(normalize_ocr_text(text)) for _, text in page_texts):
+        return metlife_rows
     omaha_rows = extract_united_omaha_combined_broker_rows(page_texts)
     if omaha_rows:
         return omaha_rows
@@ -2831,6 +2999,8 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *extract_anthem_broker_rows(plain_pages),
         *extract_aig_broker_rows(plain_pages),
         *extract_vsp_broker_rows(plain_pages),
+        *extract_hartford_broker_rows(plain_pages),
+        *extract_metlife_bay_bridge_broker_rows(plain_pages),
         *extract_prudential_broker_rows(layout_pages),
         *extract_aflac_broker_rows(layout_pages),
     ]
@@ -2852,6 +3022,11 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     selected = prefer_authoritative_prudential_fields(selected, plain_pages)
     selected = prefer_authoritative_cigna_summary_fields(selected, plain_pages)
     selected = prefer_authoritative_united_omaha_fields(selected, plain_pages)
+    metlife_fields = extract_metlife_bay_bridge_schedule_a_fields(plain_pages)
+    if metlife_fields:
+        authoritative_names = {field.field_name for field in metlife_fields}
+        selected = [field for field in selected if field.field_name not in authoritative_names]
+        selected.extend(metlife_fields)
     return _prefer_authoritative_aetna_attachment_fields(selected)
 
 
@@ -3500,6 +3675,28 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
         }
         fields = [field for field in fields if field.field_name not in authoritative_names]
         fields.extend(vsp_fields)
+    hartford_fields = extract_hartford_schedule_a_fields(page_texts)
+    if hartford_fields:
+        authoritative_names = {field.field_name for field in hartford_fields}
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(hartford_fields)
+    allone_fields = extract_allone_eap_schedule_a_fields(page_texts)
+    if allone_fields:
+        authoritative_names = {
+            *{field.field_name for field in allone_fields},
+            "3a. Name of Agent/Broker/Person",
+            "3b. Amount of Commissions",
+            "3c. Amount of Fees",
+            "3d. Purpose",
+            "3e. Organizational Code",
+        }
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(allone_fields)
+    metlife_fields = extract_metlife_bay_bridge_schedule_a_fields(page_texts)
+    if metlife_fields:
+        authoritative_names = {field.field_name for field in metlife_fields}
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(metlife_fields)
     return dedupe_fields(
         [
             field
@@ -3901,6 +4098,12 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
     vsp_rows = extract_vsp_broker_rows(page_texts)
     if vsp_rows or any(_is_vsp_schedule_a_report(normalize_ocr_text(text)) for _, text in page_texts):
         return vsp_rows
+    hartford_rows = extract_hartford_broker_rows(page_texts)
+    if hartford_rows or any(_is_hartford_annual_statement(normalize_ocr_text(text)) for _, text in page_texts):
+        return hartford_rows
+    metlife_rows = extract_metlife_bay_bridge_broker_rows(page_texts)
+    if metlife_rows or any(_is_metlife_bay_bridge_report(normalize_ocr_text(text)) for _, text in page_texts):
+        return metlife_rows
     positioned_rows = extract_position_aware_schedule_a_broker_rows(layout_page_texts)
     if positioned_rows:
         # Explicit row/column evidence is authoritative for these support
@@ -4959,6 +5162,7 @@ def extract_schedule_a_worksheet_summaries_from_pdf_text(file_bytes: bytes) -> l
     summaries.extend(extract_eyemed_schedule_a_summaries(page_texts))
     summaries.extend(extract_standard_schedule_a_summaries(page_texts))
     summaries.extend(extract_united_omaha_schedule_a_summaries(page_texts))
+    summaries.extend(extract_metlife_bay_bridge_schedule_a_summaries(page_texts))
     return summaries
 
 
@@ -6045,6 +6249,425 @@ def extract_aig_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
     return rows
 
 
+def remove_inapplicable_experience_rated_fields(
+    result: NormalizedExtractionResult,
+    page_texts: list[tuple[int, str]],
+) -> NormalizedExtractionResult:
+    """Do not copy Part I broker commission into the experience-rated section."""
+    text = "\n".join(normalize_ocr_text(page_text) for _, page_text in page_texts)
+    upper = text.upper()
+    has_nonexperience_section = bool(
+        re.search(r"\b(?:9|10)\.\s*NON[ -]?EXPERIENCE[ -]?RATED CONTRACTS", upper)
+    )
+    has_experience_section = bool(
+        re.search(r"\b(?:8|9)\.\s*EXPERIENCE[ -]?RATED CONTRACTS", upper)
+    )
+    if not has_nonexperience_section or has_experience_section:
+        return result
+    cleaned = result.model_copy(deep=True)
+    cleaned.fields = [
+        field
+        for field in cleaned.fields
+        if field.field_name not in SCHEDULE_A_EXPERIENCE_RATED_FIELDS
+    ]
+    return cleaned
+
+
+def _is_metlife_bay_bridge_report(text: str) -> bool:
+    upper = str(text or "").upper()
+    return (
+        "INSURANCE DATA FOR SCHEDULE A" in upper
+        and "INSURANCE COMMISSION INFORMATION FOR SCHEDULE A" in upper
+        and "METLIFE" in upper
+    )
+
+
+def extract_metlife_bay_bridge_schedule_a_summaries(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleAWorksheetSummary]:
+    summaries: list[ScheduleAWorksheetSummary] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        if not _is_metlife_bay_bridge_report(normalized):
+            continue
+        carrier = regex_first(normalized, [r"Name of Carrier\s*:\s*(.+?)(?=\n|Carrier EIN)"])
+        ein = regex_first(normalized, [r"Carrier EIN\s*:\s*([0-9]{9}|[0-9]{2}-[0-9]{7})"])
+        naic = regex_first(normalized, [r"Carrier NAIC Code\s*:\s*([0-9]{4,6})"])
+        coverage = regex_first(normalized, [r"Product Type\s*:\s*(.+?)(?=\n|Year)"])
+        period = regex_first(
+            normalized,
+            [r"Year\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s*(?:-|–|to)\s*(\d{1,2}/\d{1,2}/\d{4})"],
+            groups=True,
+        )
+        premium = regex_first(normalized, [r"Total Premium at Year End\s*:\s*\$?\s*([0-9,]+(?:\.\d{2})?)"])
+        employees = regex_first(normalized, [r"Total # of Employees\s*:\s*([0-9,]+)"])
+        dependents = regex_first(normalized, [r"Total # of Dependent\s*:\s*([0-9,]+)"])
+        if not carrier or not ein or not isinstance(period, tuple):
+            continue
+        persons = str(sum(int(str(value or "0").replace(",", "")) for value in (employees, dependents)))
+        broker_rows = [row for row in extract_metlife_bay_bridge_broker_rows([(page, text)])]
+        commission_total = sum_money_values(*(row.commission_total for row in broker_rows)) or "0"
+        summaries.append(
+            ScheduleAWorksheetSummary(
+                source="Bay Bridge Administrators MetLife Schedule A report",
+                carrier_name=clean_extracted_value(carrier),
+                account_number=None,
+                period_begin=normalize_schedule_a_date(period[0], end_of_month=False),
+                period_end=normalize_schedule_a_date(period[1], end_of_month=True),
+                ein=format_eyemed_ein(ein),
+                naic_code=normalize_schedule_a_naic(naic or "") or None,
+                coverage=clean_extracted_value(coverage or ""),
+                values=[
+                    ScheduleAWorksheetValue(label="Persons covered", value=persons, source="Carrier report", coverage=coverage),
+                    ScheduleAWorksheetValue(label="Total nonexperience premium", value=money_value(premium or ""), source="Carrier report", coverage=coverage),
+                    ScheduleAWorksheetValue(label="Broker payment total", value=commission_total, source="Carrier report", coverage=coverage),
+                ],
+                notes=["The carrier report does not provide a contract number; this multi-record document requires a real record-selection decision."],
+            )
+        )
+    return summaries
+
+
+def extract_metlife_bay_bridge_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    rows: list[ScheduleABrokerRow] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        if not _is_metlife_bay_bridge_report(normalized):
+            continue
+        coverage = clean_extracted_value(
+            regex_first(normalized, [r"Product Type\s*:\s*(.+?)(?=\n|Year)"]) or ""
+        )
+        section = re.split(
+            r"Insurance Commission Information for Schedule A\s*[–-]\s*Form 5500",
+            normalized,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )
+        if len(section) < 2:
+            continue
+        lines = [clean_extracted_value(line) for line in section[1].splitlines() if clean_extracted_value(line)]
+        index = 0
+        while index < len(lines):
+            match = re.fullmatch(r"(?P<name>.+?)\s+\$(?P<amount>[0-9,]+(?:\.\d{2})?)", lines[index])
+            if not match:
+                index += 1
+                continue
+            address_lines: list[str] = []
+            lookahead = index + 1
+            while lookahead < len(lines) and not re.search(r"\$[0-9,]+(?:\.\d{2})?\s*$", lines[lookahead]):
+                address_lines.append(lines[lookahead])
+                lookahead += 1
+            address_line_1, address_line_2, city, state, zip_code = _compensation_address(address_lines)
+            amount = money_value(match.group("amount"))
+            source = f"MetLife {coverage} producer commission: {match.group('name')} ${amount}"
+            rows.append(
+                ScheduleABrokerRow(
+                    name=clean_extracted_value(match.group("name")),
+                    address_line_1=address_line_1,
+                    address_line_2=address_line_2,
+                    city=city,
+                    state=state,
+                    zip_code=zip_code,
+                    organization_code="3",
+                    commission_rows=[ScheduleABrokerMoneyRow(coverage=coverage, amount=amount, purpose="COMMISSIONS")],
+                    fee_rows=[],
+                    commission_total=amount,
+                    fee_total="0",
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=page,
+                    confidence=0.99,
+                    evidence=[SourceEvidence(provider="MetLife Bay Bridge broker parser", page=page, source_text=source)],
+                )
+            )
+            index = lookahead
+    return dedupe_schedule_a_broker_rows(rows)
+
+
+def extract_metlife_bay_bridge_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    summaries = extract_metlife_bay_bridge_schedule_a_summaries(page_texts)
+    if not summaries:
+        return []
+    primary = summaries[0]
+    values_by_summary = [
+        {value.label: value.value for value in summary.values}
+        for summary in summaries
+    ]
+    source = "Bay Bridge Administrators multi-record MetLife Schedule A report"
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, candidates: list[str | None]) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        candidate_values = [
+            clean_extracted_value(str(candidate))
+            for candidate in candidates
+            if clean_extracted_value(str(candidate or ""))
+        ]
+        if clean:
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    candidate_values=list(dict.fromkeys(candidate_values)),
+                    confidence=0.6 if len(set(candidate_values)) > 1 else 0.98,
+                    page=1,
+                    source_text=source,
+                    evidence=[SourceEvidence(provider="MetLife Bay Bridge Schedule A parser", page=1, source_text=source)],
+                    decision="REVIEW_REQUIRED" if len(set(candidate_values)) > 1 else "AUTOMATIC",
+                )
+            )
+
+    add("1a. Name of Insurance Company", primary.carrier_name, [summary.carrier_name for summary in summaries])
+    add("1b. Insurance Carrier EIN", primary.ein, [summary.ein for summary in summaries])
+    if primary.naic_code:
+        add("1c. NAIC Code", primary.naic_code, [summary.naic_code for summary in summaries])
+    add("1e. Persons Covered (End of Policy Year)", values_by_summary[0].get("Persons covered"), [values.get("Persons covered") for values in values_by_summary])
+    add("1f. Policy Year Beginning Date", primary.period_begin, [summary.period_begin for summary in summaries])
+    add("1g. Policy Year Ending Date", primary.period_end, [summary.period_end for summary in summaries])
+    add("10a. Total premiums or subscription charges paid to carrier", values_by_summary[0].get("Total nonexperience premium"), [values.get("Total nonexperience premium") for values in values_by_summary])
+    add("3b. Amount of Commissions", values_by_summary[0].get("Broker payment total"), [values.get("Broker payment total") for values in values_by_summary])
+    add("3c. Amount of Fees", "0", ["0"])
+    add("3d. Purpose", "COMMISSIONS", ["COMMISSIONS"])
+    add("3e. Organizational Code", "3", ["3"])
+    return fields
+
+
+def _is_hartford_annual_statement(text: str) -> bool:
+    upper = str(text or "").upper()
+    return (
+        "THE HARTFORD" in upper
+        and "ANNUAL STATEMENT OF PREMIUMS AND PRODUCER COMPENSATION" in upper
+        and "HARTFORD LIFE AND ACCIDENT" in upper
+    )
+
+
+def extract_allone_eap_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract the compact AllOne EAP Schedule A data document."""
+    combined = "\n".join(normalize_ocr_text(text) for _, text in page_texts if text)
+    upper = combined.upper()
+    if "ALLONE HEALTH EAP" not in upper or "FORM 5500 SCHEDULE A INFORMATION" not in upper:
+        return []
+    period = re.search(
+        r"Service Period\s*=\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    headcount = regex_first(combined, [r"Headcount\s*=\s*([0-9,]+)"], flags=re.IGNORECASE)
+    total = regex_first(
+        combined,
+        [r"Total administrative fees paid\s*=\s*\$?\s*([0-9,]+(?:\.\d{2})?)"],
+        flags=re.IGNORECASE,
+    )
+    page = page_texts[0][0] if page_texts else 1
+    source = "AllOne Health EAP Schedule A information"
+    evidence = [SourceEvidence(provider="AllOne EAP Schedule A parser", page=page, source_text=source)]
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, confidence: float = 0.99) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if clean:
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    confidence=confidence,
+                    page=page,
+                    source_text=source,
+                    evidence=[item.model_copy(deep=True) for item in evidence],
+                )
+            )
+
+    add("1a. Name of Insurance Company", "ALLONE HEALTH")
+    add("1e. Persons Covered (End of Policy Year)", money_value(headcount or ""), 0.98)
+    if period:
+        def four_digit_year(value: str) -> str:
+            return re.sub(
+                r"/(\d{2})$",
+                lambda match: f"/{2000 + int(match.group(1)):04d}",
+                value,
+            )
+
+        add("1f. Policy Year Beginning Date", normalize_schedule_a_date(four_digit_year(period.group(1)), end_of_month=False))
+        add("1g. Policy Year Ending Date", normalize_schedule_a_date(four_digit_year(period.group(2)), end_of_month=True))
+    add("10a. Total premiums or subscription charges paid to carrier", money_value(total or ""), 0.98)
+    return fields
+
+
+def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract Hartford's annual premium and producer-compensation statement."""
+    combined = "\n".join(normalize_ocr_text(text) for _, text in page_texts if text)
+    if not _is_hartford_annual_statement(combined):
+        return []
+    identity_match = re.search(
+        r"Name of Insurance Carrier\s+EIN\s+NAIC Code\s+Policy Number\s*\n\s*"
+        r"(?P<carrier>HARTFORD LIFE AND ACCIDENT)\s+"
+        r"(?P<ein>\d{2}-?\d{7})\s+(?P<naic>\d{5})\s+(?P<policy>[A-Z0-9-]+)",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    period_match = re.search(
+        r"Plan/Policy Year\s*-\s*(\d{1,2}/\d{1,2}/\d{4})\s+to\s+(\d{1,2}/\d{1,2}/\d{4})",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    premium_match = re.search(
+        r"Premium was applied.*?\bTotal\s+\$\s*([0-9,]+(?:\.\d{2})?)",
+        combined,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    premium_section_match = re.search(
+        r"Premium was applied as follows during the Plan/Policy Year\s*-\s*(?P<section>.*?)\n\s*Total\s+\$",
+        combined,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    premium_section = premium_section_match.group("section") if premium_section_match else ""
+    lives = [
+        int(value.replace(",", ""))
+        for value in re.findall(
+            r"(?m)^\s*[A-Z0-9-]+\s+.+?\$[0-9,]+\.\d{2}[ \t]+([0-9,]+)[ \t]*$",
+            premium_section,
+        )
+    ]
+    broker_rows = extract_hartford_broker_rows(page_texts)
+    page = next((number for number, text in page_texts if "HARTFORD LIFE AND ACCIDENT" in text.upper()), None)
+    source_text = "Hartford annual statement of premiums and producer compensation"
+    evidence = [SourceEvidence(provider="Hartford Schedule A parser", page=page, source_text=source_text)]
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, confidence: float = 0.99) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if clean:
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    confidence=confidence,
+                    page=page,
+                    source_text=source_text,
+                    evidence=[item.model_copy(deep=True) for item in evidence],
+                )
+            )
+
+    if identity_match:
+        add("1a. Name of Insurance Company", identity_match.group("carrier"))
+        add("1b. Insurance Carrier EIN", format_eyemed_ein(identity_match.group("ein")))
+        add("1c. NAIC Code", identity_match.group("naic"))
+        add("1d. Contract/Policy Number", identity_match.group("policy"))
+    if lives:
+        add("1e. Persons Covered (End of Policy Year)", str(max(lives)), 0.98)
+    if period_match:
+        add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period_match.group(1), end_of_month=False))
+        add("1g. Policy Year Ending Date", normalize_schedule_a_date(period_match.group(2), end_of_month=True))
+    if premium_match:
+        add("10a. Total premiums or subscription charges paid to carrier", money_value(premium_match.group(1)))
+    if broker_rows:
+        commission_total = sum_money_values(*(row.commission_total for row in broker_rows))
+        fee_total = sum_money_values(*(row.fee_total for row in broker_rows))
+        add("3b. Amount of Commissions", commission_total, 0.99)
+        add("3c. Amount of Fees", fee_total, 0.99)
+        add("3d. Purpose", derive_schedule_a_purpose(commission_total, fee_total), 0.99)
+        add("3e. Organizational Code", "3", 0.99)
+    return fields
+
+
+_HARTFORD_BROKER_HEADER = re.compile(
+    r"Producer and Address\s+Org\s*\n\s*Code\s+Policy\s*\n\s*Number\s+Commissions\s*\n\s*Paid\s+Fees Paid\s+\(1\)Bonus\s*\n\s*Paid\s*\n\s*\(2\)Additional\s*\n\s*Compensation\s*\n\s*Paid",
+    re.IGNORECASE,
+)
+
+
+def extract_hartford_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Read every Hartford producer row, treating bonus/additional compensation as fees."""
+    rows: list[ScheduleABrokerRow] = []
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        if "ANNUAL STATEMENT OF PREMIUMS AND PRODUCER COMPENSATION" not in normalized.upper():
+            continue
+        blocks = _HARTFORD_BROKER_HEADER.split(normalized)
+        for block in blocks[1:]:
+            block = re.split(r"\(1\)Bonus Paid represents", block, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+            total_match = re.search(
+                r"\bTotal\s+\$?\s*(?P<commissions>[0-9,]+(?:\.\d{2})?)\s+"
+                r"\$?\s*(?P<fees>[0-9,]+(?:\.\d{2})?)\s+"
+                r"\$?\s*(?P<bonus>[0-9,]+(?:\.\d{2})?)\s+"
+                r"\$?\s*(?P<additional>[0-9,]+(?:\.\d{2})?)",
+                block,
+                flags=re.IGNORECASE,
+            )
+            contract_start = re.search(r"(?m)^\s*3\s+[A-Z0-9-]+\s+[-$]", block)
+            if not total_match or not contract_start:
+                continue
+            identity_lines = [clean_extracted_value(line) for line in block[: contract_start.start()].splitlines() if clean_extracted_value(line)]
+            city_index = next(
+                (
+                    index
+                    for index in range(len(identity_lines) - 1, -1, -1)
+                    if re.fullmatch(r".+?,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?", identity_lines[index], flags=re.IGNORECASE)
+                ),
+                None,
+            )
+            if city_index is None:
+                continue
+            city_match = re.fullmatch(
+                r"(?P<city>.+?),?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)",
+                identity_lines[city_index],
+                flags=re.IGNORECASE,
+            )
+            address_start = next(
+                (
+                    index
+                    for index, line in enumerate(identity_lines[:city_index])
+                    if re.match(r"^(?:\d|P\.?\s*O\.?\s+BOX\b)", line, flags=re.IGNORECASE)
+                ),
+                None,
+            )
+            if not city_match or address_start is None or address_start == 0:
+                continue
+            name = clean_extracted_value(" ".join(identity_lines[:address_start]))
+            address_line_1 = clean_extracted_value(" ".join(identity_lines[address_start:city_index]))
+            commissions = money_value(total_match.group("commissions"))
+            direct_fees = money_value(total_match.group("fees"))
+            bonus = money_value(total_match.group("bonus"))
+            additional = money_value(total_match.group("additional"))
+            fee_total = sum_money_values(direct_fees, bonus, additional) or "0"
+            source = "Hartford producer compensation row\n" + block[: total_match.end()]
+            fee_rows = [
+                ScheduleABrokerMoneyRow(amount=value, purpose=purpose)
+                for value, purpose in (
+                    (direct_fees, "FEES"),
+                    (bonus, "BONUS PAID"),
+                    (additional, "ADDITIONAL COMPENSATION"),
+                )
+                if (parse_numeric_amount(value) or 0) > 0
+            ]
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    address_line_1=address_line_1,
+                    city=clean_extracted_value(city_match.group("city")),
+                    state=city_match.group("state").upper(),
+                    zip_code=city_match.group("zip"),
+                    organization_code="3",
+                    commission_rows=(
+                        [ScheduleABrokerMoneyRow(amount=commissions, purpose="COMMISSIONS")]
+                        if (parse_numeric_amount(commissions) or 0) > 0
+                        else []
+                    ),
+                    fee_rows=fee_rows,
+                    commission_total=commissions or "0",
+                    fee_total=fee_total,
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=page,
+                    confidence=0.99,
+                    evidence=[SourceEvidence(provider="Hartford Schedule A broker parser", page=page, source_text=source)],
+                )
+            )
+    return dedupe_schedule_a_broker_rows(rows)
+
+
 def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
     """Extract the labelled identity block from a Vision Service Plan report.
 
@@ -6210,7 +6833,10 @@ def extract_vsp_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
                 ],
             )
         )
-    return rows
+    # Some carrier exports repeat the same statement on consecutive pages.
+    # Page number is evidence, not part of broker identity; keep one logical
+    # row so commissions are never doubled by a duplicated page.
+    return dedupe_schedule_a_broker_rows(rows)
 
 
 def extract_eyemed_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:

@@ -42,6 +42,12 @@ from app.services.extractor import (
     extract_explicit_benefit_indicator_fields,
     extract_fields_from_groundx_xray,
     extract_hmsa_schedule_a_fields,
+    extract_hartford_broker_rows,
+    extract_hartford_schedule_a_fields,
+    extract_allone_eap_schedule_a_fields,
+    extract_metlife_bay_bridge_broker_rows,
+    extract_metlife_bay_bridge_schedule_a_fields,
+    extract_metlife_bay_bridge_schedule_a_summaries,
     extract_nyl_annual_policy_fields,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
@@ -76,6 +82,7 @@ from app.services.extractor import (
     is_unfilled_schedule_a_template,
     merge_schedule_a_fields,
     merge_schedule_a_broker_rows,
+    remove_inapplicable_experience_rated_fields,
     money_value,
     local_schedule_a_pdf_result,
     parse_schedule_a_text,
@@ -383,6 +390,261 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(fields["3c. Amount of Fees"], "0")
         self.assertEqual(fields["3d. Purpose"], "COMMISSIONS")
         self.assertEqual(fields["3e. Organizational Code"], "3")
+
+    def test_vsp_duplicate_pages_do_not_double_broker_commission(self):
+        statement = """
+        VSP vision care Schedule A Form (5500) Insurance Information
+        Group ID: 40152233
+        Insurance Carrier: Vision Service Plan
+        Insurance Carrier NAIC Code: 39616
+        Insurance Carrier FEIN: 061227840
+        Policy or Contract Year: 01/01/2025 - 12/31/2025
+        Approximate Number of Persons Covered at the End of Policy or Contract Year: 118
+        Total Payments Made to Carrier: $21,711.02
+        Commissions/Fees Paid for Policy Agent or Broker or Contract Year
+        NFP Corporate Services NY LLC $972.09
+        200 Park Ave 32nd FL
+        New York NY 10166
+        """
+        pages = [(1, statement), (2, statement)]
+
+        rows = extract_vsp_broker_rows(pages)
+        fields = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].commission_total, "972.09")
+        self.assertEqual(fields["3b. Amount of Commissions"], "972.09")
+
+    def test_hartford_statement_extracts_identity_premium_lives_and_bonus_as_fee(self):
+        pages = [
+            (
+                2,
+                """
+                The Hartford Group Benefits Division
+                Annual Statement of Premiums and Producer Compensation
+                Plan/Policy Year - 01/01/2025 to 12/31/2025
+                Name of Insurance Carrier EIN NAIC Code Policy Number
+                HARTFORD LIFE AND ACCIDENT 06-0838648 70815 922556G
+                Premium was applied as follows during the Plan/Policy Year -
+                922556G ADD-BAS $7,507.49 159
+                922556G LIFE-BTRM $30,562.30 171
+                922556G LTD-ABIL $36,611.49 171
+                Total $173,344.57
+                """,
+            ),
+            (
+                3,
+                """
+                The Hartford Group Benefits Division
+                Annual Statement of Premiums and Producer Compensation
+                HARTFORD LIFE AND ACCIDENT
+                Producer and Address Org
+                Code Policy
+                Number Commissions
+                Paid Fees Paid (1)Bonus
+                Paid
+                (2)Additional
+                Compensation
+                Paid
+                NFP CORPORATE SERVICES
+                NY LLC
+                200 PARK AVE STE 3202
+                NEW YORK, NY 10166
+                3 922556-0GL $3,505.38 $0.00 $0.00 $0.00
+                922556-GLT $4,008.18 $0.00 $0.00 $0.00
+                Total $11,158.40 $0.00 $0.00 $0.00
+                Producer and Address Org
+                Code Policy
+                Number Commissions
+                Paid Fees Paid (1)Bonus
+                Paid
+                (2)Additional
+                Compensation
+                Paid
+                NFP CORPORATE SERVICES
+                NY LLC
+                P.O. BOX 786677
+                PHILADELPHIA, PA 19178
+                3 922556-0GL $0.00 $0.00 $1,369.09 $0.00
+                Total $0.00 $0.00 $4,324.75 $0.00
+                (1)Bonus Paid represents contingent compensation.
+                """,
+            ),
+        ]
+
+        rows = extract_hartford_broker_rows(pages)
+        fields = {field.field_name: field.value for field in extract_hartford_schedule_a_fields(pages)}
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].commission_total, "11,158.40")
+        self.assertEqual(rows[1].fee_total, "4,324.75")
+        self.assertEqual(rows[1].fee_rows[0].purpose, "BONUS PAID")
+        self.assertEqual(fields["1a. Name of Insurance Company"], "HARTFORD LIFE AND ACCIDENT")
+        self.assertEqual(fields["1b. Insurance Carrier EIN"], "06-0838648")
+        self.assertEqual(fields["1c. NAIC Code"], "70815")
+        self.assertEqual(fields["1d. Contract/Policy Number"], "922556G")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "171")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "173,344.57")
+        self.assertEqual(fields["3b. Amount of Commissions"], "11,158.40")
+        self.assertEqual(fields["3c. Amount of Fees"], "4,324.75")
+
+    def test_image_only_hartford_uses_groundx_page_text_for_authoritative_layout_parser(self):
+        identity_page = """
+        The Hartford Group Benefits Division
+        Annual Statement of Premiums and Producer Compensation
+        Plan/Policy Year - 01/01/2025 to 12/31/2025
+        Name of Insurance Carrier EIN NAIC Code Policy Number
+        HARTFORD LIFE AND ACCIDENT 06-0838648 70815 922556G
+        Premium was applied as follows during the Plan/Policy Year -
+        922556G ADD-BAS $7,507.49 159
+        922556G LIFE-BTRM $30,562.30 171
+        Total $173,344.57
+        """
+        broker_page = """
+        The Hartford Group Benefits Division
+        Annual Statement of Premiums and Producer Compensation
+        HARTFORD LIFE AND ACCIDENT
+        Producer and Address Org
+        Code Policy
+        Number Commissions
+        Paid Fees Paid (1)Bonus
+        Paid
+        (2)Additional
+        Compensation
+        Paid
+        NFP CORPORATE SERVICES
+        NY LLC
+        P.O. BOX 786677
+        PHILADELPHIA, PA 19178
+        3 922556-0GL $0.00 $0.00 $1,369.09 $0.00
+        Total $0.00 $0.00 $4,324.75 $0.00
+        (1)Bonus Paid represents contingent compensation.
+        """
+        groundx = NormalizedExtractionResult(
+            provider="GroundX X-Ray",
+            fields=[],
+            raw={
+                "chunks": [
+                    {"pageNumbers": [2], "suggestedText": identity_page},
+                    {"pageNumbers": [3], "suggestedText": broker_page},
+                ]
+            },
+        )
+        settings = SimpleNamespace(
+            schedule_a_canonical_validation_enabled=False,
+            schedule_a_canonical_validation_shadow_enabled=True,
+        )
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_document_text_pages", return_value=[]),
+            patch("app.services.extractor.extract_pdf_layout_text_pages", return_value=[]),
+            patch.object(service, "_extract_schedule_a_unresolved", new=AsyncMock(return_value=groundx)),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"image-only-pdf", "4. HARTFORD.pdf"))
+
+        fields = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(fields["1a. Name of Insurance Company"], "HARTFORD LIFE AND ACCIDENT")
+        self.assertEqual(fields["1d. Contract/Policy Number"], "922556G")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "173,344.57")
+        self.assertEqual(len(result.schedule_a_broker_rows), 1)
+        self.assertEqual(result.schedule_a_broker_rows[0].fee_total, "4,324.75")
+        self.assertEqual(result.schedule_a_broker_rows[0].source_page, 3)
+
+    def test_allone_eap_compact_doc_extracts_identity_period_lives_and_paid_total(self):
+        pages = [
+            (
+                1,
+                """
+                AllOne Health EAP
+                Form 5500 Schedule A Information for: CareQuest
+                Service Period = 1/1/25-12/31/25
+                Headcount = 178
+                Monthly rate = $2.78 per employee per month
+                Total administrative fees paid = $5,938.08
+                """,
+            )
+        ]
+
+        fields = {field.field_name: field.value for field in extract_allone_eap_schedule_a_fields(pages)}
+
+        self.assertEqual(fields["1a. Name of Insurance Company"], "ALLONE HEALTH")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "178")
+        self.assertEqual(fields["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(fields["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "5,938.08")
+
+    def test_metlife_bay_bridge_multirecord_report_preserves_both_records_and_brokers(self):
+        def page(carrier, ein, naic, product, premium, employees, dependents, marsh, nfp):
+            return f"""
+            Insurance Data for Schedule A – Form 5500
+            Name of Carrier: {carrier}
+            Carrier EIN: {ein}
+            Carrier NAIC Code: {naic}
+            Group/account Name: Carequest Institute for Oral Health, Inc.
+            Product Type: {product}
+            Year: 1/01/2025 – 12/31/2025
+            Total Premium at Year End: ${premium}
+            Total # of Employees: {employees}
+            Total # of Dependent: {dependents}
+            Insurance Commission Information for Schedule A – Form 5500
+            Producer Name and Address: Commissions paid to producers:
+            Marsh & McLennan Agency, LLC. ${marsh}
+            101 Huntington Ave. Ste. 401
+            Boston, MA 21997
+            NFP Corporate Services NY, LLC ${nfp}
+            200 Park Ave. Rm 3202
+            New York, NY 10166
+            """
+
+        pages = [
+            (1, page("MetLife Legal Plan", "341650967", "", "Legal Plan", "3,149.97", "13", "18", "167.76", "109.28")),
+            (2, page("MetLife Insurance Company", "135581829", "65978", "Accident", "6,528.09", "18", "15", "1,179.87", "125.95")),
+        ]
+
+        summaries = extract_metlife_bay_bridge_schedule_a_summaries(pages)
+        brokers = extract_metlife_bay_bridge_broker_rows(pages)
+        fields = {field.field_name: field for field in extract_metlife_bay_bridge_schedule_a_fields(pages)}
+
+        self.assertEqual(len(summaries), 2)
+        self.assertEqual(summaries[0].carrier_name, "MetLife Legal Plan")
+        self.assertEqual(summaries[0].ein, "34-1650967")
+        self.assertEqual(summaries[0].values[0].value, "31")
+        self.assertEqual(summaries[1].naic_code, "65978")
+        self.assertEqual(summaries[1].values[1].value, "6,528.09")
+        self.assertEqual(len(brokers), 4)
+        self.assertEqual(brokers[0].commission_rows[0].coverage, "Legal Plan")
+        self.assertEqual(brokers[2].commission_rows[0].coverage, "Accident")
+        self.assertEqual(fields["1a. Name of Insurance Company"].decision, "REVIEW_REQUIRED")
+        self.assertEqual(
+            fields["1a. Name of Insurance Company"].candidate_values,
+            ["MetLife Legal Plan", "MetLife Insurance Company"],
+        )
+
+    def test_nonexperience_section_drops_false_experience_rated_commission(self):
+        result = NormalizedExtractionResult(
+            provider="test",
+            fields=[
+                NormalizedExtractionField(field_name="3b. Amount of Commissions", value="100.00", confidence=0.99),
+                NormalizedExtractionField(field_name="9c(1)(A). Commissions", value="100.00", confidence=0.92),
+                NormalizedExtractionField(
+                    field_name="10a. Total premiums or subscription charges paid to carrier",
+                    value="5,000.00",
+                    confidence=0.99,
+                ),
+            ],
+        )
+
+        cleaned = remove_inapplicable_experience_rated_fields(
+            result,
+            [(1, "Part III Welfare Benefit Contract Information\n9. Non experience-rated contracts")],
+        )
+
+        self.assertEqual(
+            [field.field_name for field in cleaned.fields],
+            ["3b. Amount of Commissions", "10a. Total premiums or subscription charges paid to carrier"],
+        )
 
     def test_vsp_floor_address_does_not_shift_boston_into_street_or_city(self):
         pages = [
