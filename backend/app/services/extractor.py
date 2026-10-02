@@ -203,6 +203,9 @@ class ExtractionService:
                 result.fields.extend(metlife_fields)
                 result.schedule_a_broker_rows = extract_metlife_bay_bridge_broker_rows(authoritative_pages)
                 result.schedule_a_worksheet_summaries = extract_metlife_bay_bridge_schedule_a_summaries(authoritative_pages)
+            unitedhealthcare_rows = extract_unitedhealthcare_broker_rows(authoritative_pages)
+            if unitedhealthcare_rows:
+                result.schedule_a_broker_rows = unitedhealthcare_rows
             allone_fields = extract_allone_eap_schedule_a_fields(authoritative_pages)
             if allone_fields:
                 authoritative_names = {
@@ -2429,6 +2432,7 @@ def local_schedule_a_pdf_result(
         *extract_vsp_broker_rows(page_texts),
         *extract_hartford_broker_rows(page_texts),
         *extract_metlife_bay_bridge_broker_rows(page_texts),
+        *extract_unitedhealthcare_broker_rows(page_texts),
         *extract_prudential_broker_rows(broker_page_texts),
         *extract_aflac_broker_rows(broker_page_texts),
     ]
@@ -2928,6 +2932,9 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
     metlife_rows = extract_metlife_bay_bridge_broker_rows(page_texts)
     if metlife_rows or any(_is_metlife_bay_bridge_report(normalize_ocr_text(text)) for _, text in page_texts):
         return metlife_rows
+    unitedhealthcare_rows = extract_unitedhealthcare_broker_rows(page_texts)
+    if unitedhealthcare_rows:
+        return unitedhealthcare_rows
     omaha_rows = extract_united_omaha_combined_broker_rows(page_texts)
     if omaha_rows:
         return omaha_rows
@@ -3001,6 +3008,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *extract_vsp_broker_rows(plain_pages),
         *extract_hartford_broker_rows(plain_pages),
         *extract_metlife_bay_bridge_broker_rows(plain_pages),
+        *extract_unitedhealthcare_broker_rows(plain_pages),
         *extract_prudential_broker_rows(layout_pages),
         *extract_aflac_broker_rows(layout_pages),
     ]
@@ -4104,6 +4112,9 @@ def extract_schedule_a_broker_rows_from_pdf_text(file_bytes: bytes) -> list[Sche
     metlife_rows = extract_metlife_bay_bridge_broker_rows(page_texts)
     if metlife_rows or any(_is_metlife_bay_bridge_report(normalize_ocr_text(text)) for _, text in page_texts):
         return metlife_rows
+    unitedhealthcare_rows = extract_unitedhealthcare_broker_rows(page_texts)
+    if unitedhealthcare_rows:
+        return unitedhealthcare_rows
     positioned_rows = extract_position_aware_schedule_a_broker_rows(layout_page_texts)
     if positioned_rows:
         # Explicit row/column evidence is authoritative for these support
@@ -6247,6 +6258,82 @@ def extract_aig_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
             )
         )
     return rows
+
+
+def extract_unitedhealthcare_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    """Extract UnitedHealthcare's single Part I broker disclosure as a structured row."""
+    for page, text in page_texts:
+        normalized = normalize_ocr_text(text)
+        upper = normalized.upper()
+        if not (
+            "SCHEDULE A (FORM 5500) PARTS I AND III" in upper
+            and "UNITEDHEALTHCARE INSURANCE COMPANY" in upper
+            and "INSURANCE FEES AND COMMISSIONS PAID TO AGENTS" in upper
+        ):
+            continue
+        match = re.search(
+            r"\(a\)\s*Name and address of the agents, brokers or other persons to whom commissions or fees were paid:\s*\n"
+            r"(?P<identity>.*?)\n\s*\(b\)\s*Amount of commissions paid:\s*\$?\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s*\n"
+            r"\s*\(c\)\s*Fees paid\s*/\s*Amount:\s*\$?\s*(?P<fee>[0-9,]+(?:\.\d{2})?)\s*\n"
+            r"\s*\(d\)\s*Fees paid/Purpose:\s*(?P<purpose>.*?)\s*\n"
+            r"\s*\(e\)\s*Organizational Code:\s*(?P<code>[1-9])\b",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            continue
+        identity_lines = [
+            clean_extracted_value(line)
+            for line in match.group("identity").splitlines()
+            if clean_extracted_value(line)
+        ]
+        if len(identity_lines) < 3:
+            continue
+        name = identity_lines[0]
+        address_line_1, address_line_2, city, state, zip_code = _compensation_address(identity_lines[1:])
+        if not all((name, address_line_1, city, state, zip_code)):
+            continue
+        commission = money_value(match.group("commission"))
+        fee = money_value(match.group("fee"))
+        purpose = clean_extracted_value(match.group("purpose"))
+        source = f"UnitedHealthcare Part I broker disclosure: {name}"
+        return [
+            ScheduleABrokerRow(
+                name=name,
+                address_line_1=address_line_1,
+                address_line_2=address_line_2,
+                city=city,
+                state=state,
+                zip_code=zip_code,
+                organization_code=match.group("code"),
+                commission_rows=(
+                    [ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")]
+                    if (parse_numeric_amount(commission) or 0) > 0
+                    else []
+                ),
+                fee_rows=(
+                    [ScheduleABrokerMoneyRow(amount=fee, purpose=purpose or "FEES")]
+                    if (parse_numeric_amount(fee) or 0) > 0
+                    else []
+                ),
+                commission_total=commission,
+                fee_total=fee,
+                commission_source_text=source,
+                fee_source_text=source,
+                source_page=page,
+                confidence=0.99,
+                evidence=[
+                    SourceEvidence(
+                        provider="UnitedHealthcare Part I broker parser",
+                        page=page,
+                        source_text=source,
+                    )
+                ],
+            )
+        ]
+    return []
 
 
 def remove_inapplicable_experience_rated_fields(

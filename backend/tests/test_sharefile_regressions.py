@@ -477,6 +477,38 @@ class ShareFileRegressionTests(unittest.TestCase):
             {"schedule-a-new", "worksheet-latest"},
         )
 
+    def test_same_timestamp_worksheets_prefer_explicit_updated_revision(self):
+        timestamp = "2026-09-30T00:00:00Z"
+        schedule = sharefile_file(
+            "schedule-a",
+            "Medical Schedule A.pdf",
+            ["Client", "5500", "2025 Filing", "Schedule A's", "Medical Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+            timestamp,
+        )
+        schedule["change_type"] = "NEW"
+        old_worksheet = sharefile_file(
+            "worksheet-z",
+            "5500 Plan Worksheet - Client - PY25.docx",
+            ["Client", "5500", "2025 Filing", "5500 Plan Worksheet - Client - PY25.docx"],
+            DocumentType.PLAN_WORKSHEET,
+            timestamp,
+        )
+        updated_worksheet = sharefile_file(
+            "worksheet-a",
+            "UPDATED 2025 Client Plan Worksheet.docx",
+            ["Client", "5500", "2025 Filing", "UPDATED 2025 Client Plan Worksheet.docx"],
+            DocumentType.PLAN_WORKSHEET,
+            timestamp,
+        )
+
+        selected = self.service._select_package_files_for_processing(
+            [schedule, old_worksheet, updated_worksheet],
+            prefer_changed=True,
+        )
+
+        self.assertEqual({item["id"] for item in selected}, {"schedule-a", "worksheet-a"})
+
     def test_changed_schedule_a_without_worksheet_queues_extraction_and_review_flow(self):
         changed_schedule = sharefile_file(
             "schedule-a-new",

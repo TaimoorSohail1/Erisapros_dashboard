@@ -1531,10 +1531,13 @@ class ShareFileService:
             return None
         return max(candidates, key=self._file_recency_key)
 
-    def _file_recency_key(self, file_item: dict) -> tuple[str, str, str]:
+    def _file_recency_key(self, file_item: dict) -> tuple[str, str, int, str]:
+        name = str(file_item.get("name") or "").lower()
+        revision_rank = 1 if re.search(r"\b(?:updated|revised|corrected|final)\b", name) else 0
         return (
             str(file_item.get("modified_at") or ""),
             str(file_item.get("created_at") or ""),
+            revision_rank,
             str(file_item.get("id") or ""),
         )
 

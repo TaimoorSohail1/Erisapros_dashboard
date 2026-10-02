@@ -76,6 +76,7 @@ from app.services.extractor import (
     extract_united_omaha_schedule_a_fields,
     extract_united_omaha_schedule_a_records,
     extract_united_omaha_schedule_a_summaries,
+    extract_unitedhealthcare_broker_rows,
     build_groundx_schema_query,
     extract_fields_from_document_text,
     is_obvious_template_placeholder,
@@ -645,6 +646,39 @@ class ScheduleAExtractionTests(unittest.TestCase):
             [field.field_name for field in cleaned.fields],
             ["3b. Amount of Commissions", "10a. Total premiums or subscription charges paid to carrier"],
         )
+
+    def test_unitedhealthcare_part_i_extracts_structured_broker_for_existing_row_match(self):
+        pages = [
+            (
+                2,
+                """
+                Schedule A (Form 5500) Parts I and III
+                Insurance Information Certified by Carrier
+                (a) Name of Insurance carrier: UnitedHealthcare Insurance Company
+                2. Insurance fees and commissions paid to agents, brokers, and other persons
+                (a) Name and address of the agents, brokers or other persons to whom commissions or fees were paid:
+                NFP CORPORATE SERVICES (MA) LLC
+                141 LONGWATER DR STE 101
+                NORWELL MA 02061-1620
+                (b) Amount of commissions paid: $100,901.12
+                (c) Fees paid / Amount: $0.00
+                (d) Fees paid/Purpose: N/A
+                (e) Organizational Code: 3
+                """,
+            )
+        ]
+
+        rows = extract_unitedhealthcare_broker_rows(pages)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "NFP CORPORATE SERVICES (MA) LLC")
+        self.assertEqual(rows[0].address_line_1, "141 LONGWATER DR STE 101")
+        self.assertEqual(rows[0].city, "NORWELL")
+        self.assertEqual(rows[0].state, "MA")
+        self.assertEqual(rows[0].zip_code, "02061-1620")
+        self.assertEqual(rows[0].commission_total, "100,901.12")
+        self.assertEqual(rows[0].fee_total, "0.00")
+        self.assertEqual(rows[0].organization_code, "3")
 
     def test_vsp_floor_address_does_not_shift_boston_into_street_or_city(self):
         pages = [
