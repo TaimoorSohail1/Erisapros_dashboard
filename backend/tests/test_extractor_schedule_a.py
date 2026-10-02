@@ -27,6 +27,8 @@ from app.services.extractor import (
     extract_aig_broker_rows,
     extract_anthem_schedule_a_fields,
     extract_anthem_broker_rows,
+    extract_aflac_schedule_a_fields,
+    extract_aflac_broker_rows,
     extract_columnar_broker_compensation_rows,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
@@ -166,7 +168,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values["1b. Insurance Carrier EIN"], "95-4331852")
         self.assertEqual(values["1c. NAIC Code"], "62825")
         self.assertEqual(values["1d. Contract/Policy Number"], "L05472")
-        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "99")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "420")
         self.assertEqual(values["1f. Policy Year Beginning Date"], "04/01/2025")
         self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
         self.assertEqual(values["3b. Amount of Commissions"], "125,287.31")
@@ -181,6 +183,110 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].organization_code, "3")
         self.assertEqual(rows[0].commission_total, "125,287.31")
         self.assertEqual(rows[0].fee_total, "4,220.87")
+
+    def test_anthem_combined_report_supports_multiple_brokers_and_member_count(self):
+        pages = [
+            (
+                2,
+                """
+                Information For Completion of ERISA 5500 Schedule A
+                For Period : 01/01/2025 - 12/31/2025
+                Customer ID : 300683
+                Anthem Blue Cross (G1921) 23-7391136 55093 Health PPO
+                EMERSON ROGERS
+                LLC - 5200 N PALM AVE #114,
+                FRESNO, CA 93704
+                $0.00 $30,270.00
+                RSC INS BROKERAGE
+                INC - 2101 FLORENCE AVE,
+                CINCINNATI, OH 45206
+                $104,203.61 $0.00
+                """,
+            ),
+            (
+                3,
+                """
+                Part III Welfare Benefit Contract Information
+                Health PPO $3,170,109 175/205
+                """,
+            ),
+        ]
+
+        values = {field.field_name: field.value for field in extract_anthem_schedule_a_fields(pages)}
+        rows = extract_anthem_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Anthem Blue Cross")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "205")
+        self.assertEqual(values["3b. Amount of Commissions"], "104,203.61")
+        self.assertEqual(values["3c. Amount of Fees"], "30,270")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].name, "EMERSON ROGERS LLC")
+        self.assertEqual(rows[1].name, "RSC INS BROKERAGE INC")
+
+    def test_aflac_earnings_report_extracts_identity_and_every_broker_row(self):
+        plain_pages = [
+            (
+                1,
+                """
+                SCHEDULE A EARNINGS REPORT
+                Group Number Group Covered Count
+                NBX36 57
+                Total Premium Collected
+                $44,327.27
+                PLAN YEAR 01/01/2025-12/31/2025
+                NAIC CODE
+                60380
+                Name of Insurance Carrier
+                AFLAC
+                CONTRACT NUMBER
+                52-0807803
+                """,
+            )
+        ]
+        layout_pages = [
+            (
+                1,
+                """
+                SCHEDULE A EARNINGS REPORT
+                Agent Address Block w/ Full Name       Commissions Paid       Fees Paid
+                JAMES K FULATER
+                9840 57TH AVE
+                APT 3M
+                CORONA, NY 11368
+                    $4,608.16       $497.50
+                - RSC INSURANCE BROKERAGE
+                INC
+                160 FEDERAL ST FL 2
+                BOSTON, MA 02110
+                    $196.16       $0.00
+                """,
+            ),
+            (
+                2,
+                """
+                KENNETH WELLER
+                160 BEDFORD AVE APT 2R
+                BROOKLYN, NY 11249
+                    $23.73       $96.03
+                Sum: $4,828.05 $593.53
+                """,
+            ),
+        ]
+
+        values = {field.field_name: field.value for field in extract_aflac_schedule_a_fields(plain_pages)}
+        rows = extract_aflac_broker_rows(layout_pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "AFLAC")
+        self.assertNotIn("1b. Insurance Carrier EIN", values)
+        self.assertEqual(values["1c. NAIC Code"], "60380")
+        self.assertEqual(values["1d. Contract/Policy Number"], "52-0807803")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "57")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "44,327.27")
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[1].name, "RSC INSURANCE BROKERAGE INC")
+        self.assertEqual(rows[2].fee_total, "96.03")
 
     def test_vsp_report_uses_labelled_carrier_and_policy_year_values(self):
         pages = [
@@ -277,6 +383,25 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(fields["3c. Amount of Fees"], "0")
         self.assertEqual(fields["3d. Purpose"], "COMMISSIONS")
         self.assertEqual(fields["3e. Organizational Code"], "3")
+
+    def test_vsp_floor_address_does_not_shift_boston_into_street_or_city(self):
+        pages = [
+            (
+                1,
+                """
+                VSP vision care Schedule A Form (5500) Insurance Information
+                Insurance Carrier: Vision Service Plan
+                Commissions/Fees Paid for Policy Agent or Broker or Contract Year
+                RSC Insurance Brokerage, Inc. $1,275.91160 Federal St 4th FloorBOSTON MA 02110
+                """,
+            )
+        ]
+
+        rows = extract_vsp_broker_rows(pages)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].address_line_1, "160 Federal St 4th Floor")
+        self.assertEqual(rows[0].city, "BOSTON")
 
     def test_aetna_attached_listing_uses_plan_sponsor_state_and_compact_broker_row(self):
         pages = [
@@ -2759,6 +2884,55 @@ LONG FORM INFORMATION
         self.assertEqual(by_name["IMG"].fee_total, "108")
         self.assertEqual(by_name["IMG"].organization_code, "5")
         self.assertEqual(by_name["Selman & Company, LLC"].fee_total, "13,099")
+
+    def test_prudential_commission_parser_uses_document_contract_instead_of_fixed_sample(self):
+        pages = [
+            (
+                2,
+                """
+                Insurance Information For SCHEDULE A (Form 5500) Insured Welfare Plan Data
+                Homes For The Homeless
+                1 (a) Prudential Insurance Company of America
+                1 (b) Prudential's EIN: 22-1211670 1 (c) NAIC code: 68241 1 (d) Contract number or identification: 15408
+                1/1/2025 12/31/2025 See Form 27722
+                9 Non experience rated contracts:
+                a. Total premiums or subscription charges paid to carrier $ 2,031
+                GRP 32064 - Rev 1999
+                Basic AD&D Insurance 356
+                """,
+            ),
+            (
+                7,
+                """
+                ANNUAL REPORT SCHEDULE A(Form 5500) - Insurance Information
+                (Insured Welfare Plan Commission Information)
+                15408 RSC INSURANCE BROKERAGE INC $5,919
+                4TH FLOOR
+                160 FEDERAL ST
+                BOSTON, MA 2110
+                15408 RSC INSURANCE BROKERAGE INC $2,936
+                4TH FLOOR
+                160 FEDERAL ST
+                BOSTON, MA 2110
+                15408 IMG $76
+                2960 North Meridian Street
+                Indianapolis, IN 46208
+                15408 Selman & Company, LLC $2,938
+                One Integrity Parkway
+                Cleveland, OH 44143
+                Includes amounts paid to general agents
+                GRP 27722 - Rev 1999 The Prudential Insurance Company of America
+                """,
+            ),
+        ]
+
+        rows = extract_prudential_broker_rows(pages)
+        by_name = {row.name: row for row in rows}
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(by_name["RSC INSURANCE BROKERAGE INC"].commission_total, "8,855")
+        self.assertEqual(by_name["IMG"].fee_total, "76")
+        self.assertEqual(by_name["Selman & Company, LLC"].fee_total, "2,938")
 
     def test_schedule_a_parser_extracts_summary_table_broker_rows(self):
         pages = [

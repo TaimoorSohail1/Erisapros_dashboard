@@ -97,12 +97,17 @@ class ExtractionService:
 
         worksheet_rules = rules_for_form(self.field_rules, FormType.FORM_5500)
         local_fields = parse_plan_worksheet_text(context_text, rules=worksheet_rules) if context_text else []
+        worksheet_summaries = extract_plan_worksheet_schedule_a_summaries(context_text) if context_text else []
         fields = dedupe_fields(local_fields)
         if fields:
             return NormalizedExtractionResult(
                 provider="Plan Worksheet local parser",
                 fields=fields,
-                raw={"context_preview": context_text[:4000]},
+                raw={
+                    "context_preview": context_text[:4000],
+                    "fully_insured_benefits": [summary.model_dump(mode="json") for summary in worksheet_summaries],
+                },
+                schedule_a_worksheet_summaries=worksheet_summaries,
             )
 
         settings = get_settings()
@@ -154,6 +159,12 @@ class ExtractionService:
                 rules=self.field_rules,
             )
             result = restore_principal_short_form_fields(result, template_pages)
+            result.fields = prefer_authoritative_anthem_fields(result.fields, template_pages)
+            result.fields = prefer_authoritative_aig_fields(result.fields, template_pages)
+            result.fields = prefer_authoritative_aflac_fields(result.fields, template_pages)
+            result.fields = prefer_authoritative_prudential_fields(result.fields, template_pages)
+            result.fields = prefer_authoritative_cigna_summary_fields(result.fields, template_pages)
+            result.fields = prefer_authoritative_united_omaha_fields(result.fields, template_pages)
         settings = get_settings()
         return apply_schedule_a_pipeline(
             result,
@@ -2170,6 +2181,58 @@ def parse_plan_worksheet_text(text: str, *, rules=None) -> list[NormalizedExtrac
     return dedupe_fields(fields)
 
 
+def extract_plan_worksheet_schedule_a_summaries(text: str) -> list[ScheduleAWorksheetSummary]:
+    """Extract and deduplicate the fully-insured benefit table from a worksheet."""
+    normalized = normalize_ocr_text(text)
+    section_match = re.search(
+        r"Fully-Insured\s+Benefits(?P<section>.*?)(?:Self-Funded\s+Benefits|$)",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not section_match:
+        return []
+    section = section_match.group("section")
+    row_pattern = re.compile(
+        r"(?m)^\s*(?P<benefit>[A-Z][A-Z0-9 &;,/.'()-]*?)\s*\n"
+        r"\s*(?P<carrier>[A-Z][A-Z0-9 &.,'()-]+?)\s*\n"
+        r"\s*(?P<policy>[A-Z0-9-]{3,})\s*\n"
+        r"\s*(?P<begin>\d{2}[-/]\d{2}[-/]\d{4})\s*\n"
+        r"\s*(?P<end>\d{2}[-/]\d{2}[-/]\d{4})\s*$"
+    )
+    summaries: list[ScheduleAWorksheetSummary] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for match in row_pattern.finditer(section):
+        benefit = clean_extracted_value(match.group("benefit")).rstrip(";")
+        carrier = clean_extracted_value(match.group("carrier"))
+        policy = clean_extracted_value(match.group("policy"))
+        begin = normalize_schedule_a_date(match.group("begin").replace("-", "/"), end_of_month=False)
+        end = normalize_schedule_a_date(match.group("end").replace("-", "/"), end_of_month=True)
+        key = tuple(normalize_compare_key(value) for value in (benefit, carrier, policy, begin, end))
+        if key in seen:
+            continue
+        seen.add(key)
+        summaries.append(
+            ScheduleAWorksheetSummary(
+                source="Plan Worksheet fully-insured benefit table",
+                carrier_name=carrier,
+                account_number=policy,
+                period_begin=begin,
+                period_end=end,
+                coverage=benefit,
+                values=[
+                    ScheduleAWorksheetValue(
+                        label="Worksheet policy number",
+                        value=policy,
+                        source="Fully-Insured Benefits table",
+                        coverage=benefit,
+                    )
+                ],
+                notes=["Carrier, policy number, and policy dates were read from the Plan Worksheet table."],
+            )
+        )
+    return summaries
+
+
 def file_type_for_groundx(file_name: str) -> str:
     extension = os.path.splitext(file_name.lower())[1].lstrip(".")
     if extension == "jpeg":
@@ -2190,11 +2253,15 @@ def local_schedule_a_pdf_result(
 ) -> NormalizedExtractionResult:
     is_pdf = file_name.lower().endswith(".pdf")
     page_texts = extract_pdf_text_pages(file_bytes) if is_pdf else []
+    layout_page_texts = extract_pdf_layout_text_pages(file_bytes) if is_pdf else []
+    broker_page_texts = layout_page_texts or page_texts
     provider_broker_rows = [
         *extract_cigna_schedule_a_broker_rows(page_texts),
         *extract_anthem_broker_rows(page_texts),
         *extract_aig_broker_rows(page_texts),
         *extract_vsp_broker_rows(page_texts),
+        *extract_prudential_broker_rows(broker_page_texts),
+        *extract_aflac_broker_rows(broker_page_texts),
     ]
     omaha_rows = extract_united_omaha_combined_broker_rows(page_texts)
     if omaha_rows:
@@ -2398,7 +2465,11 @@ def prefer_authoritative_cigna_summary_fields(
     if not summary_fields:
         return fields
     authoritative = {field.field_name: field for field in summary_fields}
-    restored = [field for field in fields if field.field_name not in authoritative]
+    restored = [
+        field
+        for field in fields
+        if field.field_name not in authoritative and not field.field_name.startswith("9")
+    ]
     for field in summary_fields:
         authoritative_field = field.model_copy(deep=True)
         authoritative_field.candidate_values = [authoritative_field.value]
@@ -2420,6 +2491,58 @@ def prefer_authoritative_aig_fields(
         authoritative_field = field.model_copy(deep=True)
         authoritative_field.candidate_values = [authoritative_field.value]
         restored.append(authoritative_field)
+    return restored
+
+
+def prefer_authoritative_aflac_fields(
+    fields: list[NormalizedExtractionField],
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Keep AFLAC's explicit labels and drop a false EIN inferred from its contract."""
+    authoritative_fields = extract_aflac_schedule_a_fields(page_texts)
+    if not authoritative_fields:
+        return fields
+    owned = {
+        "1a. Name of Insurance Company",
+        "1b. Insurance Carrier EIN",
+        "1c. NAIC Code",
+        "1d. Contract/Policy Number",
+        "1e. Persons Covered (End of Policy Year)",
+        "1f. Policy Year Beginning Date",
+        "1g. Policy Year Ending Date",
+        "10a. Total premiums or subscription charges paid to carrier",
+        "1e. Plan Sponsor EIN",
+    }
+    restored = [field for field in fields if field.field_name not in owned]
+    restored.extend(field.model_copy(update={"candidate_values": [field.value]}) for field in authoritative_fields)
+    return restored
+
+
+def prefer_authoritative_prudential_fields(
+    fields: list[NormalizedExtractionField],
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    authoritative_fields = extract_prudential_schedule_a_fields(page_texts)
+    if not authoritative_fields:
+        return fields
+    owned = {
+        "1a. Name of Insurance Company",
+        "1b. Insurance Carrier EIN",
+        "1c. NAIC Code",
+        "1d. Contract/Policy Number",
+        "1e. Persons Covered (End of Policy Year)",
+        "1f. Policy Year Beginning Date",
+        "1g. Policy Year Ending Date",
+        "10a. Total premiums or subscription charges paid to carrier",
+    }
+    false_form_5500_labels = {"1d. Plan Sponsor Name", "1e. Plan Sponsor EIN"}
+    restored = [
+        field
+        for field in fields
+        if field.field_name not in owned | false_form_5500_labels
+        and not field.field_name.startswith("9")
+    ]
+    restored.extend(field.model_copy(update={"candidate_values": [field.value]}) for field in authoritative_fields)
     return restored
 
 
@@ -2696,6 +2819,14 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     plain_pages = extract_pdf_text_pages(file_bytes)
     layout_pages = extract_pdf_layout_text_pages(file_bytes)
     positioned_brokers = extract_position_aware_schedule_a_broker_rows(layout_pages)
+    specialized_brokers = [
+        *extract_cigna_schedule_a_broker_rows(plain_pages),
+        *extract_anthem_broker_rows(plain_pages),
+        *extract_aig_broker_rows(plain_pages),
+        *extract_vsp_broker_rows(plain_pages),
+        *extract_prudential_broker_rows(layout_pages),
+        *extract_aflac_broker_rows(layout_pages),
+    ]
     fields = [
         *_extract_fields_from_pages(plain_pages, rules=rules),
         *extract_layout_aware_schedule_a_fields(file_bytes),
@@ -2705,10 +2836,13 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         *extract_rules_driven_schedule_a_fields(layout_pages, rules=rules),
         *schedule_a_broker_compensation_fields(positioned_brokers),
         *schedule_a_broker_compensation_fields(extract_layout_broker_rows(layout_pages)),
+        *schedule_a_broker_compensation_fields(specialized_brokers),
     ]
     selected = select_best_schedule_a_fields(fields)
     selected = prefer_authoritative_anthem_fields(selected, plain_pages)
     selected = prefer_authoritative_aig_fields(selected, plain_pages)
+    selected = prefer_authoritative_aflac_fields(selected, plain_pages)
+    selected = prefer_authoritative_prudential_fields(selected, plain_pages)
     selected = prefer_authoritative_cigna_summary_fields(selected, plain_pages)
     selected = prefer_authoritative_united_omaha_fields(selected, plain_pages)
     return _prefer_authoritative_aetna_attachment_fields(selected)
@@ -3287,6 +3421,25 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
         }
         fields = [field for field in fields if field.field_name not in authoritative_names]
         fields.extend(anthem_fields)
+    aflac_fields = extract_aflac_schedule_a_fields(page_texts)
+    if aflac_fields:
+        authoritative_names = {
+            "1a. Name of Insurance Company",
+            "1b. Insurance Carrier EIN",
+            "1c. NAIC Code",
+            "1d. Contract/Policy Number",
+            "1e. Persons Covered (End of Policy Year)",
+            "1f. Policy Year Beginning Date",
+            "1g. Policy Year Ending Date",
+            "3a. Name of Agent/Broker/Person",
+            "3b. Amount of Commissions",
+            "3c. Amount of Fees",
+            "3d. Purpose",
+            "3e. Organizational Code",
+            "10a. Total premiums or subscription charges paid to carrier",
+        }
+        fields = [field for field in fields if field.field_name not in authoritative_names]
+        fields.extend(aflac_fields)
     aig_fields = extract_aig_schedule_a_fields(page_texts)
     if aig_fields:
         authoritative_names = {
@@ -3478,12 +3631,17 @@ def schedule_a_broker_compensation_fields(rows: list[ScheduleABrokerRow]) -> lis
     # More than one recipient means the filing total is the sum, and a human
     # needs to split it across rows - flag it by lowering confidence.
     confidence = single_row_confidence if len(rows) == 1 else 0.6
-    add("3b. Amount of Commissions", sum_money_values(*(row.commission_total for row in rows)), confidence)
-    add("3c. Amount of Fees", sum_money_values(*(row.fee_total for row in rows)), confidence)
-    purpose = next(
-        (money_row.purpose for row in rows for money_row in row.commission_rows if money_row.purpose),
-        None,
-    )
+    commission_total = sum_money_values(*(row.commission_total for row in rows))
+    fee_total = sum_money_values(*(row.fee_total for row in rows))
+    add("3b. Amount of Commissions", commission_total, confidence)
+    add("3c. Amount of Fees", fee_total, confidence)
+    purposes = {
+        clean_extracted_value(money_row.purpose)
+        for row in rows
+        for money_row in [*row.commission_rows, *row.fee_rows]
+        if money_row.purpose
+    }
+    purpose = next(iter(purposes)) if len(purposes) == 1 else derive_schedule_a_purpose(commission_total, fee_total)
     add("3d. Purpose", purpose, 0.8)
     add("3e. Organizational Code", primary.organization_code, 0.8)
     return fields
@@ -4289,6 +4447,7 @@ def _cigna_primary_broker_name(text: str) -> str | None:
     search_text = text[start.end() :] if start else text
     for line in search_text.splitlines():
         candidate = line.strip().rstrip(",").strip()
+        candidate = re.sub(r",\s*\d.*$", "", candidate)
         if not candidate or candidate.upper() != candidate:
             continue
         if not re.search(r"\b(?:LLC|INC|CORP|SERVICES|ASSOCIATES|AGENCY|BROKER)\b", candidate):
@@ -4389,6 +4548,42 @@ def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> l
     if not primary:
         return _cigna_plan_detail_broker_rows(page_texts) if _cigna_schedule_a_support_page(page_texts) else []
     page, text = primary
+    compact = re.sub(r"\s+", " ", text).strip()
+    recipient_pattern = re.compile(
+        r"(?P<name>[A-Z][A-Z .&'-]+?(?:INC|LLC|CORP)),\s*"
+        r"(?P<address>.+?),\s*(?P<state>[A-Z]{2}),\s*(?P<zip>\d{5}(?:-?\d{4})?)\s+"
+        r"(?P<commission>\$[\d,]+(?:\.\d{2})?)"
+        r"(?:\s+(?P<fee>\$[\d,]+(?:\.\d{2})?))?",
+    )
+    parsed_rows: list[ScheduleABrokerRow] = []
+    for match in recipient_pattern.finditer(compact):
+        address_parts = [clean_extracted_value(part) for part in match.group("address").split(",") if clean_extracted_value(part)]
+        if len(address_parts) < 2:
+            continue
+        city = address_parts[-1]
+        street_lines = address_parts[:-1]
+        commission = money_value(match.group("commission")) or "0"
+        fee = money_value(match.group("fee")) if match.group("fee") else "0"
+        purpose = "General Agent Payments" if (parse_numeric_amount(fee) or 0) else "Commissions"
+        parsed_rows.append(
+            ScheduleABrokerRow(
+                name=clean_extracted_value(match.group("name")),
+                address_line_1=street_lines[0] if street_lines else None,
+                address_line_2=" ".join(street_lines[1:]) or None,
+                city=city,
+                state=match.group("state"),
+                zip_code=normalize_zip_code(match.group("zip")),
+                organization_code="3",
+                commission_rows=([ScheduleABrokerMoneyRow(amount=commission, purpose="Commissions")] if (parse_numeric_amount(commission) or 0) else []),
+                fee_rows=([ScheduleABrokerMoneyRow(amount=fee, purpose=purpose)] if (parse_numeric_amount(fee) or 0) else []),
+                commission_total=commission,
+                fee_total=fee,
+                source_page=page,
+                confidence=0.995,
+            )
+        )
+    if parsed_rows:
+        return parsed_rows
     name = _cigna_primary_broker_name(text)
     if not name:
         return []
@@ -5434,6 +5629,131 @@ def whole_dollar_money_value(value: str | None) -> str | None:
         return money_value(value or "")
 
 
+def _is_aflac_schedule_a_earnings_report(text: str) -> bool:
+    upper = str(text or "").upper()
+    return "SCHEDULE A EARNINGS REPORT" in upper and "AFLAC" in upper
+
+
+def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
+    """Extract AFLAC's labelled earnings-report identity without guessing an EIN.
+
+    This report labels a value shaped like an EIN as ``CONTRACT NUMBER``.  The
+    label is authoritative: treating it as the carrier or sponsor EIN silently
+    changes the Schedule A identity and can update the wrong FT Williams row.
+    """
+    full_text = "\n\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    if not _is_aflac_schedule_a_earnings_report(full_text):
+        return []
+    source_page = next((page for page, text in page_texts if _is_aflac_schedule_a_earnings_report(normalize_ocr_text(text))), 1)
+    group = regex_first(full_text, [r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+([A-Z0-9-]+)"])
+    people = regex_first(full_text, [r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+[A-Z0-9-]+\s+([0-9,]+)"])
+    premium = regex_first(full_text, [r"Total\s+Premium\s+Collected\s+\$?\s*([0-9,]+(?:\.\d{2})?)"])
+    carrier = regex_first(full_text, [r"Name\s+of\s+Insurance\s+Carrier\s+(AFLAC)"], flags=re.IGNORECASE)
+    naic = regex_first(full_text, [r"NAIC\s+CODE\s+([0-9]{5})"], flags=re.IGNORECASE)
+    contract = regex_first(full_text, [r"CONTRACT\s+NUMBER\s+([A-Z0-9-]+)"], flags=re.IGNORECASE)
+    period = regex_first(
+        full_text,
+        [r"PLAN\s+YEAR\s+(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})"],
+        flags=re.IGNORECASE,
+        groups=True,
+    )
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if clean and not is_blank_extraction_value(clean):
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=field_name,
+                    value=clean,
+                    confidence=0.995,
+                    page=source_page,
+                    source_text="AFLAC Schedule A earnings report",
+                )
+            )
+
+    add("1a. Name of Insurance Company", (carrier or "AFLAC").upper())
+    add("1c. NAIC Code", naic)
+    add("1d. Contract/Policy Number", contract or group)
+    add("1e. Persons Covered (End of Policy Year)", money_value(people or ""))
+    if isinstance(period, tuple) and len(period) == 2:
+        add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
+        add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
+    add("10a. Total premiums or subscription charges paid to carrier", money_value(premium or ""))
+    return fields
+
+
+def extract_aflac_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Read all AFLAC broker rows from layout-preserving PDF text."""
+    if not any(
+        "SCHEDULE A EARNINGS REPORT" in str(text or "").upper()
+        and "COMMISSIONS PAID" in str(text or "").upper()
+        for _, text in page_texts
+    ):
+        return []
+    rows: list[ScheduleABrokerRow] = []
+    amount_line = re.compile(
+        r"^\s*\$\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)\s*$"
+    )
+    city_line = re.compile(r"^(?P<city>.+?),\s*(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)$")
+    for page, text in page_texts:
+        normalized = str(text or "").replace("\r", "")
+        if page == page_texts[0][0] and "Agent Address Block w/ Full Name" in normalized:
+            normalized = normalized.split("Agent Address Block w/ Full Name", 1)[1]
+            normalized = re.sub(r"^.*?Fees\s+Paid\s*\n", "", normalized, count=1, flags=re.IGNORECASE | re.DOTALL)
+        block: list[str] = []
+        for raw_line in normalized.splitlines():
+            line = clean_extracted_value(raw_line)
+            if not line:
+                continue
+            amounts = amount_line.match(line)
+            if not amounts:
+                if not line.upper().startswith("SUM:"):
+                    block.append(line)
+                continue
+            city_index = next((index for index in range(len(block) - 1, -1, -1) if city_line.match(block[index].upper())), None)
+            if city_index is None:
+                block = []
+                continue
+            city_match = city_line.match(block[city_index].upper())
+            address_lines = block[:city_index]
+            first_address = next((index for index, value in enumerate(address_lines) if re.search(r"\d", value)), None)
+            if first_address is None or first_address == 0:
+                block = []
+                continue
+            name = clean_extracted_value(" ".join(address_lines[:first_address])).lstrip("- ").upper()
+            street_lines = address_lines[first_address:]
+            if not name or not is_probable_person_or_entity_name(name):
+                block = []
+                continue
+            commission = money_value(amounts.group("commission")) or "0"
+            fee = money_value(amounts.group("fee")) or "0"
+            source = f"AFLAC broker row: {name}; commission {commission}; fee {fee}."
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    address_line_1=street_lines[0] if street_lines else None,
+                    address_line_2=" ".join(street_lines[1:]) or None,
+                    city=clean_extracted_value(city_match.group("city")),
+                    state=city_match.group("state"),
+                    zip_code=city_match.group("zip"),
+                    organization_code="3",
+                    commission_rows=([ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if (parse_numeric_amount(commission) or 0) else []),
+                    fee_rows=([ScheduleABrokerMoneyRow(amount=fee, purpose="FEES") ] if (parse_numeric_amount(fee) or 0) else []),
+                    commission_total=commission,
+                    fee_total=fee,
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=page,
+                    confidence=0.995,
+                    evidence=[SourceEvidence(provider="AFLAC Schedule A broker parser", page=page, source_text=source)],
+                )
+            )
+            block = []
+    return rows
+
+
 def _is_anthem_schedule_a_report(text: str) -> bool:
     upper = str(text or "").upper()
     return (
@@ -5445,49 +5765,55 @@ def _is_anthem_schedule_a_report(text: str) -> bool:
 
 def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
     pattern = re.compile(
-        r"(?P<name>GALLAGHER\s+BENEFIT\s+SERVICES\s+INC)\s*-\s*"
+        r"(?P<name>(?:[A-Z][A-Z0-9 &.,']*(?:\n|\s+)){1,3}?)\s*-\s*"
         r"(?P<street>[0-9]{1,6}\s+.+?),\s*"
         r"(?P<city>[A-Za-z .'-]+),\s*(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)\s+"
         r"\$\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s+"
         r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
-        re.IGNORECASE | re.DOTALL,
+        re.DOTALL,
     )
     rows: list[ScheduleABrokerRow] = []
     for page, text in page_texts:
         normalized = normalize_ocr_text(text)
         if not _is_anthem_schedule_a_report(normalized):
             continue
-        match = pattern.search(normalized)
-        if not match:
-            continue
-        commission = money_value(match.group("commission")) or "0"
-        fee = money_value(match.group("fee")) or "0"
-        source_text = "Anthem Schedule A fee and commission table"
-        rows.append(
-            ScheduleABrokerRow(
-                name=clean_extracted_value(match.group("name")).upper(),
-                address_line_1=clean_extracted_value(match.group("street")).upper(),
-                city=clean_extracted_value(match.group("city")).upper(),
-                state=match.group("state").upper(),
-                zip_code=match.group("zip"),
-                organization_code="3",
-                commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
-                fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")],
-                commission_total=commission,
-                fee_total=fee,
-                commission_source_text=source_text,
-                fee_source_text=source_text,
-                source_page=page,
-                confidence=0.995,
-                evidence=[
-                    SourceEvidence(
-                        provider="Anthem Schedule A broker parser",
-                        page=page,
-                        source_text=source_text,
-                    )
-                ],
+        broker_section = re.split(r"2\s+and\s+3\.\s*Insurance\s+Fee", normalized, maxsplit=1, flags=re.IGNORECASE)
+        search_text = broker_section[-1]
+        search_text = re.split(r"\*Fees\s+may\s+include", search_text, maxsplit=1, flags=re.IGNORECASE)[0]
+        for match in pattern.finditer(search_text):
+            name = clean_extracted_value(match.group("name")).upper()
+            name = re.sub(r"^(?:AND\s+)?COMMISSION\s+PAID\s+FEES\s+PAID\*\s*", "", name)
+            name = re.sub(r"^(?:HEALTH\s+)?(?:PPO|HMO|INDEMNITY)\s+", "", name)
+            if not is_probable_person_or_entity_name(name):
+                continue
+            commission = money_value(match.group("commission")) or "0"
+            fee = money_value(match.group("fee")) or "0"
+            source_text = "Anthem Schedule A fee and commission table"
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    address_line_1=clean_extracted_value(match.group("street")).upper(),
+                    city=clean_extracted_value(match.group("city")).upper(),
+                    state=match.group("state").upper(),
+                    zip_code=match.group("zip"),
+                    organization_code="3",
+                    commission_rows=([ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if (parse_numeric_amount(commission) or 0) else []),
+                    fee_rows=([ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")] if (parse_numeric_amount(fee) or 0) else []),
+                    commission_total=commission,
+                    fee_total=fee,
+                    commission_source_text=source_text,
+                    fee_source_text=source_text,
+                    source_page=page,
+                    confidence=0.995,
+                    evidence=[
+                        SourceEvidence(
+                            provider="Anthem Schedule A broker parser",
+                            page=page,
+                            source_text=source_text,
+                        )
+                    ],
+                )
             )
-        )
     return rows
 
 
@@ -5502,11 +5828,11 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
     )
     carrier = regex_first(
         source_text,
-        [r"(Anthem\s+Blue\s+Cross\s+Life\s+and\s+Health\s+Insurance\s+Company)\s*\(G0360\)"],
+        [r"(Anthem\s+Blue\s+Cross(?:\s+Life\s+and\s+Health\s+Insurance\s+Company)?)\s*\(G\d+\)"],
         flags=re.IGNORECASE,
     )
-    ein = regex_first(source_text, [r"\(G0360\)\s+(\d{2}-\d{7})"], flags=re.IGNORECASE)
-    naic = regex_first(source_text, [r"\(G0360\)\s+\d{2}-\d{7}\s+(\d{5})"], flags=re.IGNORECASE)
+    ein = regex_first(source_text, [r"\(G\d+\)\s+(\d{2}-\d{7})"], flags=re.IGNORECASE)
+    naic = regex_first(source_text, [r"\(G\d+\)\s+\d{2}-\d{7}\s+(\d{5})"], flags=re.IGNORECASE)
     contract = regex_first(source_text, [r"Customer\s+ID\s*:\s*([A-Za-z0-9-]+)"], flags=re.IGNORECASE)
     period = regex_first(
         source_text,
@@ -5525,11 +5851,13 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         flags=re.IGNORECASE,
     )
     total_premium = sum_money_values(*premiums) if premiums else None
-    persons_covered = regex_first(
+    enrollment_rows = re.findall(
+        r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*[0-9,]+(?:\.\d{2})?\s+"
+        r"\d[\d,]*\s*/\s*(\d[\d,]*)",
         part_three,
-        [r"Health\s+PPO\s+\$\s*[0-9,]+(?:\.\d{2})?\s+(\d[\d,]*)\s*/\s*\d[\d,]*"],
         flags=re.IGNORECASE,
     )
+    persons_covered = max_numeric_string(enrollment_rows)
     fields: list[NormalizedExtractionField] = []
 
     def add(field_name: str, value: str | None) -> None:
@@ -5555,8 +5883,8 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
     if rows:
         add("3a. Name of Agent/Broker/Person", rows[0].name)
-        add("3b. Amount of Commissions", rows[0].commission_total)
-        add("3c. Amount of Fees", rows[0].fee_total)
+        add("3b. Amount of Commissions", sum_money_values(*(row.commission_total for row in rows)))
+        add("3c. Amount of Fees", sum_money_values(*(row.fee_total for row in rows)))
         add("3d. Purpose", "COMMISSIONS & FEES")
         add("3e. Organizational Code", "3")
     add("10a. Total premiums or subscription charges paid to carrier", total_premium)
@@ -5831,7 +6159,8 @@ def extract_vsp_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
         r"or\s+Contract\s+Year\s*"
         r"(?P<name>[A-Za-z][A-Za-z0-9&.,' -]*?)\s*"
         r"\$\s*(?P<amount>[0-9,]+(?:\.\d{2})?)\s*"
-        r"(?P<street>[0-9]{1,6}\s+[A-Za-z0-9 .'-]+?(?:" + street_suffix + r"))\s*"
+        r"(?P<street>[0-9]{1,6}\s+[A-Za-z0-9 .'-]+?(?:" + street_suffix + r")"
+        r"(?:\s+\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL))?)\s*"
         r"(?P<city>[A-Za-z][A-Za-z .'-]+?)\s+"
         r"(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{5}(?:-[0-9]{4})?)\b",
         re.IGNORECASE,
@@ -7333,25 +7662,161 @@ def max_numeric_string(values: list[str | None]) -> str | None:
     return f"{best:,}" if best is not None else None
 
 
+def _extract_prudential_layout_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    rows_by_name: dict[str, ScheduleABrokerRow] = {}
+    record_start = re.compile(r"^\s*(?P<contract>[A-Z0-9-]{4,})\s+(?P<rest>[A-Za-z].*)$")
+    amount_pattern = re.compile(r"\$\s*([0-9,]+(?:\.\d{2})?)")
+    city_pattern = re.compile(r"^(?P<city>.+?),\s*(?P<state>[A-Z]{2})\s+(?P<zip>[0-9]{4,5}(?:-[0-9]{4})?)$", re.IGNORECASE)
+    known_contracts = {
+        summary.account_number
+        for summary in extract_prudential_schedule_a_summaries(page_texts)
+        if summary.account_number
+    }
+    for page, text in page_texts:
+        if "INSURED WELFARE PLAN COMMISSION INFORMATION" not in str(text or "").upper():
+            continue
+        lines = [re.sub(r"\s+", " ", str(line)).strip() for line in str(text).splitlines()]
+        candidate_starts = [(index, record_start.match(line)) for index, line in enumerate(lines) if record_start.match(line)]
+        token_counts: dict[str, int] = {}
+        for _, match in candidate_starts:
+            token_counts[match.group("contract")] = token_counts.get(match.group("contract"), 0) + 1
+        starts = [
+            index
+            for index, match in candidate_starts
+            if match.group("contract") in known_contracts or token_counts.get(match.group("contract"), 0) >= 2
+        ]
+        for position, start in enumerate(starts):
+            end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+            block = [line for line in lines[start:end] if line]
+            if not block:
+                continue
+            first = record_start.match(block[0])
+            if not first:
+                continue
+            name_parts: list[str] = []
+            remaining: list[str] = []
+            amount: str | None = None
+            money_index: int | None = None
+            for index, line in enumerate([first.group("rest"), *block[1:]]):
+                money = amount_pattern.search(line)
+                if money:
+                    prefix = clean_extracted_value(line[: money.start()])
+                    if prefix:
+                        name_parts.append(prefix)
+                    amount = money_value(money.group(1))
+                    money_index = index
+                    remaining = [*([clean_extracted_value(line[money.end() :])] if clean_extracted_value(line[money.end() :]) else []), *block[index + 1 :]]
+                    break
+                name_parts.append(line)
+            if not amount or money_index is None:
+                continue
+            city_index = next((index for index, line in enumerate(remaining) if city_pattern.match(line)), None)
+            if city_index is None:
+                continue
+            before_city = [
+                line
+                for line in remaining[:city_index]
+                if line
+                and normalize_compare_key(line)
+                not in {
+                    "salesandservicecompensation",
+                    "supplementalcommissions",
+                    "thirdpartyadministrationfees",
+                }
+            ]
+            first_address = next(
+                (
+                    index
+                    for index, value in enumerate(before_city)
+                    if re.search(
+                        r"\d|\b(?:STREET|ST|AVENUE|AVE|ROAD|RD|PARKWAY|PKWY|DRIVE|DR|BOULEVARD|BLVD|LANE|LN|WAY|COURT|CT)\b",
+                        value,
+                        flags=re.IGNORECASE,
+                    )
+                ),
+                None,
+            )
+            if first_address is None:
+                continue
+            compact_inc = re.match(r"^INC(?P<address>\d.*)$", before_city[first_address], flags=re.IGNORECASE)
+            if compact_inc:
+                name_parts.append("INC")
+                before_city[first_address] = compact_inc.group("address")
+            name_parts.extend(before_city[:first_address])
+            name = normalize_prudential_broker_name(" ".join(name_parts))
+            address_lines = before_city[first_address:]
+            city = city_pattern.match(remaining[city_index])
+            if not name or not is_probable_person_or_entity_name(name) or not city:
+                continue
+            key = normalize_compare_key(name)
+            row = rows_by_name.get(key)
+            if not row:
+                row = ScheduleABrokerRow(
+                    name=name,
+                    address_line_1=address_lines[-1] if address_lines else None,
+                    address_line_2=" ".join(address_lines[:-1]) or None,
+                    city=clean_extracted_value(city.group("city")),
+                    state=city.group("state").upper(),
+                    zip_code=normalize_zip_code(city.group("zip")),
+                    organization_code=prudential_org_code_for_broker(name),
+                    commission_rows=[],
+                    fee_rows=[],
+                    source_page=page,
+                    confidence=0.995,
+                )
+                rows_by_name[key] = row
+            purpose = prudential_purpose_for_broker(name)
+            money_row = ScheduleABrokerMoneyRow(amount=amount, purpose=purpose)
+            if prudential_amount_is_commission(name, purpose):
+                row.commission_rows.append(money_row)
+            else:
+                row.fee_rows.append(money_row)
+    rows = list(rows_by_name.values())
+    for row in rows:
+        row.commission_total = _sum_money_rows(row.commission_rows) if row.commission_rows else "0"
+        row.fee_total = _sum_money_rows(row.fee_rows) if row.fee_rows else "0"
+    return rows
+
+
 def extract_prudential_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
-    combined = "\n".join(text for _, text in page_texts if "Insured Welfare Plan Commission Information" in text or "Organization" in text and "code" in text)
+    layout_rows = _extract_prudential_layout_broker_rows(page_texts)
+    if layout_rows:
+        return layout_rows
+    commission_pages = [
+        (page, text)
+        for page, text in page_texts
+        if "Insured Welfare Plan Commission Information" in text
+        or "Organization" in text and "code" in text
+    ]
+    combined = "\n".join(text for _, text in commission_pages)
     normalized = normalize_ocr_text(combined)
     if "GRP 27722" not in normalized and "INSURED WELFARE PLAN COMMISSION INFORMATION" not in normalized.upper():
         return []
     rows_by_name: dict[str, ScheduleABrokerRow] = {}
     commission_section = re.split(r"\n\s*Includes amounts paid", normalized, flags=re.IGNORECASE)[0]
-    segments = re.split(r"(?=\n?\s*71492\s+)", commission_section)
+    contract_numbers = [
+        summary.account_number
+        for summary in extract_prudential_schedule_a_summaries(page_texts)
+        if summary.account_number
+    ]
+    if not contract_numbers:
+        contract_numbers = re.findall(r"(?m)^\s*([A-Z0-9-]{4,})\s+[A-Z]", commission_section)
+    contract_numbers = list(dict.fromkeys(contract_numbers))
+    if not contract_numbers:
+        return []
+    contract_pattern = "(?:" + "|".join(re.escape(value) for value in contract_numbers) + ")"
+    segments = re.split(rf"(?=\n?\s*{contract_pattern}\s+)", commission_section)
     for segment in segments:
         segment = segment.strip()
-        if not segment.startswith("71492"):
+        if not re.match(rf"{contract_pattern}\b", segment):
             continue
-        match = re.match(r"71492\s+(.+?)\s+\$([0-9,]+(?:\.\d{2})?)\s*(.*)$", segment, flags=re.DOTALL)
+        match = re.match(rf"{contract_pattern}\s+(.+?)\s+\$([0-9,]+(?:\.\d{{2}})?)\s*(.*)$", segment, flags=re.DOTALL)
         if not match:
             continue
         raw_name = clean_extracted_value(re.sub(r"\s+", " ", match.group(1)))
         amount = money_value(match.group(2))
         address_lines = [line.strip() for line in match.group(3).splitlines() if line.strip()]
-        address_lines = [line for line in address_lines if not re.match(r"71492\b", line)]
+        address_lines = [line for line in address_lines if not re.match(rf"{contract_pattern}\b", line)]
         city = state = zip_code = None
         city_line_index = None
         for index, line in enumerate(address_lines):
@@ -7381,7 +7846,7 @@ def extract_prudential_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sc
                 organization_code=prudential_org_code_for_broker(name),
                 commission_rows=[],
                 fee_rows=[],
-                source_page=14,
+                source_page=commission_pages[0][0] if commission_pages else None,
                 confidence=0.9,
             )
             rows_by_name[key] = row

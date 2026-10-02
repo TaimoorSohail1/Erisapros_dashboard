@@ -8,10 +8,48 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import FieldRule, FieldRuleMappingMode, FormType, NormalizedExtractionField, NormalizedExtractionResult
-from app.services.extractor import ExtractionService, parse_plan_worksheet_text
+from app.services.extractor import (
+    ExtractionService,
+    extract_plan_worksheet_schedule_a_summaries,
+    parse_plan_worksheet_text,
+)
 
 
 class PlanWorksheetExtractionTests(unittest.TestCase):
+    def test_fully_insured_table_extracts_unique_carrier_policy_and_dates(self):
+        text = """
+        Fully-Insured Benefits
+        Benefit
+        Carrier
+        Policy #
+        Begin Policy Year
+        End Policy Year
+        HEALTH; PPO;
+        ANTHEM BLUE CROSS
+        300683
+        01-01-2025
+        12-31-2025
+        LIFE; LTD; AD&D
+        PRUDENTIAL INSURANCE COMPANY OF AMERICA
+        15408
+        01-01-2025
+        12-31-2025
+        HEALTH; PPO;
+        ANTHEM BLUE CROSS
+        300683
+        01-01-2025
+        12-31-2025
+        Self-Funded Benefits
+        """
+
+        summaries = extract_plan_worksheet_schedule_a_summaries(text)
+
+        self.assertEqual(len(summaries), 2)
+        self.assertEqual(summaries[0].carrier_name, "ANTHEM BLUE CROSS")
+        self.assertEqual(summaries[0].account_number, "300683")
+        self.assertEqual(summaries[0].period_begin, "01/01/2025")
+        self.assertEqual(summaries[1].coverage, "LIFE; LTD; AD&D")
+
     def test_published_extraction_only_rule_can_capture_a_custom_worksheet_field(self):
         rule = FieldRule(
             key="custom_filing_signer_email",

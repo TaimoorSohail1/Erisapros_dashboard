@@ -68,9 +68,9 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                 form_type = form_type_for_document(document_type)
                 extraction = await extractor.extract_document(file_bytes, file_name, document_type)
                 providers.append(f"{document_label(document_type)}: {extraction.provider}")
+                schedule_a_worksheet_summaries.extend(extraction.schedule_a_worksheet_summaries)
                 if document_type == DocumentType.SCHEDULE_A:
                     schedule_a_broker_rows.extend(extraction.schedule_a_broker_rows)
-                    schedule_a_worksheet_summaries.extend(extraction.schedule_a_worksheet_summaries)
                     schedule_a_classification_signals.extend(extraction.classification_signals)
                 raw_items.append(
                     {
