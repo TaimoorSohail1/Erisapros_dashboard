@@ -1118,6 +1118,7 @@ class ShareFileService:
             change_type = self._sharefile_change_type(existing, file_item)
             if item_id in (force_reprocess_item_ids or set()):
                 change_type = "UPDATED"
+                file_item["force_reprocess"] = True
             if existing_filing and existing_filing.status in {FilingStatus.WAITING_FOR_WORKSHEET, FilingStatus.WAITING_FOR_SCHEDULE_A}:
                 change_type = existing_filing.status.value
             if change_type == "NEW":
@@ -1318,7 +1319,8 @@ class ShareFileService:
                     continue
 
                 existing = await self._find_active_filing_by_package_key(package_key) or await self._find_existing_package(package_files)
-                if existing and not self._package_changed(existing, package_files):
+                force_reprocess = any(bool(item.get("force_reprocess")) for item in package_files)
+                if existing and not self._package_changed(existing, package_files) and not force_reprocess:
                     await self._supersede_active_filings_for_package(
                         package_key,
                         package_files,
@@ -1531,13 +1533,13 @@ class ShareFileService:
             return None
         return max(candidates, key=self._file_recency_key)
 
-    def _file_recency_key(self, file_item: dict) -> tuple[str, str, int, str]:
+    def _file_recency_key(self, file_item: dict) -> tuple[int, str, str, str]:
         name = str(file_item.get("name") or "").lower()
         revision_rank = 1 if re.search(r"\b(?:updated|revised|corrected|final)\b", name) else 0
         return (
+            revision_rank,
             str(file_item.get("modified_at") or ""),
             str(file_item.get("created_at") or ""),
-            revision_rank,
             str(file_item.get("id") or ""),
         )
 

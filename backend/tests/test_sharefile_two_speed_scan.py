@@ -366,6 +366,20 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         filings = await self.repo.list_filings()
         self.assertTrue(any("ClientA_Schedule_A" in filing.file_name for filing in filings))
 
+        await self.repo.upsert_sharefile_suppression(
+            "d_a_sa",
+            {"reason": "CONTROLLED_RETEST", "filing_id": "existing-filing"},
+        )
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_a", "Client A (Test)")),
+        ):
+            repeated = await service.sync_folder(BackgroundTasks(), target_folder_id="f_a")
+
+        self.assertEqual(repeated.get("synced"), 1)
+        self.assertIsNone(await self.repo.get_sharefile_suppression("d_a_sa"))
+
     async def test_quick_poll_never_marks_unvisited_files_deleted(self):
         service = ShareFileService()
         await self._baseline(service)

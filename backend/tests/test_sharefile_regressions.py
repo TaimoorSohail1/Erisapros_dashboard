@@ -492,7 +492,7 @@ class ShareFileRegressionTests(unittest.TestCase):
             "5500 Plan Worksheet - Client - PY25.docx",
             ["Client", "5500", "2025 Filing", "5500 Plan Worksheet - Client - PY25.docx"],
             DocumentType.PLAN_WORKSHEET,
-            timestamp,
+            "2026-09-30T00:05:00Z",
         )
         updated_worksheet = sharefile_file(
             "worksheet-a",
