@@ -166,6 +166,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values["1b. Insurance Carrier EIN"], "95-4331852")
         self.assertEqual(values["1c. NAIC Code"], "62825")
         self.assertEqual(values["1d. Contract/Policy Number"], "L05472")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "99")
         self.assertEqual(values["1f. Policy Year Beginning Date"], "04/01/2025")
         self.assertEqual(values["1g. Policy Year Ending Date"], "03/31/2026")
         self.assertEqual(values["3b. Amount of Commissions"], "125,287.31")
@@ -751,6 +752,37 @@ class ScheduleAExtractionTests(unittest.TestCase):
         result = supplement_schedule_a_result_with_local(provider, local)
 
         self.assertEqual(result.schedule_a_broker_rows, [local_row])
+
+    def test_authoritative_zero_compensation_table_removes_provider_broker_name(self):
+        provider = NormalizedExtractionResult(
+            provider="GroundX",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="3a. Name of Agent/Broker/Person",
+                    value="Arthur J. Gallagher Risk Management Services LLC",
+                    confidence=0.99,
+                )
+            ],
+        )
+        local = NormalizedExtractionResult(
+            provider="Local PDF parser",
+            fields=[],
+            raw={"authoritative_broker_table": True},
+            schedule_a_broker_rows=[
+                ScheduleABrokerRow(
+                    name="Arthur J. Gallagher Risk Management Services LLC",
+                    commission_total="0",
+                    fee_total="0.00",
+                )
+            ],
+        )
+
+        result = supplement_schedule_a_result_with_local(provider, local)
+
+        self.assertNotIn(
+            "3a. Name of Agent/Broker/Person",
+            {field.field_name for field in result.fields},
+        )
 
     def test_cigna_summary_page_wins_over_state_appendices(self):
         pages = [
@@ -2512,7 +2544,7 @@ LONG FORM INFORMATION
         self.assertEqual(len(rows), 8)
         self.assertEqual(rows[0].name, "GALLAGHER BENEFIT SERVICES INC")
         self.assertEqual(rows[0].commission_total, "4,144")
-        self.assertEqual(rows[1].name, "GALLAGHER BENEFIT SERVICES INC NATIONAL INCENTIVE")
+        self.assertEqual(rows[1].name, "GALLAGHER BENEFIT SERVICES INC")
         self.assertEqual(rows[1].fee_total, "1,424")
 
     def test_schedule_a_parser_maps_united_omaha_and_overrides_selected_ftw_schedule(self):
@@ -2543,6 +2575,7 @@ LONG FORM INFORMATION
         self.assertEqual(combined_rows[0].fee_total, "0")
         self.assertEqual(combined_rows[1].commission_total, "0")
         self.assertEqual(combined_rows[1].fee_total, "4,352")
+        self.assertEqual(combined_rows[1].name, "GALLAGHER BENEFIT SERVICES INC")
 
         summaries = extract_united_omaha_schedule_a_summaries(pages)
         service = FTWilliamsReviewService()

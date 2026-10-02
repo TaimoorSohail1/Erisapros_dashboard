@@ -894,13 +894,21 @@ class FTWAutomationService:
                 continue
             if field.status == ExtractedFieldStatus.EDITED:
                 return field
+            deterministic_anthem_source = (
+                field.source_text == "Anthem combined Schedule A report"
+                and field.confidence >= threshold
+                and field.page is not None
+            )
             if (
                 field.confidence >= threshold
-                and field.status not in {
-                    ExtractedFieldStatus.MISSING,
-                    ExtractedFieldStatus.LOW_CONFIDENCE,
-                    ExtractedFieldStatus.UNMAPPED,
-                }
+                and (
+                    deterministic_anthem_source
+                    or field.status not in {
+                        ExtractedFieldStatus.MISSING,
+                        ExtractedFieldStatus.LOW_CONFIDENCE,
+                        ExtractedFieldStatus.UNMAPPED,
+                    }
+                )
                 and (str(field.source_text or "").strip() or field.page is not None)
             ):
                 return field

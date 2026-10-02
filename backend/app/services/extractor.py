@@ -871,6 +871,20 @@ def supplement_schedule_a_result_with_local(
         result.schedule_a_broker_rows = [
             row.model_copy(deep=True) for row in local_result.schedule_a_broker_rows
         ]
+        if all(
+            (parse_numeric_amount(row.commission_total) or 0) == 0
+            and (parse_numeric_amount(row.fee_total) or 0) == 0
+            for row in local_result.schedule_a_broker_rows
+        ):
+            # A carrier may print a recipient row while explicitly reporting
+            # zero commissions and zero fees.  FT Williams represents that as
+            # the no-compensation checkbox; retaining a provider-generated 3a
+            # scalar creates a phantom broker and can fail its 35-char limit.
+            result.fields = [
+                field
+                for field in result.fields
+                if field.field_name != "3a. Name of Agent/Broker/Person"
+            ]
         result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
         result_raw["authoritative_broker_table"] = True
         result.raw = result_raw
@@ -5511,6 +5525,11 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         flags=re.IGNORECASE,
     )
     total_premium = sum_money_values(*premiums) if premiums else None
+    persons_covered = regex_first(
+        part_three,
+        [r"Health\s+PPO\s+\$\s*[0-9,]+(?:\.\d{2})?\s+(\d[\d,]*)\s*/\s*\d[\d,]*"],
+        flags=re.IGNORECASE,
+    )
     fields: list[NormalizedExtractionField] = []
 
     def add(field_name: str, value: str | None) -> None:
@@ -5530,6 +5549,7 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
     add("1b. Insurance Carrier EIN", ein)
     add("1c. NAIC Code", naic)
     add("1d. Contract/Policy Number", contract)
+    add("1e. Persons Covered (End of Policy Year)", persons_covered)
     if isinstance(period, tuple) and len(period) == 2:
         add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
         add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
@@ -7117,7 +7137,9 @@ def extract_united_omaha_broker_rows_from_page(text: str, coverage: str | None, 
         city, state, zip_code = split_city_state_zip(other_match.group(7))
         rows.append(
             ScheduleABrokerRow(
-                name=clean_extracted_value(f"{other_match.group(1)} {other_match.group(4)}"),
+                # The word following the organization code is the incentive
+                # program/purpose, not part of the recipient's legal name.
+                name=clean_extracted_value(other_match.group(1)),
                 address_line_1=clean_extracted_value(other_match.group(6)),
                 city=city,
                 state=state,
