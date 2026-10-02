@@ -2294,6 +2294,11 @@ class FTWilliamsReviewService:
                 created_record = self._matching_existing_schedule_a_for_create(
                     fields,
                     schedule_a_records,
+                    expected_schedule_desc=str(
+                        (existing_match or {}).get("schedule_desc")
+                        or (existing_match or {}).get("description")
+                        or ""
+                    ),
                 )
                 created_sequence = str((created_record or {}).get("ftw_seq_no") or "").strip()
                 matched_schedule_a = next(
@@ -5999,7 +6004,10 @@ class FTWilliamsReviewService:
             return "Every extracted Schedule A broker must be matched to an FT Williams row or confirmed as new before sending."
         has_schedule_xml = bool(review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
         has_schedule_updates = any(
-            field.form_type == FormType.SCHEDULE_A and field.update_included
+            field.form_type == FormType.SCHEDULE_A
+            and field.changed
+            and field.update_included
+            and field.decision == FTWFieldDecision.WILL_UPDATE
             for field in review.fields or []
         )
         if not has_schedule_xml:
@@ -6108,8 +6116,22 @@ class FTWilliamsReviewService:
         self,
         fields: list[ExtractedField],
         records: list[dict],
+        *,
+        expected_schedule_desc: str | None = None,
     ) -> dict | None:
-        """Return an existing record only when contract and carrier identity both agree."""
+        """Reconcile a create-new decision to the exact row FT Williams assigned."""
+        expected_desc_key = normalize_compare_value(expected_schedule_desc)
+        if expected_desc_key:
+            description_matches = [
+                record
+                for record in records
+                if normalize_compare_value(
+                    (record.get("query_results") or {}).get("ScheduleDesc")
+                )
+                == expected_desc_key
+            ]
+            if len(description_matches) == 1:
+                return description_matches[0]
         for record in records:
             current = record.get("query_results") or {}
             if not isinstance(current, dict) or not current:

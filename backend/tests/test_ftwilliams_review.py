@@ -5254,6 +5254,31 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn("not fully fetched: 2", error)
 
+    def test_send_update_does_not_require_schedule_xml_for_matching_schedule_fields(self):
+        review = FTWilliamsReview(
+            filing_id="form-only-update",
+            fields=[
+                FTWilliamsComparisonField(
+                    label="1a. Name of Insurance Company",
+                    form_type=FormType.SCHEDULE_A,
+                    current_value="VISION SERVICE PLAN",
+                    extracted_value="Vision Service Plan",
+                    proposed_value="Vision Service Plan",
+                    changed=False,
+                    update_included=True,
+                    decision=FTWFieldDecision.NO_CHANGE,
+                )
+            ],
+            update_xml_schedule_a="",
+        )
+
+        error = FTWilliamsReviewService(FakeFTWilliamsService())._missing_schedule_a_records_for_safe_send(
+            review,
+            check_brokers=False,
+        )
+
+        self.assertIsNone(error)
+
     def test_send_update_blocks_schedule_a_xml_that_does_not_preserve_all_fetched_records(self):
         repo = repositories.get_repository()
         filing = run_async(repo.create_filing(sample_filing()))
@@ -5367,6 +5392,32 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(xml.count("<DOLScheduleAData>"), 1)
         self.assertIn("<InsCarrierName>NEW CARRIER</InsCarrierName>", xml)
+
+    def test_create_new_reconciliation_uses_the_exact_generated_schedule_description(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "ALLONE HEALTH",
+        )
+        records = [
+            {
+                "ftw_seq_no": "5",
+                "query_results": {"ScheduleDesc": "5-1", "InsCarrierName": "ALLONE HEALTH"},
+            },
+            {
+                "ftw_seq_no": "9",
+                "query_results": {"ScheduleDesc": "ALLONEH2", "InsCarrierName": "ALLONE HEALTH"},
+            },
+        ]
+
+        matched = service._matching_existing_schedule_a_for_create(
+            [carrier],
+            records,
+            expected_schedule_desc="ALLONEH2",
+        )
+
+        self.assertEqual(matched["ftw_seq_no"], "9")
 
     def test_live_schedule_a_update_uses_fresh_snapshot_and_restores_after_readback_failure(self):
         class RecordingFTWilliamsService:
