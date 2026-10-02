@@ -344,6 +344,13 @@ def looks_like_ftw_tag(value: str) -> bool:
 def normalize_compare_value(value: object) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip().lower()
     if _looks_like_date(text):
+        parts = re.split(r"[-/]", text)
+        if len(parts) == 3:
+            first, second, third = parts
+            if len(first) == 4:
+                return f"{int(first):04d}{int(second):02d}{int(third):02d}"
+            if len(third) == 4:
+                return f"{int(third):04d}{int(first):02d}{int(second):02d}"
         return re.sub(r"\D", "", text)
     text = text.replace("&", " and ")
     return re.sub(r"\s+", " ", re.sub(r"[,\.;:]", " ", text)).strip()
@@ -434,8 +441,10 @@ def _join_address(current_values: dict[str, str], line_1: str, line_2: str, city
 
 
 def _looks_like_date(value: str) -> bool:
-    digits = re.sub(r"\D", "", value)
-    return len(digits) == 8 and bool(re.fullmatch(r"[0-9/\-]+", value))
+    return bool(
+        re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", value)
+        or re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{4}", value)
+    )
 
 
 def _looks_numeric(value: str) -> bool:

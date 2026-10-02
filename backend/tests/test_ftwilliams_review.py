@@ -1076,6 +1076,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_plan_worksheet_identity_keeps_more_complete_schedule_a_carrier_name(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "913136",
+        )
+        for extracted_name, worksheet_name in (
+            ("UnitedHealthcare Insurance Company", "United Healthcare"),
+            ("Vision Service Plan", "VSP"),
+        ):
+            carrier = self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                extracted_name,
+            )
+            summary = ScheduleAWorksheetSummary(
+                source="Plan Worksheet fully-insured benefit table",
+                carrier_name=worksheet_name,
+                account_number="913136",
+                period_begin="01/01/2025",
+                period_end="12/31/2025",
+            )
+
+            updated = service._fields_with_plan_worksheet_identity([carrier, policy], [summary])
+            updated_carrier = next(field for field in updated if field.mapped_rule_key == carrier.mapped_rule_key)
+
+            self.assertEqual(updated_carrier.proposed_value, extracted_name)
+
+    def test_compare_treats_single_digit_and_zero_padded_dates_as_equal(self):
+        self.assertFalse(values_meaningfully_different("01/01/2022", "1/1/2022", tag="PLAN_EFF_DATE"))
+
     def test_plan_worksheet_policy_mismatch_is_a_real_conflict(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(

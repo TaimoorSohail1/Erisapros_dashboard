@@ -4857,6 +4857,24 @@ class FTWilliamsReviewService:
         if not canonical_carrier:
             return fields
 
+        extracted_carrier = self._field_value_by_rule(
+            fields,
+            "schedule_a_part_i_1a_name_of_insurance_company",
+        ) or ""
+        extracted_carrier_key = self._carrier_identity_key(extracted_carrier)
+        canonical_carrier_key = self._carrier_identity_key(canonical_carrier)
+        # The worksheet often uses a benefit-table shorthand (for example,
+        # "VSP" or "United Healthcare").  That row confirms which policy the
+        # document belongs to, but it must not replace the Schedule A's more
+        # complete legal carrier name.  Permit only an exact identity or the
+        # established "and affiliates" cleanup used by carrier worksheets.
+        worksheet_is_canonical = (
+            not extracted_carrier_key
+            or extracted_carrier_key == canonical_carrier_key
+        )
+        if not worksheet_is_canonical:
+            return fields
+
         now = datetime.utcnow()
         updated: list[ExtractedField] = []
         for field in fields:
