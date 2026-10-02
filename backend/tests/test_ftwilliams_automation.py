@@ -715,6 +715,24 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(updated.automation_status, FTWAutomationStatus.COMPLETED)
         self.assertIsNotNone(updated.automation_completed_at)
 
+    def test_completed_noop_is_approved_for_dashboard_status(self):
+        filing, review, extracted, settings = self.safe_case()
+        repo = MemoryRepository()
+        saved_filing = run_async(repo.create_filing(filing))
+        service = FTWAutomationService(repo=repo, review_service=FakeAutomationReviewService(review), settings=settings)
+        decision = FTWAutomationPolicy(settings)._decision(
+            FTWAutomationStatus.COMPLETED,
+            True,
+            ["FT Williams already matches the verified extracted values; no update is needed."],
+            None,
+        )
+
+        run_async(service._persist_decision(saved_filing.id, decision, run_id="test-noop"))
+        updated = run_async(repo.get_filing(saved_filing.id))
+
+        self.assertEqual(updated.status, FilingStatus.APPROVED)
+        self.assertEqual(updated.automation_status, FTWAutomationStatus.COMPLETED)
+
     def test_readback_mismatch_marks_automation_failed_without_second_send(self):
         filing, review, extracted, settings = self.safe_case()
         repo = MemoryRepository()

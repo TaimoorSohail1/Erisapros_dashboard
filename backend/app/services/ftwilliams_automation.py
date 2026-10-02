@@ -13,6 +13,7 @@ from app.models import (
     FTWAutomationDecision,
     FTWAutomationStatus,
     FTWFieldDecision,
+    FilingStatus,
     FTWilliamsPlanLookupStatus,
     FTWilliamsQueryState,
     FTWilliamsReview,
@@ -947,6 +948,12 @@ class FTWAutomationService:
         }
         if decision.status == FTWAutomationStatus.COMPLETED:
             values["automation_completed_at"] = datetime.utcnow()
+            # A verified no-op is a successful automated outcome.  Do not
+            # leave it in the dashboard's pre-comparison Needs Review state,
+            # because that makes a correct, conflict-free filing look like it
+            # still requires a person to act.
+            values["status"] = FilingStatus.APPROVED
+            values["approved_at"] = datetime.utcnow()
         await self.repo.update_filing(filing_id, values)
 
     async def _stop_safely(
