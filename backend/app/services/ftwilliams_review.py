@@ -198,6 +198,8 @@ class FTWilliamsReviewService:
             if not filing or filing.id != filing_id:
                 raise ValueError("Filing not found")
 
+        automatic_field_state = self._automatic_field_state(fields)
+
         query_payload_base = self._query_payload_base()
         configured = bool(self.ftwilliams.status()["configured"])
         if reuse_current_snapshot and send_queries:
@@ -394,7 +396,6 @@ class FTWilliamsReviewService:
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         if apply_automatic_derivations:
-            automatic_field_state = self._automatic_field_state(fields)
             computed_contract_classification = apply_schedule_a_classification(
                 fields,
                 filing.schedule_a_classification_signals,
@@ -928,6 +929,7 @@ class FTWilliamsReviewService:
         if not payload.create_new and not str(payload.ftw_seq_no or "").strip():
             raise ValueError("FTWSeqNo is required unless creating a new Schedule A.")
         fields = [field for field in await repo.list_fields(filing_id) if not is_retired_field(field)]
+        automatic_field_state = self._automatic_field_state(fields)
         review = await repo.get_ftwilliams_review(filing_id)
         if not review:
             review = await self.prepare_review(filing_id, send_queries=False)
@@ -1053,7 +1055,6 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
-        automatic_field_state = self._automatic_field_state(fields)
         computed_contract_classification = apply_schedule_a_classification(
             fields,
             filing.schedule_a_classification_signals,
@@ -1455,9 +1456,9 @@ class FTWilliamsReviewService:
         }
 
     @staticmethod
-    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, tuple[str, ExtractedFieldStatus, str | None]]:
+    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, tuple[str, ExtractedFieldStatus, str | None, float]]:
         return {
-            field.id: (field.proposed_value, field.status, field.status_reason)
+            field.id: (field.proposed_value, field.status, field.status_reason, float(field.confidence or 0))
             for field in fields
             if field.id
         }
@@ -1466,13 +1467,18 @@ class FTWilliamsReviewService:
     async def _persist_automatic_field_changes(
         repo,
         filing_id: str,
-        before: dict[str, tuple[str, ExtractedFieldStatus, str | None]],
+        before: dict[str, tuple[str, ExtractedFieldStatus, str | None, float]],
         fields: list[ExtractedField],
     ) -> None:
         for field in fields:
             if not field.id:
                 continue
-            current = (field.proposed_value, field.status, field.status_reason)
+            current = (
+                field.proposed_value,
+                field.status,
+                field.status_reason,
+                float(field.confidence or 0),
+            )
             if before.get(field.id) == current:
                 continue
             await repo.update_field(
@@ -1481,6 +1487,7 @@ class FTWilliamsReviewService:
                 field.proposed_value,
                 status=field.status,
                 status_reason=field.status_reason,
+                confidence=field.confidence,
             )
 
     async def send_approved_update(self, filing_id: str, payload: FTWilliamsSendUpdateRequest) -> FTWilliamsReview | None:
@@ -4596,6 +4603,15 @@ class FTWilliamsReviewService:
                 or schedule_a_contract_type_allows_rule(schedule_a_contract_type, field.mapped_rule_key)
             )
             changed = values_meaningfully_different(current_value, proposed_value, tag=tag) and contract_type_allowed
+            if (
+                field.form_type == FormType.SCHEDULE_A
+                and tag == "InsContractNum"
+                and (
+                    self._normalize_contract(current_value) == self._normalize_contract(proposed_value)
+                    or self._grouped_contract_matches_various(proposed_value, current_value)
+                )
+            ):
+                changed = False
             validation_status = "VALID"
             validation_message = None
             validation_expected_format = self._field_expected_format(field, update_tag) if update_tag else None
@@ -4842,7 +4858,10 @@ class FTWilliamsReviewService:
             elif match.status == "CONFIRMED" and match.ftw_index is not None:
                 decisions[match.extracted_index] = {"ftw_index": match.ftw_index}
         if create_new:
-            decisions = {index: {"create_new": True} for index in range(len(extracted_rows))}
+            # A newly created Schedule A has no existing broker rows. Let the
+            # matcher classify each unmatched source recipient as AUTO_NEW;
+            # there is no reviewer decision to preserve or manufacture.
+            decisions = {}
         matches = match_schedule_a_brokers(extracted_rows, current_rows, decisions=decisions)
         if not all(match.resolved for match in matches):
             return matches, []

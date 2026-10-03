@@ -755,6 +755,33 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             )
         )
 
+    def test_aetna_ocr_carriel_financial_context_is_automatic(self):
+        result = NormalizedExtractionResult(
+            provider="Aetna filled Schedule A parser",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="10a. Total premiums or subscription charges paid to carrier",
+                    value="5,693,303.00",
+                    confidence=0.99,
+                    page=2,
+                    source_text=(
+                        "Total premiums or subscription charges paid to carriel "
+                        "$5,693,303.00"
+                    ),
+                )
+            ],
+        )
+
+        field = resolve_schedule_a_result(result).fields[0]
+
+        self.assertEqual(field.decision, "AUTOMATIC")
+        self.assertTrue(
+            any(
+                item.validator == "section_context" and item.status == "PASS"
+                for item in field.validation_results
+            )
+        )
+
     def test_published_rule_validator_applies_to_a_new_field_without_pipeline_code(self):
         rule = FieldRule(
             key="schedule_a_custom_risk_charge",

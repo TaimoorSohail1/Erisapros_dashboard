@@ -440,7 +440,7 @@ def _validate_financial_section_context(
             or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)
             or re.search(r"\btotal\s+premium\s+received\b", normalized)
             or re.search(
-                r"\btotal\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier",
+                r"\btotal\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrie[rl]",
                 normalized,
             )
             or (

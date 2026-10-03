@@ -276,15 +276,16 @@ class ExtractionService:
                 result.raw["authoritative_broker_table"] = True
             litera_lincoln_fields = extract_litera_lincoln_schedule_a_fields(semantic_pages)
             if litera_lincoln_fields:
+                lincoln_broker_rows = extract_litera_lincoln_schedule_a_broker_rows(
+                    semantic_pages
+                )
                 authoritative_names = {field.field_name for field in litera_lincoln_fields}
                 result.fields = [
                     field for field in result.fields
                     if field.field_name not in authoritative_names
                 ]
                 result.fields.extend(litera_lincoln_fields)
-                result.schedule_a_broker_rows = extract_litera_lincoln_schedule_a_broker_rows(
-                    semantic_pages
-                )
+                result.schedule_a_broker_rows = lincoln_broker_rows
                 result.raw = (
                     dict(result.raw)
                     if isinstance(result.raw, dict)
@@ -3875,7 +3876,7 @@ def extract_litera_lincoln_schedule_a_fields(
         ("1g. Policy Year Ending Date", _normalize_position_date(highest[3]) if highest else None, source),
         ("10a. Total premiums or subscription charges paid to carrier", premium_value, premium_source or source),
     ]
-    return [
+    fields = [
         NormalizedExtractionField(
             field_name=field_name,
             value=clean_extracted_value(value),
@@ -3895,6 +3896,40 @@ def extract_litera_lincoln_schedule_a_fields(
         for field_name, value, field_source in values
         if value and clean_extracted_value(value)
     ]
+    broker_rows = extract_litera_lincoln_schedule_a_broker_rows(page_texts)
+    if broker_rows:
+        broker_source = "\n".join(
+            str(item.source_text or "")
+            for row in broker_rows
+            for item in row.evidence
+            if item.source_text
+        )
+        for label, total in (
+            (
+                "3b. Amount of Commissions",
+                sum_money_values(*(row.commission_total for row in broker_rows)) or "0",
+            ),
+            (
+                "3c. Amount of Fees",
+                sum_money_values(*(row.fee_total for row in broker_rows)) or "0",
+            ),
+        ):
+            fields.append(
+                NormalizedExtractionField(
+                    field_name=label,
+                    value=total,
+                    candidate_values=[total],
+                    confidence=0.99,
+                    page=broker_rows[0].source_page,
+                    source_text=broker_source,
+                    evidence=[
+                        item.model_copy(deep=True)
+                        for row in broker_rows
+                        for item in row.evidence
+                    ],
+                )
+            )
+    return fields
 
 
 def extract_litera_lincoln_schedule_a_broker_rows(

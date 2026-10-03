@@ -1255,6 +1255,30 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         policy_comparison = next(item for item in comparisons if item.rule_key == policy.mapped_rule_key)
         self.assertNotEqual(policy_comparison.decision, FTWFieldDecision.CONFLICT)
 
+    def test_ftw_contract_formatting_equivalents_are_no_change(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        cases = (
+            ("0186483-Medical", "186483"),
+            ("000010233867 00000", "10233867"),
+            ("000400001000 23109", "40000100023109"),
+            ("1040989/90-1001", "VARIOUS"),
+        )
+        for extracted, current in cases:
+            with self.subTest(extracted=extracted, current=current):
+                policy = self._schedule_identity_field(
+                    "schedule_a_part_i_1d_contract_policy_number",
+                    "1d. Contract/Policy Number",
+                    extracted,
+                )
+                comparison = service._comparison_fields(
+                    [policy],
+                    {},
+                    {"InsContractNum": current},
+                    update_fields=[policy],
+                )[0]
+                self.assertEqual(comparison.decision, FTWFieldDecision.NO_CHANGE)
+                self.assertFalse(comparison.changed)
+
     def test_structured_broker_section_supersedes_blocked_flat_broker_comparison(self):
         comparison = FTWilliamsComparisonField(
             label="3a. Name of Agent/Broker/Person",

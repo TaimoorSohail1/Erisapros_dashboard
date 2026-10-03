@@ -253,6 +253,7 @@ class Repository:
         *,
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
+        confidence: float | None = None,
     ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
@@ -722,6 +723,7 @@ class MongoRepository(Repository):
         *,
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
+        confidence: float | None = None,
     ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
@@ -732,6 +734,8 @@ class MongoRepository(Repository):
         }
         if status_reason is not None:
             updates["status_reason"] = status_reason
+        if confidence is not None:
+            updates["confidence"] = confidence
         doc = await self.db.extracted_fields.find_one_and_update(
             {"_id": ObjectId(field_id), "filing_id": filing_id},
             {"$set": updates},
@@ -1767,6 +1771,7 @@ class MemoryRepository(Repository):
         *,
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
+        confidence: float | None = None,
     ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
@@ -1775,6 +1780,8 @@ class MemoryRepository(Repository):
         field.status = status
         if status_reason is not None:
             field.status_reason = status_reason
+        if confidence is not None:
+            field.confidence = confidence
         field.updated_at = datetime.utcnow()
         return field
 

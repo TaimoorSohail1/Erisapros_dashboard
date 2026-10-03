@@ -1353,6 +1353,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values["1d. Contract/Policy Number"], "000400001000 23109")
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "88")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,588.17")
+        self.assertEqual(values["3b. Amount of Commissions"], "5,938.27")
+        self.assertEqual(values["3c. Amount of Fees"], "549.77")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].commission_total, "5,938.27")
         self.assertEqual(rows[0].fee_total, "549.77")
@@ -1370,6 +1372,12 @@ class ScheduleAExtractionTests(unittest.TestCase):
             "AUTOMATIC",
         )
         self.assertEqual(resolved.schedule_a_broker_rows[0].decision, "AUTOMATIC")
+        self.assertFalse(
+            any(
+                item.validator == "broker_total_reconciliation" and item.status == "ERROR"
+                for item in resolved.schedule_a_broker_rows[0].validation_results
+            )
+        )
 
     def test_litera_lincoln_recovers_dotted_premium_from_xray_glyph_noise(self):
         pages = [
