@@ -213,6 +213,23 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].fee_total, "30.34")
         self.assertEqual(rows[-1].commission_total, "47.60")
 
+    def test_aflac_ocr_premium_allows_scanner_rule_prefixes(self):
+        pages = [(1, """
+            — SCHEDULE A EARNINGS REPORT AFLAC
+            — AFLAC ACCOUNT # NSU79
+            — Contract Number 52-0807803 NAIC CODE 60380
+            — TOTAL PREMIUM COLLECTED
+            — $315.12
+            — INSURANCE FEES AND COMMISSIONS PAID TO AGENTS
+        """)]
+
+        values = {field.field_name: field.value for field in extract_aflac_schedule_a_fields(pages)}
+
+        self.assertEqual(
+            values["10a. Total premiums or subscription charges paid to carrier"],
+            "315.12",
+        )
+
     def test_colonial_life_ocr_layout_extracts_identity_totals_and_brokers(self):
         pages = [(2, """
             Insurance Data for Schedule A Form 5500

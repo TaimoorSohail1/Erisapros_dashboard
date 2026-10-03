@@ -6180,7 +6180,14 @@ def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
         ],
         flags=re.IGNORECASE,
     )
-    premium = regex_first(full_text, [r"Total\s+Premium\s+Collected\s+\$?\s*([0-9,]+(?:\.\d{2})?)"])
+    premium = regex_first(
+        full_text,
+        [
+            r"Total\s+Premium\s+Collected\s*"
+            r"(?:\n\s*[-—_=|]+\s*)?\$?\s*([0-9,]+(?:\.\d{2})?)"
+        ],
+        flags=re.IGNORECASE,
+    )
     carrier = regex_first(
         full_text,
         [
