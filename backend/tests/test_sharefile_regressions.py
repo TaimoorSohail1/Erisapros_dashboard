@@ -267,6 +267,10 @@ class ShareFileRegressionTests(unittest.TestCase):
 
         self.assertEqual(resolved[0]["document_type"], DocumentType.PLAN_WORKSHEET)
         self.service._classify_sharefile_document_by_content.assert_awaited_once()
+        self.assertEqual(
+            self.service._sharefile_change_type(stale, resolved[0]),
+            "UPDATED",
+        )
 
     def test_content_sniff_skips_unreadable_pdf_instead_of_aborting_scan(self):
         async def download_unreadable_pdf(client, token, item_id):

@@ -2285,6 +2285,19 @@ class ShareFileService:
             change_type = "UPDATED" if existing.get("status") == "FAILED" else str(existing.get("status"))
             file_item["change_type"] = change_type
             return change_type
+        current_document_type = file_item.get("document_type")
+        current_document_type = (
+            current_document_type.value
+            if isinstance(current_document_type, DocumentType)
+            else str(current_document_type or "")
+        )
+        existing_document_type = str(existing.get("document_type") or "")
+        if current_document_type != existing_document_type:
+            # A newer classifier may correct an unchanged file from Schedule A
+            # to Plan Worksheet (or to ignored support material). Persist and
+            # repackage that semantic change even though its bytes are identical.
+            file_item["change_type"] = "UPDATED"
+            return "UPDATED"
         current_hash = str(self._sharefile_hash(file_item) or "")
         existing_hash = str(existing.get("hash") or "")
         current_version = str(self._sharefile_version(file_item) or "")
