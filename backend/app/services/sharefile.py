@@ -516,8 +516,19 @@ class ShareFileService:
             # is the explicit opposite instruction: restore only files inside
             # the selected client folder and process them again.
             restored_suppression_ids: set[str] = set()
+            targeted_reprocess_ids: set[str] = set()
             if targeted_scan:
-                for file_item in self._dedupe_scanned_files(scanned_files):
+                targeted_files = self._dedupe_scanned_files(scanned_files)
+                # "Rescan client" is an explicit recovery action, not merely a
+                # metadata refresh. Re-run every supported package in that one
+                # client so parser fixes can replace stale failed/processing
+                # filings even when ShareFile timestamps did not change.
+                targeted_reprocess_ids = {
+                    str(file_item.get("id") or "")
+                    for file_item in targeted_files
+                    if file_item.get("id")
+                }
+                for file_item in targeted_files:
                     item_id = str(file_item.get("id") or "")
                     if not item_id or not await repo.get_sharefile_suppression(item_id):
                         continue
@@ -552,7 +563,7 @@ class ShareFileService:
                 # A quick scan only looked at part of the account, so it must
                 # never conclude that the folders it did not visit are gone.
                 partial_scan=targeted_scan or not deep,
-                force_reprocess_item_ids=restored_suppression_ids,
+                force_reprocess_item_ids=targeted_reprocess_ids or restored_suppression_ids,
             )
             scan_finished_at = datetime.utcnow()
             scan_error_list = list(result.get("scan_errors") or [])

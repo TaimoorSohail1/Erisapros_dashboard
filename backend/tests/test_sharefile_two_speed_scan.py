@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import BackgroundTasks
 
 from app.config import get_settings
-from app.models import ShareFileOAuthToken
+from app.models import FilingStatus, ShareFileOAuthToken
 from app.repositories import MemoryRepository
 from app.services.sharefile import SHAREFILE_INCREMENTAL_STATE_KEY, ShareFileService
 
@@ -344,6 +344,33 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("f_a_junk_q1", self.listed)
         existing = await self.repo.get_sharefile_file("d_a_sa")
         self.assertNotEqual((existing or {}).get("status"), "DELETED")
+
+    async def test_targeted_sync_reprocesses_unchanged_existing_client_packages(self):
+        service = ShareFileService()
+        await self._baseline(service)
+
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_a", "Client A (Test)")),
+        ):
+            first = await service.sync_folder(BackgroundTasks(), target_folder_id="f_a")
+
+        self.assertEqual(first.get("scan_mode"), "TARGETED")
+        self.assertEqual(first.get("synced"), 1)
+        active = [filing for filing in await self.repo.list_filings() if filing.status != FilingStatus.SUPERSEDED]
+        self.assertTrue(any("ClientA_Schedule_A" in filing.file_name for filing in active))
+
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_a", "Client A (Test)")),
+        ):
+            repeated = await service.sync_folder(BackgroundTasks(), target_folder_id="f_a")
+
+        self.assertEqual(repeated.get("synced"), 1)
+        active = [filing for filing in await self.repo.list_filings() if filing.status != FilingStatus.SUPERSEDED]
+        self.assertEqual(sum("ClientA_Schedule_A" in filing.file_name for filing in active), 1)
 
     async def test_targeted_recovery_restores_a_dashboard_deleted_source_file(self):
         service = ShareFileService()
