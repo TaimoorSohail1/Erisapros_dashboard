@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta
 
 from app.config import get_settings
-from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FieldRule, FilingStatus, FormType, NormalizedExtractionField, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
+from app.models import AuditLog, DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJobStatus, FieldPriority, FieldRule, FilingStatus, FormType, NormalizedExtractionField, RawExtraction, ScheduleABrokerRow, ScheduleAWorksheetSummary
 from app.repositories import get_repository
 from app.services.extractor import ExtractionService
 from app.services.field_rule_admin import FieldRuleService
@@ -121,6 +121,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.MAPPING})
             mapped_fields = harmonize_schedule_a_reference_fields(mapped_fields)
             mapped_fields = harmonize_schedule_a_business_rule_fields(mapped_fields)
+            mapped_fields = suppress_structured_broker_scalar_fields(
+                mapped_fields,
+                schedule_a_broker_rows,
+            )
             mapped_fields = apply_schedule_a_sanity_checks(mapped_fields)
             schedule_a_classification_signals = sorted(set(schedule_a_classification_signals))
             contract_classification = apply_schedule_a_classification(
@@ -638,6 +642,36 @@ def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> l
             "Derived purpose needs Review because its commission or fee inputs lack trusted page-level source evidence."
         )
     purpose_field.updated_at = datetime.utcnow()
+    return fields
+
+
+def suppress_structured_broker_scalar_fields(
+    fields: list[ExtractedField],
+    broker_rows: list[ScheduleABrokerRow],
+) -> list[ExtractedField]:
+    """Keep per-recipient metadata out of the filing-level field review.
+
+    Purpose and organizational code belong to each structured broker row. A
+    scalar copy is ambiguous when there are several recipients and duplicates
+    the broker matcher even when there is only one. The structured rows remain
+    authoritative for FT Williams updates.
+    """
+    if not broker_rows:
+        return fields
+    ignored_keys = {
+        "schedule_a_part_i_3d_purpose",
+        "schedule_a_part_i_3e_organizational_code",
+    }
+    for field in fields:
+        if field.mapped_rule_key not in ignored_keys:
+            continue
+        field.priority = FieldPriority.IGNORE
+        field.status = ExtractedFieldStatus.IGNORED
+        field.status_reason = (
+            "Represented by the structured Schedule A broker rows and excluded "
+            "from filing-level scalar review."
+        )
+        field.updated_at = datetime.utcnow()
     return fields
 
 

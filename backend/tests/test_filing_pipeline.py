@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, Filing, FilingStatus, FormType, FTWilliamsReview
+from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, Filing, FilingStatus, FormType, FTWilliamsReview, ScheduleABrokerRow
 from app.services.filing_pipeline import (
     auto_query_ftw_current,
     build_safe_proposed_ftw_xml,
@@ -16,6 +16,7 @@ from app.services.filing_pipeline import (
     harmonize_schedule_a_reference_fields,
     remap_existing_fields_with_source_context,
     process_extraction_batch,
+    suppress_structured_broker_scalar_fields,
     supersede_duplicate_active_package_rows,
 )
 
@@ -342,6 +343,42 @@ class FilingPipelineTests(unittest.TestCase):
         self.assertEqual(purpose_field.proposed_value, "COMMISSIONS")
         self.assertEqual(purpose_field.status, ExtractedFieldStatus.LOW_CONFIDENCE)
         self.assertIn("needs Review", purpose_field.status_reason)
+
+    def test_structured_broker_rows_suppress_duplicate_purpose_and_org_scalars(self):
+        purpose_field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3d. Purpose",
+            normalized_field_name="3d purpose",
+            mapped_rule_key="schedule_a_part_i_3d_purpose",
+            mapped_label="3d. Purpose",
+            priority=FieldPriority.HIGH,
+            proposed_value="COMMISSIONS",
+            confidence=0.5,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        )
+        code_field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="3e. Organizational Code",
+            normalized_field_name="3e organizational code",
+            mapped_rule_key="schedule_a_part_i_3e_organizational_code",
+            mapped_label="3e. Organizational Code",
+            priority=FieldPriority.HIGH,
+            proposed_value="3",
+            confidence=0.5,
+            form_type=FormType.SCHEDULE_A,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        )
+        rows = [ScheduleABrokerRow(name="Mercer", organization_code="3")]
+
+        fields = suppress_structured_broker_scalar_fields(
+            [purpose_field, code_field],
+            rows,
+        )
+
+        self.assertTrue(all(field.priority == FieldPriority.IGNORE for field in fields))
+        self.assertTrue(all(field.status == ExtractedFieldStatus.IGNORED for field in fields))
+        self.assertTrue(all("structured Schedule A broker rows" in field.status_reason for field in fields))
 
     def test_auto_query_ftw_current_uses_live_queries_and_audits_success(self):
         review = FTWilliamsReview(
