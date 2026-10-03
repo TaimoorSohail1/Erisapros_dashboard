@@ -406,14 +406,18 @@ async def auto_query_ftw_current(filing_id: str, review_service: FTWilliamsRevie
 
 async def supersede_duplicate_active_package_rows(keep_filing_id: str) -> None:
     repo = get_repository()
-    filings = await repo.list_filings()
-    keep = next((filing for filing in filings if filing.id == keep_filing_id), None)
+    keep = await repo.get_filing(keep_filing_id)
     if not keep or not keep.id:
         return
     package_key = filing_package_key(keep)
     if not package_key:
         return
 
+    # Duplicate cleanup needs only package identity and status. Loading every
+    # extraction payload and worksheet/broker table from Atlas can exceed the
+    # bounded read timeout after a bulk intake, turning a successful extraction
+    # into a failed job. Use the narrow indexed summary query instead.
+    filings = await repo.list_filing_package_summaries()
     for filing in filings:
         if not filing.id or filing.id == keep.id:
             continue

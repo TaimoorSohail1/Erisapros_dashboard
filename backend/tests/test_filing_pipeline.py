@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pathlib import Path
 import sys
@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
-from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FormType, FTWilliamsReview
+from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, Filing, FilingStatus, FormType, FTWilliamsReview
 from app.services.filing_pipeline import (
     auto_query_ftw_current,
     build_safe_proposed_ftw_xml,
@@ -16,6 +16,7 @@ from app.services.filing_pipeline import (
     harmonize_schedule_a_reference_fields,
     remap_existing_fields_with_source_context,
     process_extraction_batch,
+    supersede_duplicate_active_package_rows,
 )
 
 
@@ -42,6 +43,41 @@ class FilingPipelineTests(unittest.TestCase):
 
     def tearDown(self):
         repositories._repository = None
+
+    def test_duplicate_cleanup_uses_compact_package_summaries(self):
+        package_key = "Client > 5500 Filing > 2025 Filing > Schedule A::carrier"
+        document = {"package_key": package_key, "document_type": "SCHEDULE_A"}
+        keep = Filing(
+            id="keep",
+            file_name="Carrier Schedule A.pdf",
+            content_type="application/pdf",
+            file_size=1,
+            s3_key="schedule-a/keep.pdf",
+            document_type=DocumentType.SCHEDULE_A,
+            package_documents=[document],
+            status=FilingStatus.NEEDS_REVIEW,
+        )
+        duplicate = Filing(
+            id="duplicate",
+            file_name="Carrier Schedule A.pdf",
+            content_type="application/pdf",
+            file_size=1,
+            s3_key="schedule-a/duplicate.pdf",
+            document_type=DocumentType.SCHEDULE_A,
+            package_documents=[document],
+            status=FilingStatus.FAILED,
+        )
+        repo = AsyncMock()
+        repo.get_filing.return_value = keep
+        repo.list_filing_package_summaries.return_value = [keep, duplicate]
+
+        with patch("app.services.filing_pipeline.get_repository", return_value=repo):
+            run_async(supersede_duplicate_active_package_rows("keep"))
+
+        repo.list_filing_package_summaries.assert_awaited_once_with()
+        repo.list_filings.assert_not_awaited()
+        repo.update_filing.assert_awaited_once()
+        self.assertEqual(repo.update_filing.await_args.args[0], "duplicate")
 
     def test_re_evaluation_preserves_schedule_a_and_worksheet_source_context(self):
         from app.services.field_rules import DEFAULT_FIELD_RULES
