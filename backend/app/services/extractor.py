@@ -207,6 +207,7 @@ class ExtractionService:
             result.fields = prefer_authoritative_anthem_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_aig_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_aflac_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_colonial_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_prudential_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_cigna_summary_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_united_omaha_fields(result.fields, authoritative_pages)
@@ -2981,6 +2982,36 @@ def prefer_authoritative_aflac_fields(
     return restored
 
 
+def prefer_authoritative_colonial_fields(
+    fields: list[NormalizedExtractionField],
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Keep the labelled Paul Revere statement ahead of flattened OCR guesses."""
+    authoritative_fields = extract_colonial_life_schedule_a_fields(page_texts)
+    if not authoritative_fields:
+        return fields
+    owned = {
+        "1a. Name of Insurance Company",
+        "1b. Insurance Carrier EIN",
+        "1c. NAIC Code",
+        "1d. Contract/Policy Number",
+        "1e. Persons Covered (End of Policy Year)",
+        "1f. Policy Year Beginning Date",
+        "1g. Policy Year Ending Date",
+        "3b. Amount of Commissions",
+        "3c. Amount of Fees",
+        "3d. Purpose",
+        "3e. Organizational Code",
+        "10a. Total premiums or subscription charges paid to carrier",
+    }
+    restored = [field for field in fields if field.field_name not in owned]
+    restored.extend(
+        field.model_copy(update={"candidate_values": [field.value]})
+        for field in authoritative_fields
+    )
+    return restored
+
+
 def prefer_authoritative_prudential_fields(
     fields: list[NormalizedExtractionField],
     page_texts: list[tuple[int, str]],
@@ -3320,6 +3351,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     selected = prefer_authoritative_anthem_fields(selected, plain_pages)
     selected = prefer_authoritative_aig_fields(selected, plain_pages)
     selected = prefer_authoritative_aflac_fields(selected, plain_pages)
+    selected = prefer_authoritative_colonial_fields(selected, plain_pages)
     selected = prefer_authoritative_prudential_fields(selected, plain_pages)
     selected = prefer_authoritative_cigna_summary_fields(selected, plain_pages)
     selected = prefer_authoritative_united_omaha_fields(selected, plain_pages)

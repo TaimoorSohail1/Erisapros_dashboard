@@ -31,6 +31,7 @@ from app.services.extractor import (
     extract_anthem_broker_rows,
     extract_aflac_schedule_a_fields,
     extract_aflac_broker_rows,
+    prefer_authoritative_colonial_fields,
     extract_columnar_broker_compensation_rows,
     extract_bcbs_michigan_addendum_broker_rows,
     extract_bcbs_michigan_schedule_a_fields,
@@ -272,6 +273,31 @@ class ScheduleAExtractionTests(unittest.TestCase):
         values = {field.field_name: field.value for field in extract_colonial_life_schedule_a_fields(pages)}
 
         self.assertEqual(values["1d. Contract/Policy Number"], "E4020418")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "2")
+
+    def test_colonial_labelled_person_count_replaces_flattened_ocr_guess(self):
+        fields = [
+            NormalizedExtractionField(
+                field_name="1e. Persons Covered (End of Policy Year)",
+                value="2026",
+                confidence=0.9,
+            )
+        ]
+        pages = [(2, """
+            Insurance Data for Schedule A Form 5500
+            THE PAUL REVERE LIFE INSURANCE COMPANY
+            Name of Carrier: The Paul Revere Life Insurance Company
+            Carrier EIN: 04-1590994
+            Carrier NAIC Code: 67598
+            Billing Control Number: E4020418
+            Plan Year Date Range: 05/01/2025 - 04/30/2026
+            APPROXIMATE NUMBER OF PERSONS COVERED IN APRIL 2026: 2
+            Total Paid Premium: $1,722.37
+        """)]
+
+        corrected = prefer_authoritative_colonial_fields(fields, pages)
+        values = {field.field_name: field.value for field in corrected}
+
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "2")
 
     def test_nyl_short_year_workbook_sums_policy_and_broker_transactions(self):
