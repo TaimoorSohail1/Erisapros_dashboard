@@ -8537,8 +8537,6 @@ def extract_eyemed_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         add("1g. Policy Year Ending Date", summary.period_end, 0.98)
         add("3b. Amount of Commissions", values_by_label.get("Broker payment total"), 0.94)
         add("3c. Amount of Fees", "0", 0.9)
-        add("3d. Purpose", "COMMISSIONS & FEES", 0.9)
-        add("3e. Organizational Code", "3", 0.86)
         add("10a. Total premiums or subscription charges paid to carrier", values_by_label.get("Total nonexperience premium"), 0.99)
     return fields
 

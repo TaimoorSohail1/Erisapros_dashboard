@@ -3114,6 +3114,8 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1g. Policy Year Ending Date"], "12/31/2025")
         self.assertEqual(by_name["3b. Amount of Commissions"], "4,876.54")
         self.assertEqual(by_name["3c. Amount of Fees"], "0")
+        self.assertNotIn("3d. Purpose", by_name)
+        self.assertNotIn("3e. Organizational Code", by_name)
         self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,190.52")
         self.assertTrue(all(field.page == 1 for field in fields))
         resolved = resolve_schedule_a_result(
