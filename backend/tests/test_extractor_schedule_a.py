@@ -192,21 +192,24 @@ John Hancock
     def test_bank_of_bartlett_standard_metlife_ocr(self):
         pages = [(3, """SCHEDULE A (Form 5500) Insurance Information
 METROPOLITAN LIFE INSURANCE COMPANY
-13-5581829 65978 TM05941745 275 01/01/2025 12/31/2025
-Total amount of commissions paid 22,943
-Total Fees Paid / amount 0
+13-5581829| 65978 TM05941745 275 01/01/2025 |12/31/2025
+Total amount of commissions paid Total Fees Paid / amount
+22,943 0
 """), (4, """Name: PATRICK HOFFMAN
-Address: 1910 EXETER RD STE 2 City: GERMANTOWN ST: TN ZIP: 38138-2971
+Address: 1910 EXETER RD STE 2 City: . .
+GERMANTOWN ST: TN ZIP: 38138-2971
 Commissions Paid Fees Paid Organization code
-LIFE 12,324 Base Commissions
-Dental 5,567 Base Commissions
-Long Term Disability 4,460 Base Commissions
-AD&D 592 Base Commissions
-22,943 Sub-total 0 Sub-total 03
+LIFE 12,324 | Base Commissions 03
+Dental 5,567 | Base Commissions
+Long Term 4,460 | Base Commissions
+Disability
+AD&D 592 | Base Commissions
+22,943 | Sub-total 0 Sub-total
 """), (5, """Total premiums or subscription charges paid to carrier. 172,421""")]
         values = {field.field_name: field.value for field in extract_metlife_standard_schedule_a_fields(pages)}
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "275")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "172,421")
+        self.assertEqual(values["3c. Amount of Fees"], "0")
         rows = extract_metlife_standard_broker_rows(pages)
         self.assertEqual((rows[0].name, rows[0].commission_total, len(rows[0].commission_rows)), ("PATRICK HOFFMAN", "22,943", 4))
 

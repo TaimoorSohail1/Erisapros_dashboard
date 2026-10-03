@@ -5859,10 +5859,29 @@ class FTWilliamsReviewService:
                 current_contract_value,
             )
         )
-        return contract_conflict or any(
-            extracted and current and extracted != current
-            for extracted, current in identity_pairs[1:]
+        contract_matches = bool(
+            identity_pairs[0][0]
+            and identity_pairs[0][1]
+            and (
+                identity_pairs[0][0] == identity_pairs[0][1]
+                or self._grouped_contract_matches_various(
+                    extracted_contract_value,
+                    current_contract_value,
+                )
+            )
         )
+        ein_conflict = bool(
+            identity_pairs[1][0]
+            and identity_pairs[1][1]
+            and identity_pairs[1][0] != identity_pairs[1][1]
+            and not contract_matches
+        )
+        naic_conflict = bool(
+            identity_pairs[2][0]
+            and identity_pairs[2][1]
+            and identity_pairs[2][0] != identity_pairs[2][1]
+        )
+        return contract_conflict or ein_conflict or naic_conflict
 
     def _merge_schedule_statuses(
         self,
@@ -6099,11 +6118,17 @@ class FTWilliamsReviewService:
         """
         extracted_text = str(extracted_value or "").strip()
         current_text = cls._contract_text(current_value)
-        return bool(
-            current_text == "VARIOUS"
-            and re.search(r"[/,;]", extracted_text)
-            and len(re.sub(r"\D", "", extracted_text)) >= 8
-        )
+        has_separator = bool(re.search(r"[/,;]", extracted_text))
+        if not has_separator or len(re.sub(r"\D", "", extracted_text)) < 8:
+            return False
+        if current_text == "VARIOUS":
+            return True
+        extracted_contracts = {
+            cls._contract_text(value)
+            for value in re.split(r"[/,;]", extracted_text)
+            if cls._contract_text(value)
+        }
+        return bool(current_text and current_text in extracted_contracts)
 
     @staticmethod
     def _contract_text(value: object) -> str:

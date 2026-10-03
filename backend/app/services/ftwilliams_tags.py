@@ -380,6 +380,12 @@ def values_meaningfully_different(
                 {
                     "visionserviceplan",
                     "visionserviceplaninsurancecompany",
+                    "visionserviceplanvsp",
+                },
+                {
+                    "johnhancock",
+                    "johnhancocklifeinsurancecompany",
+                    "johnhancocklifeinsurancecompanyusa",
                 },
             )
             if any(

@@ -7271,12 +7271,18 @@ def extract_metlife_standard_schedule_a_fields(page_texts: list[tuple[int, str]]
         text, re.I | re.S,
     )
     identity = re.search(
-        r"(?P<ein>\d{2}-?\d{7})\s+(?P<naic>\d{5})\s+(?P<contract>TM\d+)\s+(?P<persons>[\d,]+)\s+"
-        r"(?P<begin>\d{1,2}/\d{1,2}/\d{4})\s+(?P<end>\d{1,2}/\d{1,2}/\d{4})",
+        r"(?P<ein>\d{2}-?\d{7})\s*\|?\s*(?P<naic>\d{5})\s+(?P<contract>TM\d+)\s+(?P<persons>[\d,]+)\s+"
+        r"(?P<begin>\d{1,2}/\d{1,2}/\d{4})\s*\|?\s*(?P<end>\d{1,2}/\d{1,2}/\d{4})",
         text, re.I,
     )
-    commissions = regex_first(text, [r"Total\s+amount\s+of\s+commissions\s+paid.{0,100}?([\d,]+)"], flags=re.I | re.S)
-    fees = regex_first(text, [r"Total\s+Fees\s+Paid\s*/?\s*amount.{0,100}?([\d,]+)"], flags=re.I | re.S)
+    totals = re.search(
+        r"Total\s+amount\s+of\s+commissions\s+paid\s+Total\s+Fees\s+Paid\s*/?\s*amount\s+"
+        r"(?P<commissions>[\d,]+)\s+(?P<fees>[\d,]+)",
+        text,
+        re.I,
+    )
+    commissions = totals.group("commissions") if totals else regex_first(text, [r"Total\s+amount\s+of\s+commissions\s+paid.{0,100}?([\d,]+)"], flags=re.I | re.S)
+    fees = totals.group("fees") if totals else None
     premium = regex_first(text, [r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier.{0,80}?([\d,]+)"], flags=re.I | re.S)
     return _statement_fields({
         "1a. Name of Insurance Company": "Metropolitan Life Insurance Company",
@@ -7299,15 +7305,24 @@ def extract_metlife_standard_broker_rows(page_texts: list[tuple[int, str]]) -> l
         return []
     name = regex_first(text, [r"Name\s*:\s*([^\n]+)"], flags=re.I)
     address = re.search(
-        r"Address\s*:\s*(?P<street>[^\n]+).*?City\s*:\s*(?P<city>[A-Za-z ]+).*?ST\s*:\s*(?P<state>[A-Z]{2}).*?ZIP\s*:\s*(?P<zip>\d{5}(?:-\d{4})?)",
+        r"Address\s*:\s*(?P<street>.*?)\s+City\s*:[^\n]*\n\s*"
+        r"(?P<city>[A-Za-z ]+?)\s+ST\s*:\s*(?P<state>[A-Z]{2})\s+ZIP\s*:\s*(?P<zip>\d{5}(?:-\d{4})?)",
         text, re.I | re.S,
     )
-    total = regex_first(text, [r"(?m)^\s*([\d,]+)\s+Sub-?total\b"], flags=re.I)
+    total = regex_first(text, [r"(?m)^\s*([\d,]+)\s*\|?\s*Sub-?total\b"], flags=re.I)
     if not name or not total:
         return []
     coverage_rows = []
-    for coverage, amount in re.findall(r"(?m)^\s*(LIFE|Dental|Long\s+Term\s+Disability|AD&D)\s+([\d,]+)\s+Base\s+Commissions", text, re.I):
-        coverage_rows.append(ScheduleABrokerMoneyRow(coverage=clean_extracted_value(coverage), amount=money_value(amount), purpose="BASE COMMISSIONS"))
+    coverage_patterns = (
+        ("LIFE", r"(?m)^\s*LIFE\s+([\d,]+)\s*\|?\s*Base\s+Commissions"),
+        ("Dental", r"(?m)^\s*Dental\s+([\d,]+)\s*\|?\s*Base\s+Commissions"),
+        ("Long Term Disability", r"(?m)^\s*Long\s+Term\s+([\d,]+)\s*\|?\s*Base\s+Commissions(?:\s*\n\s*Disability)?"),
+        ("AD&D", r"(?m)^\s*AD&D\s+([\d,]+)\s*\|?\s*Base\s+Commissions"),
+    )
+    for coverage, pattern in coverage_patterns:
+        amount = regex_first(text, [pattern], flags=re.I)
+        if amount:
+            coverage_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=money_value(amount), purpose="BASE COMMISSIONS"))
     return [ScheduleABrokerRow(
         name=clean_extracted_value(name),
         address_line_1=clean_extracted_value(address.group("street")) if address else None,

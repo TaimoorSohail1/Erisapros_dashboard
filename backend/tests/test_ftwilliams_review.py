@@ -1139,6 +1139,22 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_compare_treats_worksheet_carrier_aliases_as_equal(self):
+        self.assertFalse(
+            values_meaningfully_different(
+                "VISION SERVICE PLAN",
+                "VISION SERVICE PLAN (VSP)",
+                tag="InsCarrierName",
+            )
+        )
+        self.assertFalse(
+            values_meaningfully_different(
+                "JOHN HANCOCK",
+                "John Hancock Life Insurance Company",
+                tag="InsCarrierName",
+            )
+        )
+
     def test_plan_worksheet_policy_mismatch_is_a_real_conflict(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(
@@ -3930,6 +3946,48 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(match.ftw_seq_no, "2")
         details = service._schedule_match_details(fields, statuses[0])
         self.assertIn("Contract group", details["reasons"])
+
+    def test_schedule_match_uses_member_of_grouped_contract_despite_ein_conflict(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                "Combined Insurance Company of America",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "36-2136262",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1c_naic_code",
+                "1c. NAIC Code",
+                "62146",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "901937294; 901937295",
+            ),
+        ]
+        status = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="6",
+            query_results={
+                "InsCarrierName": "COMBINED INSURANCE COMPANY OF AMERICA",
+                "InsCarrierEIN": "36-2136263",
+                "InsCarrierNAICCode": "62146",
+                "InsContractNum": "901937294",
+            },
+        )
+
+        match = service._match_schedule_a_status(fields, [status])
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "6")
+        self.assertIn("Contract group", service._schedule_match_details(fields, status)["reasons"])
 
     def test_eyemed_bundle_becomes_automatic_only_when_worksheet_and_ftw_both_confirm_various(self):
         service = FTWilliamsReviewService()
