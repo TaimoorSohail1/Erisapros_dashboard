@@ -249,7 +249,14 @@ class ExtractionService:
                 and field.decision != "REVIEW_REQUIRED"
                 for field in eyemed_fields
             ):
-                authoritative_names = {field.field_name for field in eyemed_fields}
+                authoritative_names = {
+                    *{field.field_name for field in eyemed_fields},
+                    *SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
+                    "3a. Name of Agent/Broker/Person",
+                    "3c. Amount of Fees",
+                    "3d. Purpose",
+                    "3e. Organizational Code",
+                }
                 result.fields = [
                     field for field in result.fields
                     if field.field_name not in authoritative_names
@@ -257,7 +264,15 @@ class ExtractionService:
                 result.fields.extend(eyemed_fields)
             litera_aetna_fields = extract_litera_aetna_schedule_a_fields(semantic_pages)
             if litera_aetna_fields:
-                authoritative_names = {field.field_name for field in litera_aetna_fields}
+                authoritative_names = {
+                    *{field.field_name for field in litera_aetna_fields},
+                    *SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
+                    "3a. Name of Agent/Broker/Person",
+                    "3b. Amount of Commissions",
+                    "3c. Amount of Fees",
+                    "3d. Purpose",
+                    "3e. Organizational Code",
+                }
                 result.fields = [
                     field for field in result.fields
                     if field.field_name not in authoritative_names
@@ -279,7 +294,14 @@ class ExtractionService:
                 lincoln_broker_rows = extract_litera_lincoln_schedule_a_broker_rows(
                     semantic_pages
                 )
-                authoritative_names = {field.field_name for field in litera_lincoln_fields}
+                authoritative_names = {
+                    *{field.field_name for field in litera_lincoln_fields},
+                    *SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
+                    "3a. Name of Agent/Broker/Person",
+                    "3d. Purpose",
+                    "3e. Organizational Code",
+                    "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
+                }
                 result.fields = [
                     field for field in result.fields
                     if field.field_name not in authoritative_names
