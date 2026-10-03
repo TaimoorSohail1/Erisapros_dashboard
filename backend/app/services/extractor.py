@@ -7306,7 +7306,16 @@ def extract_sun_life_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     # data on one compact page, so that page is the authoritative evidence for
     # every deterministic value above.
     for field in fields:
-        field.source_text = joined
+        if field.field_name == "1e. Persons Covered (End of Policy Year)":
+            # The PDF text layer places the value before its visual label.
+            # Keep that exact local context so unrelated narrative uses of
+            # "employees" elsewhere in the cover letter cannot be mistaken
+            # for enrollment-tier evidence.
+            field.source_text = (
+                f"{persons} Approximate number of persons covered at end of policy or contract year"
+            )
+        else:
+            field.source_text = joined
     return fields
 
 
