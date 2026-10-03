@@ -143,6 +143,34 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(result.schedule_a_broker_rows[0].commission_total, "661.32")
         self.assertEqual(result.raw["source"], "local_pdf_ocr_parser")
 
+    def test_aflac_ocr_rows_strip_artifacts_without_dropping_brokers(self):
+        pages = [(1, """
+            SCHEDULE A EARNINGS REPORT
+            AFLAC ACCOUNT # NSU61
+            COMMISSIONS PAID FEES PAID
+            — JENNIFER LUBELSKY $661.32 $30.34
+            Ss JASON M GREB $644.31 $12.33
+            —I WORLD INSURANCE ASSOCIATES LLC $317.15 $0.00
+            OO CHRISTOPHER J ROTH $221.80 $0.00
+            GROE INC $47.60 $1.52
+            OO GRAND TOTAL $1,892.20 $44.34
+        """)]
+
+        rows = extract_aflac_broker_rows(pages)
+
+        self.assertEqual(
+            [row.name for row in rows],
+            [
+                "JENNIFER LUBELSKY",
+                "JASON M GREB",
+                "WORLD INSURANCE ASSOCIATES LLC",
+                "CHRISTOPHER J ROTH",
+                "GROF INC",
+            ],
+        )
+        self.assertEqual(rows[0].fee_total, "30.34")
+        self.assertEqual(rows[-1].commission_total, "47.60")
+
     def test_colonial_life_ocr_layout_extracts_identity_totals_and_brokers(self):
         pages = [(2, """
             Insurance Data for Schedule A Form 5500
@@ -168,6 +196,24 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values["3c. Amount of Fees"], "0.00")
         self.assertEqual([row.name for row in brokers], ["JULIE ANN KLIMCHAK", "JNAZ INC"])
         self.assertTrue(all(row.fee_total == "0.00" for row in brokers))
+
+    def test_colonial_ocr_prefers_bcn_and_final_person_count(self):
+        pages = [(1, """
+            Insurance Data for Schedule A Form 5500
+            THE PAUL REVERE LIFE INSURANCE COMPANY
+            Name of Carrier: The Paul Revere Life Insurance Company
+            Carrier EIN: 04-1590994
+            Carrier NAIC Code: 67598
+            BCN: E4020418
+            Billing Control Number: 4020418
+            Plan Year Date Range: 05/01/2025 - 04/30/2026
+            APPROXIMATE NUMBER OF PERSONS COVERED IN APRIL 2026: 2
+        """)]
+
+        values = {field.field_name: field.value for field in extract_colonial_life_schedule_a_fields(pages)}
+
+        self.assertEqual(values["1d. Contract/Policy Number"], "E4020418")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "2")
 
     def test_nyl_short_year_workbook_sums_policy_and_broker_transactions(self):
         from openpyxl import Workbook

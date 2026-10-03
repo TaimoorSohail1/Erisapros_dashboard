@@ -24,7 +24,7 @@ from app.models import (
 )
 from app.repositories import Repository, get_repository
 from app.services.ftwilliams_review import FTWilliamsReviewService
-from app.services.ftwilliams_tags import resolve_ftw_tag
+from app.services.ftwilliams_tags import resolve_ftw_tag, values_meaningfully_different
 
 
 _AUTOMATION_LOCKS: dict[str, asyncio.Lock] = {}
@@ -230,6 +230,9 @@ class FTWAutomationPolicy:
             and field.decision == FTWFieldDecision.WILL_UPDATE
         ]
         changed_forms = {field.form_type for field in changed_fields}
+        broker_updates_needed = self._broker_updates_needed(review)
+        if broker_updates_needed:
+            changed_forms.add(FormType.SCHEDULE_A)
         if FormType.FORM_5500 in changed_forms and not review.update_xml_5500:
             reasons.append("The safe Form 5500 update payload was not generated.")
         if FormType.SCHEDULE_A in changed_forms and not review.update_xml_schedule_a:
@@ -267,7 +270,7 @@ class FTWAutomationPolicy:
                 reasons,
                 next_action,
             )
-        if not changed_fields:
+        if not changed_fields and not broker_updates_needed:
             return self._decision(
                 FTWAutomationStatus.COMPLETED,
                 True,
@@ -280,6 +283,34 @@ class FTWAutomationPolicy:
             else "MANUAL_SEND"
         )
         return self._decision(FTWAutomationStatus.SAFE_TO_SEND, True, [], next_action)
+
+    @staticmethod
+    def _broker_updates_needed(review: FTWilliamsReview) -> bool:
+        rows = list(review.schedule_a_broker_rows or [])
+        for match in review.schedule_a_broker_matches or []:
+            if not match.resolved:
+                continue
+            if match.status in {"CONFIRMED_NEW", "AUTO_NEW"}:
+                return True
+            if match.extracted_index < 0 or match.extracted_index >= len(rows):
+                continue
+            if not match.current_row:
+                return True
+            proposed = rows[match.extracted_index]
+            for attribute, tag in (
+                ("commission_total", "CommPdAmtXX"),
+                ("fee_total", "FeesPdAmtXX"),
+                ("organization_code", "CodeXX"),
+            ):
+                proposed_value = getattr(proposed, attribute)
+                current_value = getattr(match.current_row, attribute)
+                if str(proposed_value or "").strip() and values_meaningfully_different(
+                    current_value,
+                    proposed_value,
+                    tag=tag,
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _contract_type_mismatch_requires_decision(review: FTWilliamsReview) -> bool:
@@ -903,15 +934,18 @@ class FTWAutomationService:
                 continue
             if field.status == ExtractedFieldStatus.EDITED:
                 return field
-            deterministic_anthem_source = (
-                field.source_text == "Anthem combined Schedule A report"
-                and field.confidence >= threshold
+            deterministic_layout_source = (
+                field.source_text in {
+                    "Anthem combined Schedule A report",
+                    "AFLAC Schedule A earnings report",
+                    "Colonial Life / Paul Revere Schedule A statement",
+                }
                 and field.page is not None
             )
             if (
                 field.confidence >= threshold
                 and (
-                    deterministic_anthem_source
+                    deterministic_layout_source
                     or field.status not in {
                         ExtractedFieldStatus.MISSING,
                         ExtractedFieldStatus.LOW_CONFIDENCE,

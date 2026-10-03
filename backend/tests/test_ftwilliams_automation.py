@@ -461,6 +461,34 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
         self.assertTrue(any("broker" in reason.lower() for reason in decision.reasons))
 
+    def test_resolved_auto_new_broker_is_a_schedule_a_change(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.fields[0].changed = False
+        review.fields[0].update_included = False
+        review.fields[0].decision = FTWFieldDecision.NO_CHANGE
+        review.schedule_a_broker_rows = [
+            ScheduleABrokerRow(
+                name="NEW BROKER LLC",
+                organization_code="3",
+                commission_total="125.00",
+                fee_total="0",
+            )
+        ]
+        from app.models import ScheduleABrokerMatch
+        review.schedule_a_broker_matches = [
+            ScheduleABrokerMatch(
+                extracted_index=0,
+                status="AUTO_NEW",
+                resolved=True,
+                reason="No current broker matched.",
+            )
+        ]
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+
     def test_broker_row_validation_error_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()
         review.schedule_a_broker_rows = [

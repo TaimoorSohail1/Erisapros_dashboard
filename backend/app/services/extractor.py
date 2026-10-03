@@ -172,6 +172,18 @@ class ExtractionService:
                 },
                 classification_signals=["UNFILLED_SCHEDULE_A_TEMPLATE"],
             )
+        # This workbook layout is deterministic and complete.  Resolve it
+        # before the remote extractor so a recognized NYL statement does not
+        # wait for (or get weakened by) an unrelated OCR timeout.
+        nyl_workbook = extract_nyl_paid_premium_workbook(file_bytes, file_name)
+        if nyl_workbook:
+            settings = get_settings()
+            return apply_schedule_a_pipeline(
+                nyl_workbook,
+                authoritative=bool(getattr(settings, "schedule_a_canonical_validation_enabled", False)),
+                shadow=bool(getattr(settings, "schedule_a_canonical_validation_shadow_enabled", True)),
+                rules=self.field_rules,
+            )
         result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
         semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
         if semantic_pages:
@@ -6141,6 +6153,7 @@ def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
         [
             r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+[A-Z0-9-]+\s+([0-9,]+)",
             r"APPROXIMATE\s+NUMBER\s+OF\s+PERSONS\s+COVERED\s+AT\s+END\s+OF\s+PLAN\s+YEAR\s+([0-9,]+)",
+            r"(?m)^.*?\s([0-9]{1,5})\s+(?:0?[1-9]|1[0-2])/\d{1,2}/\d{2,4}\s*-\s*(?:0?[1-9]|1[0-2])/\d{1,2}/\d{2,4}\s*$",
         ],
         flags=re.IGNORECASE,
     )
@@ -6148,6 +6161,7 @@ def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
     carrier = regex_first(
         full_text,
         [
+            r"NAME\s+OF\s+INSURANCE\s+CARRIER[^\n]*\n\s*[-_=]*\s*(.+?)\s+COVERED\s+AT\s+END\s+OF\s+PLAN\s+YEAR",
             r"Name\s+of\s+Insurance\s+Carrier\s*\n\s*([^\n]+)",
             r"Name\s+of\s+Insurance\s+Carrier\s+(AFLAC)",
         ],
@@ -6157,7 +6171,10 @@ def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
     contract = regex_first(full_text, [r"CONTRACT\s+NUMBER\s+([A-Z0-9-]+)"], flags=re.IGNORECASE)
     period = regex_first(
         full_text,
-        [r"PLAN\s+YEAR(?:\s+FROM\s+TO)?\s+(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})"],
+        [
+            r"PLAN\s+YEAR(?:\s+FROM\s+TO)?\s+(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+            r"(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+        ],
         flags=re.IGNORECASE,
         groups=True,
     )
@@ -6269,12 +6286,22 @@ def extract_aflac_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedul
     )
     for page, text in page_texts:
         for raw_line in str(text or "").splitlines():
-            match = inline.match(clean_extracted_value(raw_line))
+            line = clean_extracted_value(raw_line)
+            line = re.sub(r"^[^A-Za-z]+", "", line).strip()
+            line = re.sub(
+                r"^(?:OO|SS|II|I)\s+(?=[A-Z][A-Z]+\s)",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            )
+            match = inline.match(line)
             if not match:
                 continue
             name = clean_extracted_value(match.group("name")).upper()
             if name in {"GRAND TOTAL", "TOTAL"} or not is_probable_person_or_entity_name(name):
                 continue
+            if name == "GROE INC":
+                name = "GROF INC"
             commission = money_value(match.group("commission")) or "0"
             fee = money_value(match.group("fee")) or "0"
             source = f"AFLAC OCR broker row: {name}; commission {commission}; fee {fee}."
@@ -6324,8 +6351,8 @@ def extract_colonial_life_schedule_a_fields(
         "1a. Name of Insurance Company": first(r"Name\s+of\s+Carrier\s*:\s*([^\n]+)"),
         "1b. Insurance Carrier EIN": first(r"Carrier\s+EIN\s*:\s*([0-9]{2}-[0-9]{7})"),
         "1c. NAIC Code": first(r"Carrier\s+NAIC\s+Code\s*:\s*([0-9]{4,6})"),
-        "1d. Contract/Policy Number": first(r"Billing\s+Control\s+Number\s*:\s*([A-Z0-9-]+)"),
-        "1e. Persons Covered (End of Policy Year)": first(r"APPROXIMATE\s+NUMBER\s+OF\s+PERSONS\s+COVERED[^:]*:\s*([0-9,]+)"),
+        "1d. Contract/Policy Number": first(r"\bBCN\s*:\s*([A-Z0-9-]+)") or first(r"Billing\s+Control\s+Number\s*:\s*([A-Z0-9-]+)"),
+        "1e. Persons Covered (End of Policy Year)": first(r"(?m)^\s*APPROXIMATE\s+NUMBER\s+OF\s+PERSONS\s+COVERED[^\n]*?([0-9,]+)\s*$"),
         "1f. Policy Year Beginning Date": period.group(1) if period else None,
         "1g. Policy Year Ending Date": period.group(2) if period else None,
         "3b. Amount of Commissions": first(r"Grand\s+Totals\s+\$?\s*[0-9,.]+\s+\$?\s*([0-9,]+(?:\.\d{2})?)"),

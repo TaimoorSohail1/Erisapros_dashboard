@@ -12,6 +12,31 @@ def word(text: str, x0: float, top: float, x1: float, bottom: float) -> LayoutWo
 
 
 class ScheduleALayoutEngineTests(unittest.TestCase):
+    def test_total_premium_preserves_a_negative_amount(self):
+        page = LayoutPage(
+            number=1,
+            width=612,
+            height=792,
+            words=[
+                word("Total", 20, 20, 50, 30),
+                word("Premiums", 55, 20, 105, 30),
+                word("Paid", 110, 20, 135, 30),
+                word("to", 140, 20, 150, 30),
+                word("Carrier", 155, 20, 200, 30),
+                word("-20.30", 220, 20, 260, 30),
+            ],
+        )
+
+        values = {
+            field.field_name: field.value
+            for field in extract_layout_aware_schedule_a_fields_from_pages([page])
+        }
+
+        self.assertEqual(
+            values["10a. Total premiums or subscription charges paid to carrier"],
+            "-20.30",
+        )
+
     def test_reads_each_value_from_its_own_table_column(self):
         page = LayoutPage(
             number=2,

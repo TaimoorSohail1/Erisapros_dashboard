@@ -21,7 +21,7 @@ _DATE = re.compile(r"\b(?:0?[1-9]|1[0-2])[/.-](?:0?[1-9]|[12]\d|3[01])[/.-](?:\d
 _EIN = re.compile(r"\b\d{2}-\d{7}\b")
 _NAIC = re.compile(r"\b\d{4,6}\b")
 _INTEGER = re.compile(r"\b\d[\d,]*\b")
-_MONEY = re.compile(r"(?:\$\s*)?\(?\d[\d,]*(?:\.\d{1,2})?\)?")
+_MONEY = re.compile(r"[-+]?(?:\$\s*)?\(?\d[\d,]*(?:\.\d{1,2})?\)?")
 
 
 @dataclass(frozen=True)
