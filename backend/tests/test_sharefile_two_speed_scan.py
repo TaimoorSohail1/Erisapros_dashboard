@@ -372,6 +372,28 @@ class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
         active = [filing for filing in await self.repo.list_filings() if filing.status != FilingStatus.SUPERSEDED]
         self.assertEqual(sum("ClientA_Schedule_A" in filing.file_name for filing in active), 1)
 
+    async def test_targeted_sync_reprocesses_every_schedule_in_a_multi_schedule_folder(self):
+        self.tree["f_a_sa"].append(_pdf("d_a_sa_2", "ClientA_Second_Schedule_A.pdf"))
+        service = ShareFileService()
+        await self._baseline(service)
+
+        with patch.object(
+            ShareFileService,
+            "_get_item",
+            new=AsyncMock(return_value=_folder("f_a", "Client A (Test)")),
+        ):
+            result = await service.sync_folder(BackgroundTasks(), target_folder_id="f_a")
+
+        self.assertEqual(result.get("scan_mode"), "TARGETED")
+        self.assertEqual(result.get("synced"), 2)
+        active_names = [
+            filing.file_name
+            for filing in await self.repo.list_filings()
+            if filing.status != FilingStatus.SUPERSEDED
+        ]
+        self.assertTrue(any("ClientA_Schedule_A" in name for name in active_names))
+        self.assertTrue(any("ClientA_Second_Schedule_A" in name for name in active_names))
+
     async def test_targeted_recovery_restores_a_dashboard_deleted_source_file(self):
         service = ShareFileService()
         await self._baseline(service)

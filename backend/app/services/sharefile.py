@@ -1916,7 +1916,32 @@ class ShareFileService:
                     item_id = sibling.get("id")
                     if item_id and item_id not in by_id:
                         by_id[item_id] = sibling
-            resolved_packages.update(self._expand_schedule_a_packages(package_key, list(by_id.values())))
+            expanded = self._expand_schedule_a_packages(package_key, list(by_id.values()))
+            for expanded_key, expanded_files in expanded.items():
+                if expanded_key not in resolved_packages:
+                    resolved_packages[expanded_key] = expanded_files
+                    continue
+                # Multiple changed files from one filing root expand into the
+                # same per-Schedule-A package keys. Preserve the changed/forced
+                # version instead of letting a later sibling expansion replace
+                # it with an UNCHANGED index copy.
+                merged = {
+                    str(item.get("id")): item
+                    for item in resolved_packages[expanded_key]
+                    if item.get("id")
+                }
+                for item in expanded_files:
+                    item_id = str(item.get("id") or "")
+                    if not item_id:
+                        continue
+                    existing_item = merged.get(item_id)
+                    if (
+                        existing_item is None
+                        or item.get("force_reprocess")
+                        or self._is_changed_package_file(item)
+                    ):
+                        merged[item_id] = item
+                resolved_packages[expanded_key] = list(merged.values())
         return self._drop_redundant_worksheet_waiting_packages(resolved_packages)
 
     def _drop_redundant_worksheet_waiting_packages(self, packages: dict[str, list[dict]]) -> dict[str, list[dict]]:
