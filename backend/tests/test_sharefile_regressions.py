@@ -217,6 +217,57 @@ class ShareFileRegressionTests(unittest.TestCase):
 
         self.assertEqual(document_type, DocumentType.SCHEDULE_A)
 
+    def test_schedule_a_worksheet_filename_requires_content_classification(self):
+        document_type = self.service._classify_sharefile_document(
+            "Schedule A Worksheet BWD Mile Development Completed 9 2026.pdf",
+            [
+                "BWD Mile Development TEST",
+                "5500 Filing",
+                "2025 Filing",
+                "Schedule A Worksheet BWD Mile Development Completed 9 2026.pdf",
+            ],
+        )
+
+        self.assertIsNone(document_type)
+        self.assertEqual(
+            self.service._classify_document_text(
+                "Plan sponsor name Plan number(s) Original ERISA plan effective date "
+                "Total number of participants Fully-Insured Benefits Schedule A info"
+            ),
+            DocumentType.PLAN_WORKSHEET,
+        )
+
+    def test_schedule_a_explanation_docx_requires_content_classification(self):
+        name = "World Insurance Info New York Life Spreadsheet Schedule A Explanation.docx"
+
+        self.assertIsNone(
+            self.service._classify_sharefile_document(
+                name,
+                ["Client", "5500 Filing", "2025 Filing", "Schedule A's", name],
+            )
+        )
+        self.assertTrue(self.service._needs_authoritative_content_sniff(name))
+
+    def test_ambiguous_name_is_re_sniffed_despite_stale_index_classification(self):
+        name = "Schedule A Worksheet BWD Mile Development Completed 9 2026.pdf"
+        path_parts = ["Client", "5500 Filing", "2025 Filing", name]
+        scanned = sharefile_file("ambiguous-file", name, path_parts, None)
+        scanned["needs_content_sniff"] = True
+        repo = repositories.get_repository()
+        stale = self.service._sharefile_index_record(scanned, status="EXTRACTED")
+        stale["document_type"] = DocumentType.SCHEDULE_A.value
+        run_async(repo.upsert_sharefile_file("ambiguous-file", stale))
+        self.service._classify_sharefile_document_by_content = AsyncMock(
+            return_value=DocumentType.PLAN_WORKSHEET
+        )
+
+        resolved = run_async(
+            self.service._resolve_deferred_content_sniffs(None, None, [scanned])
+        )
+
+        self.assertEqual(resolved[0]["document_type"], DocumentType.PLAN_WORKSHEET)
+        self.service._classify_sharefile_document_by_content.assert_awaited_once()
+
     def test_content_sniff_skips_unreadable_pdf_instead_of_aborting_scan(self):
         async def download_unreadable_pdf(client, token, item_id):
             return b"\r\n\r\n\rnot-a-real-pdf"

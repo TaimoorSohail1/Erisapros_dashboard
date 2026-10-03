@@ -2175,7 +2175,8 @@ class ShareFileService:
         candidates: list[dict] = []
         for file_item in sniffable_files:
             existing = existing_by_item_id.get(str(file_item["id"]))
-            if existing and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
+            authoritative_sniff = self._needs_authoritative_content_sniff(file_item.get("name") or "")
+            if existing and not authoritative_sniff and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
                 indexed_type = existing.get("document_type")
                 if indexed_type:
                     try:
@@ -3588,6 +3589,15 @@ class ShareFileService:
         # to look like a Schedule A by name or by the folder it sits in.
         is_intake_document = is_supported_intake_file(name)
 
+        # Some clients name the completed plan census "Schedule A Worksheet",
+        # while email screenshots and notes beside a workbook include
+        # "Schedule A Explanation".  The name alone cannot distinguish these
+        # from a carrier Schedule A, so require the PDF/DOCX contents to decide.
+        # These files are intentionally re-sniffed even when an older index row
+        # cached the former name-only classification.
+        if is_intake_document and self._needs_authoritative_content_sniff(file_name):
+            return None
+
         # An explicit Schedule A filename is stronger evidence than a nearby
         # folder or suffix containing the generic word "worksheet".
         looks_like_schedule = "schedulea" in compact_name or "schedule a" in name
@@ -3610,6 +3620,17 @@ class ShareFileService:
         if is_pdf and ("form5500" in compact_name or "form 5500" in name or "5500" in name):
             return DocumentType.UNKNOWN
         return None
+
+    def _needs_authoritative_content_sniff(self, file_name: str) -> bool:
+        name = str(file_name or "").lower()
+        if not self._should_content_sniff(name):
+            return False
+        compact_name = re.sub(r"[^a-z0-9]+", "", name)
+        if "scheduleaworksheet" in compact_name:
+            return True
+        return "schedule a" in name and any(
+            marker in name for marker in ("explanation", "instructions", "supporting")
+        )
 
     def _should_content_sniff(self, file_name: str) -> bool:
         # Only formats we can cheaply read text from locally. Spreadsheets,
