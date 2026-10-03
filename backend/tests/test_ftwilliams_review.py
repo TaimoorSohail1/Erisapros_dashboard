@@ -1015,6 +1015,18 @@ class FakeFTWilliamsSameCustomerPlanLookupService(FTWilliamsService):
 
 
 class FTWilliamsReviewFlowTests(unittest.TestCase):
+    def test_verified_outcome_is_not_preserved_for_excluded_conflict(self):
+        conflict = FTWilliamsComparisonField(
+            label="Total premium",
+            changed=True,
+            update_included=False,
+            decision=FTWFieldDecision.CONFLICT,
+        )
+
+        self.assertTrue(
+            FTWilliamsReviewService._has_changed_comparison_fields([conflict])
+        )
+
     @staticmethod
     def _schedule_identity_field(rule_key: str, label: str, value: str) -> ExtractedField:
         return ExtractedField(

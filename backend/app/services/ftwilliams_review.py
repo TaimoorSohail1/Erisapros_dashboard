@@ -133,6 +133,10 @@ class FTWilliamsReviewService:
         self.ftwilliams = ftwilliams or FTWilliamsService()
 
     @staticmethod
+    def _has_changed_comparison_fields(fields: list[FTWilliamsComparisonField]) -> bool:
+        return any(field.changed for field in fields)
+
+    @staticmethod
     def _edit_check_issue_key(issue: FTWilliamsEditCheckIssue) -> tuple[str, ...]:
         fallback_message = re.sub(r"\s+", " ", str(issue.message or "")).strip().upper()
         field_identity = str(issue.field_line or issue.field_label or fallback_message).strip().upper()
@@ -514,7 +518,11 @@ class FTWilliamsReviewService:
             and current_query_success
             and not active_failure
             and broker_match_complete
-            and not any(field.changed and field.update_included for field in comparison_fields)
+            # A verified prior write is only still verified when every current
+            # comparison remains unchanged.  Conflicts deliberately have
+            # ``update_included=False``; using that flag here hid a later
+            # source correction behind the stale UPDATE_SENT outcome.
+            and not self._has_changed_comparison_fields(comparison_fields)
         )
         preserved_update_outcome = self._reconcile_preserved_update_outcome(
             existing_review,
