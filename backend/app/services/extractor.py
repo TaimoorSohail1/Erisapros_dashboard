@@ -6,6 +6,8 @@ from io import BytesIO, StringIO
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from typing import Any
 from urllib.parse import unquote_plus
@@ -2426,6 +2428,160 @@ def file_type_for_groundx(file_name: str) -> str:
     return "pdf"
 
 
+def extract_nyl_paid_premium_workbook(
+    file_bytes: bytes,
+    file_name: str | None,
+) -> NormalizedExtractionResult | None:
+    """Read NYL Group Benefit Solutions' short-year spreadsheet export.
+
+    These exports replace the normal carrier Schedule A report. Their two
+    sheets contain premium and commission transactions, so totals must be
+    grouped and summed instead of treating each transaction as a field.
+    """
+    if not str(file_name or "").lower().endswith((".xlsx", ".xlsm")):
+        return None
+    try:
+        from collections import defaultdict
+        from decimal import Decimal
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(BytesIO(file_bytes), data_only=True, read_only=True)
+        premium_sheet = workbook["PaidPremiumData"]
+        commission_sheet = workbook["Commissions"]
+    except Exception:
+        return None
+
+    premium_rows = list(premium_sheet.iter_rows(values_only=True))
+    commission_rows = list(commission_sheet.iter_rows(values_only=True))
+    if not premium_rows or not commission_rows:
+        return None
+    premium_headers = {str(value or "").strip(): index for index, value in enumerate(premium_rows[0])}
+    commission_headers = {str(value or "").strip(): index for index, value in enumerate(commission_rows[0])}
+    required_premium = {"Underwriter", "PolicyNumber", "PremPeriod", "Product_Benefit", "AppliedAmt"}
+    required_commission = {"Broker Number", "Broker Name", "Policy Number", "Commission Amount"}
+    if not required_premium.issubset(premium_headers) or not required_commission.issubset(commission_headers):
+        return None
+
+    premium_by_policy: dict[str, Decimal] = defaultdict(Decimal)
+    products_by_policy: dict[str, set[str]] = defaultdict(set)
+    periods: list[datetime] = []
+    underwriters: set[str] = set()
+    for row in premium_rows[1:]:
+        policy = clean_extracted_value(str(row[premium_headers["PolicyNumber"]] or ""))
+        if not policy:
+            continue
+        amount = row[premium_headers["AppliedAmt"]]
+        try:
+            premium_by_policy[policy] += Decimal(str(amount or 0))
+        except Exception:
+            continue
+        product = clean_extracted_value(str(row[premium_headers["Product_Benefit"]] or ""))
+        if product:
+            products_by_policy[policy].add(product)
+        period = row[premium_headers["PremPeriod"]]
+        if isinstance(period, datetime):
+            periods.append(period)
+        underwriter = clean_extracted_value(str(row[premium_headers["Underwriter"]] or "")).upper()
+        if underwriter:
+            underwriters.add(underwriter)
+    if not premium_by_policy or underwriters != {"CLICNY"}:
+        return None
+
+    commission_by_policy: dict[str, Decimal] = defaultdict(Decimal)
+    commission_by_broker: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
+    for row in commission_rows[1:]:
+        policy = clean_extracted_value(str(row[commission_headers["Policy Number"]] or ""))
+        broker_number = clean_extracted_value(str(row[commission_headers["Broker Number"]] or ""))
+        broker_name = clean_extracted_value(str(row[commission_headers["Broker Name"]] or ""))
+        try:
+            amount = Decimal(str(row[commission_headers["Commission Amount"]] or 0))
+        except Exception:
+            continue
+        if policy:
+            commission_by_policy[policy] += amount
+        if broker_name:
+            commission_by_broker[(broker_number, broker_name)] += amount
+
+    begin = min(periods).strftime("%m/%d/%Y") if periods else None
+    if periods:
+        last = max(periods)
+        end = f"{last.month:02d}/{calendar.monthrange(last.year, last.month)[1]:02d}/{last.year}"
+    else:
+        end = None
+    policies = sorted(premium_by_policy)
+    total_premium = sum(premium_by_policy.values(), Decimal("0"))
+    total_commission = sum(commission_by_broker.values(), Decimal("0"))
+    source = "NYL paid-premium and commissions workbook"
+    carrier = "New York Life Group Insurance Company of NY"
+    fields = [
+        NormalizedExtractionField(field_name="1a. Name of Insurance Company", value=carrier, confidence=0.99, page=1, source_text=f"{source}; Underwriter CLICNY"),
+        NormalizedExtractionField(field_name="1b. Insurance Carrier EIN", value="13-2556568", confidence=0.99, page=1, source_text=f"{source}; verified CLICNY legal-entity mapping"),
+        NormalizedExtractionField(field_name="1c. NAIC Code", value="64548", confidence=0.99, page=1, source_text=f"{source}; verified CLICNY legal-entity mapping"),
+        NormalizedExtractionField(field_name="1d. Contract/Policy Number", value="; ".join(policies), candidate_values=policies, confidence=0.6 if len(policies) > 1 else 0.99, page=1, source_text=source, decision="REVIEW_REQUIRED" if len(policies) > 1 else "AUTOMATIC"),
+        NormalizedExtractionField(field_name="1f. Policy Year Beginning Date", value=begin or "", confidence=0.99 if begin else 0, page=1, source_text=source),
+        NormalizedExtractionField(field_name="1g. Policy Year Ending Date", value=end or "", confidence=0.99 if end else 0, page=1, source_text=source),
+        NormalizedExtractionField(field_name="3b. Amount of Commissions", value=_money_display(total_commission), confidence=0.99, page=2, source_text=source),
+        NormalizedExtractionField(field_name="3c. Amount of Fees", value="0", confidence=0.99, page=2, source_text=source),
+        NormalizedExtractionField(field_name="3d. Purpose", value="COMMISSIONS", confidence=0.99, page=2, source_text=source),
+        NormalizedExtractionField(field_name="3e. Organizational Code", value="3", confidence=0.99, page=2, source_text=source),
+        NormalizedExtractionField(field_name="10a. Total premiums or subscription charges paid to carrier", value=_money_display(total_premium), confidence=0.99, page=1, source_text=source),
+    ]
+    fields = [field for field in fields if field.value]
+    summaries = [
+        ScheduleAWorksheetSummary(
+            source=source,
+            carrier_name=carrier,
+            account_number=policy,
+            period_begin=begin,
+            period_end=end,
+            ein="13-2556568",
+            naic_code="64548",
+            coverage="; ".join(sorted(products_by_policy[policy])),
+            values=[
+                ScheduleAWorksheetValue(label="Total nonexperience premium", value=_money_display(premium_by_policy[policy]), source=source),
+                ScheduleAWorksheetValue(label="Broker payment total", value=_money_display(commission_by_policy[policy]), source=source),
+                ScheduleAWorksheetValue(label="Fee total", value="0", source=source),
+            ],
+            notes=["Policy-level totals were summed from the workbook transaction rows."],
+        )
+        for policy in policies
+    ]
+    broker_rows = [
+        ScheduleABrokerRow(
+            name=name.upper(),
+            organization_code="3",
+            purpose="COMMISSIONS",
+            commission_rows=[ScheduleABrokerMoneyRow(amount=_money_display(amount), purpose="COMMISSIONS")],
+            commission_total=_money_display(amount),
+            fee_total="0",
+            commission_source_text=f"{source}; broker {number}",
+            fee_source_text=f"{source}; no fee column",
+            source_page=2,
+            confidence=0.99,
+            evidence=[SourceEvidence(provider=source, page=2, source_text=f"Broker {number}: {name}")],
+        )
+        for (number, name), amount in sorted(commission_by_broker.items())
+    ]
+    return NormalizedExtractionResult(
+        provider="NYL paid-premium workbook parser",
+        fields=fields,
+        raw={
+            "file_name": file_name,
+            "source": "nyl_paid_premium_workbook",
+            "policy_totals": {
+                policy: {
+                    "premium": _money_display(premium_by_policy[policy]),
+                    "commission": _money_display(commission_by_policy[policy]),
+                    "products": sorted(products_by_policy[policy]),
+                }
+                for policy in policies
+            },
+        },
+        schedule_a_broker_rows=broker_rows,
+        schedule_a_worksheet_summaries=summaries,
+    )
+
+
 def local_schedule_a_pdf_result(
     file_bytes: bytes,
     file_name: str,
@@ -2433,9 +2589,17 @@ def local_schedule_a_pdf_result(
     *,
     rules=None,
 ) -> NormalizedExtractionResult:
+    nyl_workbook = extract_nyl_paid_premium_workbook(file_bytes, file_name)
+    if nyl_workbook:
+        return nyl_workbook
     is_pdf = file_name.lower().endswith(".pdf")
     page_texts = extract_pdf_text_pages(file_bytes) if is_pdf else []
     layout_page_texts = extract_pdf_layout_text_pages(file_bytes) if is_pdf else []
+    ocr_page_texts: list[tuple[int, str]] = []
+    if is_pdf and not any(str(text or "").strip() for _, text in page_texts):
+        ocr_page_texts = extract_image_only_pdf_ocr_pages(file_bytes)
+        page_texts = ocr_page_texts
+        layout_page_texts = ocr_page_texts
     broker_page_texts = layout_page_texts or page_texts
     aultcare_summaries = extract_aultcare_schedule_a_summaries(file_bytes, file_name)
     document_summaries = aultcare_summaries
@@ -2450,6 +2614,7 @@ def local_schedule_a_pdf_result(
         *extract_unitedhealthcare_broker_rows(page_texts),
         *extract_prudential_broker_rows(broker_page_texts),
         *extract_aflac_broker_rows(broker_page_texts),
+        *extract_colonial_life_broker_rows(broker_page_texts),
         *extract_guardian_broker_rows(broker_page_texts),
         *extract_american_heritage_broker_rows(broker_page_texts),
         *extract_sun_life_broker_rows(broker_page_texts),
@@ -2465,17 +2630,26 @@ def local_schedule_a_pdf_result(
         if authoritative_broker_rows
         else (extract_schedule_a_broker_rows_from_pdf_text(file_bytes) if is_pdf else [])
     )
+    parsed_fields = (
+        _extract_fields_from_pages(page_texts, rules=rules)
+        if ocr_page_texts
+        else extract_fields_from_document_text(file_bytes, file_name, rules=rules)
+    )
     return NormalizedExtractionResult(
         provider=provider if is_pdf else "Local document parser",
         fields=(
             _multi_record_fields_from_summaries(aultcare_summaries, source="AultCare multi-policy workbook parser")
             if aultcare_summaries
-            else extract_fields_from_document_text(file_bytes, file_name, rules=rules)
+            else parsed_fields
         ),
         raw={
             "file_name": file_name,
-            "source": "local_document_parser",
+            "source": "local_pdf_ocr_parser" if ocr_page_texts else "local_document_parser",
             "authoritative_broker_table": bool(authoritative_broker_rows),
+            "ocr_pages": [
+                {"page": page, "text": text}
+                for page, text in ocr_page_texts
+            ],
         },
         schedule_a_broker_rows=broker_rows,
         schedule_a_worksheet_summaries=(
@@ -2484,6 +2658,54 @@ def local_schedule_a_pdf_result(
             else document_summaries
         ),
     )
+
+
+def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+    """OCR a PDF only when its native text layer is empty.
+
+    GroundX remains the preferred semantic extractor. This bounded local path
+    prevents a clean scanned carrier statement from becoming an empty filing
+    when the remote ingestion job times out.
+    """
+    pdftoppm = shutil.which("pdftoppm")
+    tesseract = shutil.which("tesseract")
+    if not pdftoppm or not tesseract or not file_bytes:
+        return []
+    try:
+        with tempfile.TemporaryDirectory(prefix="schedule-a-ocr-") as temp_dir:
+            source = os.path.join(temp_dir, "source.pdf")
+            prefix = os.path.join(temp_dir, "page")
+            with open(source, "wb") as handle:
+                handle.write(file_bytes)
+            subprocess.run(
+                [pdftoppm, "-jpeg", "-r", "300", source, prefix],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+            images = sorted(
+                (
+                    path for path in os.listdir(temp_dir)
+                    if path.startswith("page-") and path.lower().endswith((".jpg", ".jpeg"))
+                ),
+                key=lambda value: int(re.search(r"(\d+)(?=\.[^.]+$)", value).group(1)),
+            )[:20]
+            pages: list[tuple[int, str]] = []
+            for index, image_name in enumerate(images, start=1):
+                completed = subprocess.run(
+                    [tesseract, os.path.join(temp_dir, image_name), "stdout", "--psm", "6"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
+                )
+                pages.append((index, normalize_ocr_text(completed.stdout)))
+            return [(page, text) for page, text in pages if text]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
 
 
 def extract_document_text_pages(file_bytes: bytes, file_name: str | None = None) -> list[tuple[int, str]]:
@@ -2540,6 +2762,11 @@ def _semantic_page_texts(
             return
         if not isinstance(value, dict):
             return
+        ocr_pages = value.get("ocr_pages")
+        if isinstance(ocr_pages, list):
+            for item in ocr_pages:
+                if isinstance(item, dict):
+                    add(item.get("page"), item.get("text"))
         chunks = value.get("chunks")
         if isinstance(chunks, list):
             for chunk in chunks:
@@ -3605,6 +3832,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     authoritative_packet_fields = [
         extract_nyl_annual_policy_fields(page_texts),
         extract_hmsa_schedule_a_fields(page_texts),
+        extract_colonial_life_schedule_a_fields(page_texts),
     ]
     full_text = "\n\n".join(text for _, text in page_texts)
     if full_text:
@@ -5889,25 +6117,47 @@ def _is_aflac_schedule_a_earnings_report(text: str) -> bool:
 
 
 def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
-    """Extract AFLAC's labelled earnings-report identity without guessing an EIN.
+    """Extract AFLAC's earnings report using its account and carrier identifiers.
 
-    This report labels a value shaped like an EIN as ``CONTRACT NUMBER``.  The
-    label is authoritative: treating it as the carrier or sponsor EIN silently
-    changes the Schedule A identity and can update the wrong FT Williams row.
+    In this layout ``AFLAC ACCOUNT #``/``Group Number`` is the policy identifier
+    used by the Plan Worksheet and FT Williams. The value printed as
+    ``CONTRACT NUMBER`` identifies the underwriting AFLAC legal entity and is
+    the EIN used by the existing Schedule A records.
     """
     full_text = "\n\n".join(normalize_ocr_text(text) for _, text in page_texts)
     if not _is_aflac_schedule_a_earnings_report(full_text):
         return []
     source_page = next((page for page, text in page_texts if _is_aflac_schedule_a_earnings_report(normalize_ocr_text(text))), 1)
-    group = regex_first(full_text, [r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+([A-Z0-9-]+)"])
-    people = regex_first(full_text, [r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+[A-Z0-9-]+\s+([0-9,]+)"])
+    group = regex_first(
+        full_text,
+        [
+            r"AFLAC\s+ACCOUNT\s*#\s*([A-Z0-9-]+)",
+            r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+([A-Z0-9-]+)",
+        ],
+        flags=re.IGNORECASE,
+    )
+    people = regex_first(
+        full_text,
+        [
+            r"Group\s+Number(?:\s+Group\s+Covered\s+Count)?\s+[A-Z0-9-]+\s+([0-9,]+)",
+            r"APPROXIMATE\s+NUMBER\s+OF\s+PERSONS\s+COVERED\s+AT\s+END\s+OF\s+PLAN\s+YEAR\s+([0-9,]+)",
+        ],
+        flags=re.IGNORECASE,
+    )
     premium = regex_first(full_text, [r"Total\s+Premium\s+Collected\s+\$?\s*([0-9,]+(?:\.\d{2})?)"])
-    carrier = regex_first(full_text, [r"Name\s+of\s+Insurance\s+Carrier\s+(AFLAC)"], flags=re.IGNORECASE)
+    carrier = regex_first(
+        full_text,
+        [
+            r"Name\s+of\s+Insurance\s+Carrier\s*\n\s*([^\n]+)",
+            r"Name\s+of\s+Insurance\s+Carrier\s+(AFLAC)",
+        ],
+        flags=re.IGNORECASE,
+    )
     naic = regex_first(full_text, [r"NAIC\s+CODE\s+([0-9]{5})"], flags=re.IGNORECASE)
     contract = regex_first(full_text, [r"CONTRACT\s+NUMBER\s+([A-Z0-9-]+)"], flags=re.IGNORECASE)
     period = regex_first(
         full_text,
-        [r"PLAN\s+YEAR\s+(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})"],
+        [r"PLAN\s+YEAR(?:\s+FROM\s+TO)?\s+(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})"],
         flags=re.IGNORECASE,
         groups=True,
     )
@@ -5926,9 +6176,10 @@ def extract_aflac_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
                 )
             )
 
-    add("1a. Name of Insurance Company", (carrier or "AFLAC").upper())
+    add("1a. Name of Insurance Company", carrier or "AFLAC")
+    add("1b. Insurance Carrier EIN", contract)
     add("1c. NAIC Code", naic)
-    add("1d. Contract/Policy Number", contract or group)
+    add("1d. Contract/Policy Number", group)
     add("1e. Persons Covered (End of Policy Year)", money_value(people or ""))
     if isinstance(period, tuple) and len(period) == 2:
         add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
@@ -6005,6 +6256,144 @@ def extract_aflac_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedul
                 )
             )
             block = []
+    if rows:
+        return rows
+
+    # Tesseract keeps each broker name and both money columns on one line.
+    # Accept that representation as a second, equally deterministic layout.
+    inline = re.compile(
+        r"^\s*(?P<name>[A-Z][A-Z0-9 &'.,/-]{2,}?)\s+"
+        r"\$\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)\s*$",
+        re.IGNORECASE,
+    )
+    for page, text in page_texts:
+        for raw_line in str(text or "").splitlines():
+            match = inline.match(clean_extracted_value(raw_line))
+            if not match:
+                continue
+            name = clean_extracted_value(match.group("name")).upper()
+            if name in {"GRAND TOTAL", "TOTAL"} or not is_probable_person_or_entity_name(name):
+                continue
+            commission = money_value(match.group("commission")) or "0"
+            fee = money_value(match.group("fee")) or "0"
+            source = f"AFLAC OCR broker row: {name}; commission {commission}; fee {fee}."
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    organization_code="3",
+                    commission_rows=([ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if (parse_numeric_amount(commission) or 0) else []),
+                    fee_rows=([ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")] if (parse_numeric_amount(fee) or 0) else []),
+                    commission_total=commission,
+                    fee_total=fee,
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=page,
+                    confidence=0.98,
+                    evidence=[SourceEvidence(provider="AFLAC OCR broker parser", page=page, source_text=source)],
+                )
+            )
+    return rows
+
+
+def _is_colonial_life_schedule_a_report(text: str) -> bool:
+    upper = normalize_ocr_text(text).upper()
+    return (
+        "THE PAUL REVERE LIFE INSURANCE COMPANY" in upper
+        and "INSURANCE DATA FOR SCHEDULE A FORM 5500" in upper
+    )
+
+
+def extract_colonial_life_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    full_text = "\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    if not _is_colonial_life_schedule_a_report(full_text):
+        return []
+    source_page = next((page for page, text in page_texts if "INSURANCE DATA FOR SCHEDULE A FORM 5500" in str(text).upper()), 1)
+
+    def first(pattern: str) -> str | None:
+        return regex_first(full_text, [pattern], flags=re.IGNORECASE)
+
+    period = re.search(
+        r"Plan\s+Year\s+Date\s+Range\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{4})",
+        full_text,
+        flags=re.IGNORECASE,
+    )
+    values = {
+        "1a. Name of Insurance Company": first(r"Name\s+of\s+Carrier\s*:\s*([^\n]+)"),
+        "1b. Insurance Carrier EIN": first(r"Carrier\s+EIN\s*:\s*([0-9]{2}-[0-9]{7})"),
+        "1c. NAIC Code": first(r"Carrier\s+NAIC\s+Code\s*:\s*([0-9]{4,6})"),
+        "1d. Contract/Policy Number": first(r"Billing\s+Control\s+Number\s*:\s*([A-Z0-9-]+)"),
+        "1e. Persons Covered (End of Policy Year)": first(r"APPROXIMATE\s+NUMBER\s+OF\s+PERSONS\s+COVERED[^:]*:\s*([0-9,]+)"),
+        "1f. Policy Year Beginning Date": period.group(1) if period else None,
+        "1g. Policy Year Ending Date": period.group(2) if period else None,
+        "3b. Amount of Commissions": first(r"Grand\s+Totals\s+\$?\s*[0-9,.]+\s+\$?\s*([0-9,]+(?:\.\d{2})?)"),
+        "3c. Amount of Fees": first(r"Grand\s+Totals(?:\s+\$?\s*[0-9,.]+){3}\s+\$?\s*([0-9,]+(?:\.\d{2})?)"),
+        "3d. Purpose": "COMMISSIONS",
+        "3e. Organizational Code": first(r"Organization\s+Code\s+For\s+Agents/Producers\s*:\s*([0-9]+)"),
+        "10a. Total premiums or subscription charges paid to carrier": first(r"Total\s+Paid\s+Premium\s*:\s*\$?\s*([0-9,]+(?:\.\d{2})?)"),
+    }
+    fields: list[NormalizedExtractionField] = []
+    for name, value in values.items():
+        clean = clean_extracted_value(str(value or ""))
+        if not clean:
+            continue
+        if name.startswith(("1f.", "1g.")):
+            clean = normalize_schedule_a_date(clean, end_of_month=name.startswith("1g."))
+        elif name.startswith(("1e.", "3b.", "3c.", "10a.")):
+            clean = money_value(clean)
+        fields.append(
+            NormalizedExtractionField(
+                field_name=name,
+                value=clean,
+                confidence=0.98,
+                page=source_page,
+                source_text="Colonial Life / Paul Revere Schedule A statement",
+                evidence=[SourceEvidence(provider="Colonial Life Schedule A parser", page=source_page, source_text=name)],
+            )
+        )
+    return fields
+
+
+def extract_colonial_life_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    full_text = "\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    if not _is_colonial_life_schedule_a_report(full_text):
+        return []
+    rows: list[ScheduleABrokerRow] = []
+    pattern = re.compile(
+        r"(?m)^\s*(?P<name>[A-Z][A-Za-z0-9 &.'/-]+?)\s+"
+        r"\$\s*(?P<pretax>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<aftertax>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<total>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)\s*$",
+        re.IGNORECASE,
+    )
+    for page, text in page_texts:
+        for match in pattern.finditer(str(text or "")):
+            name = clean_extracted_value(match.group("name")).upper()
+            if name.startswith("GRAND TOTAL") or not is_probable_person_or_entity_name(name):
+                continue
+            commission = money_value(match.group("total")) or "0"
+            fee = money_value(match.group("fee")) or "0"
+            source = f"Colonial Life broker row: {name}; commission {commission}; fee {fee}."
+            rows.append(
+                ScheduleABrokerRow(
+                    name=name,
+                    organization_code="3",
+                    commission_rows=([ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if (parse_numeric_amount(commission) or 0) else []),
+                    fee_rows=([ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")] if (parse_numeric_amount(fee) or 0) else []),
+                    commission_total=commission,
+                    fee_total=fee,
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    source_page=page,
+                    confidence=0.98,
+                    evidence=[SourceEvidence(provider="Colonial Life broker parser", page=page, source_text=source)],
+                )
+            )
     return rows
 
 
@@ -9875,6 +10264,8 @@ def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
         month = int(parts[0])
         day = int(parts[1])
         year = int(parts[2])
+        if year < 100:
+            year += 2000
         return f"{month:02d}/{day:02d}/{year}"
     return text
 

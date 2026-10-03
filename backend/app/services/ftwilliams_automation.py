@@ -205,7 +205,10 @@ class FTWAutomationPolicy:
                 extracted and extracted.status == ExtractedFieldStatus.EDITED
             )
             field_decision = comparison.decision
-            if comparison.validation_blocking or field_decision == FTWFieldDecision.BLOCKED:
+            if comparison.validation_blocking or (
+                field_decision == FTWFieldDecision.BLOCKED
+                and comparison.update_included
+            ):
                 reasons.append(f"{comparison.label} has a blocking validation error.")
             if field_decision == FTWFieldDecision.CONFLICT and not reviewer_confirmed:
                 reasons.append(f"{comparison.label} has conflicting extracted and FT Williams values.")

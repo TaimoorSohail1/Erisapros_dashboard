@@ -1,6 +1,8 @@
 import asyncio
 import unittest
 
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -57,6 +59,9 @@ from app.services.extractor import (
     extract_metlife_bay_bridge_schedule_a_fields,
     extract_metlife_bay_bridge_schedule_a_summaries,
     extract_nyl_annual_policy_fields,
+    extract_nyl_paid_premium_workbook,
+    extract_colonial_life_schedule_a_fields,
+    extract_colonial_life_broker_rows,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
     extract_bcbsma_schedule_a_worksheet_summaries,
@@ -106,6 +111,96 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_image_only_aflac_uses_bounded_local_ocr_when_groundx_is_unavailable(self):
+        ocr_pages = [(1, """
+            SCHEDULE A EARNINGS REPORT
+            AFLAC ACCOUNT # NSU61
+            NAME OF INSURANCE CARRIER
+            American Family Life Assurance Company Of New York
+            APPROXIMATE NUMBER OF PERSONS COVERED AT END OF PLAN YEAR 16
+            PLAN YEAR FROM TO 01/01/2025 - 12/31/2025
+            Contract Number 52-0807803
+            NAIC CODE 60380
+            TOTAL PREMIUM COLLECTED $17,794.78
+            INSURANCE FEES AND COMMISSIONS PAID TO AGENTS
+            COMMISSIONS PAID FEES PAID
+            JENNIFER LUBELSKY $661.32 $30.34
+        """)]
+        with (
+            patch("app.services.extractor.extract_pdf_text_pages", return_value=[(1, "")]),
+            patch("app.services.extractor.extract_pdf_layout_text_pages", return_value=[(1, "")]),
+            patch("app.services.extractor.extract_image_only_pdf_ocr_pages", return_value=ocr_pages),
+            patch("app.services.extractor.extract_schedule_a_worksheet_summaries_from_pdf_text", return_value=[]),
+        ):
+            result = local_schedule_a_pdf_result(b"%PDF-scanned", "NSU61.pdf")
+
+        values = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(values["1a. Name of Insurance Company"], "American Family Life Assurance Company Of New York")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "52-0807803")
+        self.assertEqual(values["1d. Contract/Policy Number"], "NSU61")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "17,794.78")
+        self.assertEqual(len(result.schedule_a_broker_rows), 1)
+        self.assertEqual(result.schedule_a_broker_rows[0].commission_total, "661.32")
+        self.assertEqual(result.raw["source"], "local_pdf_ocr_parser")
+
+    def test_colonial_life_ocr_layout_extracts_identity_totals_and_brokers(self):
+        pages = [(2, """
+            Insurance Data for Schedule A Form 5500
+            Name of Carrier: The Paul Revere Life Insurance Company
+            Carrier EIN: 04-1590994
+            Carrier NAIC Code: 67598
+            Billing Control Number: E4020418
+            Plan Year Date Range: 05/01/2025 - 04/30/2026
+            Organization Code For Agents/Producers: 3
+            Total Paid Premium: $1,722.37
+            APPROXIMATE NUMBER OF PERSONS COVERED IN APRIL 2026: 2
+            Julie Ann Klimchak $0.00 $15.90 $15.90 $0.00
+            Jnaz Inc $0.00 $3.81 $3.81 $0.00
+            Grand Totals $0.00 $19.71 $19.71 $0.00
+        """)]
+        values = {field.field_name: field.value for field in extract_colonial_life_schedule_a_fields(pages)}
+        brokers = extract_colonial_life_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "The Paul Revere Life Insurance Company")
+        self.assertEqual(values["1d. Contract/Policy Number"], "E4020418")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "1,722.37")
+        self.assertEqual(values["3b. Amount of Commissions"], "19.71")
+        self.assertEqual(values["3c. Amount of Fees"], "0.00")
+        self.assertEqual([row.name for row in brokers], ["JULIE ANN KLIMCHAK", "JNAZ INC"])
+        self.assertTrue(all(row.fee_total == "0.00" for row in brokers))
+
+    def test_nyl_short_year_workbook_sums_policy_and_broker_transactions(self):
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        premiums = workbook.active
+        premiums.title = "PaidPremiumData"
+        premiums.append(["ClientName", "PayorId", "Underwriter", "PolicyNumber", "PremPeriod", "Product_Benefit", "ApplyDate", "AppliedAmt"])
+        premiums.append(["BWD", "1", "CLICNY", "SGN0600973", datetime(2025, 6, 1), "Life - Basic", datetime(2025, 6, 30), 100])
+        premiums.append(["BWD", "1", "CLICNY", "SGN0600973", datetime(2026, 4, 1), "Life - Voluntary", datetime(2026, 4, 30), 50])
+        premiums.append(["BWD", "1", "CLICNY", "VDY0600189", datetime(2026, 4, 1), "STD - Voluntary", datetime(2026, 4, 30), 25])
+        commissions = workbook.create_sheet("Commissions")
+        commissions.append(["Broker Number", "Broker Name", "Payment Issuance date", "Commission Type", "Client Name", "Policy Number", "Premium Start Date", "Commission Amount"])
+        commissions.append(["GPO-1", "BENEFITMALL", datetime(2025, 8, 1), "GAFE", "BWD", "SGN0600973", datetime(2025, 6, 1), 12.5])
+        commissions.append(["GPO-2", "WORLD INSURANCE ASSOCIATES LLC", datetime(2025, 8, 1), "GAFE", "BWD", "VDY0600189", datetime(2025, 6, 1), 7.5])
+        buffer = BytesIO()
+        workbook.save(buffer)
+
+        result = extract_nyl_paid_premium_workbook(buffer.getvalue(), "BWD NYL.xlsx")
+        self.assertIsNotNone(result)
+        values = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(values["1a. Name of Insurance Company"], "New York Life Group Insurance Company of NY")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "13-2556568")
+        self.assertEqual(values["1c. NAIC Code"], "64548")
+        self.assertEqual(values["1d. Contract/Policy Number"], "SGN0600973; VDY0600189")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "06/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "04/30/2026")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "175")
+        self.assertEqual(values["3b. Amount of Commissions"], "20")
+        self.assertEqual(len(result.schedule_a_worksheet_summaries), 2)
+        self.assertEqual(len(result.schedule_a_broker_rows), 2)
+        self.assertTrue(all(row.fee_total == "0" for row in result.schedule_a_broker_rows))
+
     def test_pomerene_eyemed_keeps_two_policies_separate(self):
         pages = [(1, """
             Vision Insurance Information For Form 5500
@@ -461,9 +556,9 @@ class ScheduleAExtractionTests(unittest.TestCase):
         rows = extract_aflac_broker_rows(layout_pages)
 
         self.assertEqual(values["1a. Name of Insurance Company"], "AFLAC")
-        self.assertNotIn("1b. Insurance Carrier EIN", values)
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "52-0807803")
         self.assertEqual(values["1c. NAIC Code"], "60380")
-        self.assertEqual(values["1d. Contract/Policy Number"], "52-0807803")
+        self.assertEqual(values["1d. Contract/Policy Number"], "NBX36")
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "57")
         self.assertEqual(values["1f. Policy Year Beginning Date"], "01/01/2025")
         self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")

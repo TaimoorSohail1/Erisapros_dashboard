@@ -423,6 +423,35 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.COMPLETED)
         self.assertTrue(decision.eligible)
 
+    def test_review_only_unmapped_field_does_not_block_an_independent_safe_update(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.fields.append(
+            FTWilliamsComparisonField(
+                field_id="review-only-welfare",
+                label="6. Plan is a welfare plan?",
+                form_type=FormType.FORM_5500,
+                priority=FieldPriority.LOW,
+                confidence=0.86,
+                extraction_status=ExtractedFieldStatus.UNMAPPED,
+                current_value="",
+                extracted_value="Yes",
+                proposed_value="Yes",
+                changed=True,
+                update_included=False,
+                validation_status="UNSUPPORTED",
+                validation_message="This field is review-only and is not supported by the FT Williams update contract.",
+                validation_blocking=False,
+                decision=FTWFieldDecision.BLOCKED,
+                decision_reason="This field is review-only and is not supported by the FT Williams update contract.",
+            )
+        )
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
+        self.assertTrue(decision.eligible)
+        self.assertFalse(any("welfare plan" in reason.lower() for reason in decision.reasons))
+
     def test_unresolved_broker_match_stops_automatic_send(self):
         filing, review, extracted, settings = self.safe_case()
         review.schedule_a_broker_match_complete = False
