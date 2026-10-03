@@ -341,6 +341,11 @@ class FTWilliamsReviewService:
         if apply_automatic_derivations:
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
             fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
+            fields = self._fields_with_confirmed_various_bundle(
+                fields,
+                schedule_a_worksheet_summaries,
+                schedule_a_current,
+            )
         schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
             schedule_a_broker_rows,
             selected_schedule_desc,
@@ -5152,6 +5157,89 @@ class FTWilliamsReviewService:
                         "status": ExtractedFieldStatus.MATCHED,
                         "status_reason": "Matched to selected Schedule A benefit section.",
                         "source_text": f"{self._summary_attr(summary, 'source') or 'Schedule A'} {self._summary_attr(summary, 'coverage') or ''} {self._summary_attr(summary, 'account_number') or ''}".strip(),
+                        "updated_at": now,
+                    }
+                )
+            )
+        return updated
+
+    def _fields_with_confirmed_various_bundle(
+        self,
+        fields: list[ExtractedField],
+        summaries: list,
+        schedule_a_current: dict[str, str],
+    ) -> list[ExtractedField]:
+        """Resolve an EyeMed multi-policy bundle only with two external confirmations.
+
+        EyeMed reports separate source contracts, while some plans intentionally
+        keep one aggregate Vision Schedule A in FT Williams.  The aggregate is
+        automatic only when both the Plan Worksheet and the selected current
+        FTW record explicitly say VARIOUS.
+        """
+        current_contract = (
+            schedule_a_current.get("InsContractNum")
+            or schedule_a_current.get("INS_CONTRACT_NUM")
+            or ""
+        )
+        if self._contract_text(current_contract) != "VARIOUS":
+            return fields
+        worksheet_confirms = any(
+            "plan worksheet" in str(self._summary_attr(summary, "source") or "").casefold()
+            and self._contract_text(self._summary_attr(summary, "account_number")) == "VARIOUS"
+            and "vision" in str(self._summary_attr(summary, "coverage") or "").casefold()
+            for summary in summaries or []
+        )
+        eyemed = next(
+            (
+                summary for summary in summaries or []
+                if "eyemed" in str(self._summary_attr(summary, "source") or "").casefold()
+                and re.search(r"[/,;]", str(self._summary_attr(summary, "account_number") or ""))
+            ),
+            None,
+        )
+        if not worksheet_confirms or not eyemed:
+            return fields
+
+        summary_values = {
+            str(self._summary_attr(item, "label") or ""): str(self._summary_attr(item, "value") or "").strip()
+            for item in (self._summary_attr(eyemed, "values") or [])
+        }
+        replacements = {
+            "1a. Name of Insurance Company": str(self._summary_attr(eyemed, "carrier_name") or "").strip(),
+            "1b. Insurance Carrier EIN": str(self._summary_attr(eyemed, "ein") or "").strip(),
+            "1c. NAIC Code": str(self._summary_attr(eyemed, "naic_code") or "").strip(),
+            "1d. Contract/Policy Number": str(self._summary_attr(eyemed, "account_number") or "").strip(),
+            "1e. Persons Covered (End of Policy Year)": summary_values.get("Persons covered", ""),
+            "1f. Policy Year Beginning Date": str(self._summary_attr(eyemed, "period_begin") or "").strip(),
+            "1g. Policy Year Ending Date": str(self._summary_attr(eyemed, "period_end") or "").strip(),
+            "3b. Amount of Commissions": summary_values.get("Broker payment total", ""),
+            "10a. Total premiums or subscription charges paid to carrier": summary_values.get("Total nonexperience premium", ""),
+        }
+        now = datetime.utcnow()
+        updated: list[ExtractedField] = []
+        for field in fields:
+            expected = replacements.get(str(field.mapped_label or ""))
+            actual = str(field.proposed_value or field.value or "").strip()
+            if not expected or not actual:
+                updated.append(field)
+                continue
+            same_value = (
+                self._worksheet_policy_values_match(actual, expected)
+                if str(field.mapped_rule_key or "").endswith("contract_policy_number")
+                else normalize_compare_value(actual) == normalize_compare_value(expected)
+            )
+            if not same_value:
+                updated.append(field)
+                continue
+            updated.append(
+                field.model_copy(
+                    update={
+                        "confidence": max(float(field.confidence or 0), 0.98),
+                        "status": ExtractedFieldStatus.MATCHED,
+                        "status_reason": (
+                            "EyeMed aggregate confirmed by both the Plan Worksheet and "
+                            "the selected FT Williams VARIOUS record."
+                        ),
                         "updated_at": now,
                     }
                 )

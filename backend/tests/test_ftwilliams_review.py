@@ -36,6 +36,7 @@ from app.models import (
     ScheduleABrokerRow,
     ScheduleAContractType,
     ScheduleAWorksheetSummary,
+    ScheduleAWorksheetValue,
 )
 from app.services.ftwilliams import FTWilliamsService
 from app.services.ftwilliams_contract import FTWFieldValidationIssue, FTWPayloadValidationError
@@ -3905,6 +3906,56 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(match.ftw_seq_no, "2")
         details = service._schedule_match_details(fields, statuses[0])
         self.assertIn("Contract group", details["reasons"])
+
+    def test_eyemed_bundle_becomes_automatic_only_when_worksheet_and_ftw_both_confirm_various(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "1040989/90-1001",
+            ).model_copy(update={"status": ExtractedFieldStatus.LOW_CONFIDENCE, "confidence": 0.5}),
+            self._schedule_identity_field(
+                "schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+                "10a. Total premiums or subscription charges paid to carrier",
+                "39,767.92",
+            ).model_copy(update={"status": ExtractedFieldStatus.LOW_CONFIDENCE, "confidence": 0.5}),
+        ]
+        summaries = [
+            ScheduleAWorksheetSummary(
+                source="Plan Worksheet fully-insured benefit table",
+                carrier_name="FIDELITY",
+                account_number="VARIOUS",
+                coverage="VISION",
+            ),
+            ScheduleAWorksheetSummary(
+                source="EyeMed vision worksheet",
+                carrier_name="Fidelity Security Life Insurance Company",
+                account_number="1040989/90-1001",
+                coverage="Vision",
+                values=[
+                    ScheduleAWorksheetValue(
+                        label="Total nonexperience premium",
+                        value="39,767.92",
+                    )
+                ],
+            ),
+        ]
+
+        updated = service._fields_with_confirmed_various_bundle(
+            fields,
+            summaries,
+            {"InsContractNum": "VARIOUS"},
+        )
+        unconfirmed = service._fields_with_confirmed_various_bundle(
+            fields,
+            summaries,
+            {"InsContractNum": "10409891001"},
+        )
+
+        self.assertTrue(all(field.status == ExtractedFieldStatus.MATCHED for field in updated))
+        self.assertTrue(all(field.confidence >= 0.98 for field in updated))
+        self.assertTrue(all(field.status == ExtractedFieldStatus.LOW_CONFIDENCE for field in unconfirmed))
 
     def test_schedule_match_uses_aetna_contract_coverage_suffix_to_break_shared_policy_tie(self):
         service = FTWilliamsReviewService()

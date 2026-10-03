@@ -16,6 +16,43 @@ from app.services.xml_builder import (
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_long_broker_administration_name_uses_safe_ftw_abbreviation(self):
+        carrier = ExtractedField(
+            filing_id="filing",
+            source_field_name="1a. Name of Insurance Company",
+            normalized_field_name="carrier_name",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            mapped_label="1a. Name of Insurance Company",
+            form_type=FormType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="AETNA LIFE INSURANCE CO.",
+            proposed_value="AETNA LIFE INSURANCE CO.",
+        )
+        xml = build_schedule_a_records_update_xml(
+            [],
+            None,
+            [],
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            year="2025",
+            add_new_fields=[carrier],
+            new_schedule_desc="AETNALIF",
+            schedule_a_broker_rows=[
+                {
+                    "name": "MERCER HEALTH & BENEFITS ADMINISTRATION LLC",
+                    "address_line_1": "12421 MEREDITH DR",
+                    "city": "URBANDALE",
+                    "state": "IA",
+                    "zip_code": "50398-0900",
+                    "commission_total": "21871.85",
+                    "fee_total": "0",
+                    "organization_code": "3",
+                }
+            ],
+        )
+
+        self.assertIn("<NameXX>MERCER HEALTH &amp; BENEFITS ADMIN LLC</NameXX>", xml)
+
     def test_new_outbound_text_updates_are_uppercase(self):
         field = ExtractedField(
             filing_id="filing",

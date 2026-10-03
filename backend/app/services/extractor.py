@@ -243,6 +243,18 @@ class ExtractionService:
             pomerene_brokers = extract_pomerene_schedule_a_broker_rows(semantic_pages)
             if pomerene_brokers:
                 result.schedule_a_broker_rows = pomerene_brokers
+            eyemed_fields = extract_eyemed_schedule_a_fields(semantic_pages)
+            if eyemed_fields and all(
+                float(field.confidence or 0) >= 0.8
+                and field.decision != "REVIEW_REQUIRED"
+                for field in eyemed_fields
+            ):
+                authoritative_names = {field.field_name for field in eyemed_fields}
+                result.fields = [
+                    field for field in result.fields
+                    if field.field_name not in authoritative_names
+                ]
+                result.fields.extend(eyemed_fields)
             litera_aetna_fields = extract_litera_aetna_schedule_a_fields(semantic_pages)
             if litera_aetna_fields:
                 authoritative_names = {field.field_name for field in litera_aetna_fields}
@@ -3510,12 +3522,26 @@ def extract_litera_aetna_schedule_a_fields(
         text,
         re.IGNORECASE | re.DOTALL,
     )
+    if not carrier_match:
+        carrier_match = re.search(
+            r"Name\s+of\s+Insurance\s+Carrier\s*:\s*"
+            r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co\.?)",
+            text,
+            re.IGNORECASE,
+        )
     identity_match = re.search(
         r"\(b\)\s*EIN\s*:\s*(?P<ein>\d{2}-\d{7})\s+"
         r"(?P<contract>[A-Za-z0-9][A-Za-z0-9-]{2,})\s+of\s+policy",
         text,
         re.IGNORECASE,
     )
+    if not identity_match:
+        identity_match = re.search(
+            r"\(b\)\s*EIN\s*:\s*(?P<ein>\d{2}-\d{7})\s+"
+            r"(?P<contract>[A-Za-z0-9][A-Za-z0-9-]{2,})\b",
+            text,
+            re.IGNORECASE,
+        )
     if not carrier_match or not identity_match:
         return []
 
@@ -3531,19 +3557,25 @@ def extract_litera_aetna_schedule_a_fields(
         re.IGNORECASE,
     )
     persons = re.search(
-        r"persons\s+covered\s+at\s+the\s+end(?:\s+Policy\s+or\s+contract\s+Year)?"
-        r".*?(?:year\s*:)?\s*([\d,]+)\s*(?:\(f\)|\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4})",
+        rf"NAIC\s+Code\s*:\s*See\s+Attached(?:\s+Listing)?\s*([\d,]+)\s+({_POSITION_DATE})",
         text,
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
     if not persons:
         persons = re.search(
-            rf"NAIC\s+Code\s*:\s*See\s+Attached(?:\s+Listing)?\s+([\d,]+)\s+({_POSITION_DATE})",
+            r"contract\s+year\s*:\s*([\d,]+)\s*\(f\)",
             text,
             re.IGNORECASE,
         )
+    if not persons:
+        persons = re.search(
+            r"persons\s+covered\s+at\s+the\s+end(?:\s+Policy\s+or\s+contract\s+Year)?"
+            r".*?(?:year\s*:)?\s*([\d,]+)\s*(?:\(f\)|\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4})",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
     premium = re.search(
-        r"Total\s+premiums\s+or\s+subscription\s+[Cc]harges\s+paid\s+to\s+[Cc]arrier"
+        r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrie[rl]"
         r"[^$\d]{0,120}\$?\s*([\d,]+(?:\.\d{2})?)",
         text,
         re.IGNORECASE,
@@ -3578,10 +3610,12 @@ def extract_litera_aetna_schedule_a_fields(
         ("1c. NAIC Code", naic, appendix_naic[1] if appendix_naic else page,
          appendix_naic[2] if appendix_naic else f"Aetna carrier identity registry: {carrier} {ein} {naic}"),
         ("1d. Contract/Policy Number", contract, page, source),
-        ("1e. Persons Covered (End of Policy Year)", persons.group(1) if persons else None, page, source),
+        ("1e. Persons Covered (End of Policy Year)", persons.group(1) if persons else None, page,
+         persons.group(0) if persons else source),
         ("1f. Policy Year Beginning Date", _normalize_position_date(period.group(1)) if period else None, page, source),
         ("1g. Policy Year Ending Date", _normalize_position_date(period.group(2)) if period else None, page, source),
-        ("10a. Total premiums or subscription charges paid to carrier", money_value(premium.group(1)) if premium else None, page, source),
+        ("10a. Total premiums or subscription charges paid to carrier", money_value(premium.group(1)) if premium else None, page,
+         premium.group(0) if premium else source),
     ]
     return [
         NormalizedExtractionField(
@@ -3675,10 +3709,11 @@ def extract_litera_aetna_schedule_a_broker_rows(
                 address_line_1=clean_extracted_value(parsed["address"]),
                 city=clean_extracted_value(parsed["city"]),
                 state=str(parsed["state"]).upper(),
-                zip_code=str(parsed["zip"]),
+                zip_code=normalize_zip_code(str(parsed["zip"])),
                 commission_total=commission,
                 fee_total="0",
-                commission_rows=[ScheduleABrokerMoneyRow(amount=commission)],
+                purpose="COMMISSIONS",
+                commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
                 source_page=page,
                 commission_source_text=source,
                 fee_source_text=source,
@@ -3694,7 +3729,63 @@ def extract_litera_aetna_schedule_a_broker_rows(
                 ],
             )
         )
-    return rows
+    if rows:
+        return rows
+
+    # Native-text Aetna packets may flatten the entire completed form into one
+    # line.  The amount still belongs to the explicitly headed commission
+    # column, so preserve that column meaning instead of treating it as an
+    # unlabelled fee.
+    for page, page_text in page_texts:
+        text = normalize_ocr_text(page_text or "")
+        match = re.search(
+            r"(?P<name>MERCER\s+HEALTH\s*&\s*BENEFITS(?:\s*ADMINISTRATION)?\s+LLC)\s+"
+            r"(?P<address>\d{1,6}\s+[A-Z0-9 ]+?)"
+            r"(?P<city>URBANDALE)\s+(?P<state>[A-Z]{2})\s+"
+            r"(?P<zip>\d{5}(?:-\d{3,4})?)\s*\$(?P<commission>[\d,]+(?:\.\d{2})?)",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        commission = money_value(match.group("commission"))
+        source = clean_extracted_value(match.group(0))
+        return [
+            ScheduleABrokerRow(
+                name=(
+                    "MERCER HEALTH & BENEFITS ADMINISTRATION LLC"
+                    if "ADMINISTRATION" in match.group("name").upper()
+                    else "MERCER HEALTH & BENEFITS LLC"
+                ),
+                address_line_1=clean_extracted_value(match.group("address")),
+                city=clean_extracted_value(match.group("city")),
+                state=match.group("state").upper(),
+                zip_code=normalize_zip_code(match.group("zip")),
+                purpose="COMMISSIONS",
+                commission_total=commission,
+                fee_total="0",
+                commission_rows=[
+                    ScheduleABrokerMoneyRow(
+                        amount=commission,
+                        purpose="COMMISSIONS",
+                    )
+                ],
+                source_page=page,
+                commission_source_text=source,
+                fee_source_text=source,
+                confidence=0.99,
+                decision="AUTOMATIC",
+                evidence=[
+                    SourceEvidence(
+                        provider="Aetna filled Schedule A parser",
+                        page=page,
+                        source_text=source,
+                        table_cell=(1, 0),
+                    )
+                ],
+            )
+        ]
+    return []
 
 
 def extract_litera_lincoln_schedule_a_fields(
@@ -3715,7 +3806,7 @@ def extract_litera_lincoln_schedule_a_fields(
         return []
     page, text = main_page
     carrier = re.search(r"Name\s+of\s+insurance\s+carrier\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
-    ein = re.search(r"\([bo]\)\s*EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
+    ein = re.search(r"\((?:b|bo)\)\s*EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
     naic = re.search(r"\(c\)\s*NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
     contract = re.search(
         r"\(d\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
@@ -3837,8 +3928,8 @@ def extract_litera_lincoln_schedule_a_broker_rows(
             if not re.match(r"^\d{1,6}\s+", address) or not locality:
                 continue
             amount = money_value(paid.group("amount"))
-            purpose = clean_extracted_value(paid.group("purpose")) or None
-            is_fee = bool(purpose)
+            purpose = clean_extracted_value(paid.group("purpose")) or "COMMISSIONS"
+            is_fee = purpose.casefold() != "commissions"
             source = "\n".join(lines[index : index + 3])
             parsed_rows.append(
                 ScheduleABrokerRow(
@@ -3849,7 +3940,10 @@ def extract_litera_lincoln_schedule_a_broker_rows(
                     zip_code=locality.group("zip"),
                     commission_total="0" if is_fee else amount,
                     fee_total=amount if is_fee else "0",
-                    commission_rows=[] if is_fee else [ScheduleABrokerMoneyRow(amount=amount)],
+                    purpose=purpose,
+                    commission_rows=[] if is_fee else [
+                        ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")
+                    ],
                     fee_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose=purpose)] if is_fee else [],
                     source_page=page,
                     commission_source_text=source,
@@ -10055,7 +10149,12 @@ def normalize_prudential_broker_name(value: str) -> str:
 
 def normalize_zip_code(value: str) -> str:
     text = str(value or "").strip()
-    return text.zfill(5) if re.fullmatch(r"\d{4}", text) else text
+    if re.fullmatch(r"\d{4}", text):
+        return text.zfill(5)
+    shortened_plus_four = re.fullmatch(r"(?P<base>\d{5})-(?P<extension>\d{3})", text)
+    if shortened_plus_four:
+        return f"{shortened_plus_four.group('base')}-0{shortened_plus_four.group('extension')}"
+    return text
 
 
 def prudential_purpose_for_broker(name: str) -> str:

@@ -1196,7 +1196,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
                 Reported fees and commissions may be attributed to multiple Aetna companies.
                 Health (other than dental or vision)
                 9. Non experience rated contracts:
-                (a) Total premiums or subscription Charges paid to Carrier $5,693,303.00
+                (a) Total premiums or subscription Charges paid to Carriel $5,693,303.00
                 """,
             ),
             (
@@ -1263,9 +1263,49 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].address_line_1, "12421 MEREDITH DR")
         self.assertEqual(rows[0].city, "URBANDALE")
         self.assertEqual(rows[0].state, "IA")
-        self.assertEqual(rows[0].zip_code, "50398-900")
+        self.assertEqual(rows[0].zip_code, "50398-0900")
         self.assertEqual(rows[0].commission_total, "21,871.85")
         self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[0].purpose, "COMMISSIONS")
+
+    def test_litera_aetna_flattened_native_text_keeps_lives_premium_and_commission_columns(self):
+        pages = [
+            (
+                3,
+                "AETNA LIFE INSURANCE COMPANY AND AFFILIATES "
+                "For Fiscal Plan Year beginning 01/01/2025 and ending 12/31/2025 "
+                "1. Coverage: Traditional Prospective "
+                "(a) Name of Insurance Carrier: Aetna Life Insurance Co."
+                "(d) Contract Number or Identification:"
+                "(e) Approximate Number of persons covered at the end of policy or contract year: "
+                "Policy or contract Year(b) EIN: 06-6033492 803136 (f) From:(g)To:"
+                "(c) NAIC Code: See Attached211 01/01/202512/31/2025 "
+                "2. Insurance Fees and commissions paid to agents and brokers:"
+                "803136MERCER HEALTH & BENEFITSADMINISTRATION LLC 12421 MEREDITH DR"
+                "URBANDALE IA 50398-900$21,871.85 TOTAL $21,871.85 "
+                "Part III Welfare Benefit Contract Information 9. Non experience rated contracts:"
+                "(a) Total premiums or subscription charges paid to carrier $45,873.97",
+            )
+        ]
+
+        fields = extract_litera_aetna_schedule_a_fields(pages)
+        rows = extract_litera_aetna_schedule_a_broker_rows(pages)
+        values = {field.field_name: field.value for field in fields}
+        resolved = resolve_schedule_a_result(
+            NormalizedExtractionResult(
+                provider="Aetna filled Schedule A parser",
+                fields=fields,
+                schedule_a_broker_rows=rows,
+                raw={},
+            )
+        )
+
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "211")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "45,873.97")
+        self.assertEqual(rows[0].commission_total, "21,871.85")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields))
+        self.assertEqual(resolved.schedule_a_broker_rows[0].decision, "AUTOMATIC")
 
     def test_litera_lincoln_voluntary_life_preserves_contract_suffix_and_merges_broker_payments(self):
         pages = [
@@ -1276,7 +1316,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
                 SCHEDULE A REPORTING INFORMATION
                 Part I - Information Concerning Insurance Contract Coverage, Fees, and Commissions
                 (a) Name of insurance carrier: The Lincoln National Life Insurance Company
-                (b) EIN: 35-0472300
+                (bo) EIN: 35-0472300
                 (c) NAIC code: 65676
                 (d) Contract or identification number: 000400001000 23109
                 (Part III, #8) (e) (f) (g)
@@ -1317,6 +1357,19 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(rows[0].commission_total, "5,938.27")
         self.assertEqual(rows[0].fee_total, "549.77")
         self.assertEqual(rows[0].fee_rows[0].purpose, "Broker Bonus")
+        resolved = resolve_schedule_a_result(
+            NormalizedExtractionResult(
+                provider="Lincoln Schedule A reporting parser",
+                fields=extract_litera_lincoln_schedule_a_fields(pages),
+                schedule_a_broker_rows=extract_litera_lincoln_schedule_a_broker_rows(pages),
+                raw={},
+            )
+        )
+        self.assertEqual(
+            next(field for field in resolved.fields if field.field_name.startswith("10a.")).decision,
+            "AUTOMATIC",
+        )
+        self.assertEqual(resolved.schedule_a_broker_rows[0].decision, "AUTOMATIC")
 
     def test_litera_lincoln_recovers_dotted_premium_from_xray_glyph_noise(self):
         pages = [

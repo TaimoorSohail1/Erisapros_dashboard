@@ -1139,6 +1139,7 @@ def _ftw_broker_name(value: str) -> str:
         return candidate
 
     standard_abbreviations = (
+        ("ADMINISTRATION", "ADMIN"),
         ("MANAGEMENT", "MGMT"),
         ("COMPENSATION", "COMP"),
         ("CORPORATION", "CORP"),
