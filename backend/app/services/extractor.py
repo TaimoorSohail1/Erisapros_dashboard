@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import csv
+from copy import deepcopy
 from datetime import datetime
 from io import BytesIO, StringIO
 import json
@@ -187,9 +188,14 @@ class ExtractionService:
         result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
         semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
         if semantic_pages:
+            has_local_ocr_pages = bool(
+                isinstance(result.raw, dict)
+                and result.raw.get("local_ocr_pages")
+            )
             authoritative_pages = (
                 template_pages
-                if any(str(text or "").strip() for _, text in template_pages)
+                if not has_local_ocr_pages
+                and any(str(text or "").strip() for _, text in template_pages)
                 else semantic_pages
             )
             result = enrich_schedule_a_result(
@@ -962,6 +968,10 @@ def supplement_schedule_a_result_with_local(
     """Guarantee deterministic Schedule A values survive a partial AI response."""
     result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
     local_raw = local_result.raw if isinstance(local_result.raw, dict) else {}
+    if local_raw.get("ocr_pages"):
+        result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        result_raw["local_ocr_pages"] = deepcopy(local_raw["ocr_pages"])
+        result.raw = result_raw
     if local_result.schedule_a_broker_rows and local_raw.get("authoritative_broker_table"):
         result.schedule_a_broker_rows = [
             row.model_copy(deep=True) for row in local_result.schedule_a_broker_rows
@@ -2749,6 +2759,19 @@ def _semantic_page_texts(
     """Return the strongest page-preserving source available for semantics."""
     name = str(file_name or "").lower()
     if name.endswith(".pdf"):
+        local_ocr_pages = (
+            result.raw.get("local_ocr_pages")
+            if isinstance(result.raw, dict)
+            else None
+        )
+        if isinstance(local_ocr_pages, list):
+            pages = [
+                (int(item.get("page") or 1), normalize_ocr_text(item.get("text") or ""))
+                for item in local_ocr_pages
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ]
+            if pages:
+                return pages
         pages = extract_pdf_layout_text_pages(file_bytes)
         if any(text.strip() for _, text in pages):
             return pages

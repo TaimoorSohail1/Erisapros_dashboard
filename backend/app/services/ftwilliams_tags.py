@@ -368,6 +368,17 @@ def values_meaningfully_different(
         current_carrier = re.sub(r"[^a-z0-9]", "", current.casefold())
         proposed_carrier = re.sub(r"[^a-z0-9]", "", proposed.casefold())
         if current_carrier and proposed_carrier:
+            equivalent_carrier_names = (
+                {
+                    "aflac",
+                    "americanfamilylifeassurancecompanyofnewyork",
+                },
+            )
+            if any(
+                current_carrier in aliases and proposed_carrier in aliases
+                for aliases in equivalent_carrier_names
+            ):
+                return False
             return current_carrier != proposed_carrier
     if tag and "address" in tag.casefold():
         current_address = _normalize_address_compare(current)

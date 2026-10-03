@@ -111,6 +111,48 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_local_ocr_pages_override_partial_native_text_and_ai_premium(self):
+        service = ExtractionService()
+        ai_result = NormalizedExtractionResult(
+            provider="remote",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="10a. Total premiums or subscription charges paid to carrier",
+                    value="2,440.75",
+                    confidence=0.9,
+                )
+            ],
+            raw={
+                "local_ocr_pages": [
+                    {
+                        "page": 1,
+                        "text": """
+                            SCHEDULE A EARNINGS REPORT
+                            AFLAC ACCOUNT # NSU61
+                            NAME OF INSURANCE CARRIER
+                            American Family Life Assurance Company Of New York
+                            APPROXIMATE NUMBER OF PERSONS COVERED AT END OF PLAN YEAR 16
+                            PLAN YEAR FROM TO 01/01/2025 - 12/31/2025
+                            CONTRACT NUMBER 52-0807803
+                            NAIC CODE 60380
+                            TOTAL PREMIUM COLLECTED $17,794.78
+                        """,
+                    }
+                ]
+            },
+        )
+        with (
+            patch("app.services.extractor.extract_document_text_pages", return_value=[(1, "*NSU61")]),
+            patch.object(service, "_extract_schedule_a_unresolved", AsyncMock(return_value=ai_result)),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"%PDF-scanned", "NSU61.pdf"))
+
+        values = {field.field_name: field.value for field in result.fields}
+        self.assertEqual(
+            values["10a. Total premiums or subscription charges paid to carrier"],
+            "17,794.78",
+        )
+
     def test_image_only_aflac_uses_bounded_local_ocr_when_groundx_is_unavailable(self):
         ocr_pages = [(1, """
             SCHEDULE A EARNINGS REPORT
