@@ -63,6 +63,14 @@ from app.services.extractor import (
     extract_nyl_paid_premium_workbook,
     extract_colonial_life_schedule_a_fields,
     extract_colonial_life_broker_rows,
+    extract_transamerica_schedule_a_fields,
+    extract_transamerica_broker_rows,
+    extract_combined_chubb_schedule_a_fields,
+    extract_combined_chubb_broker_rows,
+    extract_john_hancock_schedule_a_fields,
+    extract_john_hancock_broker_rows,
+    extract_metlife_standard_schedule_a_fields,
+    extract_metlife_standard_broker_rows,
     extract_bcbsma_commission_breakdown_broker_rows,
     extract_bcbsma_schedule_a_worksheet_fields,
     extract_bcbsma_schedule_a_worksheet_summaries,
@@ -116,6 +124,92 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_bank_of_bartlett_transamerica_statement(self):
+        pages = [(1, """Transamerica Life Insurance Company
+SCHEDULE 'A' INFORMATION FOR SECTION 125
+FOR EMPLOYER ER00000636
+PLAN YEAR 01/01/2025 - 12/31/2025
+NAIC 86231 Tax ID 39-0989781
+BANK OF BARTLETT CANCER TLIC 24.00
+6281 STAGE RD
+NAIC 86231 Tax ID 39-0989781
+BARTLETT TN 38134
+BANK OF BARTLETT CANCER 24.00
+15 5,843.28 165.60
+""")]
+        values = {field.field_name: field.value for field in extract_transamerica_schedule_a_fields(pages)}
+        self.assertEqual(values["1d. Contract/Policy Number"], "ER00000636")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "5,843.28")
+        self.assertEqual(values["3b. Amount of Commissions"], "165.60")
+        rows = extract_transamerica_broker_rows(pages)
+        self.assertEqual((rows[0].name, rows[0].commission_total, rows[0].city), ("BANK OF BARTLETT", "24.00", "BARTLETT"))
+
+    def test_bank_of_bartlett_combined_chubb_statement(self):
+        pages = [(1, """Combined Insurance, A CHUBB Company
+5500 Annual Report Schedule A Information
+1. Plan Year: 01/1/2025 – 01/31/2025
+4. Insurance Company: Combined Insurance Company of America
+5. Tax ID: 36-2136262
+6. NAIC Code: 62146
+7. Contract or ID No.: ACC; Life; – Group# 901937294; 901937295
+8. Commissions Paid: AON Consulting INC: $60.39
+Elizabeth Blair: $103.47
+Comprehensive Wealth MGMT: $1,199.32
+Charles Summers: $1,598.57
+9. Basis of Premium Rates: Master Policy on File
+10. Total Premium Paid: $34,100.37
+11. Number of Participants: 99
+""")]
+        values = {field.field_name: field.value for field in extract_combined_chubb_schedule_a_fields(pages)}
+        self.assertEqual(values["1d. Contract/Policy Number"], "901937294; 901937295")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "01/31/2025")
+        self.assertEqual(values["3b. Amount of Commissions"], "2,961.75")
+        self.assertEqual(len(extract_combined_chubb_broker_rows(pages)), 4)
+
+    def test_bank_of_bartlett_john_hancock_workbook_text(self):
+        pages = [(1, """Schedule A (Form 5500) Data for Year 2025
+Name of Group/Group Number: Bank of Bartlett/90018
+EIN Number: 01-0233346
+NAIC Number: 65838
+Policy Number: 30460
+Inforce Count: 26
+Policy Year: 01/01/2025-12/31/2025
+Payee Information: William Billingsley
+Payee Address: Comprehensive Wealth Mgmt
+1910 Exeter Rd. Ste 2
+Germantown
+TN 38138
+Commission Paid: $313.31
+Total- Premium Paid: $23,650.80
+John Hancock
+""")]
+        values = {field.field_name: field.value for field in extract_john_hancock_schedule_a_fields(pages)}
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "26")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "23,650.80")
+        rows = extract_john_hancock_broker_rows(pages)
+        self.assertEqual((rows[0].name, rows[0].commission_total, rows[0].city), ("William Billingsley", "313.31", "Germantown"))
+
+    def test_bank_of_bartlett_standard_metlife_ocr(self):
+        pages = [(3, """SCHEDULE A (Form 5500) Insurance Information
+METROPOLITAN LIFE INSURANCE COMPANY
+13-5581829 65978 TM05941745 275 01/01/2025 12/31/2025
+Total amount of commissions paid 22,943
+Total Fees Paid / amount 0
+"""), (4, """Name: PATRICK HOFFMAN
+Address: 1910 EXETER RD STE 2 City: GERMANTOWN ST: TN ZIP: 38138-2971
+Commissions Paid Fees Paid Organization code
+LIFE 12,324 Base Commissions
+Dental 5,567 Base Commissions
+Long Term Disability 4,460 Base Commissions
+AD&D 592 Base Commissions
+22,943 Sub-total 0 Sub-total 03
+"""), (5, """Total premiums or subscription charges paid to carrier. 172,421""")]
+        values = {field.field_name: field.value for field in extract_metlife_standard_schedule_a_fields(pages)}
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "275")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "172,421")
+        rows = extract_metlife_standard_broker_rows(pages)
+        self.assertEqual((rows[0].name, rows[0].commission_total, len(rows[0].commission_rows)), ("PATRICK HOFFMAN", "22,943", 4))
+
     def test_local_ocr_pages_override_partial_native_text_and_ai_premium(self):
         service = ExtractionService()
         ai_result = NormalizedExtractionResult(
