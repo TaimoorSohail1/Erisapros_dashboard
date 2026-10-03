@@ -8502,6 +8502,14 @@ def extract_eyemed_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
             summaries,
             source="EyeMed multi-policy Schedule A parser",
         )
+    source_page = next(
+        (
+            page
+            for page, text in page_texts
+            if is_eyemed_schedule_a_worksheet(normalize_ocr_text(text or ""))
+        ),
+        None,
+    )
     fields: list[NormalizedExtractionField] = []
     for summary in summaries:
         values_by_label = {value.label: value.value for value in summary.values}
@@ -8510,7 +8518,15 @@ def extract_eyemed_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         def add(field_name: str, value: str | None, confidence: float = 0.98):
             clean = clean_extracted_value(str(value or ""))
             if clean and not is_blank_extraction_value(clean):
-                fields.append(NormalizedExtractionField(field_name=field_name, value=clean, confidence=confidence, page=None, source_text=source_text))
+                fields.append(
+                    NormalizedExtractionField(
+                        field_name=field_name,
+                        value=clean,
+                        confidence=confidence,
+                        page=source_page,
+                        source_text=source_text,
+                    )
+                )
 
         add("1a. Name of Insurance Company", summary.carrier_name, 0.99)
         add("1b. Insurance Carrier EIN", summary.ein, 0.99)

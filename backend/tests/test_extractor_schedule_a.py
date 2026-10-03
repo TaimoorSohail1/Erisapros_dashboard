@@ -3115,6 +3115,19 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["3b. Amount of Commissions"], "4,876.54")
         self.assertEqual(by_name["3c. Amount of Fees"], "0")
         self.assertEqual(by_name["10a. Total premiums or subscription charges paid to carrier"], "24,190.52")
+        self.assertTrue(all(field.page == 1 for field in fields))
+        resolved = resolve_schedule_a_result(
+            NormalizedExtractionResult(
+                provider="EyeMed vision worksheet parser",
+                fields=fields,
+                schedule_a_broker_rows=rows,
+                raw={},
+            )
+        )
+        self.assertEqual(
+            next(field for field in resolved.fields if field.field_name.startswith("3c.")).decision,
+            "AUTOMATIC",
+        )
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].source, "EyeMed vision worksheet")
         self.assertEqual(len(summaries[0].benefit_rows), 2)
