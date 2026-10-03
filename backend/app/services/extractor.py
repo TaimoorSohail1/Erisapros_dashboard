@@ -243,6 +243,42 @@ class ExtractionService:
             pomerene_brokers = extract_pomerene_schedule_a_broker_rows(semantic_pages)
             if pomerene_brokers:
                 result.schedule_a_broker_rows = pomerene_brokers
+            litera_aetna_fields = extract_litera_aetna_schedule_a_fields(semantic_pages)
+            if litera_aetna_fields:
+                authoritative_names = {field.field_name for field in litera_aetna_fields}
+                result.fields = [
+                    field for field in result.fields
+                    if field.field_name not in authoritative_names
+                ]
+                result.fields.extend(litera_aetna_fields)
+                # The Part I compensation table is authoritative for Schedule
+                # A. Do not copy a later Schedule C disclosure into Part I.
+                result.schedule_a_broker_rows = extract_litera_aetna_schedule_a_broker_rows(
+                    semantic_pages
+                )
+                result.raw = (
+                    dict(result.raw)
+                    if isinstance(result.raw, dict)
+                    else {"provider_raw": result.raw}
+                )
+                result.raw["authoritative_broker_table"] = True
+            litera_lincoln_fields = extract_litera_lincoln_schedule_a_fields(semantic_pages)
+            if litera_lincoln_fields:
+                authoritative_names = {field.field_name for field in litera_lincoln_fields}
+                result.fields = [
+                    field for field in result.fields
+                    if field.field_name not in authoritative_names
+                ]
+                result.fields.extend(litera_lincoln_fields)
+                result.schedule_a_broker_rows = extract_litera_lincoln_schedule_a_broker_rows(
+                    semantic_pages
+                )
+                result.raw = (
+                    dict(result.raw)
+                    if isinstance(result.raw, dict)
+                    else {"provider_raw": result.raw}
+                )
+                result.raw["authoritative_broker_table"] = True
             result = remove_inapplicable_experience_rated_fields(result, authoritative_pages)
         aultcare_summaries = extract_aultcare_schedule_a_summaries(file_bytes, file_name)
         if aultcare_summaries:
@@ -3438,6 +3474,426 @@ def extract_aetna_schedule_a_support_statement_fields(
         if value and clean_extracted_value(value)
     ]
 
+
+_AETNA_CARRIER_IDENTITIES = {
+    ("AETNALIFEINSURANCECO", "066033492"): "60054",
+}
+
+
+def extract_litera_aetna_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Extract Aetna's filled Schedule A page from OCR/X-Ray text.
+
+    These packets are image PDFs. Their native text layer is empty and the
+    generic structured extractor can confuse the fiscal year or covered-lives
+    count with the NAIC field. This parser accepts only the explicitly labelled
+    Part I/Part III Aetna page and uses the carrier+EIN identity for the attached
+    NAIC listing when OCR omitted that small appendix page.
+    """
+    main_page = next(
+        (
+            (page, normalize_ocr_text(text or ""))
+            for page, text in page_texts
+            if re.search(r"AETNA\s+LIFE\s+INSURANCE\s+COMPANY", text or "", re.IGNORECASE)
+            and re.search(r"For\s+Fiscal\s+Plan\s+Year", text or "", re.IGNORECASE)
+            and re.search(r"Insurance\s+Fees\s+and\s+commissions", text or "", re.IGNORECASE)
+        ),
+        None,
+    )
+    if not main_page:
+        return []
+    page, text = main_page
+    carrier_match = re.search(
+        r"Name\s+of\s+Insurance\s+Carrier\s*:.*?\n\s*"
+        r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co\.?)\s+or\s+Identification",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    identity_match = re.search(
+        r"\(b\)\s*EIN\s*:\s*(?P<ein>\d{2}-\d{7})\s+"
+        r"(?P<contract>[A-Za-z0-9][A-Za-z0-9-]{2,})\s+of\s+policy",
+        text,
+        re.IGNORECASE,
+    )
+    if not carrier_match or not identity_match:
+        return []
+
+    carrier = clean_extracted_value(carrier_match.group("carrier"))
+    if carrier and not carrier.endswith("."):
+        carrier += "."
+    ein = identity_match.group("ein")
+    contract = identity_match.group("contract")
+    period = re.search(
+        rf"For\s+Fiscal\s+Plan\s+Year\s+beginning\s*({_POSITION_DATE})\s+"
+        rf"and\s*ending\s*({_POSITION_DATE})",
+        text,
+        re.IGNORECASE,
+    )
+    persons = re.search(
+        r"persons\s+covered\s+at\s+the\s+end(?:\s+Policy\s+or\s+contract\s+Year)?"
+        r".*?(?:year\s*:)?\s*([\d,]+)\s*(?:\(f\)|\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4})",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not persons:
+        persons = re.search(
+            rf"NAIC\s+Code\s*:\s*See\s+Attached(?:\s+Listing)?\s+([\d,]+)\s+({_POSITION_DATE})",
+            text,
+            re.IGNORECASE,
+        )
+    premium = re.search(
+        r"Total\s+premiums\s+or\s+subscription\s+[Cc]harges\s+paid\s+to\s+[Cc]arrier"
+        r"[^$\d]{0,120}\$?\s*([\d,]+(?:\.\d{2})?)",
+        text,
+        re.IGNORECASE,
+    )
+
+    appendix_naic = None
+    for appendix_page, appendix_text in page_texts:
+        match = re.search(
+            r"\b(\d{5})\s+Aetna\s+Life\s+Insurance\s+Company\b",
+            appendix_text or "",
+            re.IGNORECASE,
+        )
+        if match:
+            appendix_naic = (match.group(1), appendix_page, clean_extracted_value(match.group(0)))
+            break
+    identity_key = (re.sub(r"[^A-Z0-9]", "", carrier.upper()), re.sub(r"\D", "", ein))
+    mapped_naic = _AETNA_CARRIER_IDENTITIES.get(identity_key)
+    naic = appendix_naic[0] if appendix_naic else mapped_naic
+
+    source = "\n".join(
+        line for line in text.splitlines()
+        if re.search(
+            r"Name\s+of\s+Insurance\s+Carrier|EIN\s*:|NAIC\s+Code|persons\s+covered|"
+            r"Fiscal\s+Plan\s+Year|Total\s+premiums",
+            line,
+            re.IGNORECASE,
+        )
+    )[:1800]
+    values: list[tuple[str, str | None, int, str]] = [
+        ("1a. Name of Insurance Company", carrier, page, source),
+        ("1b. Insurance Carrier EIN", ein, page, source),
+        ("1c. NAIC Code", naic, appendix_naic[1] if appendix_naic else page,
+         appendix_naic[2] if appendix_naic else f"Aetna carrier identity registry: {carrier} {ein} {naic}"),
+        ("1d. Contract/Policy Number", contract, page, source),
+        ("1e. Persons Covered (End of Policy Year)", persons.group(1) if persons else None, page, source),
+        ("1f. Policy Year Beginning Date", _normalize_position_date(period.group(1)) if period else None, page, source),
+        ("1g. Policy Year Ending Date", _normalize_position_date(period.group(2)) if period else None, page, source),
+        ("10a. Total premiums or subscription charges paid to carrier", money_value(premium.group(1)) if premium else None, page, source),
+    ]
+    return [
+        NormalizedExtractionField(
+            field_name=field_name,
+            value=clean_extracted_value(value),
+            candidate_values=[clean_extracted_value(value)],
+            confidence=0.99,
+            page=source_page,
+            source_text=source_text,
+            evidence=[
+                SourceEvidence(
+                    provider="Aetna filled Schedule A parser",
+                    page=source_page,
+                    source_text=source_text,
+                    table_cell=(1, 0),
+                )
+            ],
+        )
+        for field_name, value, source_page, source_text in values
+        if value and clean_extracted_value(value)
+    ]
+
+
+def extract_litera_aetna_schedule_a_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    """Read only Aetna Part I line 2; Schedule C rows are out of scope."""
+    rows: list[ScheduleABrokerRow] = []
+    for page, page_text in page_texts:
+        text = normalize_ocr_text(page_text or "")
+        if not (
+            re.search(r"AETNA\s+LIFE\s+INSURANCE\s+COMPANY", text, re.IGNORECASE)
+            and re.search(r"For\s+Fiscal\s+Plan\s+Year", text, re.IGNORECASE)
+            and re.search(r"Insurance\s+Fees\s+and\s+commissions", text, re.IGNORECASE)
+        ):
+            continue
+        part_i = re.split(r"Part\s+I{2,3}\s+Welfare\s+Benefit", text, maxsplit=1, flags=re.IGNORECASE)[0]
+        lines = [line.strip() for line in part_i.splitlines() if line.strip()]
+        parsed = None
+        for index, line in enumerate(lines):
+            paid = re.match(
+                r"^[A-Z0-9-]{5,}\s+(?P<body>.+?)\s+\$(?P<commission>[\d,]+(?:\.\d{2})?)\s*$",
+                line,
+                re.IGNORECASE,
+            )
+            if not paid:
+                continue
+            body = clean_extracted_value(paid.group("body"))
+            name = body
+            address = ""
+            address_match = re.search(r"\b\d{1,6}\s+[A-Z]", body, re.IGNORECASE)
+            next_index = index + 1
+            if address_match:
+                name = body[: address_match.start()].strip()
+                address = body[address_match.start() :].strip()
+            elif next_index < len(lines):
+                continuation = lines[next_index]
+                continuation_address = re.search(r"\b\d{1,6}\s+[A-Z]", continuation, re.IGNORECASE)
+                if continuation_address:
+                    name = " ".join(
+                        filter(None, [body, continuation[: continuation_address.start()].strip()])
+                    )
+                    address = continuation[continuation_address.start() :].strip()
+                    next_index += 1
+            if not address or next_index >= len(lines):
+                continue
+            locality = re.match(
+                r"^(?P<city>[A-Z][A-Z .'-]+?)\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{3,4})?)$",
+                lines[next_index],
+                re.IGNORECASE,
+            )
+            if not locality or not re.search(r"(?:LLC|INC\.?|CORPORATION|COMPANY)\b", name, re.IGNORECASE):
+                continue
+            parsed = {
+                "name": name,
+                "address": address,
+                "city": locality.group("city"),
+                "state": locality.group("state"),
+                "zip": locality.group("zip"),
+                "commission": paid.group("commission"),
+                "source": "\n".join(lines[index : next_index + 1]),
+            }
+            break
+        if not parsed:
+            continue
+        source = clean_extracted_value(parsed["source"])
+        commission = money_value(parsed["commission"])
+        rows.append(
+            ScheduleABrokerRow(
+                name=clean_extracted_value(parsed["name"]),
+                address_line_1=clean_extracted_value(parsed["address"]),
+                city=clean_extracted_value(parsed["city"]),
+                state=str(parsed["state"]).upper(),
+                zip_code=str(parsed["zip"]),
+                commission_total=commission,
+                fee_total="0",
+                commission_rows=[ScheduleABrokerMoneyRow(amount=commission)],
+                source_page=page,
+                commission_source_text=source,
+                fee_source_text=source,
+                confidence=0.99,
+                decision="AUTOMATIC",
+                evidence=[
+                    SourceEvidence(
+                        provider="Aetna filled Schedule A parser",
+                        page=page,
+                        source_text=source,
+                        table_cell=(1, 0),
+                    )
+                ],
+            )
+        )
+    return rows
+
+
+def extract_litera_lincoln_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Extract Lincoln's labelled Schedule A reporting statement."""
+    main_page = next(
+        (
+            (page, normalize_ocr_text(text or ""))
+            for page, text in page_texts
+            if re.search(r"THE\s+LINCOLN\s+NATIONAL\s+LIFE\s+INSURANCE\s+COMPANY", text or "", re.IGNORECASE)
+            and re.search(r"SCHEDULE\s+A\s+REPORTING\s+INFORMATION", text or "", re.IGNORECASE)
+            and re.search(r"Contract\s+or\s+identification\s+number", text or "", re.IGNORECASE)
+        ),
+        None,
+    )
+    if not main_page:
+        return []
+    page, text = main_page
+    carrier = re.search(r"Name\s+of\s+insurance\s+carrier\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
+    ein = re.search(r"\([bo]\)\s*EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
+    naic = re.search(r"\(c\)\s*NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
+    contract = re.search(
+        r"\(d\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    benefit_section = re.search(
+        r"\(Part\s+III\s*,?\s*#?8\).*?\n(?P<body>.*?)\n\s*2\.\s*Insurance\s+fee",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    benefit_rows: list[tuple[str, str, str, str]] = []
+    if benefit_section:
+        for match in re.finditer(
+            rf"^\s*(?P<benefit>[A-Za-z][A-Za-z &]+?)\s+(?P<persons>[\d,]+)\s+"
+            rf"(?P<begin>{_POSITION_DATE})\s+(?P<end>{_POSITION_DATE})\s*$",
+            benefit_section.group("body"),
+            re.IGNORECASE | re.MULTILINE,
+        ):
+            benefit_rows.append(
+                (
+                    clean_extracted_value(match.group("benefit")),
+                    match.group("persons"),
+                    match.group("begin"),
+                    match.group("end"),
+                )
+            )
+    premium = re.search(
+        r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier"
+        r"[^\n]*?\$\s*([\d,]+(?:\.\d{2})?)",
+        text,
+        re.IGNORECASE,
+    )
+    premium_value = money_value(premium.group(1)) if premium else None
+    premium_source = premium.group(0) if premium else ""
+    if not premium_value:
+        damaged_premium = re.search(
+            r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier"
+            r"[^\n]*?S\s*(\d{1,3}),\s*(\d{3})5(\d{2})\b",
+            text,
+            re.IGNORECASE,
+        )
+        if damaged_premium:
+            premium_value = f"{damaged_premium.group(1)},{damaged_premium.group(2)}.{damaged_premium.group(3)}"
+            premium_source = (
+                f"OCR-normalized premium: {premium_value}\n"
+                f"Original OCR: {damaged_premium.group(0)}"
+            )
+    highest = max(benefit_rows, key=lambda item: int(item[1].replace(",", ""))) if benefit_rows else None
+    source = "\n".join(
+        line for line in text.splitlines()
+        if re.search(
+            r"insurance\s+carrier|EIN\s*:|NAIC\s+code|Contract\s+or\s+identification|"
+            r"\d{1,2}/\d{1,2}/\d{4}|Total\s+premiums",
+            line,
+            re.IGNORECASE,
+        )
+    )[:1800]
+    values = [
+        ("1a. Name of Insurance Company", carrier.group(1) if carrier else None, source),
+        ("1b. Insurance Carrier EIN", ein.group(1) if ein else None, source),
+        ("1c. NAIC Code", naic.group(1) if naic else None, source),
+        ("1d. Contract/Policy Number", contract.group(1) if contract else None, source),
+        ("1e. Persons Covered (End of Policy Year)", highest[1] if highest else None, source),
+        ("1f. Policy Year Beginning Date", _normalize_position_date(highest[2]) if highest else None, source),
+        ("1g. Policy Year Ending Date", _normalize_position_date(highest[3]) if highest else None, source),
+        ("10a. Total premiums or subscription charges paid to carrier", premium_value, premium_source or source),
+    ]
+    return [
+        NormalizedExtractionField(
+            field_name=field_name,
+            value=clean_extracted_value(value),
+            candidate_values=[clean_extracted_value(value)],
+            confidence=0.99,
+            page=page,
+            source_text=field_source,
+            evidence=[
+                SourceEvidence(
+                    provider="Lincoln Schedule A reporting parser",
+                    page=page,
+                    source_text=field_source,
+                    table_cell=(1, 0),
+                )
+            ],
+        )
+        for field_name, value, field_source in values
+        if value and clean_extracted_value(value)
+    ]
+
+
+def extract_litera_lincoln_schedule_a_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    """Merge Lincoln's commission and Broker Bonus lines into one recipient."""
+    parsed_rows: list[ScheduleABrokerRow] = []
+    for page, page_text in page_texts:
+        text = normalize_ocr_text(page_text or "")
+        if not (
+            re.search(r"SCHEDULE\s+A\s+REPORTING\s+INFORMATION", text, re.IGNORECASE)
+            and re.search(r"Insurance\s+fees\s+and\s+commissions\s+paid", text, re.IGNORECASE)
+        ):
+            continue
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            paid = re.match(
+                r"^(?P<name>[A-Z][A-Z &,.']+?(?:LLC|INC\.?|CORPORATION|COMPANY))\s+"
+                r"\$(?P<amount>[\d,]+(?:\.\d{2})?)\s*(?P<purpose>.*?)\s*3\s*$",
+                line,
+                re.IGNORECASE,
+            )
+            if not paid or index + 2 >= len(lines):
+                continue
+            address = lines[index + 1]
+            locality = re.match(
+                r"^(?P<city>[A-Z][A-Z .'-]+?),?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)$",
+                lines[index + 2],
+                re.IGNORECASE,
+            )
+            if not re.match(r"^\d{1,6}\s+", address) or not locality:
+                continue
+            amount = money_value(paid.group("amount"))
+            purpose = clean_extracted_value(paid.group("purpose")) or None
+            is_fee = bool(purpose)
+            source = "\n".join(lines[index : index + 3])
+            parsed_rows.append(
+                ScheduleABrokerRow(
+                    name=clean_extracted_value(paid.group("name")),
+                    address_line_1=clean_extracted_value(address),
+                    city=clean_extracted_value(locality.group("city")),
+                    state=locality.group("state").upper(),
+                    zip_code=locality.group("zip"),
+                    commission_total="0" if is_fee else amount,
+                    fee_total=amount if is_fee else "0",
+                    commission_rows=[] if is_fee else [ScheduleABrokerMoneyRow(amount=amount)],
+                    fee_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose=purpose)] if is_fee else [],
+                    source_page=page,
+                    commission_source_text=source,
+                    fee_source_text=source,
+                    confidence=0.99,
+                    decision="AUTOMATIC",
+                    evidence=[
+                        SourceEvidence(
+                            provider="Lincoln Schedule A reporting parser",
+                            page=page,
+                            source_text=source,
+                            table_cell=(index + 1, 0),
+                        )
+                    ],
+                )
+            )
+    merged: dict[tuple[str, str, str], ScheduleABrokerRow] = {}
+    for row in parsed_rows:
+        key = (
+            _canonical_broker_name(row.name),
+            str(row.state or "").upper(),
+            str(row.zip_code or ""),
+        )
+        current = merged.get(key)
+        if current is None:
+            merged[key] = row.model_copy(deep=True)
+            continue
+        if len(str(row.address_line_1 or "")) > len(str(current.address_line_1 or "")):
+            current.address_line_1 = row.address_line_1
+        current.commission_rows.extend(item.model_copy(deep=True) for item in row.commission_rows)
+        current.fee_rows.extend(item.model_copy(deep=True) for item in row.fee_rows)
+        current.commission_total = sum_money_values(
+            current.commission_total,
+            row.commission_total,
+        ) or "0"
+        current.fee_total = sum_money_values(current.fee_total, row.fee_total) or "0"
+        current.commission_source_text = "\n".join(
+            filter(None, [current.commission_source_text, row.commission_source_text])
+        )
+        current.fee_source_text = "\n".join(
+            filter(None, [current.fee_source_text, row.fee_source_text])
+        )
+        current.evidence = _merge_source_evidence(current.evidence, row.evidence)
+    return list(merged.values())
 
 def extract_aetna_attached_listing_fields(
     page_texts: list[tuple[int, str]],

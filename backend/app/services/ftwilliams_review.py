@@ -227,6 +227,7 @@ class FTWilliamsReviewService:
         form_5500_current: dict[str, str] = {}
         schedule_a_current: dict[str, str] = {}
         matched_schedule_a: FTWilliamsStatusItem | None = None
+        automatic_schedule_a_match: dict | None = None
         schedule_a_candidates: list[dict] = []
         schedule_a_records: list[dict] = []
         error_message: str | None = self._authoritative_plan_lookup_error(plan_lookup)
@@ -291,6 +292,10 @@ class FTWilliamsReviewService:
                 form_5500_current = query_result["form_5500_current"]
                 schedule_a_current = query_result["schedule_a_current"]
                 matched_schedule_a = query_result["matched_schedule_a"]
+                automatic_schedule_a_match = query_result.get("automatic_schedule_a_match")
+                if automatic_schedule_a_match:
+                    create_new_schedule_a = True
+                    new_schedule_desc = str(automatic_schedule_a_match.get("schedule_desc") or "").strip() or None
                 if create_new_schedule_a and matched_schedule_a:
                     # FT Williams assigned a sequence to the record created by
                     # an earlier accepted request. Continue with that record;
@@ -572,6 +577,8 @@ class FTWilliamsReviewService:
             schedule_a_match=(
                 self._schedule_match_payload_preserving_decision(matched_schedule_a, fields, existing_review)
                 if matched_schedule_a
+                else automatic_schedule_a_match
+                if automatic_schedule_a_match
                 else (
                     (existing_review.schedule_a_match or None)
                     if existing_review
@@ -579,7 +586,7 @@ class FTWilliamsReviewService:
                         not send_queries
                         or current_query_failed
                         or str((existing_review.schedule_a_match or {}).get("source") or "").upper()
-                        in {"MANUAL", "NEW_SCHEDULE_A"}
+                        in {"MANUAL", "NEW_SCHEDULE_A", "AUTO_NEW_SCHEDULE_A"}
                     )
                     else None
                 )
@@ -2287,6 +2294,7 @@ class FTWilliamsReviewService:
         matched_schedule_a: FTWilliamsStatusItem | None = None
         schedule_a_candidates: list[dict] = []
         schedule_a_records: list[dict] = []
+        automatic_schedule_a_match: dict | None = None
         error_message: str | None = snapshot["form_5500_error"]
         schedule_statuses = deepcopy(snapshot["schedule_statuses"])
         schedule_a_error = snapshot["schedule_a_error"]
@@ -2345,6 +2353,14 @@ class FTWilliamsReviewService:
                     schedule_statuses,
                     preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
                 )
+                if not matched_schedule_a:
+                    automatic_schedule_a_match = self._automatic_new_schedule_a_match(
+                        fields,
+                        schedule_statuses,
+                        schedule_a_records,
+                    )
+                    if automatic_schedule_a_match:
+                        existing_create_new = True
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
             if not matched_schedule_a and not existing_create_new:
                 schedule_a_error = (
@@ -2374,6 +2390,7 @@ class FTWilliamsReviewService:
             "form_5500_current": form_5500_current,
             "schedule_a_current": schedule_a_current,
             "matched_schedule_a": matched_schedule_a,
+            "automatic_schedule_a_match": automatic_schedule_a_match,
             "schedule_a_candidates": schedule_a_candidates,
             "schedule_a_records": schedule_a_records,
             "error_message": error_message,
@@ -4865,7 +4882,7 @@ class FTWilliamsReviewService:
         if (
             extracted_policy
             and worksheet_policy
-            and self._identity_key(extracted_policy) != self._identity_key(worksheet_policy)
+            and not self._worksheet_policy_values_match(extracted_policy, worksheet_policy)
         ):
             return fields
         canonical_carrier = str(self._summary_attr(summary, "carrier_name") or "").strip()
@@ -4923,7 +4940,7 @@ class FTWilliamsReviewService:
             (
                 "schedule_a_part_i_1d_contract_policy_number",
                 str(self._summary_attr(summary, "account_number") or "").strip(),
-                lambda left, right: self._identity_key(left) == self._identity_key(right),
+                self._worksheet_policy_values_match,
                 "policy number",
             ),
             (
@@ -4979,15 +4996,34 @@ class FTWilliamsReviewService:
             fields,
             "schedule_a_part_i_1d_contract_policy_number",
         )
-        policy_key = self._identity_key(extracted_policy)
+        policy_key = self._normalize_contract(extracted_policy)
         if policy_key:
             policy_matches = [
                 summary
                 for summary in worksheet_rows
-                if self._identity_key(self._summary_attr(summary, "account_number")) == policy_key
+                if self._worksheet_policy_values_match(
+                    extracted_policy,
+                    self._summary_attr(summary, "account_number"),
+                )
             ]
             if len(policy_matches) == 1:
                 return policy_matches[0]
+            if len(policy_matches) > 1:
+                benefit_hint = self._contract_benefit_hint(extracted_policy)
+                coverage_needles = {
+                    "DentalInd": ("dental",),
+                    "HealthInd": ("health", "medical", "ppo", "rx"),
+                }.get(benefit_hint, ())
+                coverage_matches = [
+                    summary
+                    for summary in policy_matches
+                    if any(
+                        needle in str(self._summary_attr(summary, "coverage") or "").casefold()
+                        for needle in coverage_needles
+                    )
+                ]
+                if len(coverage_matches) == 1:
+                    return coverage_matches[0]
             # Some carrier reports append a one-character group suffix that
             # the plan worksheet omits (for example 922556G vs 922556). When
             # exactly one worksheet row is that near-match, pair the records
@@ -4996,7 +5032,7 @@ class FTWilliamsReviewService:
                 summary
                 for summary in worksheet_rows
                 if (
-                    (summary_key := self._identity_key(self._summary_attr(summary, "account_number")))
+                    (summary_key := self._normalize_contract(self._summary_attr(summary, "account_number")))
                     and abs(len(summary_key) - len(policy_key)) == 1
                     and (summary_key.startswith(policy_key) or policy_key.startswith(summary_key))
                 )
@@ -5017,6 +5053,13 @@ class FTWilliamsReviewService:
             if self._carrier_identity_key(self._summary_attr(summary, "carrier_name")) == carrier_key
         ]
         return carrier_matches[0] if len(carrier_matches) == 1 else None
+
+    def _worksheet_policy_values_match(self, extracted: object, worksheet: object) -> bool:
+        left = self._normalize_contract(extracted)
+        right = self._normalize_contract(worksheet)
+        if left and right and left == right:
+            return True
+        return self._grouped_contract_matches_various(extracted, worksheet)
 
     @staticmethod
     def _identity_key(value: object) -> str:
@@ -5698,7 +5741,21 @@ class FTWilliamsReviewService:
                 ),
             ),
         ]
-        return any(extracted and current and extracted != current for extracted, current in identity_pairs)
+        extracted_contract_value = extracted_by_tag.get("InsContractNum")
+        current_contract_value = query_results.get("InsContractNum") or query_results.get("INS_CONTRACT_NUM")
+        contract_conflict = bool(
+            identity_pairs[0][0]
+            and identity_pairs[0][1]
+            and identity_pairs[0][0] != identity_pairs[0][1]
+            and not self._grouped_contract_matches_various(
+                extracted_contract_value,
+                current_contract_value,
+            )
+        )
+        return contract_conflict or any(
+            extracted and current and extracted != current
+            for extracted, current in identity_pairs[1:]
+        )
 
     def _merge_schedule_statuses(
         self,
@@ -5801,7 +5858,14 @@ class FTWilliamsReviewService:
         current_contract_exact = self._contract_text(current_contract_value)
         extracted_contract = self._normalize_contract(extracted_contract_value)
         current_contract = self._normalize_contract(current_contract_value)
-        if (
+        if self._grouped_contract_matches_various(
+            extracted_contract_value,
+            current_contract_value,
+        ):
+            score += 8
+            strong_matches += 1
+            reasons.append("Contract group")
+        elif (
             extracted_contract_exact
             and current_contract_exact
             and extracted_contract_exact == current_contract_exact
@@ -5845,6 +5909,29 @@ class FTWilliamsReviewService:
                 score += 2
                 reasons.append("Carrier name partial")
 
+        benefit_tags = (
+            "HealthInd",
+            "DentalInd",
+            "VisionInd",
+            "LifeInsurInd",
+            "LongTermDisabInd",
+            "TempDisabInd",
+            "PpoInd",
+            "PrescriptDrugInd",
+            "IndemnityInd",
+        )
+        matched_benefit = False
+        for tag in benefit_tags:
+            if self._indicator_is_true(extracted_by_tag.get(tag)) and self._indicator_is_true(query_results.get(tag)):
+                matched_benefit = True
+                break
+        contract_hint = self._contract_benefit_hint(extracted_contract_value)
+        if contract_hint and self._indicator_is_true(query_results.get(contract_hint)):
+            matched_benefit = True
+        if matched_benefit:
+            score += 5
+            reasons.append("Benefit type")
+
         date_pairs = [
             ("InsPolicyFromDate", query_results.get("InsPolicyFromDate") or query_results.get("INS_POLICY_FROM_DATE")),
             ("InsPolicyToDate", query_results.get("InsPolicyToDate") or query_results.get("INS_POLICY_TO_DATE")),
@@ -5868,6 +5955,10 @@ class FTWilliamsReviewService:
         text = self._contract_text(value)
         if not text:
             return ""
+        # Aetna appends the benefit name to a shared group contract while FTW
+        # stores the base contract and distinguishes the rows with benefit
+        # indicators. Keep the suffix as a matching hint, not identifier data.
+        text = re.sub(r"(?:MEDICAL|DENTAL)$", "", text)
         # FT Williams normalizes policy identifiers by dropping leading zeroes
         # from numeric runs even when they follow an alphabetic prefix (for
         # example, ``LK 0751856`` is returned as ``LK 751856``). Treat those
@@ -5875,8 +5966,46 @@ class FTWilliamsReviewService:
         return re.sub(r"\d+", lambda match: match.group(0).lstrip("0") or "0", text)
 
     @staticmethod
+    def _indicator_is_true(value: object) -> bool:
+        return str(value or "").strip().casefold() in {"1", "y", "yes", "true", "x", "checked"}
+
+    @staticmethod
+    def _contract_benefit_hint(value: object) -> str | None:
+        text = str(value or "").strip().casefold()
+        if re.search(r"(?:^|[-_/\s])dental$", text):
+            return "DentalInd"
+        if re.search(r"(?:^|[-_/\s])medical$", text):
+            return "HealthInd"
+        return None
+
+    @classmethod
+    def _grouped_contract_matches_various(
+        cls,
+        extracted_value: object,
+        current_value: object,
+    ) -> bool:
+        """Treat an explicit multi-contract source bundle as FTW ``VARIOUS``.
+
+        EyeMed prints multiple policy rows while the Plan Worksheet and FTW
+        intentionally store the combined record as VARIOUS. A separator is
+        required so an ordinary single contract can never take this path.
+        """
+        extracted_text = str(extracted_value or "").strip()
+        current_text = cls._contract_text(current_value)
+        return bool(
+            current_text == "VARIOUS"
+            and re.search(r"[/,;]", extracted_text)
+            and len(re.sub(r"\D", "", extracted_text)) >= 8
+        )
+
+    @staticmethod
     def _contract_text(value: object) -> str:
-        return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+        text = str(value or "").strip().upper()
+        # Lincoln prints an all-zero reporting-unit suffix after the policy
+        # number, while FT Williams stores only the policy number. Preserve a
+        # real nonzero suffix (for example 23109) and remove only five zeros.
+        text = re.sub(r"(?<=\d)\s+0{5}$", "", text)
+        return re.sub(r"[^A-Za-z0-9]", "", text)
 
     def _normalize_identifier_digits(self, value: object) -> str:
         text = re.sub(r"\D", "", str(value or ""))
@@ -6201,6 +6330,70 @@ class FTWilliamsReviewService:
             if contract_matches and carrier_matches and not self._schedule_identity_conflicts(fields, status):
                 return record
         return None
+
+    def _automatic_new_schedule_a_match(
+        self,
+        fields: list[ExtractedField],
+        statuses: list[FTWilliamsStatusItem],
+        records: list[dict],
+    ) -> dict | None:
+        """Create a new Schedule A only from a complete, trusted identity pair."""
+        contract_field = next(
+            (
+                field for field in fields
+                if field.mapped_rule_key == "schedule_a_part_i_1d_contract_policy_number"
+            ),
+            None,
+        )
+        ein_field = next(
+            (
+                field for field in fields
+                if field.mapped_rule_key == "schedule_a_part_i_1b_insurance_carrier_ein"
+            ),
+            None,
+        )
+        if not contract_field or not ein_field:
+            return None
+        if (
+            float(contract_field.confidence or 0) < 0.8
+            or float(ein_field.confidence or 0) < 0.8
+            or contract_field.status != ExtractedFieldStatus.MATCHED
+            or ein_field.status != ExtractedFieldStatus.MATCHED
+        ):
+            return None
+        contract = contract_field.proposed_value or contract_field.value
+        carrier_ein = ein_field.proposed_value or ein_field.value
+        normalized_contract = self._normalize_contract(contract)
+        normalized_ein = self._normalize_ein_digits(carrier_ein)
+        if not normalized_contract or not normalized_ein:
+            return None
+        for status in statuses:
+            current = status.query_results or {}
+            current_contract_value = current.get("InsContractNum") or current.get("INS_CONTRACT_NUM")
+            contract_matches = (
+                self._normalize_contract(current_contract_value) == normalized_contract
+                or self._grouped_contract_matches_various(contract, current_contract_value)
+            )
+            current_ein = self._normalize_ein_digits(
+                current.get("InsCarrierEIN") or current.get("INS_CARRIER_EIN")
+            )
+            if contract_matches and current_ein == normalized_ein:
+                return None
+        payload = FTWilliamsScheduleAMatchRequest(create_new=True)
+        schedule_desc = self._schedule_desc_from_payload_or_fields(payload, fields, records)
+        return {
+            "ftw_seq_no": None,
+            "score": None,
+            "carrier": self._field_value_by_rule(
+                fields,
+                "schedule_a_part_i_1a_name_of_insurance_company",
+            ),
+            "carrier_ein": carrier_ein,
+            "contract": contract,
+            "schedule_desc": schedule_desc,
+            "create_new": True,
+            "source": "AUTO_NEW_SCHEDULE_A",
+        }
 
     def _sequence_sort_key(self, value: object) -> tuple[int, str]:
         text = str(value or "").strip()

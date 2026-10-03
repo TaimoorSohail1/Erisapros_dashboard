@@ -74,6 +74,10 @@ from app.services.extractor import (
     restore_principal_short_form_fields,
     extract_aetna_attached_listing_fields,
     extract_aetna_schedule_a_support_statement_fields,
+    extract_litera_aetna_schedule_a_broker_rows,
+    extract_litera_aetna_schedule_a_fields,
+    extract_litera_lincoln_schedule_a_broker_rows,
+    extract_litera_lincoln_schedule_a_fields,
     extract_position_aware_schedule_a_broker_rows,
     extract_position_aware_schedule_a_fields,
     extract_schedule_a_broker_rows,
@@ -1174,6 +1178,176 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "06-6033492")
         self.assertEqual(by_name["1c. NAIC Code"], "60054")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "0252023")
+
+    def test_litera_aetna_medical_uses_part_i_values_and_ignores_schedule_c_compensation(self):
+        pages = [
+            (
+                3,
+                """
+                AETNA LIFE INSURANCE COMPANY AND AFFILIATES
+                For Fiscal Plan Year beginning 01/01/2025 and ending 12/31/2025
+                (a) Name of Insurance Carrier: (d) Contract Number (e) Approximate Number of
+                Aetna Life Insurance Co. or Identification: persons covered at the end Policy or contract Year
+                (b) EIN: 06-6033492 0186483-Medical of policy or contract year: (f) From: (g) To:
+                (c) NAIC Code: See Attached Listing 685 01/01/2025 12/31/2025
+                2. Insurance Fees and commissions paid to agents and brokers:
+                Contract or (a) Name and address of the agents or brokers (b) Amount of (c) & (d) Fees Paid
+                Identification to whom commissions or fees were paid. commissions paid Amount Purpose
+                Reported fees and commissions may be attributed to multiple Aetna companies.
+                Health (other than dental or vision)
+                9. Non experience rated contracts:
+                (a) Total premiums or subscription Charges paid to Carrier $5,693,303.00
+                """,
+            ),
+            (
+                5,
+                """
+                completing Schedule C of Form 5500.
+                Broker Information: MERCER HEALTH & BENEFITS LLC
+                4565 PAYSPHERE CIRCLE CHICAGO, IL 60674
+                $240,148.74
+                """,
+            ),
+        ]
+
+        values = {
+            field.field_name: field.value
+            for field in extract_litera_aetna_schedule_a_fields(pages)
+        }
+        rows = extract_litera_aetna_schedule_a_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "Aetna Life Insurance Co.")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "06-6033492")
+        self.assertEqual(values["1c. NAIC Code"], "60054")
+        self.assertEqual(values["1d. Contract/Policy Number"], "0186483-Medical")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "685")
+        self.assertEqual(values["1f. Policy Year Beginning Date"], "01/01/2025")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "5,693,303.00")
+        self.assertEqual(rows, [])
+
+    def test_litera_aetna_indemnity_extracts_primary_schedule_a_broker_row(self):
+        pages = [
+            (
+                3,
+                """
+                AETNA LIFE INSURANCE COMPANY
+                For Fiscal Plan Year beginning 01/01/2025 and ending 12/31/2025
+                (a) Name of Insurance Carrier: (d) Contract Number (e) Approximate Number of
+                Aetna Life Insurance Co. or Identification: persons covered at the end Policy or contract Year
+                (b) EIN: 06-6033492 803136 of policy or contract year: 211 (f) From: (g) To:
+                (c) NAIC Code: See Attached 01/01/2025 12/31/2025
+                2. Insurance Fees and commissions paid to agents and brokers:
+                803136 MERCER HEALTH & BENEFITS ADMINISTRATION LLC 12421 MEREDITH DR $21,871.85
+                URBANDALE IA 50398-900
+                TOTAL $21,871.85
+                Indemnity contract
+                9. Non experience rated contracts:
+                (a) Total premiums or subscription charges paid to carrier $45,873.97
+                """,
+            )
+        ]
+
+        values = {
+            field.field_name: field.value
+            for field in extract_litera_aetna_schedule_a_fields(pages)
+        }
+        rows = extract_litera_aetna_schedule_a_broker_rows(pages)
+
+        self.assertEqual(values["1c. NAIC Code"], "60054")
+        self.assertEqual(values["1d. Contract/Policy Number"], "803136")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "211")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "45,873.97")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "MERCER HEALTH & BENEFITS ADMINISTRATION LLC")
+        self.assertEqual(rows[0].address_line_1, "12421 MEREDITH DR")
+        self.assertEqual(rows[0].city, "URBANDALE")
+        self.assertEqual(rows[0].state, "IA")
+        self.assertEqual(rows[0].zip_code, "50398-900")
+        self.assertEqual(rows[0].commission_total, "21,871.85")
+        self.assertEqual(rows[0].fee_total, "0")
+
+    def test_litera_lincoln_voluntary_life_preserves_contract_suffix_and_merges_broker_payments(self):
+        pages = [
+            (
+                2,
+                """
+                THE LINCOLN NATIONAL LIFE INSURANCE COMPANY
+                SCHEDULE A REPORTING INFORMATION
+                Part I - Information Concerning Insurance Contract Coverage, Fees, and Commissions
+                (a) Name of insurance carrier: The Lincoln National Life Insurance Company
+                (b) EIN: 35-0472300
+                (c) NAIC code: 65676
+                (d) Contract or identification number: 000400001000 23109
+                (Part III, #8) (e) (f) (g)
+                Vol Child Life 36 01/01/2025 12/31/2025
+                Vol Spouse AD&D 42 01/01/2025 12/31/2025
+                Vol Spouse Life 42 01/01/2025 12/31/2025
+                Voluntary AD&D 88 01/01/2025 12/31/2025
+                Voluntary Life 88 01/01/2025 12/31/2025
+                2. Insurance fee and commission information.
+                (a) Total amount of commissions paid (b) Total amount of fees paid
+                $5,938.27 $549.77
+                3. Insurance fees and commissions paid to agents, brokers, and other persons:
+                MERCER HEALTH & BENEFITS LLC $5,938.27 3
+                4565 PAYSPHERE CIR
+                CHICAGO, IL 60674
+                Totals: $5,938.27 $0.00
+                MERCER HEALTH & BENEFITS LLC $549.77 Broker Bonus 3
+                4565 PAYSPHERE CIRCLE
+                CHICAGO, IL 60674
+                Totals: $0.00 $549.77
+                Part III - Welfare Benefit Contract Information
+                10. Nonexperience-rated contracts:
+                (a) Total premiums or subscription charges paid to carrier $39,588.17
+                """,
+            )
+        ]
+
+        values = {
+            field.field_name: field.value
+            for field in extract_litera_lincoln_schedule_a_fields(pages)
+        }
+        rows = extract_litera_lincoln_schedule_a_broker_rows(pages)
+
+        self.assertEqual(values["1d. Contract/Policy Number"], "000400001000 23109")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "88")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,588.17")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].commission_total, "5,938.27")
+        self.assertEqual(rows[0].fee_total, "549.77")
+        self.assertEqual(rows[0].fee_rows[0].purpose, "Broker Bonus")
+
+    def test_litera_lincoln_recovers_dotted_premium_from_xray_glyph_noise(self):
+        pages = [
+            (
+                2,
+                """
+                THE LINCOLN NATIONAL LIFE INSURANCE COMPANY
+                SCHEDULE A REPORTING INFORMATION
+                (a) Name of insurance carrier: The Lincoln National Life Insurance Company
+                (b) EIN: 35-0472300
+                (c) NAIC code: 65676
+                (d) Contract or identification number: 000010233867 00000
+                (Part III, #8) (e) (f) (g)
+                LTD 422 01/01/2025 12/31/2025
+                2. Insurance fee and commission information.
+                Part III - Welfare Benefit Contract Information
+                10. Nonexperience-rated contracts:
+                (a) Total premiums or subscription charges paid to carrier... S126, 256523
+                """,
+            )
+        ]
+
+        values = {
+            field.field_name: field.value
+            for field in extract_litera_lincoln_schedule_a_fields(pages)
+        }
+
+        self.assertEqual(
+            values["10a. Total premiums or subscription charges paid to carrier"],
+            "126,256.23",
+        )
 
     def test_principal_short_form_extracts_part_i_and_broker_values(self):
         pages = [

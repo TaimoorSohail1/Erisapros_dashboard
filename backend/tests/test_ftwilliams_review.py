@@ -1201,6 +1201,59 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("922556", policy_comparison.decision_reason)
         self.assertIn("922556G", policy_comparison.decision_reason)
 
+    def test_plan_worksheet_uses_aetna_coverage_to_pair_shared_contract_without_conflict(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "0186483-Dental",
+        )
+        summaries = [
+            ScheduleAWorksheetSummary(
+                source="Plan Worksheet fully-insured benefit table",
+                carrier_name="AETNA",
+                account_number="186483",
+                coverage=coverage,
+                period_begin="01/01/2025",
+                period_end="12/31/2025",
+            )
+            for coverage in ("HEALTH/RX/PPO", "DENTAL")
+        ]
+        fields = [policy]
+        comparisons = service._comparison_fields(fields, {}, {}, update_fields=fields)
+
+        matched = service._matching_plan_worksheet_summary(fields, summaries)
+        service._mark_plan_worksheet_conflicts(comparisons, fields, summaries)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.coverage, "DENTAL")
+        policy_comparison = next(item for item in comparisons if item.rule_key == policy.mapped_rule_key)
+        self.assertNotEqual(policy_comparison.decision, FTWFieldDecision.CONFLICT)
+
+    def test_plan_worksheet_various_matches_explicit_multi_contract_bundle(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "1040989/90-1001",
+        )
+        summary = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name="FIDELITY",
+            account_number="VARIOUS",
+            coverage="VISION",
+            period_begin="01/01/2025",
+            period_end="12/31/2025",
+        )
+        comparisons = service._comparison_fields([policy], {}, {}, update_fields=[policy])
+
+        matched = service._matching_plan_worksheet_summary([policy], [summary])
+        service._mark_plan_worksheet_conflicts(comparisons, [policy], [summary])
+
+        self.assertIsNotNone(matched)
+        policy_comparison = next(item for item in comparisons if item.rule_key == policy.mapped_rule_key)
+        self.assertNotEqual(policy_comparison.decision, FTWFieldDecision.CONFLICT)
+
     def test_structured_broker_section_supersedes_blocked_flat_broker_comparison(self):
         comparison = FTWilliamsComparisonField(
             label="3a. Name of Agent/Broker/Person",
@@ -3797,6 +3850,121 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("Carrier EIN", candidates[0]["match_reasons"])
         self.assertIn("NAIC", candidates[0]["match_reasons"])
 
+    def test_schedule_match_treats_multiple_eyemed_contracts_as_ftw_various(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                "Fidelity Security Life Insurance Company",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "43-0949844",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1c_naic_code",
+                "1c. NAIC Code",
+                "71870",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "1040989/90-1001",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="2",
+                query_results={
+                    "InsCarrierName": "FIDELITY SECURITY LIFE INSURANCE COMPANY",
+                    "InsCarrierEIN": "43-0949844",
+                    "InsCarrierNAICCode": "71870",
+                    "InsContractNum": "VARIOUS",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="3",
+                query_results={
+                    "InsCarrierName": "AETNA LIFE INSURANCE CO.",
+                    "InsCarrierEIN": "06-6033492",
+                    "InsCarrierNAICCode": "60054",
+                    "InsContractNum": "186483",
+                },
+            ),
+        ]
+
+        match = service._match_schedule_a_status(fields, statuses)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "2")
+        details = service._schedule_match_details(fields, statuses[0])
+        self.assertIn("Contract group", details["reasons"])
+
+    def test_schedule_match_uses_aetna_contract_coverage_suffix_to_break_shared_policy_tie(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                "Aetna Life Insurance Co.",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "06-6033492",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1c_naic_code",
+                "1c. NAIC Code",
+                "60054",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "0186483-Dental",
+            ),
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="1",
+                query_results={
+                    "InsCarrierName": "AETNA LIFE INSURANCE CO.",
+                    "InsCarrierEIN": "06-6033492",
+                    "InsCarrierNAICCode": "60054",
+                    "InsContractNum": "186483",
+                    "HealthInd": "1",
+                    "PpoInd": "1",
+                },
+            ),
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="3",
+                query_results={
+                    "InsCarrierName": "AETNA LIFE INSURANCE CO.",
+                    "InsCarrierEIN": "06-6033492",
+                    "InsCarrierNAICCode": "60054",
+                    "InsContractNum": "186483",
+                    "DentalInd": "1",
+                },
+            ),
+        ]
+
+        match = service._match_schedule_a_status(fields, statuses)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "3")
+        details = service._schedule_match_details(fields, statuses[1])
+        self.assertIn("Benefit type", details["reasons"])
+
     def test_schedule_match_tolerates_ftw_dropping_internal_contract_leading_zero(self):
         service = FTWilliamsReviewService()
         fields = [
@@ -3863,6 +4031,41 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(match.ftw_seq_no, "5")
         self.assertEqual(candidates[0]["ftw_seq_no"], "5")
         self.assertIn("Contract", candidates[0]["match_reasons"])
+
+    def test_schedule_match_ignores_lincoln_all_zero_reporting_unit_suffix(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "35-0472300",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1c_naic_code",
+                "1c. NAIC Code",
+                "65676",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "000010233867 00000",
+            ),
+        ]
+        status = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="4",
+            query_results={
+                "InsCarrierEIN": "35-0472300",
+                "InsCarrierNAICCode": "65676",
+                "InsContractNum": "10233867",
+            },
+        )
+
+        match = service._match_schedule_a_status(fields, [status])
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "4")
 
     def test_fresh_query_replaces_stale_preferred_schedule_a_with_stronger_identity_match(self):
         service = FTWilliamsReviewService()
@@ -5471,6 +5674,71 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(matched["ftw_seq_no"], "9")
+
+    def test_complete_unmatched_ein_and_contract_automatically_select_new_schedule_a(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1a_name_of_insurance_company",
+                "1a. Name of Insurance Company",
+                "Aetna Life Insurance Co.",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "06-6033492",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "803136",
+            ),
+        ]
+        fields = [
+            field.model_copy(update={"confidence": 0.99, "status": ExtractedFieldStatus.MATCHED})
+            for field in fields
+        ]
+        statuses = [
+            FTWilliamsStatusItem(
+                type="ScheduleA",
+                error_code="0",
+                ftw_seq_no="1",
+                query_results={
+                    "ScheduleDesc": "AETNA",
+                    "InsCarrierEIN": "06-6033492",
+                    "InsContractNum": "186483",
+                },
+            )
+        ]
+        records = [
+            {"ftw_seq_no": "1", "query_results": dict(statuses[0].query_results)}
+        ]
+
+        match = service._automatic_new_schedule_a_match(fields, statuses, records)
+
+        self.assertIsNotNone(match)
+        self.assertTrue(match["create_new"])
+        self.assertEqual(match["source"], "AUTO_NEW_SCHEDULE_A")
+        self.assertEqual(match["contract"], "803136")
+
+    def test_low_confidence_identity_never_automatically_creates_schedule_a(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein",
+                "1b. Insurance Carrier EIN",
+                "06-6033492",
+            ).model_copy(update={"confidence": 0.99, "status": ExtractedFieldStatus.MATCHED}),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number",
+                "1d. Contract/Policy Number",
+                "06",
+            ).model_copy(update={"confidence": 0.5, "status": ExtractedFieldStatus.LOW_CONFIDENCE}),
+        ]
+
+        match = service._automatic_new_schedule_a_match(fields, [], [])
+
+        self.assertIsNone(match)
 
     def test_schedule_match_accepts_unique_exact_carrier_with_policy_dates_when_ids_are_blank(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
