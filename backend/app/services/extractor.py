@@ -7590,7 +7590,7 @@ def extract_eyemed_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
             name = clean_extracted_value(match.group(1))
             contract_number = clean_extracted_value(match.group(2))
             address_city = clean_extracted_value(match.group(3))
-            address_line_1, city = split_eyemed_address_city(address_city)
+            address_line_1, address_line_2, city = split_eyemed_address_city(address_city)
             amount = money_value(match.group(6))
             if not name or not is_probable_person_or_entity_name(name):
                 continue
@@ -7598,6 +7598,7 @@ def extract_eyemed_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
                 ScheduleABrokerRow(
                     name=name,
                     address_line_1=address_line_1,
+                    address_line_2=address_line_2,
                     city=city,
                     state=match.group(4).upper(),
                     zip_code=match.group(5),
@@ -7668,15 +7669,30 @@ def normalize_eyemed_date(value: str) -> str:
     return f"{int(month):02d}/{int(day):02d}/{full_year}"
 
 
-def split_eyemed_address_city(value: str) -> tuple[str | None, str | None]:
+def split_eyemed_address_city(
+    value: str,
+) -> tuple[str | None, str | None, str | None]:
     text = clean_extracted_value(value)
-    po_box_match = re.match(r"((?:P\.?\s*O\.?\s+Box)\s+\d+)\s+(.+)$", text, flags=re.IGNORECASE)
-    if po_box_match:
-        return clean_extracted_value(po_box_match.group(1)), clean_extracted_value(po_box_match.group(2))
     match = re.match(r"(.+\b(?:Street|St|Avenue|Ave|Parkway|Pkwy|Road|Rd|Drive|Dr|Boulevard|Blvd|Lane|Ln|Way|Court|Ct|Circle|Cir))\s+(.+)$", text, flags=re.IGNORECASE)
     if match:
-        return clean_extracted_value(match.group(1)), clean_extracted_value(match.group(2))
-    return text or None, None
+        address_line_1 = clean_extracted_value(match.group(1))
+        remainder = clean_extracted_value(match.group(2))
+        po_box_match = re.match(
+            r"((?:P\.?\s*O\.?\s+Box)\s+\d+)\s+(.+)$",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+        if po_box_match:
+            return (
+                address_line_1,
+                clean_extracted_value(po_box_match.group(1)),
+                clean_extracted_value(po_box_match.group(2)),
+            )
+        return address_line_1, None, remainder
+    po_box_match = re.match(r"((?:P\.?\s*O\.?\s+Box)\s+\d+)\s+(.+)$", text, flags=re.IGNORECASE)
+    if po_box_match:
+        return clean_extracted_value(po_box_match.group(1)), None, clean_extracted_value(po_box_match.group(2))
+    return text or None, None, None
 
 
 def _short_form_field(

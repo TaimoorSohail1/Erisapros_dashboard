@@ -130,6 +130,11 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(values[1]["Persons covered"], "432")
         self.assertEqual(values[1]["Total nonexperience premium"], "33,717.70")
         self.assertEqual(values[1]["Broker payment total"], "3,406.53")
+        brokers = extract_eyemed_broker_rows(pages)
+        self.assertEqual(len(brokers), 2)
+        self.assertEqual(brokers[0].address_line_1, "461 Wadsworth Road")
+        self.assertEqual(brokers[0].address_line_2, "PO Box 3")
+        self.assertEqual(brokers[0].city, "Orrville")
 
     def test_pomerene_guardian_portal_statement_extracts_policy_totals_and_brokers(self):
         pages = [(1, """
