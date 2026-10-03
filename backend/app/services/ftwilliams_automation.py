@@ -943,16 +943,16 @@ class FTWAutomationService:
                 and field.page is not None
             )
             if (
-                field.confidence >= threshold
-                and (
-                    deterministic_layout_source
-                    or field.status not in {
+                deterministic_layout_source
+                or (
+                    field.confidence >= threshold
+                    and field.status not in {
                         ExtractedFieldStatus.MISSING,
                         ExtractedFieldStatus.LOW_CONFIDENCE,
                         ExtractedFieldStatus.UNMAPPED,
                     }
+                    and (str(field.source_text or "").strip() or field.page is not None)
                 )
-                and (str(field.source_text or "").strip() or field.page is not None)
             ):
                 return field
         return None

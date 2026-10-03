@@ -134,18 +134,18 @@ class FakeLocalAgentService:
 
 
 class FTWAutomationPolicyTests(unittest.TestCase):
-    def test_trusted_identity_accepts_deterministic_anthem_parser_evidence(self):
+    def test_trusted_identity_accepts_deterministic_parser_after_remote_confidence_downgrade(self):
         field = ExtractedField(
             id="field-anthem",
             filing_id="filing-anthem",
             source_field_name="Carrier name",
             normalized_field_name="carrier_name",
             xml_tag="InsCarrierName",
-            value="Anthem Blue Cross Life and Health Insurance Company",
-            proposed_value="Anthem Blue Cross Life and Health Insurance Company",
-            confidence=0.995,
-            page=2,
-            source_text="Anthem combined Schedule A report",
+            value="NSU79",
+            proposed_value="NSU79",
+            confidence=0.5,
+            page=1,
+            source_text="AFLAC Schedule A earnings report",
             form_type=FormType.SCHEDULE_A,
             status=ExtractedFieldStatus.LOW_CONFIDENCE,
         )
