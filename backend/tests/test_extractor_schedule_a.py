@@ -2354,6 +2354,41 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual([row.fee_total for row in life_rows], ["48,230.78"])
         self.assertEqual([row.fee_total for row in ltd_rows], ["26,143.92"])
 
+    def test_broker_rows_are_filtered_by_contract_before_generated_schedule_description(self):
+        rows = [
+            ScheduleABrokerRow(
+                name="HUMMEL GROUP",
+                commission_total="3,406.53",
+                commission_rows=[
+                    ScheduleABrokerMoneyRow(
+                        coverage="10049061001",
+                        amount="3,406.53",
+                        purpose="Commissions",
+                    )
+                ],
+            ),
+            ScheduleABrokerRow(
+                name="HUMMEL GROUP",
+                commission_total="245.62",
+                commission_rows=[
+                    ScheduleABrokerMoneyRow(
+                        coverage="10049071001",
+                        amount="245.62",
+                        purpose="Commissions",
+                    )
+                ],
+            ),
+        ]
+
+        selected = FTWilliamsReviewService()._broker_rows_for_schedule_desc(
+            rows,
+            "7-1",
+            "10049071001",
+        )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].commission_total, "245.62")
+
     def test_schedule_a_parser_stops_last_broker_before_part_iii(self):
         text = """
         Name and address of the agents, brokers or other persons to whom commissions or fees were paid

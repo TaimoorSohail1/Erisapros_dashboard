@@ -329,13 +329,14 @@ class FTWilliamsReviewService:
                 or existing_review.schedule_a_match.get("ScheduleDesc")
                 or ""
             ).strip()
-        schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
-            schedule_a_broker_rows,
-            selected_schedule_desc,
-        )
         if apply_automatic_derivations:
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
             fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
+        schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
+            schedule_a_broker_rows,
+            selected_schedule_desc,
+            self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number"),
+        )
 
         ftw_editability = self._ftw_editability_status(form_5500_current)
         if ftw_editability["editable"] is None and existing_review and not send_queries:
@@ -996,9 +997,16 @@ class FTWilliamsReviewService:
             if self._same_schedule_a_selection(review.schedule_a_match, schedule_a_match)
             else []
         )
+        fields = self._fields_with_schedule_a_summary_override(
+            fields,
+            schedule_a_worksheet_summaries,
+            new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
+        )
+        fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
         schedule_a_broker_rows = self._broker_rows_for_schedule_desc(
             schedule_a_broker_rows,
             new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
+            self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number"),
         )
         broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
             schedule_a_broker_rows,
@@ -1014,12 +1022,6 @@ class FTWilliamsReviewService:
                 error_message,
                 "Schedule A broker rows need confirmation before FT Williams can be updated.",
             ]))
-        fields = self._fields_with_schedule_a_summary_override(
-            fields,
-            schedule_a_worksheet_summaries,
-            new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
-        )
-        fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
         plan_year_conflict = self._plan_year_conflict(fields, form_5500_current, schedule_a_current)
         plan_year_resolution = self._effective_plan_year_resolution(review, fields, form_5500_current, schedule_a_current)
         plan_year_update_confirmed = plan_year_resolution is not None
@@ -5022,7 +5024,31 @@ class FTWilliamsReviewService:
         text = re.sub(r"[\(\[\{].*$", "", text).strip()
         return cls._identity_key(text)
 
-    def _broker_rows_for_schedule_desc(self, rows: list, schedule_desc: object) -> list:
+    def _broker_rows_for_schedule_desc(
+        self,
+        rows: list,
+        schedule_desc: object,
+        contract_number: object = None,
+    ) -> list:
+        contract_key = self._standard_schedule_desc_key(str(contract_number or ""))
+        if contract_key:
+            contract_matches = []
+            for row in rows:
+                money_rows = [
+                    *(self._summary_attr(row, "commission_rows") or []),
+                    *(self._summary_attr(row, "fee_rows") or []),
+                ]
+                coverage_keys = {
+                    self._standard_schedule_desc_key(
+                        str(self._summary_attr(money_row, "coverage") or "")
+                    )
+                    for money_row in money_rows
+                    if self._summary_attr(money_row, "coverage")
+                }
+                if contract_key in coverage_keys:
+                    contract_matches.append(row)
+            if contract_matches:
+                return contract_matches
         desc_key = self._standard_schedule_desc_key(str(schedule_desc or ""))
         if not desc_key:
             return rows
