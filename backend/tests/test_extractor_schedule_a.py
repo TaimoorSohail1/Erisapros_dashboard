@@ -45,6 +45,14 @@ from app.services.extractor import (
     extract_hartford_broker_rows,
     extract_hartford_schedule_a_fields,
     extract_allone_eap_schedule_a_fields,
+    extract_american_heritage_broker_rows,
+    extract_american_heritage_schedule_a_fields,
+    extract_guardian_broker_rows,
+    extract_guardian_schedule_a_fields,
+    extract_reliance_standard_broker_rows,
+    extract_reliance_standard_schedule_a_fields,
+    extract_sun_life_broker_rows,
+    extract_sun_life_schedule_a_fields,
     extract_metlife_bay_bridge_broker_rows,
     extract_metlife_bay_bridge_schedule_a_fields,
     extract_metlife_bay_bridge_schedule_a_summaries,
@@ -97,6 +105,155 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_pomerene_eyemed_keeps_two_policies_separate(self):
+        pages = [(1, """
+            Vision Insurance Information For Form 5500
+            Information Compiled By: EyeMed Vision Care on behalf of the Fidelity Security Life Insurance Company
+            Report Start Date Report End Date
+            1/1/2025 12/31/2025
+            Name of Plan Contract or ID # Enrollment Group subscribers covered subscribers and dependents covered EIN NAIC Amount
+            POMERENE HOSPITAL 10049071001 POMERENE HOSPITAL 81 172 430949844 71870 $2,451.00
+            POMERENE HOSPITAL BUY UP 10049061001 POMERENE HOSPITAL BUY UP 174 432 430949844 71870 $33,717.70
+            Total: $36,168.70
+            Payee Name Contract or ID # Address Line 1 City State Zip Code Amount
+            Hummel Group 10049061001 461 Wadsworth Road PO Box 3 Orrville OH 44667 $3,406.53
+            Hummel Group 10049071001 461 Wadsworth Road PO Box 3 Orrville OH 44667 $245.62
+        """)]
+
+        summaries = extract_eyemed_schedule_a_summaries(pages)
+
+        self.assertEqual([summary.account_number for summary in summaries], ["10049071001", "10049061001"])
+        values = [{value.label: value.value for value in summary.values} for summary in summaries]
+        self.assertEqual(values[0]["Persons covered"], "172")
+        self.assertEqual(values[0]["Total nonexperience premium"], "2,451.00")
+        self.assertEqual(values[0]["Broker payment total"], "245.62")
+        self.assertEqual(values[1]["Persons covered"], "432")
+        self.assertEqual(values[1]["Total nonexperience premium"], "33,717.70")
+        self.assertEqual(values[1]["Broker payment total"], "3,406.53")
+
+    def test_pomerene_guardian_portal_statement_extracts_policy_totals_and_brokers(self):
+        pages = [(1, """
+            Guardian 2025 Schedule A/5500 Information
+            From 01/01/2025 To 12/31/2025
+            Plan Name POMERENE HOSPITAL Plan Number 00579175
+            Guardian's EIN 13-5123390 Guardian's NAIC 64246
+            Approximate number of employees covered at the end of the plan year 418
+            0009L838 REDTAIL LTD $6,431.27
+            9999 BREWSTER PLACE #100 POWELL OH 43065
+            000K2652 HUMMEL GROUP INC $6,431.27
+            PO BOX 250 BERLIN OH 44610 111
+            000NM733 HUMMEL GROUP INC $0.00
+            Total commissions for plan $12,862.54
+            Total Fees Paid $0.00
+            Total premium paid $98,942.65
+        """)]
+
+        fields = {field.field_name: field.value for field in extract_guardian_schedule_a_fields(pages)}
+        brokers = extract_guardian_broker_rows(pages)
+
+        self.assertEqual(fields["1d. Contract/Policy Number"], "00579175")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "418")
+        self.assertEqual(fields["3b. Amount of Commissions"], "12,862.54")
+        self.assertEqual(fields["3c. Amount of Fees"], "0.00")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "98,942.65")
+        self.assertEqual([(row.name, row.commission_total) for row in brokers], [("REDTAIL LTD", "6,431.27"), ("HUMMEL GROUP INC", "6,431.27")])
+
+    def test_pomerene_guardian_letter_uses_plan_number_not_broker_code(self):
+        pages = [(1, """
+            Guardian Life Insurance Company of America
+            Plan Number : 00579270 EIN : 13-5123390 NAIC: 64246
+            Name of Plan : POMERENE HOSPITAL
+            Data for Period From : 1/1/25 To : 12/31/25
+            approximate number of employees covered at the end of the plan year : 63
+            000K215 LIFETIME FINANCIAL GROWTH OF N Short Term Disability 38.48 Total For Contract: 38.48
+            000K2652 HUMMEL GROUP INC PO BOX 250 BERLIN OH 44610 111 Short Term Disability 4,735.73 Total For Contract: 4,735.73
+            Total Commissions Paid On Plan: 4,774.21
+            000NM733 HUMMEL GROUP INC $0.00 Total Fees Paid $0.00
+            Gross Premium Paid Short Term Disability 29,598.29 Totals: 29,598.29
+        """)]
+
+        fields = {field.field_name: field.value for field in extract_guardian_schedule_a_fields(pages)}
+
+        self.assertEqual(fields["1d. Contract/Policy Number"], "00579270")
+        self.assertEqual(fields["3b. Amount of Commissions"], "4,774.21")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "29,598.29")
+
+    def test_pomerene_american_heritage_aggregates_same_contract_benefits(self):
+        pages = [(1, """
+            POMERENE HOSPITAL(MH301)
+            Plan/Contract Year:1/1/2025-12/31/2025
+            Part I (a) Name of Insurance Carrier: American Heritage Life Insurance Company
+            Part I (b) EIN: 59-0781901 Part I (c) NAIC Code: 60534
+            Accident Account: MH301 Accident 83 $31,169.61 $9,726.44 $0.00
+            CGI VOLUNTARY BENEFITS INC 8HRK0 $121.20 $0.00
+            HUMMEL GROUP INC 8Y0K0 $6,652.62 $0.00
+        """), (3, """
+            POMERENE HOSPITAL(MH301)
+            Critical Illness Account: MH301 Critical Illness 31 $13,368.95 $2,517.41 $0.00
+            CGI VOLUNTARY BENEFITS INC 8HRK0 $40.78 $0.00
+            HUMMEL GROUP INC 8Y0K0 $1,347.88 $0.00
+        """), (5, """
+            POMERENE HOSPITAL(MH301)
+            Universal Life Account: MH301 Universal Life 71 $21,166.88 $650.77 $0.00
+            GALLAGHER BENEFIT SVCS INC 0HW70 $253.91 $0.00
+        """), (6, "Grand Total $65,705.44 $12,894.62 $0.00")]
+
+        fields = {field.field_name: field.value for field in extract_american_heritage_schedule_a_fields(pages)}
+        brokers = extract_american_heritage_broker_rows(pages)
+
+        self.assertEqual(fields["1d. Contract/Policy Number"], "MH301")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "83")
+        self.assertEqual(fields["3b. Amount of Commissions"], "12,894.62")
+        self.assertEqual(fields["3c. Amount of Fees"], "0.00")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "65,705.44")
+        self.assertEqual(next(row for row in brokers if row.name == "HUMMEL GROUP INC").commission_total, "8,000.50")
+
+    def test_pomerene_sun_life_extracts_complete_schedule_a(self):
+        pages = [(2, """
+            5500 Schedule A Insurance Information
+            Policy/Account Number 924948
+            Name of insurance carrier Sun Life Assurance Company of Canada EIN 38-1082080 NAIC code 80802
+            Policy or Contract Year From 01/01/2025 To 12/31/2025
+            Approximate number of persons covered at end of policy or contract year 62
+            Total Amount of commissions paid $6,330.49
+            Gallagher Benefit Services Inc 2850 Golf Rd 5th Fl Rolling Meadows, IL 60008 Organization Code 3
+            Total Premium received 01/01/2025 to 12/31/2025 Total $32,478.18
+        """)]
+
+        fields = {field.field_name: field.value for field in extract_sun_life_schedule_a_fields(pages)}
+        brokers = extract_sun_life_broker_rows(pages)
+
+        self.assertEqual(fields["1d. Contract/Policy Number"], "924948")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "62")
+        self.assertEqual(fields["3b. Amount of Commissions"], "6,330.49")
+        self.assertEqual(fields["3c. Amount of Fees"], "0.00")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "32,478.18")
+        self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
+
+    def test_pomerene_reliance_ocr_text_extracts_complete_schedule_a(self):
+        pages = [(1, """
+            reliance standard INSURANCE INFORMATION FORM 5500 - SCHEDULE A
+            EIN: 36-0883760 NAIC: 68381 ORG. NUMBER: 3
+            Policyholder Name: Pomerene Hospital Policy Number: GL160111
+            Policy Type: GROUP LIFE AND ACCIDENTAL DEATH AND DISMEMBERMENT
+            Number of covered lives: Beginning: 351 Ending: 319
+            Policy Contract Year: 01/01/2025 to 12/31/2025
+            Total Premium: $10,878.32
+            Payee Name: Gallagher Benefit Services Inc
+            Payee Address: Mail Stop: 072103 P. O. Box 4135 Clinton, IA 52732
+            Total Commission: $1,522.94
+            Total Administrative and Other Fees: $384.40
+        """)]
+
+        fields = {field.field_name: field.value for field in extract_reliance_standard_schedule_a_fields(pages)}
+        brokers = extract_reliance_standard_broker_rows(pages)
+
+        self.assertEqual(fields["1d. Contract/Policy Number"], "GL160111")
+        self.assertEqual(fields["1e. Persons Covered (End of Policy Year)"], "319")
+        self.assertEqual(fields["3b. Amount of Commissions"], "1,522.94")
+        self.assertEqual(fields["3c. Amount of Fees"], "384.40")
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "10,878.32")
+        self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
     def test_aig_welfare_plan_extracts_authoritative_identity_and_zero_broker_row(self):
         pages = [
             (

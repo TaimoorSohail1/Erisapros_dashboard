@@ -12,6 +12,7 @@ import zipfile
 
 from app.models import FieldRule, FieldRuleMappingMode
 from app.services.extractor import (
+    extract_aultcare_schedule_a_summaries,
     extract_document_text_pages,
     extract_fields_from_document_text,
     extract_schedule_a_classification_signals,
@@ -89,6 +90,45 @@ CARRIER_SHEET = [
 
 
 class SpreadsheetExtractionTests(unittest.TestCase):
+    def test_pomerene_aultcare_keeps_both_workbook_policies_separate(self):
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        for index, (contract, persons, premium, commission, broker) in enumerate(
+            [
+                ("950052", 243, 4059527, 29855, "HUMMEL GROUP INC"),
+                ("25365", 245, 9020.25, 0, "NA"),
+            ]
+        ):
+            sheet = workbook.active if index == 0 else workbook.create_sheet()
+            sheet.title = contract
+            for row in [
+                ["Name of Insurance Carrier:", "AultCare Insurance Company"],
+                ["EIN of Carrier:", "34-1624818"],
+                ["NAIC Code:", 77216],
+                ["Contract (Group) Number:", contract],
+                ["Number of Employees Covered", persons],
+                ["Contract Year:", "1/1/2025-12/31/2025"],
+                ["Name Of Agent:", broker],
+                ["Commissions Paid:", commission],
+                ["Premiums Paid:", premium],
+                ["Organization Code", 3],
+            ]:
+                sheet.append(row)
+        buffer = BytesIO()
+        workbook.save(buffer)
+
+        summaries = extract_aultcare_schedule_a_summaries(buffer.getvalue(), "aultcare.xlsx")
+
+        self.assertEqual([summary.account_number for summary in summaries], ["950052", "25365"])
+        values = [{value.label: value.value for value in summary.values} for summary in summaries]
+        self.assertEqual(values[0]["Persons covered"], "243")
+        self.assertEqual(values[0]["Total nonexperience premium"], "4,059,527")
+        self.assertEqual(values[0]["Broker payment total"], "29,855")
+        self.assertEqual(values[1]["Persons covered"], "245")
+        self.assertEqual(values[1]["Total nonexperience premium"], "9,020.25")
+        self.assertEqual(values[1]["Broker payment total"], "0")
+
     def test_a_carrier_workbook_extracts_the_same_fields_as_a_statement(self):
         fields = {f.field_name: f.value for f in extract_fields_from_document_text(_workbook(CARRIER_SHEET), "carrier.xlsx")}
         self.assertEqual(fields["1a. Name of Insurance Company"], "American Life Insurance Company")
