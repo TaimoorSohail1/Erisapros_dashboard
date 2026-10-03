@@ -438,6 +438,7 @@ def _validate_financial_section_context(
             or re.search(r"\b(?:part\s+iii\s+)?line\s+10[a-z]?\b", normalized)
             or re.search(r"\b10[a-z]\s*[.(]", normalized)
             or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)
+            or re.search(r"\btotal\s+premium\s+received\b", normalized)
             or (
                 re.search(r"\bgross\s+premium\s+paid\b", normalized)
                 and re.search(r"\btotals?\s*:", normalized)

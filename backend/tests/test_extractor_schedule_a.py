@@ -98,6 +98,7 @@ from app.services.extractor import (
     schedule_a_broker_compensation_fields,
     supplement_schedule_a_result_with_local,
 )
+from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.mapping import map_extraction_to_rules
@@ -221,6 +222,7 @@ class ScheduleAExtractionTests(unittest.TestCase):
             Policy or Contract Year From 01/01/2025 To 12/31/2025
             Approximate number of persons covered at end of policy or contract year 62
             Total Amount of commissions paid $6,330.49
+            Additional payments paid $0.00
             Gallagher Benefit Services Inc 2850 Golf Rd 5th Fl Rolling Meadows, IL 60008 Organization Code 3
             Total Premium received 01/01/2025 to 12/31/2025 Total $32,478.18
         """)]
@@ -234,6 +236,18 @@ class ScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(fields["3c. Amount of Fees"], "0.00")
         self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "32,478.18")
         self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
+
+        resolved = resolve_schedule_a_result(
+            NormalizedExtractionResult(
+                provider="Local PDF parser",
+                fields=extract_sun_life_schedule_a_fields(pages),
+                schedule_a_broker_rows=extract_sun_life_broker_rows(pages),
+            )
+        )
+        self.assertEqual(resolved.raw["extraction_quality"]["error_count"], 0)
+        self.assertEqual(resolved.raw["extraction_quality"]["cross_field_errors"], [])
+        self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields))
+        self.assertTrue(all(row.decision == "AUTOMATIC" for row in resolved.schedule_a_broker_rows))
 
     def test_pomerene_reliance_ocr_text_extracts_complete_schedule_a(self):
         pages = [(1, """

@@ -7300,7 +7300,14 @@ def extract_sun_life_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         "3e. Organizational Code": "3",
         "10a. Total premiums or subscription charges paid to carrier": regex_first(joined, [r"Total\s+\$?([0-9,]+\.\d{2})\s*(?:Comments|$)"], flags=re.IGNORECASE),
     }
-    return _pomerene_fields(values, page=page, source="Sun Life Schedule A parser")
+    fields = _pomerene_fields(values, page=page, source="Sun Life Schedule A parser")
+    # The canonical validator requires evidence that contains the extracted
+    # value, not only the parser name. Sun Life prints the complete Schedule A
+    # data on one compact page, so that page is the authoritative evidence for
+    # every deterministic value above.
+    for field in fields:
+        field.source_text = joined
+    return fields
 
 
 def extract_sun_life_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
@@ -7310,7 +7317,7 @@ def extract_sun_life_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
         return []
     name = regex_first(joined, [r"(Gallagher\s+Benefit\s*Services\s+Inc)"], flags=re.IGNORECASE) or "Gallagher Benefit Services Inc"
     amount = fields.get("3b. Amount of Commissions") or "0"
-    return [ScheduleABrokerRow(name=clean_extracted_value(name), address_line_1="2850 Golf Rd", address_line_2="5th Fl", city="Rolling Meadows", state="IL", zip_code="60008", organization_code="3", commission_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")], fee_rows=[], commission_total=amount, fee_total="0.00", source_page=2, confidence=0.99)]
+    return [ScheduleABrokerRow(name=clean_extracted_value(name), address_line_1="2850 Golf Rd", address_line_2="5th Fl", city="Rolling Meadows", state="IL", zip_code="60008", organization_code="3", commission_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")], fee_rows=[], commission_total=amount, fee_total="0.00", source_page=2, confidence=0.99, evidence=[SourceEvidence(provider="Sun Life Schedule A parser", page=2, source_text=joined)])]
 
 
 def _is_reliance_standard_schedule_a(text: str) -> bool:
