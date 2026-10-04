@@ -971,6 +971,34 @@ AD&D 592 | Base Commissions
         self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "66,964.14")
 
+    def test_vsp_payment_claim_fee_summary_maps_to_experience_rated_lines(self):
+        pages = [
+            (
+                1,
+                """
+                VSP vision care
+                Schedule A Form (5500) Insurance Information
+                Group ID: 30105423
+                Insurance Carrier: Vision Service Plan
+                Insurance Carrier NAIC Code: 47029
+                Insurance Carrier FEIN: 222777159
+                Policy or Contract Year: 01/01/2025 - 12/31/2025
+                Approximate Number of Persons Covered at the End of Policy or Contract Year: 3,055
+                Total Administrative Fees Paid to Carrier: $67,975.56
+                Total Payments Made to Carrier: $503,524.06
+                Total Claims Paid by Carrier: $424,707.02
+                """,
+            )
+        ]
+
+        values = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
+
+        self.assertEqual(values["9a. Premiums: (1) Amount Received"], "503,524.06")
+        self.assertEqual(values["9b(1). Benefit Charges (1) Claims paid"], "424,707.02")
+        self.assertEqual(values["9c(1)(B). Administrative service or other fees"], "67,975.56")
+        self.assertNotIn("3c. Amount of Fees", values)
+        self.assertNotIn("10a. Total premiums or subscription charges paid to carrier", values)
+
     def test_vsp_full_labels_and_compact_text_override_generic_false_matches(self):
         pages = [
             (

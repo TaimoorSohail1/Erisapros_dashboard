@@ -3126,6 +3126,7 @@ def prefer_authoritative_carrier_statement_fields(
 ) -> list[NormalizedExtractionField]:
     """Prefer positively identified carrier statements over generic OCR guesses."""
     for parser in (
+        extract_vsp_schedule_a_fields,
         extract_cigna_g2050a_schedule_a_fields,
         extract_delta_dental_schedule_a_fields,
         extract_first_unum_schedule_a_fields,
@@ -3141,6 +3142,7 @@ def prefer_authoritative_carrier_statement_fields(
             continue
         owned = {field.field_name for field in authoritative}
         if parser in {
+            extract_vsp_schedule_a_fields,
             extract_cigna_g2050a_schedule_a_fields,
             extract_delta_dental_schedule_a_fields,
             extract_first_unum_schedule_a_fields,
@@ -3161,6 +3163,9 @@ def prefer_authoritative_carrier_statement_fields(
                     "3c. Amount of Fees",
                     "3d. Purpose",
                     "3e. Organizational Code",
+                    "9a. Premiums: (1) Amount Received",
+                    "9b(1). Benefit Charges (1) Claims paid",
+                    "9c(1)(B). Administrative service or other fees",
                     "10a. Total premiums or subscription charges paid to carrier",
                 }
             )
@@ -4718,6 +4723,9 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
             "3c. Amount of Fees",
             "3d. Purpose",
             "3e. Organizational Code",
+            "9a. Premiums: (1) Amount Received",
+            "9b(1). Benefit Charges (1) Claims paid",
+            "9c(1)(B). Administrative service or other fees",
             "10a. Total premiums or subscription charges paid to carrier",
         }
         fields = [field for field in fields if field.field_name not in authoritative_names]
@@ -8331,6 +8339,14 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
             normalized,
             [r"Total\s+Payments\s+Made\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
         )
+        claims = regex_first(
+            normalized,
+            [r"Total\s+Claims\s+Paid\s+by\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+        )
+        administrative_fees = regex_first(
+            normalized,
+            [r"Total\s+Administrative\s+Fees\s+Paid\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+        )
         source_text = "Vision Service Plan labelled Schedule A report"
 
         def add(field_name: str, value: str | None, confidence: float = 0.99) -> None:
@@ -8354,7 +8370,19 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
         if isinstance(period, tuple) and len(period) == 2:
             add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False), 0.99)
             add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True), 0.99)
-        add("10a. Total premiums or subscription charges paid to carrier", money_value(premium or ""), 0.99)
+        if claims and administrative_fees:
+            # VSP's payment/claim/administrative-fee summary supplies the
+            # experience-rated Part III values.  The administrative fee is a
+            # carrier retention amount, not a Part I broker fee.
+            add("9a. Premiums: (1) Amount Received", money_value(premium or ""), 0.99)
+            add("9b(1). Benefit Charges (1) Claims paid", money_value(claims), 0.99)
+            add(
+                "9c(1)(B). Administrative service or other fees",
+                money_value(administrative_fees),
+                0.99,
+            )
+        else:
+            add("10a. Total premiums or subscription charges paid to carrier", money_value(premium or ""), 0.99)
         broker_rows = extract_vsp_broker_rows([(page, text)])
         if broker_rows:
             broker = broker_rows[0]
