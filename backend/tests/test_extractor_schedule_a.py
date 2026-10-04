@@ -56,6 +56,13 @@ from app.services.extractor import (
     extract_reliance_standard_schedule_a_fields,
     extract_sun_life_broker_rows,
     extract_sun_life_schedule_a_fields,
+    extract_ace_schedule_a_broker_rows,
+    extract_ace_schedule_a_fields,
+    extract_cigna_g2050a_schedule_a_fields,
+    extract_delta_dental_schedule_a_fields,
+    extract_first_unum_broker_rows,
+    extract_first_unum_schedule_a_fields,
+    extract_mount_sinai_schedule_a_fields,
     extract_metlife_bay_bridge_broker_rows,
     extract_metlife_bay_bridge_schedule_a_fields,
     extract_metlife_bay_bridge_schedule_a_summaries,
@@ -124,6 +131,141 @@ from app.services.schedule_a_classification import classify_schedule_a_fields
 
 
 class ScheduleAExtractionTests(unittest.TestCase):
+    def test_cigna_g2050a_layout_uses_certified_totals_not_table_fragments(self):
+        pages = [(1, """G2050A
+NON-EXPERIENCE - RATED CONTRACTS CIGNA HEALTH AND LIFE INSURANCE COMPANY
+For Policy Year beginning January 1, 2025 and ending December 31, 2025
+Name of plan Apollo Management, L.P.
+CIGNA HEALTH AND LIFE INSURANCE COMPANY 04094A
+56 Total Covered, 17 Employees 1/1/2025 12/31/2025
+Dental Coverage $38,560
+Evacuation Coverage $3,111
+I EAP Coverage $651
+Medical Coverage $845,754
+Contract or Identification Number 04094A
+NAIC COMPANY CODE: 67369
+EMPLOYER IDENTIFICATION NUMBER: 591031071
+(a) Total premiums or subscriptions charges paid to carrier $888,075
+""")]
+        values = {field.field_name: field.value for field in extract_cigna_g2050a_schedule_a_fields(pages)}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "CIGNA HEALTH AND LIFE INSURANCE COMPANY")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "59-1031071")
+        self.assertEqual(values["1c. NAIC Code"], "67369")
+        self.assertEqual(values["1d. Contract/Policy Number"], "04094A")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "56")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "888,075")
+        self.assertEqual(values["3b. Amount of Commissions"], "0")
+        self.assertEqual(values["3c. Amount of Fees"], "0")
+
+    def test_delta_dental_layout_extracts_zero_compensation_and_premium(self):
+        pages = [(1, """INSURANCE INFORMATION
+Delta Dental of Iowa
+EIN: 42-0959302
+NAIC CODE: 55786
+Contract or ID Number: 43173
+Approximate Number of Persons Covered @ End of Policy or Contract Year: 1980
+Policy or Contract Year 01/01/2025 - 12/31/2025
+Total Amount of Commissions Paid: $0.00
+Total Fees Paid/Amount: $0.00
+Total premiums or subscription charges paid to carrier $2,113,696.44
+""")]
+        values = {field.field_name: field.value for field in extract_delta_dental_schedule_a_fields(pages)}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "DELTA DENTAL OF IOWA")
+        self.assertEqual(values["1d. Contract/Policy Number"], "43173")
+        self.assertEqual(values["3b. Amount of Commissions"], "0.00")
+        self.assertEqual(values["3c. Amount of Fees"], "0.00")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "2,113,696.44")
+
+    def test_first_unum_layout_normalizes_exclusive_anniversary_and_broker(self):
+        pages = [(1, """INSURANCE DATA FOR SCHEDULE A (FORM 5500)
+First Unum Life Insurance Company
+TAX ID: 131898173 NAIC: 64297
+CONTRACT NUMBER: 612696
+APPROXIMATE NUMBER OF PERSONS COVERED AT END OF POLICY YEAR: 1505
+DATE FOR PERIOD: FROM 01-01-2025 TO 01-01-2026
+NFP Corporate Services (NY) LLC 31,892.89 .00 .00
+PO Box 9101
+Plainview NY 11803
+NON-PARTICIPATING CONTRACTS (PREMIUMS)
+TOTAL PREMIUM OR SUBSCRIPTION CHARGES PAID TO CARRIER $637,857.78
+""")]
+        values = {field.field_name: field.value for field in extract_first_unum_schedule_a_fields(pages)}
+        rows = extract_first_unum_broker_rows(pages)
+
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "13-1898173")
+        self.assertEqual(values["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "637,857.78")
+        self.assertEqual(rows[0].name, "NFP Corporate Services (NY) LLC")
+        self.assertEqual(rows[0].commission_total, "31,892.89")
+
+    def test_sun_life_health_layout_does_not_turn_footnote_into_fee(self):
+        pages = [(1, "Cover letter"), (2, """5500 Schedule A Insurance Information
+Policy/Account Number 931755
+Name of insurance carrier Sun Life and Health Insurance Company (U.S.)
+EIN (Insurance Carrier) 06-0893662 NAIC code 80926
+Policy or Contract Year From 01/01/2025 To 12/31/2025
+1929 Approximate number of persons covered at end of policy or contract year
+Total Amount of commissions paid $91,286.13
+Amount of commissions paid Type of Benefit Override 1 Stop Loss Specific Only $91,286.13
+Bonuses and additional payments paid 3
+Bonus Amount 2 Additional Payments
+Alterity Group LLC
+90 Park Ave 17th Floor
+New York, NY 10016
+Total Premium received 01/01/2025 to 12/31/2025
+Stop Loss Specific Only $2,026,913.43
+Total $2,026,913.43
+""")]
+        values = {field.field_name: field.value for field in extract_sun_life_schedule_a_fields(pages)}
+        rows = extract_sun_life_broker_rows(pages)
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "SUN LIFE AND HEALTH INSURANCE COMPANY (U.S.)")
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "06-0893662")
+        self.assertEqual(values["3c. Amount of Fees"], "0.00")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "2,026,913.43")
+        self.assertEqual(rows[0].name, "Alterity Group LLC")
+
+    def test_ace_layout_keeps_missing_persons_blank_and_extracts_broker(self):
+        pages = [(1, """Insurance Information: Provided to assist the Plan Administrator in completing Form 5500/Schedule A.
+Contract Identification/Policy Number: N18154614
+Policy Period: 06/01/2025 - 06/01/2026
+Name of Insurance Company: ACE American Insurance Company
+ACE American Insurance Company Tax ID Number: 95-2371728
+ACE American Insurance Company NAIC Number: 22667
+Approximate Number of Persons Insured: To be Provided by the Plan Administrator
+Name of Agent or Broker Commissions or Fees Paid
+AON CONSULTING INC
+ONE LIBERTY PLAZA, 165 BROADWAY SUITE 3201
+NEW YORK, NY 10006
+$36,935.20
+Total Premium Paid to ACE American Insurance Company: $184,676.00
+""")]
+        values = {field.field_name: field.value for field in extract_ace_schedule_a_fields(pages)}
+        rows = extract_ace_schedule_a_broker_rows(pages)
+
+        self.assertNotIn("1e. Persons Covered (End of Policy Year)", values)
+        self.assertEqual(values["1g. Policy Year Ending Date"], "05/31/2026")
+        self.assertEqual(values["3b. Amount of Commissions"], "36,935.20")
+        self.assertEqual(rows[0].name, "AON CONSULTING INC")
+        self.assertEqual(rows[0].commission_total, "36,935.20")
+
+    def test_mount_sinai_invoice_layout_sums_membership_fees(self):
+        pages = [(1, """2025 Apollo Management Holdings, L.P. Schedule A - Form 5500
+Service Period 1/1/2025 - 1/31/2025 2/1/2025 - 2/28/2025 12/1/2025 - 12/31/2025
+Number of Eligible Employees 1430 1445 1422 1433 1440 1463 1482 1526 1589 1613 1623 0
+Virtual Health Center at Hudson Yards and Navigation Services Membership Fee
+20,600$ 20,600$ 20,600$ 20,600$ 21,218$ 21,218$ 21,218$ 21,218$ 21,218$ 21,218$ 21,218$ - $
+Relationship between Apollo Management Holdings, L.P. and Mount Sinai Solutions, LLC terminated effective December 1, 2025.
+""")]
+        values = {field.field_name: field.value for field in extract_mount_sinai_schedule_a_fields(pages)}
+
+        self.assertEqual(values["1a. Name of Insurance Company"], "MOUNT SINAI SOLUTIONS LLC")
+        self.assertEqual(values["1d. Contract/Policy Number"], "APOLLO")
+        self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "0")
+        self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "230,926")
+
     def test_bank_of_bartlett_transamerica_statement(self):
         pages = [(1, """Transamerica Life Insurance Company
 SCHEDULE 'A' INFORMATION FOR SECTION 125

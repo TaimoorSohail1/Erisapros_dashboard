@@ -86,6 +86,36 @@ class ShareFileRegressionTests(unittest.TestCase):
             target_folder_id="fo-vitco",
         )
 
+    def test_targeted_year_folder_keeps_client_ancestry_in_package_root(self):
+        target = {
+            "Id": "year",
+            "Name": "2025 Filing",
+            "ItemType": "Folder",
+            "Parent": {"Id": "filing"},
+        }
+        ancestors = {
+            "filing": {"Id": "filing", "Name": "5500 Filing", "ItemType": "Folder", "Parent": {"Id": "client"}},
+            "client": {"Id": "client", "Name": "Apollo Global Management TEST", "ItemType": "Folder"},
+        }
+
+        async def get_item(_client, _token, item_id):
+            return ancestors[item_id]
+
+        self.service._get_item = AsyncMock(side_effect=get_item)
+        parts = run_async(self.service._target_folder_path_parts(None, None, target, "2025 Filing"))
+
+        self.assertEqual(parts, ["Apollo Global Management TEST", "5500 Filing", "2025 Filing"])
+        schedule = sharefile_file(
+            "apollo-schedule",
+            "Schedule A.pdf",
+            [*parts, "Schedule A's", "Schedule A.pdf"],
+            DocumentType.SCHEDULE_A,
+        )
+        self.assertEqual(
+            self.service._package_root_key(schedule),
+            "Apollo Global Management TEST > 5500 Filing > 2025 Filing",
+        )
+
     def test_nested_navigation_placeholder_is_not_a_folder(self):
         self.assertFalse(
             self.service._is_folder(

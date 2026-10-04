@@ -417,11 +417,17 @@ class ShareFileService:
                         "synced": 0,
                         "message": "The selected ShareFile item is not a client folder.",
                     }
+                target_path_parts = await self._target_folder_path_parts(
+                    client,
+                    token,
+                    target,
+                    str(target_name),
+                )
                 scan_roots = [
                     self._scan_root(
                         target_folder_id,
                         "Manual targeted ShareFile scan",
-                        [str(target_name)],
+                        target_path_parts,
                     )
                 ]
             if not scan_roots:
@@ -2787,6 +2793,40 @@ class ShareFileService:
             if ancestor.get("id")
         }
         return resolved_path_parts, resolved_folder_ids
+
+    async def _target_folder_path_parts(
+        self,
+        client: httpx.AsyncClient,
+        token: ShareFileOAuthToken,
+        target: dict,
+        target_name: str,
+    ) -> list[str]:
+        """Resolve a targeted scan root to its full ShareFile ancestry.
+
+        Starting a recovery at a year folder used to seed paths with only
+        ``2025 Filing``. That package key collided across clients and allowed
+        indexed Schedule As from another client to be paired with the target
+        worksheet. Targeted scans must retain the client folder in the root.
+        """
+        parent = target.get("Parent") if isinstance(target.get("Parent"), dict) else {}
+        current_id = target.get("ParentId") or target.get("parentId") or parent.get("Id")
+        if not current_id:
+            return self._path_parts_from_item(target, target_name) or [target_name]
+
+        ancestors: list[str] = [target_name]
+        seen: set[str] = set()
+        while current_id and current_id not in seen and len(ancestors) < 25:
+            seen.add(str(current_id))
+            try:
+                folder = await self._get_item(client, token, str(current_id))
+            except Exception:
+                break
+            folder_name = folder.get("Name") or folder.get("FileName") or folder.get("fileName")
+            if folder_name:
+                ancestors.append(str(folder_name))
+            folder_parent = folder.get("Parent") if isinstance(folder.get("Parent"), dict) else {}
+            current_id = folder.get("ParentId") or folder.get("parentId") or folder_parent.get("Id")
+        return list(reversed(ancestors))
 
     def _path_parts_from_item(self, item: dict, name: str) -> list[str]:
         for key in ("Path", "path", "FilePath", "filePath"):

@@ -14,6 +14,7 @@ from app.services.extractor import (
     ExtractionService,
     extract_plan_worksheet_docx_schedule_a_summaries,
     extract_plan_worksheet_schedule_a_summaries,
+    normalize_worksheet_date,
     parse_plan_worksheet_text,
 )
 
@@ -213,6 +214,28 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
         self.assertEqual(by_policy["922556"].coverage, "Basic Life / AD&D")
         self.assertEqual(by_policy["922557"].coverage, "Optional Life / AD&D")
         self.assertEqual(by_policy["922558"].coverage, "STD / LTD")
+
+    def test_native_docx_table_skips_retired_na_period_without_crashing(self):
+        def cell(value: str) -> str:
+            return f"<w:tc><w:p><w:r><w:t>{value}</w:t></w:r></w:p></w:tc>"
+
+        header = "".join(cell(value) for value in ("Benefit", "Carrier", "Policy #", "Begin Policy Year", "End Policy Year"))
+        retired = "".join(cell(value) for value in ("Dental - transitioned", "MetLife", "04094A", "N/A", "N/A"))
+        active = "".join(cell(value) for value in ("Dental", "Delta Dental", "43173", "1/1", "12/31"))
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:body><w:tbl><w:tr>{header}</w:tr><w:tr>{retired}</w:tr><w:tr>{active}</w:tr></w:tbl></w:body>"
+            "</w:document>"
+        )
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("word/document.xml", xml)
+
+        summaries = extract_plan_worksheet_docx_schedule_a_summaries(buffer.getvalue(), default_year="2025")
+
+        self.assertIsNone(normalize_worksheet_date("N/A", "2025", end_of_month=False))
+        self.assertEqual([summary.account_number for summary in summaries], ["43173"])
 
 
 class PlanWorksheetFallbackTests(unittest.IsolatedAsyncioTestCase):
