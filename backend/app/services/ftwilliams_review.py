@@ -127,6 +127,28 @@ def _is_source_less_zero_default(field: ExtractedField) -> bool:
         return False
 
 
+def _source_reports_no_broker_compensation(fields: list[ExtractedField]) -> bool:
+    """Detect an explicit source-level zero for both commissions and fees."""
+    by_rule = {str(field.mapped_rule_key or ""): field for field in fields}
+    name = by_rule.get("schedule_a_part_i_3a_name_of_agent_broker_person")
+    if name and str(name.proposed_value or name.value or "").strip():
+        return False
+
+    def explicit_zero(rule_key: str) -> bool:
+        field = by_rule.get(rule_key)
+        if not field or not (str(field.source_text or "").strip() or field.page is not None):
+            return False
+        text = re.sub(r"[$,\s]", "", str(field.proposed_value or field.value or ""))
+        try:
+            return bool(text) and float(text) == 0
+        except ValueError:
+            return False
+
+    return explicit_zero("schedule_a_part_i_3b_amount_of_commissions") and explicit_zero(
+        "schedule_a_part_i_3c_amount_of_fees"
+    )
+
+
 class FTWilliamsReviewService:
     _SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN = 4
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
@@ -4179,8 +4201,8 @@ class FTWilliamsReviewService:
             )
         )
 
-    @staticmethod
     def _can_finalize_reconciled_noop(
+        self,
         review: FTWilliamsReview,
         *,
         had_active_failure: bool,
@@ -4190,19 +4212,20 @@ class FTWilliamsReviewService:
             (review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500)
             or (review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a)
         )
-        return bool(
-            had_active_failure
-            and not has_outbound_payload
-            and review.current_query_success
-            and review.current_query_complete is not False
-            and review.update_attempted_count > 0
-            and review.update_remaining_count == 0
-            and review.update_verification_attempted
-            and review.update_verification_success is True
-            and (
-                not review.schedule_a_broker_rows
-                or review.schedule_a_broker_match_complete
+        if has_outbound_payload or not review.current_query_success or review.current_query_complete is False:
+            return False
+        if review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete:
+            return False
+        if had_active_failure:
+            return bool(
+                review.update_attempted_count > 0
+                and review.update_remaining_count == 0
+                and review.update_verification_attempted
+                and review.update_verification_success is True
             )
+        return bool(
+            not any(field.changed and field.update_included for field in review.fields)
+            and not self._review_has_broker_updates(review)
         )
 
     async def _record_reconciled_noop_success(
@@ -4577,6 +4600,15 @@ class FTWilliamsReviewService:
     ) -> list[FTWilliamsComparisonField]:
         comparison: list[FTWilliamsComparisonField] = []
         update_field_ids = {id(field) for field in update_fields} if update_fields is not None else None
+        compensation_is_represented_by_checkbox = bool(
+            str(schedule_a_current.get("OverrideCommissionsAndFees") or "").strip() == "1"
+            and _source_reports_no_broker_compensation(fields)
+        )
+        checkbox_represented_rules = {
+            "schedule_a_part_i_3b_amount_of_commissions",
+            "schedule_a_part_i_3c_amount_of_fees",
+            "schedule_a_part_i_3e_organizational_code",
+        }
         for field in sorted(fields, key=lambda item: (str(item.form_type or ""), item.mapped_label or item.source_field_name)):
             if field.priority == FieldPriority.IGNORE:
                 continue
@@ -4674,6 +4706,21 @@ class FTWilliamsReviewService:
             else:
                 decision = FTWFieldDecision.CONFLICT
                 decision_reason = "The extracted and current FT Williams values are different."
+            if (
+                compensation_is_represented_by_checkbox
+                and str(field.mapped_rule_key or "") in checkbox_represented_rules
+                and field.status != ExtractedFieldStatus.EDITED
+            ):
+                changed = False
+                update_included = False
+                update_exclusion_reason = (
+                    "FT Williams' No commissions or fees paid checkbox already represents the sourced zero amounts."
+                )
+                validation_status = "VALID"
+                validation_message = update_exclusion_reason
+                validation_blocking = False
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = update_exclusion_reason
             comparison.append(
                 FTWilliamsComparisonField(
                     field_id=field.id,

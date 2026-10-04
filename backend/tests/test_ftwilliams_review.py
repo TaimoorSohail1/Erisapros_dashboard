@@ -1430,6 +1430,61 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(comparison.decision, "WILL_UPDATE")
         self.assertTrue(comparison.update_included)
 
+    def test_zero_commissions_and_fees_use_existing_ftw_no_compensation_checkbox(self):
+        def field(rule_key: str, label: str, value: str) -> ExtractedField:
+            return ExtractedField(
+                filing_id="filing",
+                source_field_name=label,
+                normalized_field_name=rule_key,
+                mapped_rule_key=rule_key,
+                mapped_label=label,
+                form_type=FormType.SCHEDULE_A,
+                source_document_type=DocumentType.SCHEDULE_A,
+                priority=FieldPriority.HIGH,
+                value=value,
+                proposed_value=value,
+                confidence=0.99,
+                source_text=f"Source reports {label} {value}",
+                page=1,
+            )
+
+        fields = [
+            field("schedule_a_part_i_3b_amount_of_commissions", "3b. Amount of Commissions", "0"),
+            field("schedule_a_part_i_3c_amount_of_fees", "3c. Amount of Fees", "0.00"),
+            field("schedule_a_part_i_3e_organizational_code", "3e. Organizational Code", "3"),
+        ]
+        comparisons = FTWilliamsReviewService()._comparison_fields(
+            fields,
+            {},
+            {"OverrideCommissionsAndFees": "1", "CommPdAmt01": "", "FeesPdAmt01": "", "Code01": ""},
+            update_fields=fields,
+        )
+
+        self.assertTrue(all(item.decision == FTWFieldDecision.NO_CHANGE for item in comparisons))
+        self.assertTrue(all(not item.changed and not item.update_included for item in comparisons))
+        self.assertTrue(all("No commissions or fees paid" in item.decision_reason for item in comparisons))
+
+    def test_fresh_review_with_no_outbound_changes_finalizes_as_noop(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        review = FTWilliamsReview(
+            filing_id="filing",
+            current_query_success=True,
+            current_query_complete=True,
+            update_xml_5500="",
+            update_xml_schedule_a="",
+            schedule_a_broker_match_complete=True,
+            fields=[
+                FTWilliamsComparisonField(
+                    label="Already matched",
+                    decision=FTWFieldDecision.NO_CHANGE,
+                    changed=False,
+                    update_included=True,
+                )
+            ],
+        )
+
+        self.assertTrue(service._can_finalize_reconciled_noop(review, had_active_failure=False))
+
     def test_review_summary_counts_only_conflicts_as_decisions(self):
         review = FTWilliamsReview(
             filing_id="filing",
