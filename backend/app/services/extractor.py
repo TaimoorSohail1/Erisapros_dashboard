@@ -355,12 +355,24 @@ class ExtractionService:
             result.schedule_a_worksheet_summaries = aultcare_summaries
             result.schedule_a_broker_rows = extract_aultcare_broker_rows(file_bytes, file_name)
         settings = get_settings()
-        return apply_schedule_a_pipeline(
+        final_result = apply_schedule_a_pipeline(
             result,
             authoritative=bool(getattr(settings, "schedule_a_canonical_validation_enabled", False)),
             shadow=bool(getattr(settings, "schedule_a_canonical_validation_shadow_enabled", True)),
             rules=self.field_rules,
         )
+        result_raw = final_result.raw if isinstance(final_result.raw, dict) else {}
+        if result_raw.get("authoritative_visible_overlay"):
+            visible_layout_fields = extract_filled_irs_schedule_a_fields(semantic_pages)
+            if visible_layout_fields:
+                final_result.fields = [
+                    field
+                    for field in final_result.fields
+                    if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS
+                ]
+                final_result.fields.extend(visible_layout_fields)
+                final_result.fields = select_best_schedule_a_fields(final_result.fields)
+        return final_result
 
     async def _extract_schedule_a_unresolved(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
         settings = get_settings()
@@ -3956,7 +3968,14 @@ def extract_filled_irs_schedule_a_fields(
         if re.search(r"No\s+Commission\s+or\s+Broker\s+Fees\s+Paid", text, re.IGNORECASE):
             commission = commission or "0"
             fee = fee or "0"
-        premium = extract_nonexperience_total_premium_from_text(text)
+        premium = extract_nonexperience_total_premium_from_text(text) or regex_first(
+            text,
+            [
+                r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carri\w*"
+                r"\s*(?:\|\s*)?10a\s*(?:\|\s*)?([\d,]+(?:\.\d{1,2})?)",
+            ],
+            flags=re.IGNORECASE,
+        )
         candidates.extend(
             [
                 ("3b. Amount of Commissions", money_value(commission or "")),

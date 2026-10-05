@@ -104,7 +104,7 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
             Tuned Care 853889665 525120 8,625 01/01/2025 12/31/2025
             Total amount of commissions paid 0 Total amount of fees paid 0
             10 Nonexperience-rated contracts
-            Total premiums or subscription charges paid to carrier 98,796.44
+            Total premiums or subscription charges paid to Carriles | 10a | 98,796.44
         """)]
         extracted = values(extract_filled_irs_schedule_a_fields(page_texts))
         self.assertEqual(extracted["1a. Name of Insurance Company"], "Tuned Care")
@@ -124,7 +124,7 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
             2 Insurance fee and commission information
             Total amount of commissions paid $0 Total amount of fees paid $0
             10 Nonexperience-rated contracts
-            Total premiums or subscription charges paid to carrier 98,796.44
+            Total premiums or subscription charges paid to Carriles | 10a | 98,796.44
         """)]
 
         extracted = values(extract_filled_irs_schedule_a_fields(page_texts))
@@ -160,6 +160,7 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(extracted["1e. Persons Covered (End of Policy Year)"], "8625")
         self.assertEqual(extracted["3b. Amount of Commissions"], "0")
         self.assertEqual(extracted["3c. Amount of Fees"], "0")
+        self.assertEqual(extracted["10a. Total premiums or subscription charges paid to carrier"], "98,796.44")
         self.assertNotIn("3a. Name of Agent/Broker/Person", extracted)
         self.assertNotIn(
             "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
@@ -182,8 +183,28 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         service = ExtractionService()
         unresolved = NormalizedExtractionResult(
             provider="local OCR",
-            fields=extract_filled_irs_schedule_a_fields(visible_overlay),
-            raw={"local_ocr_pages": [{"page": 1, "text": visible_overlay[0][1]}]},
+            fields=[
+                *extract_filled_irs_schedule_a_fields(visible_overlay),
+                NormalizedExtractionField(
+                    field_name="9a. Premiums: (1) Amount Received",
+                    value="(1)",
+                    confidence=0.99,
+                    source="hidden text layer",
+                ),
+                NormalizedExtractionField(
+                    field_name=(
+                        "11. Did the insurance company fail to provide any information necessary "
+                        "to complete Schedule A?"
+                    ),
+                    value="Yes",
+                    confidence=0.99,
+                    source="hidden text layer",
+                ),
+            ],
+            raw={
+                "local_ocr_pages": [{"page": 1, "text": visible_overlay[0][1]}],
+                "authoritative_visible_overlay": True,
+            },
         )
         settings = SimpleNamespace(
             schedule_a_canonical_validation_enabled=False,
@@ -198,6 +219,14 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         ):
             result = asyncio.run(service.extract_schedule_a(b"%PDF flattened", "Tuned.pdf"))
         self.assertEqual(values(result.fields)["1a. Name of Insurance Company"], "Tuned Care")
+        self.assertNotIn(
+            "9a. Premiums: (1) Amount Received",
+            values(result.fields),
+        )
+        self.assertNotIn(
+            "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
+            values(result.fields),
+        )
         self.assertNotIn("UNFILLED_SCHEDULE_A_TEMPLATE", result.classification_signals)
 
     def test_clean_blank_irs_layer_requires_visual_overlay(self):
