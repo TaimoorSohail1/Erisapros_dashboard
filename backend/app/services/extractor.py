@@ -3120,7 +3120,7 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]
             with open(source, "wb") as handle:
                 handle.write(file_bytes)
             subprocess.run(
-                [pdftoppm, "-jpeg", "-r", "300", source, prefix],
+                [pdftoppm, "-jpeg", "-r", "400", source, prefix],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -3146,12 +3146,12 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]
                 )
                 page_text = normalize_ocr_text(completed.stdout)
                 pages.append((index, page_text))
-            # MetLife's standard Schedule A is a sparse, multi-page form with
-            # independent table columns. PSM 6 drops cells on the later pages,
-            # so once the packet is positively identified, re-run every page
-            # in sparse-text mode and keep the complete packet together.
+            # Official Schedule A forms use independent table cells. PSM 6 can
+            # drop an entire filled value row (including EIN/NAIC/dates), so
+            # re-run standard forms in column-aware mode and keep the complete
+            # packet together. This also covers sparse MetLife form packets.
             packet_text = "\n".join(text for _, text in pages).upper()
-            if "METROPOLITAN LIFE INSURANCE COMPANY" in packet_text and "SCHEDULE A" in packet_text:
+            if "SCHEDULE A" in packet_text and "FORM 5500" in packet_text:
                 sparse_pages: list[tuple[int, str]] = []
                 for index, image_name in enumerate(images, start=1):
                     sparse = subprocess.run(
@@ -3953,6 +3953,9 @@ def extract_filled_irs_schedule_a_fields(
         ]
         commission = regex_first(text, [r"Total\s+amount\s+of\s+commissions\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
         fee = regex_first(text, [r"Total\s+amount\s+of\s+fees\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
+        if re.search(r"No\s+Commission\s+or\s+Broker\s+Fees\s+Paid", text, re.IGNORECASE):
+            commission = commission or "0"
+            fee = fee or "0"
         premium = extract_nonexperience_total_premium_from_text(text)
         candidates.extend(
             [
@@ -5412,6 +5415,22 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
         authoritative_names = {field.field_name for field in metlife_fields}
         fields = [field for field in fields if field.field_name not in authoritative_names]
         fields.extend(metlife_fields)
+    # Re-apply NFP's positively identified layouts after every broad parser.
+    # Several broad passes above intentionally run late and can otherwise
+    # reintroduce blank-form labels after the authoritative replacement.
+    for layout_fields in (
+        extract_filled_irs_schedule_a_fields(page_texts),
+        extract_ameritas_schedule_a_fields(page_texts),
+        extract_curalinc_schedule_a_fields(page_texts),
+        extract_continental_american_schedule_a_fields(page_texts),
+    ):
+        if layout_fields:
+            fields = [
+                field
+                for field in fields
+                if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS
+            ]
+            fields.extend(layout_fields)
     return select_best_schedule_a_fields(
         dedupe_fields([
             field

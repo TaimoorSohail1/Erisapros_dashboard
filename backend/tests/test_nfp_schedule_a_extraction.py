@@ -133,6 +133,39 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(extracted["1b. Insurance Carrier EIN"], "85-3889665")
         self.assertEqual(extracted["1e. Persons Covered (End of Policy Year)"], "8625")
 
+    def test_filled_irs_ocr_layout_owns_blank_form_fields_and_zero_compensation(self):
+        page_texts = [(1, """
+            SCHEDULE A (Form 5500) Insurance Information
+            1 Coverage Information:
+            (a) Name of insurance carrier
+            Tuned Care
+            (c) NAIC (d) Contract or (e) Approximate number of Policy or contract year
+            (b) EIN code identification number persons covered at end of policy year (f) From (g) To
+            853889665 525120 8,625 1/1/2025 12/31/2025
+            2 Insurance fee and commission information
+            (a) Total amount of commissions paid (b) Total amount of fees paid
+            $0 $0
+            3 Persons receiving commissions and fees
+            Not Applicable - No Commission or Broker Fees Paid
+            10 Nonexperience-rated contracts:
+            Total premiums or subscription charges paid to carrier 98,796.44
+            11 Did the insurance company fail to provide information? Yes No
+        """)]
+
+        extracted = values(_extract_fields_from_pages(page_texts))
+
+        self.assertEqual(extracted["1a. Name of Insurance Company"], "Tuned Care")
+        self.assertEqual(extracted["1b. Insurance Carrier EIN"], "85-3889665")
+        self.assertEqual(extracted["1c. NAIC Code"], "525120")
+        self.assertEqual(extracted["1e. Persons Covered (End of Policy Year)"], "8625")
+        self.assertEqual(extracted["3b. Amount of Commissions"], "0")
+        self.assertEqual(extracted["3c. Amount of Fees"], "0")
+        self.assertNotIn("3a. Name of Agent/Broker/Person", extracted)
+        self.assertNotIn(
+            "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
+            extracted,
+        )
+
     def test_hidden_sample_layer_uses_visible_ocr_overlay(self):
         hidden_template = [(1, """
             SCHEDULE A FORM 5500 INSURANCE INFORMATION
