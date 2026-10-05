@@ -3212,11 +3212,11 @@ def _semantic_page_texts(
     """Return the strongest page-preserving source available for semantics."""
     name = str(file_name or "").lower()
     if name.endswith(".pdf"):
-        local_ocr_pages = (
-            result.raw.get("local_ocr_pages")
-            if isinstance(result.raw, dict)
-            else None
-        )
+        local_ocr_pages = None
+        if isinstance(result.raw, dict):
+            local_ocr_pages = result.raw.get("local_ocr_pages")
+            if not local_ocr_pages and result.raw.get("authoritative_visible_overlay"):
+                local_ocr_pages = result.raw.get("ocr_pages")
         if isinstance(local_ocr_pages, list):
             pages = [
                 (int(item.get("page") or 1), normalize_ocr_text(item.get("text") or ""))
@@ -3909,6 +3909,28 @@ def extract_filled_irs_schedule_a_fields(
 ) -> list[NormalizedExtractionField]:
     """Parse the visible OCR row of a filled IRS Schedule A with a blank contract."""
     fields: list[NormalizedExtractionField] = []
+    document_text = "\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    document_commission = regex_first(
+        document_text,
+        [r"Total\s+amount\s+of\s+commissions\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"],
+        flags=re.IGNORECASE,
+    )
+    document_fee = regex_first(
+        document_text,
+        [r"Total\s+amount\s+of\s+fees\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"],
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"No\s+Commission\s+or\s+Broker\s+Fees\s+Paid", document_text, re.IGNORECASE):
+        document_commission = document_commission or "0"
+        document_fee = document_fee or "0"
+    document_premium = regex_first(
+        document_text,
+        [
+            r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carri\w*"
+            r"\s*(?:\|\s*)?10a\s*(?:\|\s*)?([\d,]+(?:\.\d{1,2})?)",
+        ],
+        flags=re.IGNORECASE,
+    ) or extract_nonexperience_total_premium_from_text(document_text)
     for page, raw_text in page_texts:
         text = normalize_ocr_text(raw_text)
         if not all(token in text.upper() for token in ("SCHEDULE A", "FORM 5500", "EIN", "NAIC")):
@@ -3963,19 +3985,9 @@ def extract_filled_irs_schedule_a_fields(
             ("1f. Policy Year Beginning Date", _normalize_schedule_a_source_date(identity.group("from"))),
             ("1g. Policy Year Ending Date", _normalize_schedule_a_source_date(identity.group("to"))),
         ]
-        commission = regex_first(text, [r"Total\s+amount\s+of\s+commissions\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
-        fee = regex_first(text, [r"Total\s+amount\s+of\s+fees\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
-        if re.search(r"No\s+Commission\s+or\s+Broker\s+Fees\s+Paid", text, re.IGNORECASE):
-            commission = commission or "0"
-            fee = fee or "0"
-        premium = extract_nonexperience_total_premium_from_text(text) or regex_first(
-            text,
-            [
-                r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carri\w*"
-                r"\s*(?:\|\s*)?10a\s*(?:\|\s*)?([\d,]+(?:\.\d{1,2})?)",
-            ],
-            flags=re.IGNORECASE,
-        )
+        commission = document_commission
+        fee = document_fee
+        premium = document_premium
         candidates.extend(
             [
                 ("3b. Amount of Commissions", money_value(commission or "")),

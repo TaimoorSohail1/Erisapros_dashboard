@@ -177,8 +177,13 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
             SCHEDULE A (Form 5500) Insurance Information
             (a) Name of insurance company (b) EIN (c) NAIC code
             Tuned Care 85-3889665 525120 8625 01/01/2025 12/31/2025
-            10 Nonexperience-rated contracts
-            Total premiums or subscription charges paid to carrier 98,796.44
+        """), (4, """
+            Schedule A (Form 5500) 2025 Page 4
+            9 Experience-rated contracts:
+            a Premiums: (1) Amount received 9a(1)
+            10 Nonexperience-rated contracts:
+            Total premiums or subscription charges paid to carrier 10a 98,796.44
+            11 Did the insurance company fail to provide information? Yes No
         """)]
         service = ExtractionService()
         unresolved = NormalizedExtractionResult(
@@ -202,7 +207,10 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
                 ),
             ],
             raw={
-                "local_ocr_pages": [{"page": 1, "text": visible_overlay[0][1]}],
+                "ocr_pages": [
+                    {"page": page, "text": text}
+                    for page, text in visible_overlay
+                ],
                 "authoritative_visible_overlay": True,
             },
         )
@@ -218,14 +226,19 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
             patch("app.services.extractor.get_settings", return_value=settings),
         ):
             result = asyncio.run(service.extract_schedule_a(b"%PDF flattened", "Tuned.pdf"))
-        self.assertEqual(values(result.fields)["1a. Name of Insurance Company"], "Tuned Care")
+        result_values = values(result.fields)
+        self.assertEqual(result_values["1a. Name of Insurance Company"], "Tuned Care")
+        self.assertEqual(
+            result_values["10a. Total premiums or subscription charges paid to carrier"],
+            "98,796.44",
+        )
         self.assertNotIn(
             "9a. Premiums: (1) Amount Received",
-            values(result.fields),
+            result_values,
         )
         self.assertNotIn(
             "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
-            values(result.fields),
+            result_values,
         )
         self.assertNotIn("UNFILLED_SCHEDULE_A_TEMPLATE", result.classification_signals)
 
