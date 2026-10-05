@@ -387,6 +387,18 @@ def values_meaningfully_different(
                     "johnhancocklifeinsurance",
                     "johnhancocklifeinsurancecompanyusa",
                 },
+                {
+                    "bluecrossblueshieldofvermont",
+                    "bluecrossandblueshieldofvermont",
+                },
+                {
+                    "ameritaslifeinsurance",
+                    "ameritaslifeinsurancecorpofnewyork",
+                },
+                {
+                    "thestandardinsurance",
+                    "standardlifeinscoofny",
+                },
             )
             if any(
                 current_carrier in aliases and proposed_carrier in aliases
@@ -422,7 +434,7 @@ def values_meaningfully_different(
 
 def _normalize_carrier_name_compare(value: str) -> str:
     """Ignore punctuation and terminal legal suffixes in carrier comparisons."""
-    words = re.findall(r"[a-z0-9]+", value.casefold())
+    words = [word for word in re.findall(r"[a-z0-9]+", value.casefold()) if word != "and"]
     legal_suffixes = {
         "co",
         "company",

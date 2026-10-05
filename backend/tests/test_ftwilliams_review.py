@@ -1139,6 +1139,43 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_compare_treats_verified_nfp_carrier_aliases_as_equal(self):
+        aliases = (
+            ("BLUECROSS BLUESHIELD OF VERMONT", "Blue Cross and Blue Shield of Vermont"),
+            ("AMERITAS LIFE INSURANCE", "Ameritas Life Insurance Corp. of New York"),
+            ("THE STANDARD INSURANCE COMPANY", "Standard Life Ins Co of NY"),
+        )
+        for current, extracted in aliases:
+            with self.subTest(current=current, extracted=extracted):
+                self.assertFalse(
+                    values_meaningfully_different(current, extracted, tag="InsCarrierName")
+                )
+
+    def test_existing_equivalent_carrier_is_not_blocked_by_send_format_rule(self):
+        field = ExtractedField(
+            filing_id="filing",
+            source_field_name="1a. Name of Insurance Company",
+            normalized_field_name="carrier_name",
+            mapped_rule_key="schedule_a_part_i_1a_name_of_insurance_company",
+            mapped_label="1a. Name of Insurance Company",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+            proposed_value="PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+        )
+
+        comparison = FTWilliamsReviewService()._comparison_fields(
+            [field],
+            {},
+            {"InsCarrierName": "PRE-PAID LEGAL SERVICES INC DBA LEGALSHIELD"},
+            update_fields=[field],
+        )[0]
+
+        self.assertEqual(comparison.decision, FTWFieldDecision.NO_CHANGE)
+        self.assertEqual(comparison.validation_status, "VALID")
+        self.assertFalse(comparison.validation_blocking)
+
     def test_compare_treats_aflac_trade_name_and_new_york_legal_name_as_equal(self):
         self.assertFalse(
             values_meaningfully_different(

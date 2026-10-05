@@ -21,6 +21,7 @@ from app.services.extractor import (
     extract_filled_irs_schedule_a_fields,
     has_blank_schedule_a_form_layer,
     extract_schedule_a_acroform_data,
+    prefer_authoritative_insured_welfare_extract_fields,
     remove_inapplicable_experience_rated_fields,
     supplement_schedule_a_result_with_local,
 )
@@ -96,6 +97,55 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
             "PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
         )
         self.assertNotIn("9a. Premiums: (1) Amount Received", merged)
+
+    def test_acroform_values_are_restored_after_semantic_enrichment(self):
+        hidden_template = [(1, """
+            SCHEDULE A FORM 5500 INSURANCE INFORMATION
+            ABCDEFGHI 123456789 012345678 YYYY-MM-DD YYYY-MM-DD
+            9 Experience-rated contracts: Premiums (1) Amount received
+        """)]
+        acroform_fields, acroform_brokers = extract_schedule_a_acroform_data(
+            {
+                "insCarrierName": "PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+                "insCarrierEIN": "73-1016728",
+                "insCarrierNAICCode": "00000",
+                "insContractNum": "203812",
+                "insPrsnCoveredEoyCnt": "1252",
+                "insPolicyFromDate": "01.01.2025",
+                "insPolicyToDate": "12.31.2025",
+                "wlfrTotChargesPaidAmt": "195,256.06",
+            }
+        )
+        unresolved = NormalizedExtractionResult(
+            provider="AcroForm",
+            fields=[
+                *acroform_fields,
+                NormalizedExtractionField(
+                    field_name="9a. Premiums: (1) Amount Received",
+                    value="(1)",
+                    confidence=0.99,
+                ),
+            ],
+            raw={"authoritative_visible_overlay": True},
+            schedule_a_broker_rows=acroform_brokers,
+        )
+        service = ExtractionService()
+        settings = SimpleNamespace(
+            schedule_a_canonical_validation_enabled=False,
+            schedule_a_canonical_validation_shadow_enabled=False,
+        )
+        with (
+            patch("app.services.extractor.extract_document_text_pages", return_value=hidden_template),
+            patch("app.services.extractor.extract_schedule_a_acroform", return_value=(acroform_fields, acroform_brokers)),
+            patch("app.services.extractor.extract_pdf_layout_text_pages", return_value=hidden_template),
+            patch.object(service, "_extract_schedule_a_unresolved", AsyncMock(return_value=unresolved)),
+            patch("app.services.extractor.get_settings", return_value=settings),
+        ):
+            result = asyncio.run(service.extract_schedule_a(b"%PDF acroform", "LegalShield.pdf"))
+
+        restored = values(result.fields)
+        self.assertEqual(restored["10a. Total premiums or subscription charges paid to carrier"], "195,256.06")
+        self.assertNotIn("9a. Premiums: (1) Amount Received", restored)
 
     def test_filled_irs_ocr_layout_does_not_return_labels_as_values(self):
         page_texts = [(1, """
@@ -332,6 +382,7 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
     def test_bcbs_extract_supports_unhyphenated_ein_and_named_dates(self):
         pages = [(1, """
             EXTRACT FROM SCHEDULE A (Form 5500)
+            INSURED WELFARE PLAN DATA
             a. Name of insurance carrier: Blue Cross and Blue Shield of Vermont
             b. Employer Identification Number: 030277307
             c. NAIC Code: 00053295
@@ -347,7 +398,18 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(extracted["1b. Insurance Carrier EIN"], "03-0277307")
         self.assertEqual(extracted["1f. Policy Year Beginning Date"], "01/01/2025")
         self.assertEqual(extracted["1g. Policy Year Ending Date"], "12/31/2025")
+        self.assertEqual(extracted["10a. Total premiums or subscription charges paid to carrier"], "1,096,314")
         self.assertNotIn("3d. Purpose", extracted)
+
+        corrupted = [
+            NormalizedExtractionField(
+                field_name="10a. Total premiums or subscription charges paid to carrier",
+                value="1",
+                confidence=0.99,
+            )
+        ]
+        restored = values(prefer_authoritative_insured_welfare_extract_fields(corrupted, pages))
+        self.assertEqual(restored["10a. Total premiums or subscription charges paid to carrier"], "1,096,314")
 
     def test_zero_experience_section_is_removed_when_line_10_has_premium(self):
         result = NormalizedExtractionResult(

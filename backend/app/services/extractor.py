@@ -238,6 +238,10 @@ class ExtractionService:
             result.fields = prefer_authoritative_aig_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_aflac_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_carrier_statement_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_insured_welfare_extract_fields(
+                result.fields,
+                authoritative_pages,
+            )
             result.fields = prefer_authoritative_colonial_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_prudential_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_cigna_summary_fields(result.fields, authoritative_pages)
@@ -364,13 +368,15 @@ class ExtractionService:
         result_raw = final_result.raw if isinstance(final_result.raw, dict) else {}
         if result_raw.get("authoritative_visible_overlay"):
             visible_layout_fields = extract_filled_irs_schedule_a_fields(semantic_pages)
-            if visible_layout_fields:
+            acroform_layout_fields, _ = extract_schedule_a_acroform(file_bytes)
+            authoritative_layout_fields = visible_layout_fields or acroform_layout_fields
+            if authoritative_layout_fields:
                 final_result.fields = [
                     field
                     for field in final_result.fields
                     if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS
                 ]
-                final_result.fields.extend(visible_layout_fields)
+                final_result.fields.extend(authoritative_layout_fields)
                 final_result.fields = select_best_schedule_a_fields(final_result.fields)
         return final_result
 
@@ -3516,6 +3522,34 @@ def prefer_authoritative_carrier_statement_fields(
         fields = [field for field in fields if field.field_name not in owned]
         fields.extend(field.model_copy(update={"candidate_values": [field.value]}) for field in authoritative)
     return fields
+
+
+def prefer_authoritative_insured_welfare_extract_fields(
+    fields: list[NormalizedExtractionField],
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Keep the labelled values on a carrier's Schedule A extract.
+
+    These reports contain dotted leaders and section numbers around the line
+    10 premium.  The generic semantic pass can mistake the line number for the
+    premium even though the labelled local parser has the exact value.
+    """
+    text = "\n".join(value for _, value in page_texts)
+    upper = text.upper()
+    if "EXTRACT  FROM  SCHEDULE  A" not in upper and "EXTRACT FROM SCHEDULE A" not in upper:
+        return fields
+    if "INSURED WELFARE PLAN DATA" not in upper:
+        return fields
+    authoritative = _extract_fields_from_pages(page_texts)
+    if not authoritative:
+        return fields
+    owned = {field.field_name for field in authoritative}
+    restored = [field for field in fields if field.field_name not in owned]
+    restored.extend(
+        field.model_copy(update={"candidate_values": [field.value]})
+        for field in authoritative
+    )
+    return select_best_schedule_a_fields(restored)
 
 
 def prefer_authoritative_prudential_fields(

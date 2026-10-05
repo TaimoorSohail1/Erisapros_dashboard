@@ -4672,6 +4672,19 @@ class FTWilliamsReviewService:
                 validation_expected_format = None
                 validation_normalized_value = None
                 validation_blocking = False
+            if (
+                tag == "InsCarrierName"
+                and current_value.strip()
+                and extracted_proposed_value.strip()
+                and not changed
+            ):
+                # A rule may reject trade-name or DBA wording for a value that
+                # FT Williams already stores as the same carrier.  Since no
+                # write is needed, that formatting rule must not manufacture a
+                # blocking decision.
+                validation_status = "VALID"
+                validation_message = None
+                validation_blocking = False
             update_included = bool(
                 tag
                 and extracted_proposed_value.strip()
