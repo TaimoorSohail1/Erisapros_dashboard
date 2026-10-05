@@ -4704,15 +4704,15 @@ class FTWilliamsReviewService:
                 else:
                     decision = FTWFieldDecision.SKIP_EMPTY
                     decision_reason = "Extraction and FT Williams are both blank, so the field will be skipped."
+            elif not changed:
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = "The extracted and current FT Williams values match."
             elif validation_status == "UNSUPPORTED" or not update_included:
                 decision = FTWFieldDecision.BLOCKED
                 decision_reason = validation_message or update_exclusion_reason or "The field is not safe to update."
             elif not current_value.strip():
                 decision = FTWFieldDecision.WILL_UPDATE
                 decision_reason = "FT Williams is blank and the extracted value is valid."
-            elif not changed:
-                decision = FTWFieldDecision.NO_CHANGE
-                decision_reason = "The extracted and current FT Williams values match."
             elif field.status == ExtractedFieldStatus.EDITED:
                 decision = FTWFieldDecision.WILL_UPDATE
                 decision_reason = "A reviewer confirmed the proposed FT Williams value."

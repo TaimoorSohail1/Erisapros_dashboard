@@ -1169,7 +1169,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             [field],
             {},
             {"InsCarrierName": "PRE-PAID LEGAL SERVICES INC DBA LEGALSHIELD"},
-            update_fields=[field],
+            # Unchanged fields are not part of the outbound write list.  They
+            # must still display as NO_CHANGE rather than a false BLOCKED row.
+            update_fields=[],
         )[0]
 
         self.assertEqual(comparison.decision, FTWFieldDecision.NO_CHANGE)
