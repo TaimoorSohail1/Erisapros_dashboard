@@ -123,6 +123,7 @@ from app.services.extractor import (
     local_schedule_a_pdf_result,
     parse_schedule_a_text,
     schedule_a_broker_compensation_fields,
+    select_best_schedule_a_fields,
     supplement_schedule_a_result_with_local,
 )
 from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
@@ -2103,6 +2104,26 @@ AD&D 592 | Base Commissions
         )
 
         self.assertEqual(merged, [])
+
+    def test_numeric_broker_name_is_rejected_but_fee_is_preserved(self):
+        selected = select_best_schedule_a_fields(
+            [
+                NormalizedExtractionField(
+                    field_name="3a. Name of Agent/Broker/Person",
+                    value="384.40",
+                    confidence=0.99,
+                ),
+                NormalizedExtractionField(
+                    field_name="9c(1)(B). Administrative service or other fees",
+                    value="384.40",
+                    confidence=0.99,
+                ),
+            ]
+        )
+
+        values = {field.field_name: field.value for field in selected}
+        self.assertNotIn("3a. Name of Agent/Broker/Person", values)
+        self.assertEqual(values["9c(1)(B). Administrative service or other fees"], "384.40")
 
     def test_authoritative_local_broker_table_replaces_provider_rows(self):
         provider = NormalizedExtractionResult(

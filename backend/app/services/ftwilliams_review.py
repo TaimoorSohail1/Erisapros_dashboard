@@ -4590,6 +4590,15 @@ class FTWilliamsReviewService:
             for field in review.fields or []
         )
 
+    @staticmethod
+    def _invalid_current_ftw_value(tag: str | None, value: str) -> bool:
+        """Recognize a known table heading that can never be carrier identity."""
+        if tag != "InsCarrierName":
+            return False
+        normalized = re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+        header_tokens = {"EIN", "INSURANCE", "CARRIER", "NAIC", "CODE", "FROM", "TO"}
+        return header_tokens.issubset(set(normalized.split()))
+
     def _comparison_fields(
         self,
         fields: list[ExtractedField],
@@ -4616,6 +4625,7 @@ class FTWilliamsReviewService:
             update_tag = resolve_ftw_update_tag(field)
             current_values = form_5500_current if field.form_type == FormType.FORM_5500 else schedule_a_current
             current_value = resolve_ftw_current_value(field, current_values)
+            invalid_current_value = self._invalid_current_ftw_value(tag, current_value)
             source_less_zero_default = _is_source_less_zero_default(field)
             extracted_proposed_value = "" if source_less_zero_default else str(field.proposed_value or "")
             # A blank extraction must never visually suggest that an existing FTW
@@ -4710,9 +4720,14 @@ class FTWilliamsReviewService:
             elif validation_status == "UNSUPPORTED" or not update_included:
                 decision = FTWFieldDecision.BLOCKED
                 decision_reason = validation_message or update_exclusion_reason or "The field is not safe to update."
-            elif not current_value.strip():
+            elif not current_value.strip() or invalid_current_value:
                 decision = FTWFieldDecision.WILL_UPDATE
-                decision_reason = "FT Williams is blank and the extracted value is valid."
+                decision_reason = (
+                    "The current FT Williams carrier is an invalid document header and will be replaced "
+                    "with the valid extracted carrier."
+                    if invalid_current_value
+                    else "FT Williams is blank and the extracted value is valid."
+                )
             elif field.status == ExtractedFieldStatus.EDITED:
                 decision = FTWFieldDecision.WILL_UPDATE
                 decision_reason = "A reviewer confirmed the proposed FT Williams value."

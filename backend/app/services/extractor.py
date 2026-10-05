@@ -1518,6 +1518,10 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
             or is_obvious_template_placeholder(field.value)
             or _is_column_heading_broker_name(field)
             or is_layout_label_text(field.value)
+            or (
+                field.field_name == "3a. Name of Agent/Broker/Person"
+                and not is_probable_person_or_entity_name(field.value)
+            )
         ):
             continue
         key = field.field_name.strip().lower()

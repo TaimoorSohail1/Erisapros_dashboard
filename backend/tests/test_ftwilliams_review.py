@@ -1089,6 +1089,25 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_invalid_ftw_carrier_header_is_repaired_without_false_conflict(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "SUN LIFE ASSURANCE COMPANY OF CANADA",
+        )
+        comparison = service._comparison_fields(
+            [carrier],
+            {},
+            {"InsCarrierName": "EIN (INSURANCE CARRIER) NAIC CODE FROM TO"},
+            update_fields=[carrier],
+        )
+
+        self.assertEqual(comparison[0].decision, FTWFieldDecision.WILL_UPDATE)
+        self.assertTrue(comparison[0].update_included)
+        self.assertFalse(comparison[0].validation_blocking)
+        self.assertIn("invalid document header", comparison[0].decision_reason)
+
     def test_plan_worksheet_identity_keeps_more_complete_schedule_a_carrier_name(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         policy = self._schedule_identity_field(
