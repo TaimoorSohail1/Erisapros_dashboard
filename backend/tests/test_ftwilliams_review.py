@@ -1130,6 +1130,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_compare_ignores_terminal_carrier_legal_suffix(self):
+        self.assertFalse(
+            values_meaningfully_different(
+                "Kaiser Foundation Health Plan",
+                "Kaiser Foundation Health Plan, Inc.",
+                tag="InsCarrierName",
+            )
+        )
+
     def test_compare_treats_aflac_trade_name_and_new_york_legal_name_as_equal(self):
         self.assertFalse(
             values_meaningfully_different(

@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import unquote_plus
 import zipfile
@@ -81,6 +82,24 @@ SCHEDULE_A_PREFER_PDF_TEXT_FIELDS = {
     "3d. Purpose",
     "3e. Organizational Code",
     "10a. Total premiums or subscription charges paid to carrier",
+}
+
+SCHEDULE_A_LAYOUT_OWNED_FIELDS = {
+    "1a. Name of Insurance Company",
+    "1b. Insurance Carrier EIN",
+    "1c. NAIC Code",
+    "1d. Contract/Policy Number",
+    "1e. Persons Covered (End of Policy Year)",
+    "1f. Policy Year Beginning Date",
+    "1g. Policy Year Ending Date",
+    "3a. Name of Agent/Broker/Person",
+    "3b. Amount of Commissions",
+    "3c. Amount of Fees",
+    "3d. Purpose",
+    "3e. Organizational Code",
+    "10a. Total premiums or subscription charges paid to carrier",
+    "11. Did the insurance company fail to provide any information necessary to complete Schedule A?",
+    *SCHEDULE_A_EXPERIENCE_RATED_FIELDS,
 }
 
 
@@ -157,22 +176,33 @@ class ExtractionService:
 
     async def extract_schedule_a(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
         template_pages = extract_document_text_pages(file_bytes, file_name)
-        if is_unfilled_schedule_a_template(template_pages):
-            # Do not run customer defaults or semantic enrichment here: even a
-            # harmless default would make a blank form look partially filled.
-            return NormalizedExtractionResult(
-                provider="Unfilled Schedule A template - manual review required",
-                fields=[],
-                raw={
-                    "file_name": file_name,
-                    "source": "document_quality_preflight",
-                    "manual_review_required": True,
-                    "document_quality_issue": (
-                        "The Schedule A is an unfilled IRS template containing sample placeholders."
-                    ),
-                },
-                classification_signals=["UNFILLED_SCHEDULE_A_TEMPLATE"],
-            )
+        if has_blank_schedule_a_form_layer(template_pages):
+            acroform_fields, _ = extract_schedule_a_acroform(file_bytes)
+            visible_pages = []
+            if not acroform_fields and file_name.lower().endswith(".pdf"):
+                visible_pages = extract_image_only_pdf_ocr_pages(file_bytes)
+            if acroform_fields or has_completed_schedule_a_overlay(visible_pages):
+                # A completed PDF can preserve the official sample layer under
+                # either AcroForm values or a flattened signature/appearance
+                # layer.  Continue into the real extractor when visible data
+                # proves the form is filled.
+                template_pages = visible_pages or template_pages
+            else:
+                # Do not run customer defaults or semantic enrichment here: even a
+                # harmless default would make a blank form look partially filled.
+                return NormalizedExtractionResult(
+                    provider="Unfilled Schedule A template - manual review required",
+                    fields=[],
+                    raw={
+                        "file_name": file_name,
+                        "source": "document_quality_preflight",
+                        "manual_review_required": True,
+                        "document_quality_issue": (
+                            "The Schedule A is an unfilled IRS template containing sample placeholders."
+                        ),
+                    },
+                    classification_signals=["UNFILLED_SCHEDULE_A_TEMPLATE"],
+                )
         # This workbook layout is deterministic and complete.  Resolve it
         # before the remote extractor so a recognized NYL statement does not
         # wait for (or get weakened by) an unrelated OCR timeout.
@@ -1039,8 +1069,17 @@ def supplement_schedule_a_result_with_local(
     local_result: NormalizedExtractionResult,
 ) -> NormalizedExtractionResult:
     """Guarantee deterministic Schedule A values survive a partial AI response."""
-    result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
     local_raw = local_result.raw if isinstance(local_result.raw, dict) else {}
+    if local_raw.get("authoritative_visible_overlay"):
+        # A completed AcroForm or flattened visible overlay can retain a hidden
+        # IRS sample layer.  Values from that layer are not candidates: remove
+        # every layout-owned AI value before merging the visible source truth.
+        result.fields = [
+            field
+            for field in result.fields
+            if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS
+        ]
+    result.fields = merge_schedule_a_fields(result.fields, local_result.fields)
     if local_raw.get("ocr_pages"):
         result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
         result_raw["local_ocr_pages"] = deepcopy(local_raw["ocr_pages"])
@@ -1395,6 +1434,57 @@ def is_unfilled_schedule_a_template(page_texts: list[tuple[int, str]]) -> bool:
     return not has_real_date and not has_real_ein
 
 
+def has_blank_schedule_a_form_layer(page_texts: list[tuple[int, str]]) -> bool:
+    """Detect an official Schedule A layer that contains labels but no values.
+
+    Flattened signature tools can place completed values in a visual appearance
+    layer while leaving a pristine blank IRS text layer underneath.  This is
+    broader than the legacy sample-placeholder detector and exists only to
+    trigger AcroForm/OCR inspection before accepting any extracted values.
+    """
+    if is_unfilled_schedule_a_template(page_texts):
+        return True
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    upper = text.upper()
+    official_markers = (
+        "SCHEDULE A",
+        "FORM 5500",
+        "INSURANCE INFORMATION",
+        "NAME OF INSURANCE CARRIER",
+        "TOTAL AMOUNT OF COMMISSIONS PAID",
+        "NONEXPERIENCE-RATED CONTRACTS",
+    )
+    if not all(marker in upper for marker in official_markers):
+        return False
+    coverage_section_match = re.search(
+        r"\b1\s+COVERAGE INFORMATION\b(.+?)\b2\s+INSURANCE FEE AND COMMISSION INFORMATION\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    coverage_section = coverage_section_match.group(1) if coverage_section_match else text
+    has_real_date = bool(
+        re.search(r"\b(?:0?[1-9]|1[0-2])[/.-](?:0?[1-9]|[12]\d|3[01])[/.-](?:20)?\d{2}\b", coverage_section)
+        or re.search(r"\b20\d{2}[/.-](?:0[1-9]|1[0-2])[/.-](?:0[1-9]|[12]\d|3[01])\b", coverage_section)
+    )
+    has_real_ein = bool(re.search(r"\b\d{2}[- ]\d{7}\b", coverage_section))
+    return not has_real_date and not has_real_ein
+
+
+def has_completed_schedule_a_overlay(page_texts: list[tuple[int, str]]) -> bool:
+    """Require multiple visible values before overriding template preflight."""
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if not text:
+        return False
+    has_ein = bool(re.search(r"\b\d{2}[- ]\d{7}\b", text))
+    has_date = bool(
+        re.search(r"\b\d{1,2}[./-]\d{1,2}[./-](?:20)?\d{2}\b", text)
+        or re.search(r"\b\d{1,2}-[A-Za-z]{3}-(?:20)?\d{2}\b", text)
+    )
+    has_money = bool(re.search(r"\$?\s*\d{1,3}(?:,\d{3})+(?:\.\d{2})?", text))
+    has_identity = bool(re.search(r"\b(?:NAIC|CONTRACT|POLICY)\b", text, re.IGNORECASE))
+    return sum((has_ein, has_date, has_money, has_identity)) >= 3
+
+
 def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> list[NormalizedExtractionField]:
     """Return one trustworthy value per dashboard field.
 
@@ -1433,7 +1523,21 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
             best[key] = _merge_field_provenance(field, [current, field])
         else:
             best[key] = _merge_field_provenance(current, [current, field])
-    return [best[key] for key in order]
+    selected = [best[key] for key in order]
+    amount_by_prefix = {
+        prefix: next(
+            (
+                parse_numeric_amount(field.value)
+                for field in selected
+                if field.field_name.strip().lower().startswith(prefix)
+            ),
+            None,
+        )
+        for prefix in ("3b.", "3c.")
+    }
+    if all(value in (None, 0) for value in amount_by_prefix.values()):
+        selected = [field for field in selected if not field.field_name.strip().lower().startswith("3d.")]
+    return selected
 
 
 def _schedule_a_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int, int]:
@@ -2188,6 +2292,187 @@ def extract_pdf_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     return pages
 
 
+def extract_schedule_a_acroform(
+    file_bytes: bytes,
+) -> tuple[list[NormalizedExtractionField], list[ScheduleABrokerRow]]:
+    """Read visible Schedule A values stored in AcroForm widgets.
+
+    Some completed IRS PDFs retain a hidden sample text layer.  The widget
+    values are the actual source of truth and must win over that layer.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return [], []
+    try:
+        raw_fields = PdfReader(BytesIO(file_bytes)).get_fields() or {}
+    except Exception:
+        return [], []
+    values: dict[str, str] = {}
+    for name, item in raw_fields.items():
+        if not isinstance(item, dict):
+            continue
+        value = item.get("/V")
+        if isinstance(value, (dict, list, bytes)) or value in (None, "", "/Off"):
+            continue
+        clean = str(value).strip()
+        if clean and not clean.startswith("/"):
+            values[str(name)] = clean
+    return extract_schedule_a_acroform_data(values)
+
+
+def extract_schedule_a_acroform_data(
+    values: dict[str, str],
+) -> tuple[list[NormalizedExtractionField], list[ScheduleABrokerRow]]:
+    scalar_map = {
+        "insCarrierName": "1a. Name of Insurance Company",
+        "insCarrierEIN": "1b. Insurance Carrier EIN",
+        "insCarrierNAICCode": "1c. NAIC Code",
+        "insContractNum": "1d. Contract/Policy Number",
+        "insPrsnCoveredEoyCnt": "1e. Persons Covered (End of Policy Year)",
+        "insPolicyFromDate": "1f. Policy Year Beginning Date",
+        "insPolicyToDate": "1g. Policy Year Ending Date",
+        "insBrokerCommTotAmt": "3b. Amount of Commissions",
+        "insBrokerFeesTotAmt": "3c. Amount of Fees",
+        "wlfrPremiumRcvdAmt": "9a. Premiums: (1) Amount Received",
+        "wlfrUnpaidDueAmt": "9a(2). Increase (decrease) in amount due but unpaid",
+        "wlfrReserveAmt": "9a(3). Increase (decrease) in unearned premium reserve",
+        "wlfrTotEarnedPremAmt": "9a(4). Earned ((1) + (2) - (3))",
+        "wlfrClaimsPaidAmt": "9b(1). Benefit Charges (1) Claims paid",
+        "wlfrIncrReserveAmt": "9b(2). Increase (decrease) in claim reserves",
+        "wlfrIncurredClaimAmt": "9b(3). Incurred claims (add(1) and (2))",
+        "wlfrClaimsChrgdAmt": "9b(4). Claims Charged",
+        "wlfrRetCommissionsAmt": "9c(1)(A). Commissions",
+        "wlfrRetAdminAmt": "9c(1)(B). Administrative service or other fees",
+        "wlfrRetOthCostAmt": "9c(1)(C). Other Specific acquisition costs",
+        "wlfrRetOthExpenseAmt": "9c(1)(D). Other expenses",
+        "wlfrRetTaxesAmt": "9c(1)(E). Taxes",
+        "wlfrRetChargesAmt": "9c(1)(F). Charges for risks or other contingencies",
+        "wlfrRetOthChrgsAmt": "9c(1)(G). Other retention charges",
+        "wlfrRetTotAmt": "9c(1)(H). Total retention",
+        "wlfrRefundAmt": "9c(2). Dividends or retroactive rate refunds",
+        "wlfrHeldBnftsAmt": "9d(1). Status of policyholder reserves at end of year: (1) Amount held to provide benefits after retirement",
+        "wlfrClaimsReserveAmt": "9d(2). Claim reserves",
+        "wlfrOthReserveAmt": "9d(3). Other reserves",
+        "wlfrDivndsDueAmt": "9e. Dividends or retroactive rate refunds due",
+        "wlfrTotChargesPaidAmt": "10a. Total premiums or subscription charges paid to carrier",
+    }
+    fields: list[NormalizedExtractionField] = []
+
+    def add(field_name: str, value: str | None, source_name: str) -> None:
+        clean = clean_extracted_value(str(value or ""))
+        if not clean or is_blank_extraction_value(clean) or is_obvious_template_placeholder(clean):
+            return
+        if field_name.startswith("1b."):
+            digits = re.sub(r"\D", "", clean)
+            if len(digits) == 9:
+                clean = f"{digits[:2]}-{digits[2:]}"
+        elif field_name.startswith("1c."):
+            clean = normalize_schedule_a_naic(clean)
+        elif field_name.startswith(("1f.", "1g.")):
+            clean = _normalize_schedule_a_source_date(clean)
+        fields.append(
+            NormalizedExtractionField(
+                field_name=field_name,
+                value=clean,
+                confidence=0.995,
+                page=1,
+                source_text=f"AcroForm {source_name}={clean}",
+                evidence=[
+                    SourceEvidence(
+                        provider="AcroForm widget parser",
+                        page=1,
+                        source_text=f"{source_name}={clean}",
+                        table_cell=(1, 0),
+                    )
+                ],
+            )
+        )
+
+    for source_name, field_name in scalar_map.items():
+        add(field_name, values.get(source_name), source_name)
+
+    brokers: list[ScheduleABrokerRow] = []
+    for index in range(1, 100):
+        suffix = f"_{index:02d}"
+        name = clean_extracted_value(values.get(f"insBrokerName{suffix}", ""))
+        if not name:
+            continue
+        commission = money_value(values.get(f"insBrokerCommPdAmt{suffix}", "") or "0")
+        fee = money_value(values.get(f"insBrokerFeesPdAmt{suffix}", "") or "0")
+        purpose = clean_extracted_value(values.get(f"insBrokerFeesPdText{suffix}", "")) or derive_schedule_a_purpose(commission, fee)
+        address_line_1, address_line_2, city, state, zip_code = _acroform_broker_address(
+            values.get(f"insBrokerAddress{suffix}", "")
+        )
+        source = f"AcroForm broker {index}: {name}"
+        brokers.append(
+            ScheduleABrokerRow(
+                name=name,
+                address_line_1=address_line_1,
+                address_line_2=address_line_2,
+                city=city,
+                state=state,
+                zip_code=zip_code,
+                organization_code=clean_extracted_value(values.get(f"insBrokerCode{suffix}", "")) or None,
+                purpose=purpose,
+                commission_rows=(
+                    [ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")]
+                    if (parse_numeric_amount(commission) or 0) > 0
+                    else []
+                ),
+                fee_rows=(
+                    [ScheduleABrokerMoneyRow(amount=fee, purpose=purpose or "FEES")]
+                    if (parse_numeric_amount(fee) or 0) > 0
+                    else []
+                ),
+                commission_total=commission,
+                fee_total=fee,
+                commission_source_text=source,
+                fee_source_text=source,
+                source_page=1,
+                confidence=0.995,
+                evidence=[SourceEvidence(provider="AcroForm widget parser", page=1, source_text=source, table_cell=(index, 0))],
+            )
+        )
+
+    if brokers:
+        total_commission = sum_money_values(*(row.commission_total for row in brokers)) or "0"
+        total_fee = sum_money_values(*(row.fee_total for row in brokers)) or "0"
+        existing = {field.field_name for field in fields}
+        if "3b. Amount of Commissions" not in existing:
+            add("3b. Amount of Commissions", total_commission, "broker rows total")
+        if "3c. Amount of Fees" not in existing:
+            add("3c. Amount of Fees", total_fee, "broker rows total")
+        add("3a. Name of Agent/Broker/Person", brokers[0].name, "first broker row")
+        purpose = derive_schedule_a_purpose(total_commission, total_fee)
+        if purpose:
+            add("3d. Purpose", purpose, "broker rows purpose")
+        if brokers[0].organization_code:
+            add("3e. Organizational Code", brokers[0].organization_code, "first broker row code")
+    return select_best_schedule_a_fields(fields), brokers
+
+
+def _acroform_broker_address(value: str | None) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    lines = [clean_extracted_value(line) for line in re.split(r"[\r\n]+", str(value or "")) if clean_extracted_value(line)]
+    if not lines:
+        return None, None, None, None, None
+    city = state = zip_code = None
+    street_lines = list(lines)
+    match = re.fullmatch(r"(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)", lines[-1], flags=re.IGNORECASE)
+    if match:
+        city = clean_extracted_value(match.group(1))
+        state = match.group(2).upper()
+        zip_code = match.group(3)
+        street_lines = lines[:-1]
+    return (
+        street_lines[0] if street_lines else None,
+        " ".join(street_lines[1:]) if len(street_lines) > 1 else None,
+        city,
+        state,
+        zip_code,
+    )
+
+
 def extract_pdf_layout_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     """Extract PDF text while retaining the whitespace that describes tables.
 
@@ -2699,11 +2984,23 @@ def local_schedule_a_pdf_result(
         else extract_document_text_pages(file_bytes, file_name)
     )
     layout_page_texts = extract_pdf_layout_text_pages(file_bytes) if is_pdf else []
+    acroform_fields, acroform_broker_rows = (
+        extract_schedule_a_acroform(file_bytes) if is_pdf else ([], [])
+    )
     ocr_page_texts: list[tuple[int, str]] = []
-    if is_pdf and not any(str(text or "").strip() for _, text in page_texts):
+    hidden_template_layer = is_pdf and has_blank_schedule_a_form_layer(page_texts)
+    if is_pdf and (
+        not any(str(text or "").strip() for _, text in page_texts)
+        or (hidden_template_layer and not acroform_fields)
+    ):
         ocr_page_texts = extract_image_only_pdf_ocr_pages(file_bytes)
-        page_texts = ocr_page_texts
-        layout_page_texts = ocr_page_texts
+        if has_completed_schedule_a_overlay(ocr_page_texts):
+            page_texts = ocr_page_texts
+            layout_page_texts = ocr_page_texts
+        elif hidden_template_layer:
+            # Fail closed: labels from the blank native layer are not values.
+            page_texts = []
+            layout_page_texts = []
     broker_page_texts = layout_page_texts or page_texts
     aultcare_summaries = extract_aultcare_schedule_a_summaries(file_bytes, file_name)
     document_summaries = aultcare_summaries
@@ -2729,12 +3026,19 @@ def local_schedule_a_pdf_result(
         *extract_american_heritage_broker_rows(broker_page_texts),
         *extract_sun_life_broker_rows(broker_page_texts),
         *extract_reliance_standard_broker_rows(broker_page_texts),
+        *extract_ameritas_schedule_a_broker_rows(broker_page_texts),
+        *extract_curalinc_broker_rows(broker_page_texts),
+        *extract_continental_american_broker_rows(broker_page_texts),
         *document_broker_rows,
     ]
     omaha_rows = extract_united_omaha_combined_broker_rows(page_texts)
     if omaha_rows:
         provider_broker_rows.extend(omaha_rows)
-    authoritative_broker_rows = provider_broker_rows or extract_columnar_broker_compensation_rows(page_texts)
+    authoritative_broker_rows = (
+        acroform_broker_rows
+        or provider_broker_rows
+        or extract_columnar_broker_compensation_rows(page_texts)
+    )
     broker_rows = (
         authoritative_broker_rows
         if authoritative_broker_rows
@@ -2745,6 +3049,25 @@ def local_schedule_a_pdf_result(
         if ocr_page_texts
         else extract_fields_from_document_text(file_bytes, file_name, rules=rules)
     )
+    for layout_fields in (
+        extract_ameritas_schedule_a_fields(broker_page_texts),
+        extract_curalinc_schedule_a_fields(broker_page_texts),
+        extract_continental_american_schedule_a_fields(broker_page_texts),
+    ):
+        if layout_fields:
+            parsed_fields = [
+                field for field in parsed_fields
+                if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS
+            ]
+            parsed_fields.extend(layout_fields)
+    if acroform_fields:
+        if hidden_template_layer:
+            parsed_fields = list(acroform_fields)
+        else:
+            authoritative_names = {field.field_name for field in acroform_fields}
+            parsed_fields = [field for field in parsed_fields if field.field_name not in authoritative_names]
+            parsed_fields.extend(acroform_fields)
+    parsed_fields = select_best_schedule_a_fields(parsed_fields)
     return NormalizedExtractionResult(
         provider=provider if is_pdf else "Local document parser",
         fields=(
@@ -2754,8 +3077,17 @@ def local_schedule_a_pdf_result(
         ),
         raw={
             "file_name": file_name,
-            "source": "local_pdf_ocr_parser" if ocr_page_texts else "local_document_parser",
+            "source": (
+                "local_pdf_acroform_parser"
+                if acroform_fields
+                else "local_pdf_ocr_parser"
+                if ocr_page_texts
+                else "local_document_parser"
+            ),
             "authoritative_broker_table": bool(authoritative_broker_rows),
+            "authoritative_visible_overlay": bool(
+                acroform_fields or (hidden_template_layer and ocr_page_texts)
+            ),
             "ocr_pages": [
                 {"page": page, "text": text}
                 for page, text in ocr_page_texts
@@ -3258,11 +3590,35 @@ def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
 
     add(
         "1a. Name of Insurance Company",
-        regex_first(normalized, [r"^\s*Legal\s+Name\s*:\s*(.+?)\s*$"], flags=re.IGNORECASE | re.MULTILINE),
+        regex_first(
+            normalized,
+            [
+                r"^\s*Legal\s+Name\s*:\s*(.+?)\s*$",
+                r"Premium\s+paid\s+to\s*:\s*(.+?)\s+-\s+EIN\s+-\s+\d{2}-\d{7}\b",
+            ],
+            flags=re.IGNORECASE | re.MULTILINE,
+        ),
     )
     add(
         "1b. Insurance Carrier EIN",
-        regex_first(normalized, [r"^\s*(?:Carrier\s+)?EIN\s*:\s*([0-9]{2}-[0-9]{7})\b"], flags=re.IGNORECASE | re.MULTILINE),
+        regex_first(
+            normalized,
+            [
+                r"^\s*(?:Carrier\s+)?EIN\s*:\s*([0-9]{2}-[0-9]{7})\b",
+                r"Premium\s+paid\s+to\s*:.*?\bEIN\s+-\s+([0-9]{2}-[0-9]{7})\b",
+            ],
+            flags=re.IGNORECASE | re.MULTILINE,
+        ),
+        0.96,
+    )
+    add(
+        "1c. NAIC Code",
+        regex_first(normalized, [r"FSL\s+NAIC(?:\s*\([^)]*\))?\s*-\s*(\d{5,6})\b"], flags=re.IGNORECASE),
+        0.96,
+    )
+    add(
+        "1d. Contract/Policy Number",
+        regex_first(normalized, [r"Policy\s+Number\s*:\s*([A-Za-z0-9][A-Za-z0-9-]+)"], flags=re.IGNORECASE),
         0.96,
     )
     add(
@@ -3272,6 +3628,7 @@ def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
             [
                 r"Approximate\s+(?:employee\s+)?lives?\s+covered[^:\n]*:\s*(?:[A-Za-z][A-Za-z &/.-]*\s+)?([0-9,]+)\b",
                 r"(?:employee\s+)?lives?\s+covered\s*:\s*([0-9,]+)\b",
+                r"Enrollment\s+count\s*:\s*([0-9,]+)\b",
             ],
             flags=re.IGNORECASE | re.DOTALL,
         ),
@@ -3285,6 +3642,15 @@ def extract_email_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
             flags=re.IGNORECASE,
         ),
         0.95,
+    )
+    add(
+        "10a. Total premiums or subscription charges paid to carrier",
+        regex_first(
+            normalized,
+            [r"Premium\s+Amount\s+Paid\s*-\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+            flags=re.IGNORECASE,
+        ),
+        0.96,
     )
 
     start_date, end_date = extract_email_coverage_dates(normalized)
@@ -3317,6 +3683,291 @@ def extract_email_coverage_dates(text: str) -> tuple[str | None, str | None]:
     end_year = int(month_range.group(4))
     end_day = calendar.monthrange(end_year, end_month)[1]
     return f"{start_month:02d}/01/{start_year}", f"{end_month:02d}/{end_day:02d}/{end_year}"
+
+
+def _nfp_layout_field(
+    field_name: str,
+    value: str | None,
+    *,
+    page: int = 1,
+    source: str,
+    confidence: float = 0.99,
+) -> NormalizedExtractionField | None:
+    clean = clean_extracted_value(str(value or ""))
+    if not clean or is_blank_extraction_value(clean):
+        return None
+    return NormalizedExtractionField(
+        field_name=field_name,
+        value=clean,
+        confidence=confidence,
+        page=page,
+        source_text=source,
+        evidence=[SourceEvidence(provider="NFP carrier layout parser", page=page, source_text=source, table_cell=(1, 0))],
+    )
+
+
+def extract_ameritas_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if not (
+        re.search(r"Policy\s*#\s*\d{3}-\d+", text, re.IGNORECASE)
+        and "GROSS PREMIUM PAID" in text.upper()
+        and "NAIC CODE" in text.upper()
+    ):
+        return []
+    source = "Ameritas Schedule A policyholder letter"
+    period = re.search(
+        r"For\s+([A-Za-z]+\s+\d{1,2},\s*\d{4})\s+Through\s+([A-Za-z]+\s+\d{1,2},\s*\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    totals = re.search(r"\bTotal\s+([\d,]+)\s+([\d,]+)\b", text, re.IGNORECASE)
+    commission_fee = re.search(
+        r"NFP\s+CORPORATE\s+SERVICES\s+NY\s+LLC\s+\$?\s*([\d,]+(?:\.\d{2})?)\s+\$?\s*([\d,]+(?:\.\d{2})?)",
+        text,
+        re.IGNORECASE,
+    )
+    commission = money_value(commission_fee.group(1)) if commission_fee else None
+    fee = money_value(commission_fee.group(2)) if commission_fee else None
+    values = [
+        ("1a. Name of Insurance Company", "Ameritas Life Insurance Corp. of New York"),
+        ("1b. Insurance Carrier EIN", regex_first(text, [r"Tax\s+ID\s*:\s*(\d{2}-\d{7})"])),
+        ("1c. NAIC Code", regex_first(text, [r"NAIC\s+code\s*:\s*(\d{5,6})"])),
+        ("1d. Contract/Policy Number", regex_first(text, [r"Policy\s*#\s*(\d{3}-\d+)"])),
+        ("1e. Persons Covered (End of Policy Year)", totals.group(2) if totals else None),
+        ("1f. Policy Year Beginning Date", normalize_schedule_a_date(period.group(1), end_of_month=False) if period else None),
+        ("1g. Policy Year Ending Date", normalize_schedule_a_date(period.group(2), end_of_month=True) if period else None),
+        ("3a. Name of Agent/Broker/Person", "NFP CORPORATE SERVICES NY LLC" if commission_fee else None),
+        ("3b. Amount of Commissions", commission),
+        ("3c. Amount of Fees", fee),
+        ("3d. Purpose", derive_schedule_a_purpose(commission, fee)),
+        ("10a. Total premiums or subscription charges paid to carrier", regex_first(text, [r"Gross\s+Premium\s+Paid\s*:\s*\$?\s*([\d,]+(?:\.\d{2})?)"])),
+    ]
+    return [field for name, value in values if (field := _nfp_layout_field(name, value, source=source))]
+
+
+def extract_ameritas_schedule_a_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if not extract_ameritas_schedule_a_fields(page_texts):
+        return []
+    paid = re.search(
+        r"NFP\s+CORPORATE\s+SERVICES\s+NY\s+LLC\s+\$?\s*([\d,]+(?:\.\d{2})?)\s+\$?\s*([\d,]+(?:\.\d{2})?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not paid:
+        return []
+    location = re.search(r"PO\s+BOX\s+(\d+)\s+PLAINVIEW\s+NY\s+(\d{5})\s+(\d{4})", text, re.IGNORECASE)
+    commission, fee = money_value(paid.group(1)), money_value(paid.group(2))
+    source = paid.group(0)
+    return [
+        ScheduleABrokerRow(
+            name="NFP CORPORATE SERVICES NY LLC",
+            address_line_1=f"PO BOX {location.group(1)}" if location else None,
+            city="PLAINVIEW" if location else None,
+            state="NY" if location else None,
+            zip_code=f"{location.group(2)}-{location.group(3)}" if location else None,
+            purpose=derive_schedule_a_purpose(commission, fee),
+            commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if (parse_numeric_amount(commission) or 0) > 0 else [],
+            fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")] if (parse_numeric_amount(fee) or 0) > 0 else [],
+            commission_total=commission,
+            fee_total=fee,
+            commission_source_text=source,
+            fee_source_text=source,
+            source_page=1,
+            confidence=0.99,
+            evidence=[SourceEvidence(provider="NFP carrier layout parser", page=1, source_text=source, table_cell=(1, 0))],
+        )
+    ]
+
+
+def extract_curalinc_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if "CURALINC LLC" not in text.upper() or "TOTAL US PARTICIPANTS AT END OF PLAN YEAR" not in text.upper():
+        return []
+    source = "CuraLinc Schedule A information letter"
+    period = re.search(r"Plan\s+Year\s+(\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})", text, re.IGNORECASE)
+    fee = regex_first(text, [r"Fees\s+Paid\s+by\s+Employer/Plan\s+Sponsor.*?\$\s*([\d,]+(?:\.\d{2})?)"], flags=re.IGNORECASE)
+    values = [
+        ("1a. Name of Insurance Company", regex_first(text, [r"Name\s+of\s+Service\s+Provider\s+(.+?)(?=\n|Service\s+Provider's)"])),
+        ("1b. Insurance Carrier EIN", regex_first(text, [r"Employer\s+Identification\s+Number\s*\(EIN\)\s+(\d{2}-\d{7})"])),
+        ("1c. NAIC Code", regex_first(text, [r"Carrier\s+NAIC\s+(\d{5,6})"])),
+        ("1d. Contract/Policy Number", regex_first(text, [r"Contract\s+ID#?\s*:\s*([A-Za-z0-9-]+)"])),
+        ("1e. Persons Covered (End of Policy Year)", regex_first(text, [r"Total\s+US\s+Participants\s+at\s+End\s+of\s+Plan\s+Year\s+([\d,]+)"])),
+        ("1f. Policy Year Beginning Date", _normalize_schedule_a_source_date(period.group(1)) if period else None),
+        ("1g. Policy Year Ending Date", _normalize_schedule_a_source_date(period.group(2)) if period else None),
+        ("3a. Name of Agent/Broker/Person", "CuraLinc LLC" if fee else None),
+        ("3c. Amount of Fees", money_value(fee or "")),
+        ("3d. Purpose", "FEES" if fee else None),
+    ]
+    return [field for name, value in values if (field := _nfp_layout_field(name, value, source=source))]
+
+
+def extract_curalinc_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    fields = extract_curalinc_schedule_a_fields(page_texts)
+    values = {field.field_name: field.value for field in fields}
+    fee = values.get("3c. Amount of Fees")
+    if not fee:
+        return []
+    source = "CuraLinc LLC fees paid by employer/plan sponsor"
+    return [
+        ScheduleABrokerRow(
+            name="CuraLinc LLC",
+            purpose="FEES",
+            commission_rows=[],
+            fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose="FEES")],
+            commission_total="0",
+            fee_total=fee,
+            fee_source_text=source,
+            source_page=1,
+            confidence=0.98,
+            evidence=[SourceEvidence(provider="NFP carrier layout parser", page=1, source_text=source, table_cell=(1, 0))],
+        )
+    ]
+
+
+def extract_continental_american_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if "CONTINENTAL AMERICAN INSURANCE COMPANY" not in text.upper() or "GROSS PREMIUMS PAID" not in text.upper():
+        return []
+    source = "Continental American Schedule A report"
+    period = re.search(
+        r"For\s+The\s+FY/CY\s+Beginning\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s+Ending\s*:\s*(\d{1,2}/\d{1,2}/\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    commission = regex_first(text, [r"Total\s+Commissions\s+Paid\s*:\s*\$\s*([\d,]+(?:\.\d{2})?)"])
+    values = [
+        ("1a. Name of Insurance Company", regex_first(text, [r"Carrier\s+Name\s*:\s*(.+?)(?=\n|Carrier\s+Address)"])),
+        ("1b. Insurance Carrier EIN", regex_first(text, [r"Carrier\s+EIN\s*:\s*(\d{2}-\d{7})"])),
+        ("1c. NAIC Code", regex_first(text, [r"Carrier\s+NAIC\s+Code\s*:\s*(\d{5,6})"])),
+        ("1d. Contract/Policy Number", regex_first(text, [r"Contract\s+Number\s*:\s*([A-Za-z0-9-]+)"])),
+        ("1e. Persons Covered (End of Policy Year)", regex_first(text, [r"COVERED\s+EMPLOYEES\s+@\s+YEAR\s+END\s*:\s*([\d,]+)"])),
+        ("1f. Policy Year Beginning Date", _normalize_schedule_a_source_date(period.group(1)) if period else None),
+        ("1g. Policy Year Ending Date", _normalize_schedule_a_source_date(period.group(2)) if period else None),
+        ("3a. Name of Agent/Broker/Person", "NFP CORPORATE SERVICES (NY) LLC" if commission else None),
+        ("3b. Amount of Commissions", money_value(commission or "")),
+        ("3d. Purpose", "COMMISSIONS" if commission else None),
+        ("10a. Total premiums or subscription charges paid to carrier", regex_first(text, [r"Gross\s+Premiums\s+Paid\s*:\s*\$\s*([\d,]+(?:\.\d{2})?)"])),
+    ]
+    return [field for name, value in values if (field := _nfp_layout_field(name, value, source=source))]
+
+
+def extract_continental_american_broker_rows(
+    page_texts: list[tuple[int, str]],
+) -> list[ScheduleABrokerRow]:
+    text = normalize_ocr_text("\n".join(value for _, value in page_texts))
+    if "CONTINENTAL AMERICAN INSURANCE COMPANY" not in text.upper():
+        return []
+    commission = regex_first(text, [r"Total\s+Commissions\s+Paid\s*:\s*\$\s*([\d,]+(?:\.\d{2})?)"])
+    if not commission:
+        return []
+    amount = money_value(commission)
+    source = "NFP CORPORATE SERVICES (NY) LLC 200 Park Avenue 32nd Floor New York, NY 10166"
+    return [
+        ScheduleABrokerRow(
+            name="NFP CORPORATE SERVICES (NY) LLC",
+            address_line_1="200 Park Avenue",
+            address_line_2="32nd Floor",
+            city="New York",
+            state="NY",
+            zip_code="10166",
+            purpose="COMMISSIONS",
+            commission_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")],
+            fee_rows=[],
+            commission_total=amount,
+            fee_total="0",
+            commission_source_text=source,
+            source_page=1,
+            confidence=0.99,
+            evidence=[SourceEvidence(provider="NFP carrier layout parser", page=1, source_text=source, table_cell=(1, 0))],
+        )
+    ]
+
+
+def extract_filled_irs_schedule_a_fields(
+    page_texts: list[tuple[int, str]],
+) -> list[NormalizedExtractionField]:
+    """Parse the visible OCR row of a filled IRS Schedule A with a blank contract."""
+    fields: list[NormalizedExtractionField] = []
+    for page, raw_text in page_texts:
+        text = normalize_ocr_text(raw_text)
+        if not all(token in text.upper() for token in ("SCHEDULE A", "FORM 5500", "EIN", "NAIC")):
+            continue
+        identity = re.search(
+            r"(?m)^\s*(?P<carrier>[A-Za-z][A-Za-z&,. '\-/]{2,80}?)\s+"
+            r"(?P<ein>\d{2}-?\d{7})\s+(?P<naic>\d{5,6})\s+"
+            r"(?:(?P<contract>[A-Za-z][A-Za-z0-9./-]{2,})\s+)?"
+            r"(?P<persons>[\d,]{1,9})\s+"
+            r"(?P<from>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+"
+            r"(?P<to>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*$",
+            text,
+            re.IGNORECASE,
+        )
+        if not identity:
+            coverage_match = re.search(
+                r"\b1\s+COVERAGE INFORMATION\b(.+?)\b2\s+INSURANCE FEE AND COMMISSION INFORMATION\b",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            coverage = coverage_match.group(1) if coverage_match else text
+            numeric = re.search(
+                r"(?P<ein>\d{2}-?\d{7})\s+(?P<naic>\d{5,6})\s+"
+                r"(?:(?P<contract>[A-Za-z][A-Za-z0-9./-]{2,})\s+)?"
+                r"(?P<persons>[\d,]{1,9})\s+"
+                r"(?P<from>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+"
+                r"(?P<to>\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                coverage,
+                re.IGNORECASE,
+            )
+            carrier = regex_first(
+                coverage,
+                [
+                    r"Name\s+of\s+insurance\s+carrier\s+([A-Za-z][A-Za-z&,. '\-/]{2,80}?)(?=\s+\(?b\)?\s+EIN\b)",
+                    r"Name\s+of\s+insurance\s+carrier\s*\n\s*([A-Za-z][A-Za-z&,. '\-/]{2,80})\s*$",
+                ],
+                flags=re.IGNORECASE | re.MULTILINE,
+            )
+            if numeric and carrier:
+                identity = SimpleNamespace(
+                    group=lambda name: carrier if name == "carrier" else numeric.group(name),
+                )
+        if not identity:
+            continue
+        source = identity.group(0).strip()
+        candidates = [
+            ("1a. Name of Insurance Company", identity.group("carrier")),
+            ("1b. Insurance Carrier EIN", _format_schedule_a_ein(identity.group("ein"))),
+            ("1c. NAIC Code", identity.group("naic")),
+            ("1d. Contract/Policy Number", identity.group("contract")),
+            ("1e. Persons Covered (End of Policy Year)", re.sub(r"\D", "", identity.group("persons"))),
+            ("1f. Policy Year Beginning Date", _normalize_schedule_a_source_date(identity.group("from"))),
+            ("1g. Policy Year Ending Date", _normalize_schedule_a_source_date(identity.group("to"))),
+        ]
+        commission = regex_first(text, [r"Total\s+amount\s+of\s+commissions\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
+        fee = regex_first(text, [r"Total\s+amount\s+of\s+fees\s+paid\s+\$?\s*([\d,]+(?:\.\d{1,2})?)"], flags=re.IGNORECASE)
+        premium = extract_nonexperience_total_premium_from_text(text)
+        candidates.extend(
+            [
+                ("3b. Amount of Commissions", money_value(commission or "")),
+                ("3c. Amount of Fees", money_value(fee or "")),
+                ("3d. Purpose", derive_schedule_a_purpose(commission, fee)),
+                ("10a. Total premiums or subscription charges paid to carrier", premium),
+            ]
+        )
+        fields.extend(
+            field
+            for name, value in candidates
+            if (field := _nfp_layout_field(name, value, page=page, source=source))
+        )
+    return select_best_schedule_a_fields(fields)
 
 
 # Spreadsheets and exports state the same values as a carrier statement, but as
@@ -4604,6 +5255,15 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
     fields.extend(extract_standard_schedule_a_fields(page_texts))
     fields.extend(extract_standard_short_form_schedule_a_fields(page_texts))
     fields.extend(extract_united_omaha_schedule_a_fields(page_texts))
+    for layout_fields in (
+        extract_filled_irs_schedule_a_fields(page_texts),
+        extract_ameritas_schedule_a_fields(page_texts),
+        extract_curalinc_schedule_a_fields(page_texts),
+        extract_continental_american_schedule_a_fields(page_texts),
+    ):
+        if layout_fields:
+            fields = [field for field in fields if field.field_name not in SCHEDULE_A_LAYOUT_OWNED_FIELDS]
+            fields.extend(layout_fields)
     authoritative_packet_fields = [
         extract_cigna_g2050a_schedule_a_fields(page_texts),
         extract_delta_dental_schedule_a_fields(page_texts),
@@ -4752,13 +5412,13 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
         authoritative_names = {field.field_name for field in metlife_fields}
         fields = [field for field in fields if field.field_name not in authoritative_names]
         fields.extend(metlife_fields)
-    return dedupe_fields(
-        [
+    return select_best_schedule_a_fields(
+        dedupe_fields([
             field
             for field in fields
             if not _is_column_heading_broker_name(field)
             and not is_obvious_template_placeholder(field.value)
-        ]
+        ])
     )
 
 
@@ -6353,6 +7013,7 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
         [
             r"\(\s*b\s*\)\s*EIN\s*:?\s*([0-9]{2}-[0-9]{7})",
             r"\bEIN\s+([0-9]{2}-[0-9]{7})",
+            r"Employer\s+Identification\s+Number\s*:\s*(\d{9})\b",
         ],
         flags=re.IGNORECASE,
     )
@@ -6386,6 +7047,7 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
             r"\b(?:Contract/Policy|Contract|Policy)\s+Year\s+From\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\(\s*f\s*\)\s*From\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\bFrom\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
+            r"\bFrom\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})",
         ],
         flags=re.IGNORECASE,
     )
@@ -6395,11 +7057,12 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
             r"\b(?:Contract/Policy|Contract|Policy)\s+Year\s+To\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\(\s*g\s*\)\s*To\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
             r"\bTo\s*:?\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
+            r"\bTo\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})",
         ],
         flags=re.IGNORECASE,
     )
     if carrier_ein:
-        add("1b. Insurance Carrier EIN", carrier_ein, 0.93, value_validator=looks_like_ein)
+        add("1b. Insurance Carrier EIN", _format_schedule_a_ein(carrier_ein), 0.93, value_validator=looks_like_ein)
     if naic:
         add("1c. NAIC Code", naic, 0.92)
     if contract:
@@ -6407,9 +7070,9 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
     if covered:
         add("1e. Persons Covered (End of Policy Year)", covered, 0.9)
     if policy_from:
-        add("1f. Policy Year Beginning Date", policy_from, 0.9)
+        add("1f. Policy Year Beginning Date", _normalize_schedule_a_source_date(policy_from), 0.9)
     if policy_to:
-        add("1g. Policy Year Ending Date", policy_to, 0.9)
+        add("1g. Policy Year Ending Date", _normalize_schedule_a_source_date(policy_to), 0.9)
 
     policy_period = regex_first(
         text,
@@ -7869,10 +8532,22 @@ def remove_inapplicable_experience_rated_fields(
     has_nonexperience_section = bool(
         re.search(r"\b(?:9|10)\.\s*NON[ -]?EXPERIENCE[ -]?RATED CONTRACTS", upper)
     )
-    has_experience_section = bool(
-        re.search(r"\b(?:8|9)\.\s*EXPERIENCE[ -]?RATED CONTRACTS", upper)
+    experience_section = re.search(
+        r"\b(?:8|9)\.\s*EXPERIENCE[ -]?RATED CONTRACTS\b(.+?)(?=\b(?:9|10)\.\s*NON[ -]?EXPERIENCE[ -]?RATED CONTRACTS\b|\bPART\s+IV\b|$)",
+        text,
+        re.IGNORECASE | re.DOTALL,
     )
-    if not has_nonexperience_section or has_experience_section:
+    experience_amounts = [
+        parse_numeric_amount(value)
+        for value in re.findall(r"\$\s*(-?[\d,]+(?:\.\d{1,2})?)", experience_section.group(1) if experience_section else "")
+    ]
+    experience_has_nonzero_value = any(
+        value is not None and abs(value) > 0.004 for value in experience_amounts
+    )
+    nonexperience_premium = parse_numeric_amount(extract_nonexperience_total_premium_from_text(text))
+    if not has_nonexperience_section or experience_has_nonzero_value:
+        return result
+    if experience_section and (not experience_amounts or not nonexperience_premium):
         return result
     cleaned = result.model_copy(deep=True)
     cleaned.fields = [
@@ -11598,7 +12273,14 @@ def normalize_schedule_a_naic(value: str) -> str:
 
 def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
     text = str(value or "").strip()
-    for pattern in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+    for pattern in (
+        "%B %d, %Y",
+        "%B %d %Y",
+        "%b %d, %Y",
+        "%b %d %Y",
+        "%d-%b-%y",
+        "%d-%b-%Y",
+    ):
         try:
             parsed = datetime.strptime(text, pattern)
             return parsed.strftime("%m/%d/%Y")
@@ -11622,6 +12304,21 @@ def normalize_schedule_a_date(value: str, *, end_of_month: bool) -> str:
             year += 2000
         return f"{month:02d}/{day:02d}/{year}"
     return text
+
+
+def _normalize_schedule_a_source_date(value: str | None) -> str:
+    text = str(value or "").strip().replace(".", "/")
+    for pattern in ("%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%d-%b-%y"):
+        try:
+            return datetime.strptime(text, pattern).strftime("%m/%d/%Y")
+        except ValueError:
+            continue
+    return normalize_schedule_a_date(text, end_of_month=False)
+
+
+def _format_schedule_a_ein(value: str | None) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return f"{digits[:2]}-{digits[2:]}" if len(digits) == 9 else str(value or "").strip()
 
 
 def regex_first(text: str, patterns: list[str], flags: int = re.IGNORECASE, groups: bool = False):

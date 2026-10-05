@@ -365,8 +365,8 @@ def values_meaningfully_different(
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
     if tag == "InsCarrierName":
-        current_carrier = re.sub(r"[^a-z0-9]", "", current.casefold())
-        proposed_carrier = re.sub(r"[^a-z0-9]", "", proposed.casefold())
+        current_carrier = _normalize_carrier_name_compare(current)
+        proposed_carrier = _normalize_carrier_name_compare(proposed)
         if current_carrier and proposed_carrier:
             equivalent_carrier_names = (
                 {
@@ -375,7 +375,7 @@ def values_meaningfully_different(
                 },
                 {
                     "metropolitanlife",
-                    "metropolitanlifeinsurancecompany",
+                    "metropolitanlifeinsurance",
                 },
                 {
                     "visionserviceplan",
@@ -384,7 +384,7 @@ def values_meaningfully_different(
                 },
                 {
                     "johnhancock",
-                    "johnhancocklifeinsurancecompany",
+                    "johnhancocklifeinsurance",
                     "johnhancocklifeinsurancecompanyusa",
                 },
             )
@@ -418,6 +418,25 @@ def values_meaningfully_different(
             # read-back as the same business value.
             return abs(current_number - proposed_number) > Decimal("0.5")
     return normalize_compare_value(current) != normalize_compare_value(proposed)
+
+
+def _normalize_carrier_name_compare(value: str) -> str:
+    """Ignore punctuation and terminal legal suffixes in carrier comparisons."""
+    words = re.findall(r"[a-z0-9]+", value.casefold())
+    legal_suffixes = {
+        "co",
+        "company",
+        "corp",
+        "corporation",
+        "inc",
+        "incorporated",
+        "llc",
+        "ltd",
+        "limited",
+    }
+    while words and words[-1] in legal_suffixes:
+        words.pop()
+    return "".join(words)
 
 
 def _normalize_address_compare(value: str) -> str:
