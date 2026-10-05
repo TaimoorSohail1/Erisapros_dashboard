@@ -362,6 +362,10 @@ class FTWilliamsReviewService:
                 or existing_review.schedule_a_match.get("ScheduleDesc")
                 or ""
             ).strip()
+        # Carrier legal-name cleanup is a field-level safety normalization and
+        # must run even when no existing Schedule A matched. Otherwise a clear
+        # ``DBA``/affiliate suffix can block creation of the correct new record.
+        fields = self._fields_with_canonical_carrier_legal_name(fields)
         if apply_automatic_derivations:
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
             fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)

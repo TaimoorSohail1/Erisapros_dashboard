@@ -278,9 +278,26 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertIsNone(aligned[0].address_line_2)
         self.assertEqual(aligned[0].commission_total, "345.19")
 
-    def test_ambiguous_duplicate_requires_confirmation(self):
+    def test_exact_duplicate_rows_are_safe_to_match_deterministically(self):
         extracted_rows = [extracted("Same Broker", commission="100")]
-        current_rows = [current(1, "Same Broker"), current(2, "Same Broker")]
+        current_rows = [
+            current(1, "Same Broker", commission="100"),
+            current(2, "Same Broker", commission="100"),
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+
+        self.assertEqual(matches[0].status, "AUTO_MATCHED")
+        self.assertTrue(matches[0].resolved)
+        self.assertEqual(matches[0].ftw_index, 0)
+        self.assertIn("duplicate", matches[0].reason)
+
+    def test_same_name_rows_with_different_compensation_remain_ambiguous(self):
+        extracted_rows = [extracted("Same Broker", commission="150")]
+        current_rows = [
+            current(1, "Same Broker", commission="100"),
+            current(2, "Same Broker", commission="200"),
+        ]
 
         matches = match_schedule_a_brokers(extracted_rows, current_rows)
 

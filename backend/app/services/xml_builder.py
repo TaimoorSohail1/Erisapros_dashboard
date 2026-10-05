@@ -843,6 +843,19 @@ def schedule_a_broker_multipart_rows(
             multipart[_schedule_a_broker_multipart_tag(tag)] = text
         rows.append(multipart)
 
+    # Exact duplicate FT Williams subparts are data corruption, not distinct
+    # business recipients. Collapse them before applying positional overrides
+    # so a safe replay repairs totals instead of multiplying compensation.
+    unique_rows: list[dict[str, str]] = []
+    seen_rows: set[tuple[tuple[str, str], ...]] = set()
+    for row in rows:
+        signature = tuple(sorted((str(tag), str(value).strip()) for tag, value in row.items()))
+        if signature in seen_rows:
+            continue
+        seen_rows.add(signature)
+        unique_rows.append(row)
+    rows = unique_rows
+
     for tag, value in (overrides or {}).items():
         parsed = _schedule_a_broker_tag_index(tag)
         if not parsed:

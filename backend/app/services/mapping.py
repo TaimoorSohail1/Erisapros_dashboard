@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from app.config import get_settings
 from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FieldRuleMappingMode, FilingStatus, FormType, NormalizedExtractionField
 from app.services.field_rules import find_rule_for_field, form_type_for_rule, is_retired_field, normalize_name, rules_for_form_type
@@ -36,9 +37,13 @@ def map_extraction_to_rules(
         elif not field_rule:
             status = ExtractedFieldStatus.UNMAPPED
             status_reason = "No Field Rules alias matched this extracted field."
-        elif is_placeholder_value(field.value):
+        elif is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type):
             status = ExtractedFieldStatus.MISSING
-            status_reason = "Extractor matched the field name but did not return a value."
+            status_reason = (
+                "Extractor returned a value that is not semantically valid for this field."
+                if is_semantically_invalid_value(field, form_type)
+                else "Extractor matched the field name but did not return a value."
+            )
         elif confidence < low_confidence_threshold:
             status = ExtractedFieldStatus.LOW_CONFIDENCE
             status_reason = f"Confidence {confidence:.0%} is below the {low_confidence_threshold:.0%} review threshold."
@@ -52,8 +57,8 @@ def map_extraction_to_rules(
             ftw_field=field_rule.ftw_field if field_rule and not extraction_only else None,
             xml_tag=field_rule.xml_tag if field_rule and not extraction_only else None,
             priority=field_rule.priority if field_rule else FieldPriority.LOW,
-            value="" if is_placeholder_value(field.value) else field.value,
-            proposed_value="" if is_placeholder_value(field.value) else field.value,
+            value="" if is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type) else field.value,
+            proposed_value="" if is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type) else field.value,
             confidence=confidence,
             page=field.page,
             source_text=field.source_text,
@@ -143,6 +148,20 @@ def is_placeholder_value(value: object) -> bool:
     if text in {"", "missing", "unreadable", "blank", "none", "null", "obscured", "not provided", "not shown", "not visible", "redacted"}:
         return True
     return any(marker in text for marker in ["obscured", "redaction", "redacted", "not visible", "unreadable"])
+
+
+def is_semantically_invalid_value(
+    field: NormalizedExtractionField,
+    form_type: FormType | None,
+) -> bool:
+    """Reject values whose shape cannot represent the mapped business field."""
+    if form_type != FormType.SCHEDULE_A:
+        return False
+    name = normalize_name(field.field_name)
+    value = str(field.value or "").strip()
+    if name.startswith("3a name of agent broker person"):
+        return not bool(re.search(r"[A-Za-z]", value))
+    return False
 
 
 def extraction_rank(field: ExtractedField) -> tuple[int, float, int]:

@@ -129,6 +129,14 @@ def match_schedule_a_brokers(
         elif len(address_matches) == 1:
             selected = address_matches[0]
             reason = "Matched by a unique exact broker address."
+        duplicate_candidates = identity_matches or name_matches or address_matches
+        if (
+            selected is None
+            and len(duplicate_candidates) > 1
+            and len({_exact_current_broker_key(normalized_current[index]) for index in duplicate_candidates}) == 1
+        ):
+            selected = min(duplicate_candidates)
+            reason = "Matched the first of several byte-equivalent duplicate FT Williams broker rows."
         if selected is not None:
             assigned.add(selected)
             matches.append(
@@ -340,6 +348,20 @@ def _same_broker_business_row(extracted: ScheduleABrokerRow, current: ScheduleAB
     ):
         return False
     return True
+
+
+def _exact_current_broker_key(row: ScheduleABrokerRow) -> tuple[str, ...]:
+    return (
+        _broker_name_key(row.name),
+        _broker_address_key(row),
+        _key(row.city),
+        _key(row.state),
+        _key(row.zip_code),
+        str(_decimal_amount(row.commission_total)),
+        str(_decimal_amount(row.fee_total)),
+        _purpose_key(row.purpose),
+        _organization_code_key(row.organization_code),
+    )
 
 
 def _broker_name_key(value: object) -> str:

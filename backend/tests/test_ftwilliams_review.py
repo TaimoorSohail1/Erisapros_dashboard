@@ -1108,6 +1108,20 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(comparison[0].validation_blocking)
         self.assertIn("invalid document header", comparison[0].decision_reason)
 
+    def test_carrier_legal_name_cleanup_does_not_require_worksheet_match(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "PRE-PAID LEGAL SERVICES INC DBA LEGALSHIELD",
+        )
+
+        updated = service._fields_with_canonical_carrier_legal_name([carrier])
+
+        self.assertEqual(carrier.proposed_value, carrier.value)
+        self.assertEqual(updated[0].value, carrier.value)
+        self.assertEqual(updated[0].proposed_value, "PRE-PAID LEGAL SERVICES INC")
+
     def test_plan_worksheet_identity_keeps_more_complete_schedule_a_carrier_name(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         policy = self._schedule_identity_field(

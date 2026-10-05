@@ -2125,6 +2125,26 @@ AD&D 592 | Base Commissions
         self.assertNotIn("3a. Name of Agent/Broker/Person", values)
         self.assertEqual(values["9c(1)(B). Administrative service or other fees"], "384.40")
 
+        mapped = map_extraction_to_rules(
+            "filing",
+            [
+                NormalizedExtractionField(
+                    field_name="3a. Name of Agent/Broker/Person",
+                    value="384.40",
+                    confidence=0.99,
+                )
+            ],
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+        )
+        broker = next(
+            field
+            for field in mapped["fields"]
+            if field.mapped_rule_key == "schedule_a_part_i_3a_name_of_agent_broker_person"
+        )
+        self.assertEqual(broker.proposed_value, "")
+        self.assertEqual(broker.status.value, "MISSING")
+
     def test_authoritative_local_broker_table_replaces_provider_rows(self):
         provider = NormalizedExtractionResult(
             provider="GroundX",

@@ -11,11 +11,26 @@ from app.services.xml_builder import (
     build_ftw_update_xml,
     build_single_document_update_xml,
     build_schedule_a_records_update_xml,
+    schedule_a_broker_multipart_rows,
     schedule_a_replacement_data_gaps,
 )
 
 
 class XmlBuilderTests(unittest.TestCase):
+    def test_exact_duplicate_current_broker_rows_are_collapsed_before_update(self):
+        rows = schedule_a_broker_multipart_rows(
+            {},
+            query_subparts={
+                "Broker": [
+                    {"Name1": "ALTERITY GROUP LLC", "CommPdAmt01": "91286", "Code01": "3"},
+                    {"Name1": "ALTERITY GROUP LLC", "CommPdAmt01": "91286", "Code01": "3"},
+                ]
+            },
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["NameXX"], "ALTERITY GROUP LLC")
+
     def test_long_broker_administration_name_uses_safe_ftw_abbreviation(self):
         carrier = ExtractedField(
             filing_id="filing",
