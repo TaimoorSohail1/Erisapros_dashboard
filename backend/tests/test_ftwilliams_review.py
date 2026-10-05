@@ -1153,12 +1153,41 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             ("BLUECROSS BLUESHIELD OF VERMONT", "Blue Cross and Blue Shield of Vermont"),
             ("AMERITAS LIFE INSURANCE", "Ameritas Life Insurance Corp. of New York"),
             ("THE STANDARD INSURANCE COMPANY", "Standard Life Ins Co of NY"),
+            (
+                "EQUITABLE FINANCIAL LIFE INSURANCE COMPANY OF AMERICA",
+                "Equitable Financial Life Insurance Company",
+            ),
         )
         for current, extracted in aliases:
             with self.subTest(current=current, extracted=extracted):
                 self.assertFalse(
                     values_meaningfully_different(current, extracted, tag="InsCarrierName")
                 )
+
+    def test_carrier_alias_cleanup_proposes_exact_legal_name_without_worksheet(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        cases = (
+            (
+                "Cigna Health and Life Insurance Company and affiliates",
+                "Cigna Health and Life Insurance Company",
+            ),
+            (
+                "PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+                "PRE-PAID LEGAL SERVICES INC",
+            ),
+        )
+        for extracted, expected in cases:
+            with self.subTest(extracted=extracted):
+                carrier = self._schedule_identity_field(
+                    "schedule_a_part_i_1a_name_of_insurance_company",
+                    "1a. Name of Insurance Company",
+                    extracted,
+                )
+
+                updated = service._fields_with_plan_worksheet_identity([carrier], [])
+
+                self.assertEqual(updated[0].value, extracted)
+                self.assertEqual(updated[0].proposed_value, expected)
 
     def test_existing_equivalent_carrier_is_not_blocked_by_send_format_rule(self):
         field = ExtractedField(

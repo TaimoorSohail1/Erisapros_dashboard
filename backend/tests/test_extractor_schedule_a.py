@@ -27,6 +27,7 @@ from app.services.extractor import (
     extract_cigna_schedule_a_fields,
     extract_aig_schedule_a_fields,
     extract_aig_broker_rows,
+    prefer_authoritative_aig_fields,
     extract_anthem_schedule_a_fields,
     extract_anthem_broker_rows,
     extract_aflac_schedule_a_fields,
@@ -833,6 +834,19 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].zip_code, "91203-3018")
         self.assertEqual(rows[0].commission_total, "0.00")
         self.assertEqual(rows[0].fee_total, "0")
+
+        provider_fields = [
+            NormalizedExtractionField(
+                field_name="3a. Name of Agent/Broker/Person",
+                value="Arthur J. Gallagher Risk Management Services LLC",
+                confidence=0.99,
+            )
+        ]
+        merged = prefer_authoritative_aig_fields(provider_fields, pages)
+        self.assertNotIn(
+            "3a. Name of Agent/Broker/Person",
+            {field.field_name: field.value for field in merged},
+        )
 
     def test_anthem_combined_report_extracts_one_complete_broker_and_total_premium(self):
         pages = [

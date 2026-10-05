@@ -3408,7 +3408,13 @@ def prefer_authoritative_aig_fields(
     if not authoritative_fields:
         return fields
     authoritative = {field.field_name: field for field in authoritative_fields}
-    restored = [field for field in fields if field.field_name not in authoritative]
+    owned = {
+        *authoritative,
+        "3a. Name of Agent/Broker/Person",
+        "3d. Purpose",
+        "3e. Organizational Code",
+    }
+    restored = [field for field in fields if field.field_name not in owned]
     for field in authoritative_fields:
         authoritative_field = field.model_copy(deep=True)
         authoritative_field.candidate_values = [authoritative_field.value]

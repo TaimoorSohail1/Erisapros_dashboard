@@ -399,6 +399,10 @@ def values_meaningfully_different(
                     "standardinsurance",
                     "standardlifeinscoofny",
                 },
+                {
+                    "equitablefinanciallifeinsurancecompanyofamerica",
+                    "equitablefinanciallifeinsurance",
+                },
             )
             if any(
                 current_carrier in aliases and proposed_carrier in aliases

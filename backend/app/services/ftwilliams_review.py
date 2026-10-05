@@ -4955,6 +4955,7 @@ class FTWilliamsReviewService:
         match the document.  A policy mismatch is deliberately left untouched
         so the decision engine can surface it as a real conflict.
         """
+        fields = self._fields_with_canonical_carrier_legal_name(fields)
         summary = self._matching_plan_worksheet_summary(fields, summaries)
         if not summary:
             return fields
@@ -5005,6 +5006,47 @@ class FTWilliamsReviewService:
                         "status": ExtractedFieldStatus.MATCHED,
                         "status_reason": "Carrier identity cross-checked against the Plan Worksheet policy row.",
                         "updated_at": now,
+                    }
+                )
+            )
+        return updated
+
+    def _fields_with_canonical_carrier_legal_name(
+        self,
+        fields: list[ExtractedField],
+    ) -> list[ExtractedField]:
+        """Remove clearly labelled trade-name tails from the outbound value.
+
+        The original extracted value remains immutable evidence. FT Williams'
+        contract requires the legal carrier only, while carrier documents
+        often append ``and affiliates`` or ``dba <brand>``. Those tails are
+        explicitly non-legal identity text, so removing them is deterministic
+        and avoids manufacturing a reviewer decision for an unambiguous name.
+        """
+
+        updated: list[ExtractedField] = []
+        for field in fields:
+            if field.mapped_rule_key != "schedule_a_part_i_1a_name_of_insurance_company":
+                updated.append(field)
+                continue
+            proposed = str(field.proposed_value or field.value or "").strip()
+            canonical = re.sub(
+                r"\s+(?:(?:and\s+)?affiliates?|d/?b/?a|a/?k/?a|formerly)\b.*$",
+                "",
+                proposed,
+                flags=re.IGNORECASE,
+            ).strip(" ,;-()[]{}\t\r\n")
+            if not canonical or canonical == proposed:
+                updated.append(field)
+                continue
+            updated.append(
+                field.model_copy(
+                    update={
+                        "proposed_value": canonical,
+                        "confidence": max(float(field.confidence or 0), 0.98),
+                        "status": ExtractedFieldStatus.MATCHED,
+                        "status_reason": "Removed a labelled carrier alias from the FT Williams legal-name value.",
+                        "updated_at": datetime.utcnow(),
                     }
                 )
             )
@@ -5152,7 +5194,7 @@ class FTWilliamsReviewService:
     @classmethod
     def _carrier_identity_key(cls, value: object) -> str:
         text = re.sub(
-            r"\b(?:AND\s+)?AFFILIATES?\b.*$",
+            r"\b(?:(?:AND\s+)?AFFILIATES?|D/?B/?A|A/?K/?A|FORMERLY)\b.*$",
             "",
             str(value or "").upper(),
         )
