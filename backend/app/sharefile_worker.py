@@ -6,6 +6,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Callable
 
+from pymongo.errors import PyMongoError
+
 from app.config import get_settings
 from app.repositories import get_repository, reset_repository
 from app.services.filing_pipeline import process_extraction_batch
@@ -182,8 +184,18 @@ async def process_webhook_batch(
             receipt_handle = message["ReceiptHandle"]
             try:
                 body = json.loads(message.get("Body") or "{}")
-                collector = ExtractionBatchCollector()
-                await dispatch_sharefile_work(body, background_tasks=collector)
+                for attempt in range(2):
+                    collector = ExtractionBatchCollector()
+                    try:
+                        await dispatch_sharefile_work(body, background_tasks=collector)
+                        break
+                    except PyMongoError:
+                        if attempt:
+                            raise
+                        reset_repository()
+                        logger.warning(
+                            "Retrying ShareFile webhook registration after a transient MongoDB error."
+                        )
                 if collector.packages:
                     packages.extend(collector.packages)
                     extraction_receipts.append(receipt_handle)

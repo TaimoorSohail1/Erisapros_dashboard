@@ -4,6 +4,8 @@ import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from pymongo.errors import NetworkTimeout
+
 from app.services.filing_pipeline import process_extraction_batch as pipeline_extraction_batch
 from app.sharefile_worker import (
     _visibility_heartbeat,
@@ -239,6 +241,30 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
             await process_sqs_messages(queue, messages)
 
         queue.delete.assert_awaited_once_with("good")
+
+    async def test_transient_mongo_failure_retries_webhook_registration_once(self):
+        queue = AsyncMock()
+        message = {
+            "Body": json.dumps({"type": "webhook", "payload": {"ItemId": "item-1"}}),
+            "ReceiptHandle": "receipt-1",
+        }
+
+        async def register(_message, service=None, background_tasks=None):
+            if register.attempts == 0:
+                register.attempts += 1
+                raise NetworkTimeout("temporary Atlas timeout")
+            return {"queued": 0}
+
+        register.attempts = 0
+        with (
+            patch("app.sharefile_worker.dispatch_sharefile_work", new=AsyncMock(side_effect=register)) as dispatch,
+            patch("app.sharefile_worker.reset_repository") as reset,
+        ):
+            await process_sqs_messages(queue, [message])
+
+        self.assertEqual(dispatch.await_count, 2)
+        reset.assert_called_once_with()
+        queue.delete.assert_awaited_once_with("receipt-1")
 
     async def test_failed_combined_extraction_leaves_messages_for_sqs_retry(self):
         queue = AsyncMock()
