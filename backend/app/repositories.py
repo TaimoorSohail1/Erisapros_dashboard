@@ -1136,7 +1136,13 @@ class MongoRepository(Repository):
         if not item_ids:
             return []
         values = sorted(item_ids)
-        docs = await self.db.filings.find(
+        # Intake is a read-after-write workflow: use the primary so a fresh
+        # ShareFile version cannot be held behind a slow or stale secondary.
+        filings = self.db.get_collection(
+            "filings",
+            read_preference=ReadPreference.PRIMARY,
+        )
+        docs = await filings.find(
             {
                 "$or": [
                     {"sharefile_item_id": {"$in": values}},

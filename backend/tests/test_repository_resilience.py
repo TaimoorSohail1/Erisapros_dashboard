@@ -1,7 +1,7 @@
 import unittest
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from bson import ObjectId
 
@@ -293,6 +293,24 @@ class MongoRepositoryResilienceTests(unittest.TestCase):
             waitQueueTimeoutMS=5_000,
             timeoutMS=18_000,
             read_preference=ReadPreference.SECONDARY_PREFERRED,
+        )
+
+    def test_sharefile_intake_filing_lookup_reads_from_primary(self):
+        repository = object.__new__(MongoRepository)
+        repository.db = MagicMock()
+        collection = MagicMock()
+        cursor = MagicMock()
+        cursor.sort.return_value = cursor
+        cursor.to_list = AsyncMock(return_value=[])
+        collection.find.return_value = cursor
+        repository.db.get_collection.return_value = collection
+
+        result = asyncio.run(repository.list_filings_by_sharefile_item_ids({"item-1"}))
+
+        self.assertEqual(result, [])
+        repository.db.get_collection.assert_called_once_with(
+            "filings",
+            read_preference=ReadPreference.PRIMARY,
         )
 
     def test_safe_repository_read_replaces_pool_and_retries_once(self):
