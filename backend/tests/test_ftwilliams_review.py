@@ -1139,6 +1139,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_compare_ignores_leading_carrier_article(self):
+        self.assertFalse(
+            values_meaningfully_different(
+                "GUARDIAN LIFE INSURANCE COMPANY OF AMERICA",
+                "The Guardian Life Insurance Company of America",
+                tag="InsCarrierName",
+            )
+        )
+
     def test_compare_treats_verified_nfp_carrier_aliases_as_equal(self):
         aliases = (
             ("BLUECROSS BLUESHIELD OF VERMONT", "Blue Cross and Blue Shield of Vermont"),

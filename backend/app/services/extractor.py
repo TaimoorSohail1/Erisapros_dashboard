@@ -9757,6 +9757,12 @@ def extract_sun_life_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     is_sun_life_health = bool(re.search(r"SUN\s+LIFE\s+AND\s+HEALTH\s+INSURANCE\s+COMPANY", joined, re.IGNORECASE))
     if is_sun_life_health:
         carrier = "SUN LIFE AND HEALTH INSURANCE COMPANY (U.S.)"
+    elif re.search(r"SUN\s+LIFE\s+ASSURANCE\s+COMPANY\s+OF\s+CANADA", joined, re.IGNORECASE):
+        # Some PDF text layers place the column heading immediately after
+        # "Name of insurance carrier" and the legal name on the next visual
+        # row. Prefer the explicit legal-name evidence anywhere on the page;
+        # otherwise the generic label becomes the carrier sent to FTW.
+        carrier = "SUN LIFE ASSURANCE COMPANY OF CANADA"
     carrier = re.sub(r"\s+", " ", carrier).strip().upper()
     values = {
         "1a. Name of Insurance Company": carrier,
@@ -9853,23 +9859,29 @@ def prefer_authoritative_pomerene_fields(
     fields: list[NormalizedExtractionField],
     page_texts: list[tuple[int, str]],
 ) -> list[NormalizedExtractionField]:
-    authoritative = next(
-        (
-            parsed
-            for parser in (
-                extract_guardian_schedule_a_fields,
-                extract_american_heritage_schedule_a_fields,
-                extract_sun_life_schedule_a_fields,
-                extract_reliance_standard_schedule_a_fields,
-                extract_eyemed_schedule_a_fields,
-            )
-            if (parsed := parser(page_texts))
-        ),
-        [],
-    )
+    authoritative: list[NormalizedExtractionField] = []
+    authoritative_parser = None
+    for parser in (
+        extract_guardian_schedule_a_fields,
+        extract_american_heritage_schedule_a_fields,
+        extract_sun_life_schedule_a_fields,
+        extract_reliance_standard_schedule_a_fields,
+        extract_eyemed_schedule_a_fields,
+    ):
+        if parsed := parser(page_texts):
+            authoritative = parsed
+            authoritative_parser = parser
+            break
     if not authoritative:
         return fields
     owned = {field.field_name for field in authoritative}
+    if authoritative_parser is extract_reliance_standard_schedule_a_fields:
+        # The OCR provider can confuse the adjacent administrative-fee amount
+        # for the payee name when the Reliance form's Payee Name row has no
+        # usable text layer.  The deterministic layout parser owns this field
+        # too: omit an unverified name and preserve the existing FTW broker
+        # instead of manufacturing a monetary broker name and false conflict.
+        owned.add("3a. Name of Agent/Broker/Person")
     restored = [field for field in fields if field.field_name not in owned and not field.field_name.startswith("9")]
     restored.extend(authoritative)
     return restored

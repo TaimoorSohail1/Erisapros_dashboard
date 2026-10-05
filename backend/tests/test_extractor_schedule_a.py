@@ -56,6 +56,7 @@ from app.services.extractor import (
     extract_reliance_standard_schedule_a_fields,
     extract_sun_life_broker_rows,
     extract_sun_life_schedule_a_fields,
+    prefer_authoritative_pomerene_fields,
     extract_ace_schedule_a_broker_rows,
     extract_ace_schedule_a_fields,
     extract_cigna_g2050a_schedule_a_fields,
@@ -718,6 +719,26 @@ AD&D 592 | Base Commissions
         self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields))
         self.assertTrue(all(row.decision == "AUTOMATIC" for row in resolved.schedule_a_broker_rows))
 
+    def test_pomerene_sun_life_table_header_is_not_used_as_carrier_name(self):
+        pages = [(2, """
+            5500 Schedule A Insurance Information
+            Policy/Account Number 924948
+            Name of insurance carrier
+            EIN (Insurance Carrier) NAIC Code From To
+            Sun Life Assurance Company of Canada 38-1082080 80802 01/01/2025 12/31/2025
+            Policy or Contract Year From 01/01/2025 To 12/31/2025
+            62 Approximate number of persons covered at end of policy or contract year
+            Total Amount of commissions paid $6,330.49
+            Total Premium received 01/01/2025 to 12/31/2025 Total $32,478.18
+        """)]
+
+        fields = {field.field_name: field.value for field in extract_sun_life_schedule_a_fields(pages)}
+
+        self.assertEqual(
+            fields["1a. Name of Insurance Company"],
+            "SUN LIFE ASSURANCE COMPANY OF CANADA",
+        )
+
     def test_pomerene_reliance_ocr_text_extracts_complete_schedule_a(self):
         pages = [(1, """
             reliance standard INSURANCE INFORMATION FORM 5500 - SCHEDULE A
@@ -742,6 +763,32 @@ AD&D 592 | Base Commissions
         self.assertEqual(fields["3c. Amount of Fees"], "384.40")
         self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "10,878.32")
         self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
+
+    def test_pomerene_reliance_drops_money_only_provider_broker_name(self):
+        pages = [(1, """
+            reliance standard INSURANCE INFORMATION FORM 5500 - SCHEDULE A
+            EIN: 36-0883760 NAIC: 68381 ORG. NUMBER: 3
+            Policyholder Name: Pomerene Hospital Policy Number: GL160111
+            Number of covered lives: Beginning: 351 Ending: 319
+            Policy Contract Year: 01/01/2025 to 12/31/2025
+            Total Premium: $10,878.32
+            Total Commission: $1,522.94
+            Total Administrative and Other Fees: $384.40
+        """)]
+        provider_fields = [
+            NormalizedExtractionField(
+                field_name="3a. Name of Agent/Broker/Person",
+                value="384.40",
+                confidence=0.99,
+            )
+        ]
+
+        merged = prefer_authoritative_pomerene_fields(provider_fields, pages)
+        values = {field.field_name: field.value for field in merged}
+
+        self.assertNotIn("3a. Name of Agent/Broker/Person", values)
+        self.assertEqual(values["3b. Amount of Commissions"], "1,522.94")
+        self.assertEqual(values["3c. Amount of Fees"], "384.40")
     def test_aig_welfare_plan_extracts_authoritative_identity_and_zero_broker_row(self):
         pages = [
             (
