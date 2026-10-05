@@ -343,6 +343,10 @@ def _document_xml(
             overrides=broker_overrides,
         )
         if schedule_a_broker_rows is not None:
+            broker_rows = _without_superseded_unpaid_broker_placeholders(
+                broker_rows,
+                schedule_a_broker_rows,
+            )
             broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
         if preserve_current_values and (values or broker_rows):
             values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
@@ -409,6 +413,10 @@ def _schedule_a_record_document_xml(
         overrides=broker_overrides,
     )
     if schedule_a_broker_rows is not None:
+        broker_rows = _without_superseded_unpaid_broker_placeholders(
+            broker_rows,
+            schedule_a_broker_rows,
+        )
         broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
     values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
         values,
@@ -876,6 +884,38 @@ def _schedule_a_broker_has_explicit_zero_compensation(row: dict[str, str]) -> bo
 def _sort_schedule_a_broker_rows_by_payment(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     """Meet FT Williams' highest-to-lowest provider ordering requirement."""
     return sorted(rows, key=_schedule_a_broker_payment_total, reverse=True)
+
+
+def _without_superseded_unpaid_broker_placeholders(
+    rows: list[dict[str, str]],
+    positional_overrides: list,
+) -> list[dict[str, str]]:
+    """Drop only unmatched, unpaid ``various brokers`` attachment markers.
+
+    FT Williams may keep a non-payment row such as ``VARIOUS BROKERS (LIST
+    ATTACHED)`` next to the actual recipient rows.  Once the attachment has
+    been extracted into structured broker rows, preserving that marker can
+    exceed FT Williams' broker-row capacity and cause a real recipient to be
+    discarded.  A ``None`` override proves the marker was not matched to an
+    extracted recipient.  Paid rows and ordinary unmatched brokers continue
+    to be preserved.
+    """
+    kept: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        unmatched = index < len(positional_overrides) and positional_overrides[index] is None
+        name_key = re.sub(r"[^A-Z0-9]+", "", str(row.get("NameXX") or "").upper())
+        is_attachment_marker = (
+            "VARIOUSBROKER" in name_key
+            and ("LISTATTACHED" in name_key or "SEEATTACHED" in name_key)
+        )
+        has_payment = any(
+            _has_nonzero_or_unknown_amount(row.get(tag))
+            for tag in ("CommPdAmtXX", "FeesPdAmtXX")
+        )
+        if unmatched and is_attachment_marker and not has_payment:
+            continue
+        kept.append(row)
+    return kept
 
 
 def _schedule_a_broker_payment_total(row: dict[str, str]) -> Decimal:

@@ -325,6 +325,64 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
         self.assertIsNone(aligned[1])
         self.assertEqual(aligned[2].name, "New Broker")
 
+    def test_complete_detail_replaces_unpaid_various_brokers_placeholder(self):
+        extracted_rows = [
+            extracted("First Broker", "1 Main St", "10001", "100"),
+            extracted("Second Broker", "2 Main St", "10002", "50"),
+        ]
+        current_rows = [
+            current(1, "First Broker", "1 Main St", "10001", "90"),
+            current(2, "Second Broker", "2 Main St", "10002", "40"),
+            {
+                "NameXX": "VARIOUS BROKERS (LIST ATTACHED)",
+                "CodeXX": "3",
+                "FeesPdTextXX": "COMMISSIONS AND FEES",
+            },
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        records = [
+            {
+                "ftw_seq_no": "5",
+                "query_results": {"InsCarrierName": "AFLAC", "InsContractNum": "NBX36"},
+                "query_subparts": {"Broker": current_rows},
+            }
+        ]
+        xml = build_schedule_a_records_update_xml(
+            records,
+            "5",
+            [],
+            year="2025",
+            ftw_customer_id="customer",
+            ftw_plan_id="plan",
+            schedule_a_broker_rows=aligned,
+        )
+        brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
+
+        self.assertTrue(all(match.resolved for match in matches))
+        self.assertEqual(len(aligned), 3)
+        self.assertIsNone(aligned[2])
+        self.assertEqual(
+            [broker.findtext("NameXX") for broker in brokers],
+            ["FIRST BROKER", "SECOND BROKER"],
+        )
+
+    def test_unmatched_paid_or_named_broker_is_still_preserved(self):
+        extracted_rows = [extracted("First Broker", "1 Main St", "10001", "100")]
+        current_rows = [
+            current(1, "First Broker", "1 Main St", "10001", "90"),
+            current(2, "Keep This Broker", "2 Main St", "10002", "25"),
+        ]
+
+        matches = match_schedule_a_brokers(extracted_rows, current_rows)
+        aligned = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+
+        self.assertEqual(len(aligned), 2)
+        self.assertEqual(aligned[0].name, "First Broker")
+        self.assertIsNone(aligned[1])
+
     def test_stale_confirmed_new_decision_does_not_duplicate_exact_existing_broker(self):
         extracted_rows = [
             ScheduleABrokerRow(
