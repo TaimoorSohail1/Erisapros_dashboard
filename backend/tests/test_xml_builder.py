@@ -1666,6 +1666,35 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertIn("sequence 1 missing field PlanSponsorName", gaps)
         self.assertIn("sequence 1 missing broker row 1 field NameXX", gaps)
 
+    def test_schedule_a_replace_ignores_hidden_brokers_when_no_compensation_is_preserved(self):
+        records = [
+            {
+                "ftw_seq_no": "4",
+                "query_results": {
+                    "InsCarrierName": "BLUECROSS BLUESHIELD OF VERMONT",
+                    "OverrideCommissionsAndFees": "1",
+                },
+                "query_subparts": {
+                    "Broker": [
+                        {
+                            "Name1": "STALE HIDDEN BROKER",
+                            "Code01": "3",
+                        }
+                    ]
+                },
+            }
+        ]
+        xml = """<ftwLink><DataBatch><DOLScheduleAData>
+          <TransactionType>2</TransactionType>
+          <InsCarrierName>BLUECROSS BLUESHIELD OF VERMONT</InsCarrierName>
+          <OverrideCommissionsAndFees>1</OverrideCommissionsAndFees>
+        </DOLScheduleAData></DataBatch></ftwLink>"""
+
+        self.assertEqual(
+            schedule_a_replacement_data_gaps(records, xml, matched_ftw_seq_no="4"),
+            [],
+        )
+
     def test_schedule_a_replace_preflight_allows_selected_brokers_to_be_sorted_by_payment(self):
         broker_rows = [
             {

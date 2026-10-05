@@ -931,6 +931,15 @@ def schedule_a_replacement_data_gaps(
             current_values,
             query_subparts=record.get("query_subparts") or {},
         )
+        if (
+            str(current_values.get("OverrideCommissionsAndFees") or "").strip() == "1"
+            and str(actual_fields.get("OverrideCommissionsAndFees") or "").strip() == "1"
+        ):
+            # FT Williams' no-compensation checkbox is the authoritative
+            # representation for this filing.  Old hidden broker fragments do
+            # not need to be copied into a replace-style update when both the
+            # fresh snapshot and outbound record keep that checkbox selected.
+            expected_brokers = []
         actual_brokers = [
             {
                 child.tag: str(child.text or "").strip()
