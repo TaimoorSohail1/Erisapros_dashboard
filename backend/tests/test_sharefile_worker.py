@@ -86,7 +86,7 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(upload_processed.wait(), timeout=1)
             raise asyncio.CancelledError
 
-        async def process(_queue, messages, _extraction_queue):
+        async def process(_queue, messages, _extraction_queue, _maintenance_queue):
             self.assertEqual(messages, [upload])
             upload_processed.set()
 
@@ -105,6 +105,56 @@ class ShareFileWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await run_worker()
 
         self.assertTrue(upload_processed.is_set())
+
+    async def test_slow_scheduled_scan_does_not_block_later_upload_webhook(self):
+        """A full-account poll must not occupy the upload-priority intake lane."""
+        queue = AsyncMock()
+        queue.configured = True
+        scan_started = asyncio.Event()
+        upload_seen = asyncio.Event()
+        release_scan = asyncio.Event()
+        poll = {"Body": json.dumps({"type": "poll"}), "ReceiptHandle": "poll"}
+        upload = {
+            "Body": json.dumps({"type": "webhook", "payload": {"ItemId": "new-pdf"}}),
+            "ReceiptHandle": "upload",
+        }
+        calls = 0
+
+        async def receive(_queue):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return [poll]
+            if calls == 2:
+                return [upload]
+            await asyncio.Event().wait()
+
+        async def dispatch(message, service=None, background_tasks=None):
+            if message["type"] == "poll":
+                scan_started.set()
+                await release_scan.wait()
+            elif message["type"] == "webhook":
+                upload_seen.set()
+            return {"queued": 0}
+
+        with (
+            patch("app.sharefile_worker.get_settings") as settings,
+            patch("app.sharefile_worker.get_sharefile_work_queue", return_value=queue),
+            patch("app.sharefile_worker.get_repository") as repository,
+            patch("app.sharefile_worker.receive_message_burst", side_effect=receive),
+            patch("app.sharefile_worker.dispatch_sharefile_work", new=AsyncMock(side_effect=dispatch)),
+        ):
+            settings.return_value.sharefile_webhook_auto_register_enabled = False
+            repository.return_value.ensure_indexes = AsyncMock()
+            worker = asyncio.create_task(run_worker())
+            try:
+                await asyncio.wait_for(scan_started.wait(), timeout=1)
+                await asyncio.wait_for(upload_seen.wait(), timeout=0.2)
+            finally:
+                release_scan.set()
+                worker.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker
 
     async def test_dispatches_each_supported_work_type(self):
         service = AsyncMock()

@@ -46,6 +46,14 @@ class PendingWebhookExtraction:
     heartbeats: list[asyncio.Task]
 
 
+@dataclass
+class PendingMaintenanceWork:
+    """Slow scans kept off the upload-priority intake lane."""
+
+    message: dict
+    heartbeat: asyncio.Task
+
+
 async def dispatch_sharefile_work(
     message: dict,
     service: ShareFileService | None = None,
@@ -92,6 +100,58 @@ async def process_sqs_message(queue: ShareFileWorkQueue, message: dict) -> None:
         heartbeat.cancel()
         with suppress(asyncio.CancelledError):
             await heartbeat
+
+
+async def enqueue_maintenance_work(
+    queue: ShareFileWorkQueue,
+    maintenance_queue: asyncio.Queue[PendingMaintenanceWork],
+    message: dict,
+) -> None:
+    """Queue a scan without pausing receipt of later upload webhooks."""
+    receipt_handle = message["ReceiptHandle"]
+    heartbeat = asyncio.create_task(_visibility_heartbeat(queue, receipt_handle))
+    await maintenance_queue.put(PendingMaintenanceWork(message=message, heartbeat=heartbeat))
+
+
+async def process_next_maintenance_work(
+    queue: ShareFileWorkQueue,
+    maintenance_queue: asyncio.Queue[PendingMaintenanceWork],
+) -> None:
+    pending = await maintenance_queue.get()
+    try:
+        body = json.loads(pending.message.get("Body") or "{}")
+        sent_timestamp = (pending.message.get("Attributes") or {}).get("SentTimestamp")
+        if body.get("type") == "poll" and sent_timestamp:
+            age_seconds = time.time() - (int(sent_timestamp) / 1000)
+            if age_seconds > STALE_POLL_SECONDS:
+                logger.info("Discarding stale ShareFile poll message (age %.0fs).", age_seconds)
+                await queue.delete(pending.message["ReceiptHandle"])
+                return
+
+        result = await dispatch_sharefile_work(body)
+        if body.get("type") == "auto_register" and isinstance(result, dict):
+            failed = int(result.get("failed") or 0)
+            if failed:
+                logger.warning(
+                    "ShareFile webhook registration incomplete: %s of %s folder roots failed.",
+                    failed,
+                    result.get("webhook_roots") or 0,
+                )
+        await queue.delete(pending.message["ReceiptHandle"])
+    except Exception:
+        reset_repository()
+        logger.exception("ShareFile maintenance work failed; SQS will retry it.")
+    finally:
+        await _cancel_heartbeat(pending.heartbeat)
+        maintenance_queue.task_done()
+
+
+async def run_maintenance_worker(
+    queue: ShareFileWorkQueue,
+    maintenance_queue: asyncio.Queue[PendingMaintenanceWork],
+) -> None:
+    while True:
+        await process_next_maintenance_work(queue, maintenance_queue)
 
 
 async def process_webhook_batch(
@@ -244,6 +304,7 @@ async def process_sqs_messages(
     queue: ShareFileWorkQueue,
     messages: list[dict],
     extraction_queue: asyncio.Queue[PendingWebhookExtraction] | None = None,
+    maintenance_queue: asyncio.Queue[PendingMaintenanceWork] | None = None,
 ) -> None:
     webhook_messages: list[dict] = []
     other_messages: list[dict] = []
@@ -262,6 +323,9 @@ async def process_sqs_messages(
         await process_webhook_batch(queue, webhook_messages, extraction_queue)
 
     for message in other_messages:
+        if maintenance_queue is not None:
+            await enqueue_maintenance_work(queue, maintenance_queue, message)
+            continue
         try:
             await process_sqs_message(queue, message)
         except Exception:
@@ -303,7 +367,9 @@ async def run_worker() -> None:
     await get_repository().ensure_indexes()
     logger.info("ShareFile worker started.")
     extraction_queue: asyncio.Queue[PendingWebhookExtraction] = asyncio.Queue()
+    maintenance_queue: asyncio.Queue[PendingMaintenanceWork] = asyncio.Queue()
     extraction_worker = asyncio.create_task(run_extraction_worker(queue, extraction_queue))
+    maintenance_worker = asyncio.create_task(run_maintenance_worker(queue, maintenance_queue))
     registration_worker = (
         asyncio.create_task(run_webhook_registration_loop(settings.sharefile_webhook_discovery_interval_seconds))
         if settings.sharefile_webhook_auto_register_enabled
@@ -313,13 +379,17 @@ async def run_worker() -> None:
         while True:
             messages = await receive_message_burst(queue)
             if messages:
-                await process_sqs_messages(queue, messages, extraction_queue)
+                await process_sqs_messages(queue, messages, extraction_queue, maintenance_queue)
     finally:
-        for task in (extraction_worker, registration_worker):
+        for task in (extraction_worker, maintenance_worker, registration_worker):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        while not maintenance_queue.empty():
+            pending = maintenance_queue.get_nowait()
+            await _cancel_heartbeat(pending.heartbeat)
+            maintenance_queue.task_done()
 
 
 if __name__ == "__main__":

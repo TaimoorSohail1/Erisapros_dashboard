@@ -570,6 +570,7 @@ class ShareFileService:
                 # never conclude that the folders it did not visit are gone.
                 partial_scan=targeted_scan or not deep,
                 force_reprocess_item_ids=targeted_reprocess_ids or restored_suppression_ids,
+                deletion_cutoff_at=scan_started_at,
             )
             scan_finished_at = datetime.utcnow()
             scan_error_list = list(result.get("scan_errors") or [])
@@ -1026,6 +1027,7 @@ class ShareFileService:
         scan_errors: list[dict] | None = None,
         partial_scan: bool = False,
         force_reprocess_item_ids: set[str] | None = None,
+        deletion_cutoff_at: datetime | None = None,
     ) -> dict:
         repo = get_repository()
         scanned_files = self._dedupe_scanned_files(scanned_files)
@@ -1191,7 +1193,10 @@ class ShareFileService:
         # on record, so it is only safe after a scan that saw the whole
         # account with no errors.
         if not partial_scan and scan_errors is not None and not scan_errors:
-            deleted = await self._mark_deleted_sharefile_files(active_sharefile_item_ids)
+            deleted = await self._mark_deleted_sharefile_files(
+                active_sharefile_item_ids,
+                observed_before=deletion_cutoff_at,
+            )
 
         await repo.add_audit(
             AuditLog(
@@ -2375,7 +2380,11 @@ class ShareFileService:
             "path": file_item.get("path"),
         }
 
-    async def _mark_deleted_sharefile_files(self, active_sharefile_item_ids: set[str]) -> int:
+    async def _mark_deleted_sharefile_files(
+        self,
+        active_sharefile_item_ids: set[str],
+        observed_before: datetime | None = None,
+    ) -> int:
         repo = get_repository()
         deleted = 0
         for record in await repo.list_active_sharefile_file_summaries():
@@ -2386,10 +2395,18 @@ class ShareFileService:
                 continue
             if record.get("document_type") not in {DocumentType.PLAN_WORKSHEET.value, DocumentType.SCHEDULE_A.value}:
                 continue
+            last_seen_at = record.get("last_seen_at")
+            if observed_before and isinstance(last_seen_at, datetime) and last_seen_at > observed_before:
+                # A webhook observed this file after the full scan began. The
+                # scan snapshot cannot safely conclude that it was deleted.
+                continue
             marked = await self._mark_deleted_sharefile_item(item_id, "ShareFile source file was not found during the latest complete scan.")
             if marked:
                 deleted += 1
-        deleted += await self._mark_deleted_sharefile_filings(active_sharefile_item_ids)
+        deleted += await self._mark_deleted_sharefile_filings(
+            active_sharefile_item_ids,
+            observed_before=observed_before,
+        )
         return deleted
 
     async def _mark_deleted_sharefile_item(self, item_id: str, reason: str | None = None) -> dict | None:
@@ -3126,13 +3143,21 @@ class ShareFileService:
                 return True
         return False
 
-    async def _mark_deleted_sharefile_filings(self, active_sharefile_item_ids: set[str]) -> int:
+    async def _mark_deleted_sharefile_filings(
+        self,
+        active_sharefile_item_ids: set[str],
+        observed_before: datetime | None = None,
+    ) -> int:
         repo = get_repository()
         deleted = 0
         for filing in await repo.list_filing_package_summaries():
             if filing.status in {FilingStatus.DELETED, FilingStatus.SUPERSEDED}:
                 continue
             if filing.intake_source != "SHAREFILE" and not filing.sharefile_item_id:
+                continue
+            if observed_before and filing.created_at > observed_before:
+                # The filing was created by a priority webhook after this scan
+                # took its snapshot, so it belongs to the next reconciliation.
                 continue
 
             filing_item_ids = {

@@ -86,6 +86,43 @@ class ShareFileRegressionTests(unittest.TestCase):
             target_folder_id="fo-vitco",
         )
 
+    def test_deep_scan_does_not_delete_file_observed_by_newer_webhook(self):
+        scan_started_at = datetime.utcnow()
+        webhook_seen_at = scan_started_at + timedelta(seconds=1)
+        run_async(
+            repositories.get_repository().upsert_sharefile_file(
+                "new-upload",
+                {
+                    "status": "NEW",
+                    "document_type": DocumentType.SCHEDULE_A.value,
+                    "last_seen_at": webhook_seen_at,
+                },
+            )
+        )
+        filing = run_async(
+            repositories.get_repository().create_filing(
+                Filing(
+                    file_name="new-upload.pdf",
+                    content_type="application/pdf",
+                    file_size=1,
+                    s3_key="sharefile/new-upload.pdf",
+                    intake_source="SHAREFILE",
+                    sharefile_item_id="new-upload",
+                    created_at=webhook_seen_at,
+                )
+            )
+        )
+
+        deleted = run_async(
+            self.service._mark_deleted_sharefile_files(set(), observed_before=scan_started_at)
+        )
+
+        self.assertEqual(deleted, 0)
+        record = run_async(repositories.get_repository().get_sharefile_file("new-upload"))
+        current = run_async(repositories.get_repository().get_filing(filing.id))
+        self.assertEqual(record["status"], "NEW")
+        self.assertNotEqual(current.status, FilingStatus.DELETED)
+
     def test_targeted_year_folder_keeps_client_ancestry_in_package_root(self):
         target = {
             "Id": "year",

@@ -1259,7 +1259,7 @@ class MongoRepository(Repository):
                 "status": {"$nin": ["DELETED", "IGNORED"]},
                 "document_type": {"$in": ["SCHEDULE_A", "PLAN_WORKSHEET"]},
             },
-            {"item_id": 1, "status": 1, "document_type": 1},
+            {"item_id": 1, "status": 1, "document_type": 1, "last_seen_at": 1},
         ).to_list(10000)
         return [self._plain_mongo_doc(doc) for doc in docs]
 
@@ -2104,6 +2104,7 @@ class MemoryRepository(Repository):
                 "item_id": record.get("item_id"),
                 "status": record.get("status"),
                 "document_type": record.get("document_type"),
+                "last_seen_at": record.get("last_seen_at"),
             }
             for record in self.sharefile_files.values()
             if record.get("status") not in {"DELETED", "IGNORED"}
