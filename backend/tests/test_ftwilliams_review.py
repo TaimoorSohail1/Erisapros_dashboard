@@ -1222,6 +1222,32 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 self.assertEqual(updated[0].value, extracted)
                 self.assertEqual(updated[0].proposed_value, expected)
 
+    def test_plan_worksheet_identity_does_not_restore_dba_alias_to_outbound_carrier(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+        )
+        policy = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "ABCDE0123456789",
+        )
+        summary = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name="PRE-PAID LEGAL SERVICES INC dba LEGALSHIELD",
+            account_number="ABCDE0123456789",
+            period_begin="01/01/2025",
+            period_end="12/31/2025",
+        )
+
+        updated = service._fields_with_plan_worksheet_identity([carrier, policy], [summary])
+        updated_carrier = next(field for field in updated if field.mapped_rule_key == carrier.mapped_rule_key)
+
+        self.assertEqual(updated_carrier.value, carrier.value)
+        self.assertEqual(updated_carrier.proposed_value, "PRE-PAID LEGAL SERVICES INC")
+
     def test_existing_equivalent_carrier_is_not_blocked_by_send_format_rule(self):
         field = ExtractedField(
             filing_id="filing",
