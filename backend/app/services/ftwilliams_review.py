@@ -5805,6 +5805,8 @@ class FTWilliamsReviewService:
         for match in review.schedule_a_broker_matches or []:
             if not match.resolved:
                 continue
+            if match.status == "AUTO_DEDUPLICATE":
+                return True
             # AUTO_NEW is the deterministic outcome when no FT Williams row
             # matches the extracted broker. It is already resolved and must be
             # treated exactly like a reviewer-confirmed new row when deciding

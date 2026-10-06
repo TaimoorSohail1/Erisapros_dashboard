@@ -290,6 +290,8 @@ class FTWAutomationPolicy:
         for match in review.schedule_a_broker_matches or []:
             if not match.resolved:
                 continue
+            if match.status == "AUTO_DEDUPLICATE":
+                return True
             if match.status in {"CONFIRMED_NEW", "AUTO_NEW"}:
                 return True
             if match.extracted_index < 0 or match.extracted_index >= len(rows):

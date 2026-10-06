@@ -287,7 +287,7 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
 
         matches = match_schedule_a_brokers(extracted_rows, current_rows)
 
-        self.assertEqual(matches[0].status, "AUTO_MATCHED")
+        self.assertEqual(matches[0].status, "AUTO_DEDUPLICATE")
         self.assertTrue(matches[0].resolved)
         self.assertEqual(matches[0].ftw_index, 0)
         self.assertIn("duplicate", matches[0].reason)

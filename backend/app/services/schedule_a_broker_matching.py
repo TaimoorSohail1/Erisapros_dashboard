@@ -143,7 +143,11 @@ def match_schedule_a_brokers(
                 ScheduleABrokerMatch(
                     extracted_index=extracted_index,
                     ftw_index=selected,
-                    status="AUTO_MATCHED",
+                    status=(
+                        "AUTO_DEDUPLICATE"
+                        if reason.startswith("Matched the first of several byte-equivalent")
+                        else "AUTO_MATCHED"
+                    ),
                     resolved=True,
                     reason=reason,
                     current_row=normalized_current[selected],
