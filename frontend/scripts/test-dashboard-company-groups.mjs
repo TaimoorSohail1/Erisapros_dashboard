@@ -13,6 +13,19 @@ const groupKey = runInNewContext(runtime + "\nfilingCompanyGroupKey", {
   firstXmlValue: () => "",
   firstStringFromPackageDocuments: () => "",
 });
+const updateModeSource = page.slice(page.indexOf("function dashboardUpdateMode("), page.indexOf("function dashboardAutomationState("));
+const updateModeRuntime = ts.transpileModule(updateModeSource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const updateMode = runInNewContext(updateModeRuntime + "\ndashboardUpdateMode", {
+  automationIsActive: (status) => ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND"].includes(status),
+});
+const normalizedUpdateMode = (filing) => JSON.parse(JSON.stringify(updateMode(filing)));
+
+assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 3 }), { label: "Automatically updated", badgeClass: "ready" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 0 }), { label: "Automatically verified", badgeClass: "ready" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "PROCESSING" }), { label: "Automatic update", badgeClass: "info" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "ACTION_NEEDED" }), { label: "Manual update required", badgeClass: "warn" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "DISABLED" }), { label: "Manual update", badgeClass: "warn" });
+
 const clientFilings = ["COMMUNITY LEGAL AID SOCAL", "Community Legal Aid SoCal (CLA SoCal)"].map((name, index) => ({
   id: String(index), dashboard_client_name: name, dashboard_ein: "95-1994337",
   dashboard_client_group_key: "sharefile:legacy:path:community legal aid socal (test) > community legal aid socal (cla socal)",
@@ -25,6 +38,21 @@ assert.match(
   page,
   /const DASHBOARD_IDLE_POLL_MS = 30_000;/,
   "New ShareFile uploads should appear without a two-minute idle dashboard delay.",
+);
+assert.match(
+  page,
+  /useState<LifecycleFilter>\("ALL"\)/,
+  "The dashboard must open with All filings selected.",
+);
+assert.match(
+  page,
+  /function dashboardUpdateMode[\s\S]*?Automatically updated[\s\S]*?Automatically verified[\s\S]*?Manual update required[\s\S]*?Automatic update[\s\S]*?Manual update/,
+  "Each filing must identify whether FT Williams handling is automatic or manual.",
+);
+assert.match(
+  page,
+  /dashboard-update-mode/,
+  "The filing status cell must display its automatic or manual update mode.",
 );
 assert.match(
   page,

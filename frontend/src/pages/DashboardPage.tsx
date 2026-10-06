@@ -52,7 +52,7 @@ export function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [dateFilter, setDateFilter] = useState<DateFilter>("ALL");
   const [contractTypeFilter, setContractTypeFilter] = useState<ContractTypeFilter>("ALL");
-  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>("ACTIVE");
+  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>("ALL");
   const ftwFailuresState = useFTWilliamsFailures();
   const ftwFailureCount = ftwFailuresState.data.total;
   const [rowsLimit, setRowsLimit] = useState(25);
@@ -245,9 +245,9 @@ export function DashboardPage() {
                 label="View"
                 value={lifecycleFilter}
                 options={[
+                  { value: "ALL", label: "All filings" },
                   { value: "ACTIVE", label: "Active" },
                   { value: "COMPLETED", label: "Completed" },
-                  { value: "ALL", label: "All filings" },
                 ]}
                 onChange={(value) => setLifecycleFilter(value as LifecycleFilter)}
               />
@@ -679,6 +679,7 @@ function DashboardFilingRow({
   const planIdentity = filingPlanIdentity(filing);
   const planName = filingPlanName(filing, pipelineStage);
   const automation = dashboardAutomationState(filing);
+  const updateMode = dashboardUpdateMode(filing);
   const readyAction = automation
     ? automation.status === "COMPLETED"
     : filing.status === "APPROVED" || filing.status === "READY_FOR_APPROVAL";
@@ -717,6 +718,7 @@ function DashboardFilingRow({
           ) : (
             <StatusBadge status={filing.status} />
           )}
+          <span className={`badge dashboard-update-mode ${updateMode.badgeClass}`}>{updateMode.label}</span>
           <ScheduleAContractBadge type={filing.schedule_a_contract_type || "UNKNOWN"} compact />
           <small>{automation?.detail || pipelineStage.detail}</small>
         </div>
@@ -773,6 +775,27 @@ type AutomationPresentation = {
   status: FTWAutomationStatus;
   tone: "info" | "warn" | "ready" | "danger";
 };
+
+type DashboardUpdateMode = {
+  badgeClass: "info" | "ready" | "warn";
+  label: "Automatic update" | "Automatically updated" | "Automatically verified" | "Manual update" | "Manual update required";
+};
+
+function dashboardUpdateMode(filing: Filing): DashboardUpdateMode {
+  const automationStatus = filing.automation_status;
+  if (automationStatus === "COMPLETED") {
+    return (filing.will_update_count || 0) > 0
+      ? { label: "Automatically updated", badgeClass: "ready" }
+      : { label: "Automatically verified", badgeClass: "ready" };
+  }
+  if (automationStatus === "ACTION_NEEDED" || automationStatus === "FAILED") {
+    return { label: "Manual update required", badgeClass: "warn" };
+  }
+  if (automationIsActive(automationStatus)) {
+    return { label: "Automatic update", badgeClass: "info" };
+  }
+  return { label: "Manual update", badgeClass: "warn" };
+}
 
 function dashboardAutomationState(filing: Filing): AutomationPresentation | null {
   const status = filing.automation_status;
