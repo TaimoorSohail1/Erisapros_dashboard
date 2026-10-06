@@ -47,7 +47,11 @@ class FilingPipelineTests(unittest.TestCase):
 
     def test_duplicate_cleanup_uses_compact_package_summaries(self):
         package_key = "Client > 5500 Filing > 2025 Filing > Schedule A::carrier"
-        document = {"package_key": package_key, "document_type": "SCHEDULE_A"}
+        keep_document = {"package_key": package_key, "document_type": "SCHEDULE_A"}
+        duplicate_document = {
+            "package_key": f"Folders > ERISA Pros > {package_key}",
+            "document_type": "SCHEDULE_A",
+        }
         keep = Filing(
             id="keep",
             file_name="Carrier Schedule A.pdf",
@@ -55,7 +59,7 @@ class FilingPipelineTests(unittest.TestCase):
             file_size=1,
             s3_key="schedule-a/keep.pdf",
             document_type=DocumentType.SCHEDULE_A,
-            package_documents=[document],
+            package_documents=[keep_document],
             status=FilingStatus.NEEDS_REVIEW,
         )
         duplicate = Filing(
@@ -65,7 +69,7 @@ class FilingPipelineTests(unittest.TestCase):
             file_size=1,
             s3_key="schedule-a/duplicate.pdf",
             document_type=DocumentType.SCHEDULE_A,
-            package_documents=[document],
+            package_documents=[duplicate_document],
             status=FilingStatus.FAILED,
         )
         repo = AsyncMock()

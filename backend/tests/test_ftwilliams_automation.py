@@ -842,6 +842,35 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(updated.automation_status, FTWAutomationStatus.COMPLETED)
         self.assertIsNotNone(updated.automation_completed_at)
 
+    def test_same_plan_update_waits_for_distributed_plan_lease(self):
+        filing, review, extracted, settings = self.safe_case()
+        repo = MemoryRepository()
+        saved_filing = run_async(repo.create_filing(filing))
+        extracted.filing_id = saved_filing.id
+        review.filing_id = saved_filing.id
+        run_async(repo.add_fields([extracted]))
+        review.fields[0].field_id = extracted.id
+        run_async(repo.upsert_ftwilliams_review(review))
+        repo.try_acquire_ftw_plan_lease = AsyncMock(side_effect=[False, True])
+        repo.release_ftw_plan_lease = AsyncMock()
+        review_service = FakeAutomationReviewService(review)
+        service = FTWAutomationService(
+            repo=repo,
+            review_service=review_service,
+            settings=settings,
+        )
+
+        with patch(
+            "app.services.ftwilliams_automation.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            decision = run_async(service.run(saved_filing.id, review=review))
+
+        self.assertEqual(decision.status, FTWAutomationStatus.COMPLETED)
+        self.assertEqual(repo.try_acquire_ftw_plan_lease.await_count, 2)
+        repo.release_ftw_plan_lease.assert_awaited_once()
+        self.assertEqual(len(review_service.send_calls), 1)
+
     def test_readback_mismatch_marks_automation_failed_without_second_send(self):
         filing, review, extracted, settings = self.safe_case()
         repo = MemoryRepository()

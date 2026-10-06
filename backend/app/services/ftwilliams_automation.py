@@ -526,10 +526,57 @@ class FTWAutomationService:
                 ["Another automation worker is already processing this filing."],
                 "WAIT_FOR_ACTIVE_RUN",
             )
+        plan_key = self._plan_lease_key(review)
+        plan_lease_acquired = False
         try:
+            if plan_key:
+                wait_attempts = max(
+                    1,
+                    int(self.settings.ftw_automation_lease_seconds / 2),
+                )
+                for attempt in range(wait_attempts):
+                    plan_lease_acquired = await self.repo.try_acquire_ftw_plan_lease(
+                        plan_key,
+                        lease_id,
+                        self.settings.ftw_automation_lease_seconds,
+                    )
+                    if plan_lease_acquired:
+                        break
+                    if attempt + 1 < wait_attempts:
+                        await asyncio.sleep(2)
+                if not plan_lease_acquired:
+                    return self.policy._decision(
+                        FTWAutomationStatus.PROCESSING,
+                        False,
+                        ["Another automation worker is updating this FT Williams plan year."],
+                        "WAIT_FOR_ACTIVE_RUN",
+                    )
             return await self._run_with_process_lock(filing_id, review=review)
         finally:
+            if plan_key and plan_lease_acquired:
+                await self.repo.release_ftw_plan_lease(plan_key, lease_id)
             await self.repo.release_automation_lease(filing_id, lease_id)
+
+    @staticmethod
+    def _plan_lease_key(review: FTWilliamsReview | None) -> str | None:
+        if review is None:
+            return None
+        customer_id = str(
+            review.ftw_browser_customer_id
+            or review.ftw_customer_id
+            or review.customer_id
+            or ""
+        ).strip()
+        plan_id = str(
+            review.ftw_browser_plan_id
+            or review.ftw_plan_id
+            or review.plan_id
+            or ""
+        ).strip()
+        year = str(review.year or review.comparison_year or "").strip()
+        if not customer_id or not plan_id or not year:
+            return None
+        return f"{customer_id.casefold()}|{plan_id.casefold()}|{year}"
 
     async def _run_with_process_lock(
         self,

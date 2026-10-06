@@ -449,11 +449,25 @@ async def supersede_duplicate_active_package_rows(keep_filing_id: str) -> None:
 def filing_package_key(filing) -> str | None:
     for document in filing.package_documents:
         if document.get("package_key"):
-            return str(document["package_key"])
+            return canonical_sharefile_package_key(str(document["package_key"]))
     s3_key = str(filing.s3_key or "")
     if s3_key.startswith("sharefile-package/"):
-        return s3_key.removeprefix("sharefile-package/")
+        return canonical_sharefile_package_key(
+            s3_key.removeprefix("sharefile-package/")
+        )
     return None
+
+
+def canonical_sharefile_package_key(package_key: str) -> str:
+    """Collapse ShareFile UI-root aliases used by deep scans and quick polls."""
+    path, separator, item_id = package_key.partition("::")
+    segments = [re.sub(r"\s+", " ", part).strip() for part in path.split(">")]
+    while segments and segments[0].casefold() in {"folders", "erisa pros"}:
+        segments.pop(0)
+    canonical_path = " > ".join(segment.casefold() for segment in segments if segment)
+    if not separator:
+        return canonical_path
+    return f"{canonical_path}::{item_id.strip().casefold()}"
 
 
 def classify_document(file_name: str) -> DocumentType:

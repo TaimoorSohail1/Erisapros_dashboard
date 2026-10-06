@@ -242,6 +242,8 @@ class Repository:
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
     async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool: ...
     async def release_automation_lease(self, filing_id: str, lease_id: str) -> None: ...
+    async def try_acquire_ftw_plan_lease(self, plan_key: str, lease_id: str, seconds: int) -> bool: ...
+    async def release_ftw_plan_lease(self, plan_key: str, lease_id: str) -> None: ...
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def replace_fields(self, filing_id: str, fields: list[ExtractedField]) -> list[ExtractedField]: ...
     async def list_fields(self, filing_id: str) -> list[ExtractedField]: ...
@@ -696,6 +698,41 @@ class MongoRepository(Repository):
         await self.db.filings.update_one(
             {"_id": ObjectId(filing_id), "automation_lease_id": lease_id},
             {"$set": {"automation_lease_id": None, "automation_lease_expires_at": None}},
+        )
+
+    async def try_acquire_ftw_plan_lease(self, plan_key: str, lease_id: str, seconds: int) -> bool:
+        now = datetime.utcnow()
+        try:
+            doc = await self.db.ftw_automation_plan_leases.find_one_and_update(
+                {
+                    "_id": plan_key,
+                    "$or": [
+                        {"lease_id": lease_id},
+                        {"lease_id": None},
+                        {"lease_id": {"$exists": False}},
+                        {"expires_at": {"$lte": now}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "lease_id": lease_id,
+                        "expires_at": now + timedelta(seconds=max(30, seconds)),
+                        "updated_at": now,
+                    },
+                    "$setOnInsert": {"created_at": now},
+                },
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            # A different process owns the unique plan/year lease.
+            return False
+        return bool(doc and doc.get("lease_id") == lease_id)
+
+    async def release_ftw_plan_lease(self, plan_key: str, lease_id: str) -> None:
+        await self.db.ftw_automation_plan_leases.update_one(
+            {"_id": plan_key, "lease_id": lease_id},
+            {"$set": {"lease_id": None, "expires_at": None, "updated_at": datetime.utcnow()}},
         )
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
@@ -1669,6 +1706,7 @@ class MemoryRepository(Repository):
 
     def __init__(self):
         self.ftw_browser_leases: dict[str, tuple[str, datetime]] = {}
+        self.ftw_automation_plan_leases: dict[str, tuple[str, datetime]] = {}
         self.filings: dict[str, Filing] = {}
         self.fields: dict[str, ExtractedField] = {}
         self.events: list[ReviewEvent] = []
@@ -1755,6 +1793,22 @@ class MemoryRepository(Repository):
         if filing and filing.automation_lease_id == lease_id:
             filing.automation_lease_id = None
             filing.automation_lease_expires_at = None
+
+    async def try_acquire_ftw_plan_lease(self, plan_key: str, lease_id: str, seconds: int) -> bool:
+        now = datetime.utcnow()
+        current = self.ftw_automation_plan_leases.get(plan_key)
+        if current and current[0] != lease_id and current[1] > now:
+            return False
+        self.ftw_automation_plan_leases[plan_key] = (
+            lease_id,
+            now + timedelta(seconds=max(30, seconds)),
+        )
+        return True
+
+    async def release_ftw_plan_lease(self, plan_key: str, lease_id: str) -> None:
+        current = self.ftw_automation_plan_leases.get(plan_key)
+        if current and current[0] == lease_id:
+            self.ftw_automation_plan_leases.pop(plan_key, None)
 
     async def add_fields(self, fields: list[ExtractedField]) -> list[ExtractedField]:
         for field in fields:
