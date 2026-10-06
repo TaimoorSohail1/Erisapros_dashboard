@@ -185,6 +185,7 @@ export function FilingReviewPage() {
   const [pollVersion, setPollVersion] = useState(0);
   const [ftwBusy, setFtwBusy] = useState(false);
   const [ftwSendBusy, setFtwSendBusy] = useState(false);
+  const [auditPdfBusy, setAuditPdfBusy] = useState(false);
   const [xmlBusy, setXmlBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
   const [decisionAction, setDecisionAction] = useState<"reject" | null>(null);
@@ -206,7 +207,8 @@ export function FilingReviewPage() {
   const previousFilingRef = useRef<FilingDetail | null>(null);
   const bringForwardOpenedRef = useRef(false);
   const ftwSendInFlightRef = useRef(false);
-  const pollingPaused = ftwBusy || ftwSendBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
+  const auditPdfInFlightRef = useRef(false);
+  const pollingPaused = ftwBusy || ftwSendBusy || auditPdfBusy || xmlBusy || retryBusy || rulesBusy || Boolean(decisionAction) || Boolean(fieldSavingId);
   const shouldPollReview = !pollingPaused && (
     isProcessingStatus(filing?.status ?? "UPLOADED")
     || ["PROCESSING", "BRING_FORWARD_REQUIRED", "SAFE_TO_SEND"].includes(filing?.automation_status || "DISABLED")
@@ -999,7 +1001,9 @@ export function FilingReviewPage() {
   }
 
   async function viewFtwAuditPdf() {
-    if (!id) return;
+    if (!id || auditPdfInFlightRef.current) return;
+    auditPdfInFlightRef.current = true;
+    setAuditPdfBusy(true);
     try {
       await openFTWilliamsAuditPDF(id);
     } catch (error) {
@@ -1008,6 +1012,9 @@ export function FilingReviewPage() {
         title: "Verified PDF is unavailable",
         message: error instanceof Error ? error.message : "Generate the FT Williams evidence again.",
       });
+    } finally {
+      auditPdfInFlightRef.current = false;
+      setAuditPdfBusy(false);
     }
   }
 
@@ -1115,6 +1122,7 @@ export function FilingReviewPage() {
 
         {verifiedUpdateComplete && ftwReview ? (
           <FTWUpdateSuccessNotice
+            auditPdfBusy={auditPdfBusy}
             onViewAuditPDF={viewFtwAuditPdf}
             review={ftwReview}
             reviewNoteCount={actionRequiredCount}
@@ -1394,6 +1402,7 @@ export function FilingReviewPage() {
         <WorkflowDetailDialog
           actionRequiredCount={actionRequiredCount}
           busy={reviewInteractionBusy}
+          auditPdfBusy={auditPdfBusy}
           filing={filing}
           foundCount={foundCount}
           ftwCurrentLoaded={ftwCurrentLoaded}
@@ -1677,10 +1686,12 @@ function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined)
 }
 
 function FTWUpdateSuccessNotice({
+  auditPdfBusy,
   onViewAuditPDF,
   review,
   reviewNoteCount,
 }: {
+  auditPdfBusy: boolean;
   onViewAuditPDF: () => void;
   review: FTWilliamsReview;
   reviewNoteCount: number;
@@ -1726,8 +1737,8 @@ function FTWUpdateSuccessNotice({
           </a>
         ) : null}
         {review.audit_pdf_status === "AVAILABLE" ? (
-          <button className="button secondary" type="button" onClick={onViewAuditPDF}>
-            <FileText size={15} /> View verified PDF
+          <button className="button secondary" type="button" disabled={auditPdfBusy} aria-busy={auditPdfBusy} onClick={onViewAuditPDF}>
+            {auditPdfBusy ? <InlineLoader label="Preparing verified PDF" /> : <><FileText size={15} /> View verified PDF</>}
           </button>
         ) : null}
       </div>
@@ -2285,6 +2296,7 @@ function ReviewPrimaryActions({
 
 function WorkflowDetailDialog({
   actionRequiredCount,
+  auditPdfBusy,
   busy,
   filing,
   foundCount,
@@ -2302,6 +2314,7 @@ function WorkflowDetailDialog({
   willUpdateCount,
 }: {
   actionRequiredCount: number;
+  auditPdfBusy: boolean;
   busy: boolean;
   filing: FilingDetail;
   foundCount: number;
@@ -2592,8 +2605,8 @@ function WorkflowDetailDialog({
               ) : null}
               {review?.audit_pdf_status === "AVAILABLE" ? (
                 <div className="workflow-dialog-actions">
-                  <button className="button secondary" type="button" onClick={onViewAuditPDF}>
-                    <FileText size={15} /> View verified PDF
+                  <button className="button secondary" type="button" disabled={auditPdfBusy} aria-busy={auditPdfBusy} onClick={onViewAuditPDF}>
+                    {auditPdfBusy ? <InlineLoader label="Preparing verified PDF" /> : <><FileText size={15} /> View verified PDF</>}
                   </button>
                   {review.audit_pdf_sha256 ? <small>SHA-256 {review.audit_pdf_sha256.slice(0, 12)}…</small> : null}
                 </div>

@@ -14,6 +14,9 @@ assert.match(source, /Existing Schedule A updated/, "The receipt must identify a
 assert.match(source, /Verified by FT Williams/, "The receipt must state that FT Williams read-back verified the update.");
 assert.match(source, /Open in FT Williams/, "The receipt must link to the FT Williams destination.");
 assert.match(source, /View verified PDF/, "The receipt must expose generated PDF evidence when available.");
+assert.match(source, /const \[auditPdfBusy, setAuditPdfBusy\] = useState\(false\)/, "Opening verified evidence must have an explicit loading state.");
+assert.match(source, /async function viewFtwAuditPdf[\s\S]*?setAuditPdfBusy\(true\)[\s\S]*?await openFTWilliamsAuditPDF\(id\)[\s\S]*?finally[\s\S]*?setAuditPdfBusy\(false\)/, "The verified PDF loader must cover the complete request lifecycle.");
+assert.match(source, /disabled=\{auditPdfBusy\}[\s\S]*?InlineLoader label="Preparing verified PDF"/, "The verified PDF button must disable itself and show progress while opening evidence.");
 assert.match(source, /<th>Sent<\/th>[\s\S]*?<th>FT Williams returned<\/th>[\s\S]*?<th>Status<\/th>/, "The receipt must show sent and returned field values with status.");
 assert.match(source, /isVerifiedFTWilliamsUpdate\(review\)/, "The receipt must remain gated by verified read-back success.");
 assert.match(source, /verifiedUpdateComplete \? \([\s\S]*?FT Williams verified[\s\S]*?: \([\s\S]*?Send to FT Williams/, "A completed filing must replace the send action with a verified state.");
