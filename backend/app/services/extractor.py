@@ -683,10 +683,25 @@ class ExtractionService:
         max_attempts = max(1, int(wait_seconds / settings.groundx_poll_seconds))
         latest: Any = None
         for _ in range(max_attempts):
-            response = await client.get(f"{base_url}/ingest/{process_id}", headers=headers)
+            try:
+                response = await client.get(
+                    f"{base_url}/ingest/{process_id}",
+                    headers=headers,
+                    timeout=min(30, max(5, wait_seconds)),
+                )
+            except (httpx.TimeoutException, httpx.NetworkError):
+                await asyncio.sleep(settings.groundx_poll_seconds)
+                continue
             response.raise_for_status()
             latest = response.json()
-            status = str(first_value(latest, ["status", "state", "processStatus"]) or "").lower()
+            status_payload = (
+                latest.get("ingest")
+                if isinstance(latest, dict) and isinstance(latest.get("ingest"), dict)
+                else latest
+            )
+            status = str(
+                first_value(status_payload, ["status", "state", "processStatus"]) or ""
+            ).lower()
             if status in {"complete", "completed", "done", "success", "succeeded", "finished"}:
                 return latest
             if status in {"failed", "error", "errored", "cancelled", "canceled"}:
@@ -755,7 +770,10 @@ class ExtractionService:
         max_attempts = max(1, int(settings.groundx_max_wait_seconds / settings.groundx_poll_seconds))
         for attempt in range(max_attempts):
             try:
-                response = await client.get(f"{base_url}/ingest/documents", headers=headers)
+                response = await client.get(
+                    f"{base_url}/ingest/documents/{settings.groundx_bucket_id}",
+                    headers=headers,
+                )
                 if response.status_code < 400:
                     documents = response.json().get("documents", [])
                     if isinstance(documents, list):

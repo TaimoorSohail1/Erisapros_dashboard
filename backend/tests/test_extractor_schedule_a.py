@@ -3633,6 +3633,73 @@ AD&D 592 | Base Commissions
         self.assertIn("verified local fallback", result.provider.lower())
         self.assertIn("TimeoutError", result.raw["fallback_reason"])
 
+    def test_groundx_document_lookup_is_scoped_to_configured_bucket(self):
+        response = SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "documents": [
+                    {
+                        "documentId": "document-1",
+                        "fileName": "schedule-a.pdf",
+                        "status": "complete",
+                        "xrayUrl": "https://upload.groundx.ai/xray.json",
+                    }
+                ]
+            },
+        )
+        client = SimpleNamespace(get=AsyncMock(return_value=response))
+        settings = SimpleNamespace(
+            groundx_bucket_id=35071,
+            groundx_max_wait_seconds=3,
+            groundx_poll_seconds=1,
+        )
+        service = ExtractionService()
+
+        with patch("app.services.extractor.get_settings", return_value=settings):
+            refs = asyncio.run(
+                service._find_groundx_document_refs(
+                    client,
+                    "https://api.groundx.ai/api/v1",
+                    {"X-API-Key": "test"},
+                    [{"processId": "process-1", "status": "complete"}],
+                    "schedule-a.pdf",
+                )
+            )
+
+        self.assertEqual(refs[0]["documentId"], "document-1")
+        client.get.assert_awaited_once_with(
+            "https://api.groundx.ai/api/v1/ingest/documents/35071",
+            headers={"X-API-Key": "test"},
+        )
+
+    def test_groundx_poll_recognizes_nested_ingest_status(self):
+        response = SimpleNamespace(
+            json=lambda: {"ingest": {"processId": "process-1", "status": "complete"}},
+            raise_for_status=lambda: None,
+        )
+        client = SimpleNamespace(get=AsyncMock(return_value=response))
+        settings = SimpleNamespace(
+            groundx_max_wait_seconds=3,
+            groundx_poll_seconds=1,
+        )
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = asyncio.run(
+                service._poll_groundx_process(
+                    client,
+                    "https://api.groundx.ai/api/v1",
+                    {"X-API-Key": "test"},
+                    "process-1",
+                )
+            )
+
+        self.assertEqual(result["ingest"]["status"], "complete")
+        self.assertEqual(client.get.await_count, 1)
+
     def test_groundx_failure_keeps_complete_local_fallback_trusted(self):
         fallback = NormalizedExtractionResult(
             provider="Local PDF parser fallback",
