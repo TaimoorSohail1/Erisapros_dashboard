@@ -354,11 +354,27 @@ class FTWLocalAgentService:
         ]
         if not devices:
             return FTWLocalAgentStatusResponse(enabled=True, connected=False)
-        devices.sort(key=lambda item: item.last_seen_at or datetime.min, reverse=True)
-        device = devices[0]
         fresh_after = datetime.utcnow() - timedelta(
             seconds=max(15, self.settings.ftw_local_agent_heartbeat_ttl_seconds)
         )
+
+        def status_priority(item: FTWLocalAgentDevice) -> tuple[bool, bool, bool, datetime]:
+            fresh = bool(item.last_seen_at and item.last_seen_at >= fresh_after)
+            ready = bool(
+                fresh
+                and not item.pause_requested
+                and item.status == FTWLocalAgentDeviceStatus.CONNECTED
+                and item.browser_ready
+            )
+            active = bool(fresh and not item.pause_requested)
+            return ready, active, fresh, item.last_seen_at or datetime.min
+
+        # A paused secondary computer can continue heartbeating and therefore
+        # be newer than the computer that is actually available for work. The
+        # workspace summary must describe the best active device, not merely
+        # the last device to report.
+        devices.sort(key=status_priority, reverse=True)
+        device = devices[0]
         connected = bool(
             device.last_seen_at
             and device.last_seen_at >= fresh_after

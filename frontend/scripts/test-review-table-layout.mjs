@@ -103,8 +103,18 @@ assert.match(
 );
 assert.match(
   source,
-  /Local FT Williams agent:[\s\S]*?Connected[\s\S]*?Login required[\s\S]*?Offline/,
+  /Local FT Williams agent:[\s\S]*?localAgentStatusLabel/,
   "The automated workflow should show a concise local-agent connection state.",
+);
+assert.match(
+  source,
+  /function localAgentStatusLabel[\s\S]*?Connected[\s\S]*?Login required[\s\S]*?Paused[\s\S]*?Pausing[\s\S]*?Resuming[\s\S]*?Waiting for account[\s\S]*?Offline/,
+  "The review workspace must not label a paused, resuming, waiting, or login-required computer as offline.",
+);
+assert.match(
+  source,
+  /const LOCAL_AGENT_POLL_MS = 5000[\s\S]*?setInterval\(loadLocalAgentStatus, LOCAL_AGENT_POLL_MS\)/,
+  "The review workspace must refresh agent connectivity promptly.",
 );
 assert.match(
   api,

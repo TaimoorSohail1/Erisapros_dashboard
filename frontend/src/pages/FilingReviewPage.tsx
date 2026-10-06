@@ -80,6 +80,7 @@ type FieldSaveOptions = {
   successTitle?: string;
 };
 const REVIEW_POLL_MS = 30000;
+const LOCAL_AGENT_POLL_MS = 5000;
 const EXPERIENCE_SCHEDULE_A_RULES = new Set([
   "schedule_a_part_iii_9a_premiums_1_amount_received",
   "schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid",
@@ -228,7 +229,7 @@ export function FilingReviewPage() {
       }
     }
     loadLocalAgentStatus();
-    const interval = window.setInterval(loadLocalAgentStatus, REVIEW_POLL_MS);
+    const interval = window.setInterval(loadLocalAgentStatus, LOCAL_AGENT_POLL_MS);
     return () => {
       active = false;
       window.clearInterval(interval);
@@ -1618,12 +1619,22 @@ function AutomationWorkflowNotice({
         {localAgentStatus?.enabled ? (
           <span className={`local-agent-status ${localAgentStatus.connected ? "connected" : "attention"}`}>
             <i aria-hidden="true" />
-            Local FT Williams agent: {localAgentStatus.connected ? "Connected" : localAgentStatus.status === "LOGIN_REQUIRED" ? "Login required" : "Offline"}
+            Local FT Williams agent: {localAgentStatusLabel(localAgentStatus)}
           </span>
         ) : null}
       </div>
     </section>
   );
+}
+
+function localAgentStatusLabel(status: FTWLocalAgentStatus) {
+  if (status.connected) return "Connected";
+  if (status.status === "LOGIN_REQUIRED") return "Login required";
+  if (status.status === "PAUSED") return "Paused";
+  if (status.status === "PAUSING") return "Pausing";
+  if (status.status === "RESUMING") return "Resuming";
+  if (status.status === "WAITING") return "Waiting for account";
+  return "Offline";
 }
 
 function uniqueAutomationReasonLabels(reasons: string[]) {

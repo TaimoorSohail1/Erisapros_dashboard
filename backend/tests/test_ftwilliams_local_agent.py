@@ -197,6 +197,91 @@ def test_mongo_local_agent_expiry_fields_are_stored_as_native_datetimes():
     assert isinstance(payload["created_at"], datetime)
 
 
+def test_status_prefers_a_ready_computer_over_a_more_recent_paused_device():
+    repo = MemoryRepository()
+    settings = Settings(
+        ftw_local_agent_enabled=True,
+        ftw_local_agent_heartbeat_ttl_seconds=90,
+    )
+    service = FTWLocalAgentService(repo=repo, settings=settings)
+    now = datetime.utcnow()
+    run_async(
+        repo.create_ftw_local_agent_device(
+            FTWLocalAgentDevice(
+                name="Paused computer",
+                token_hash="paused",
+                token_prefix="paused",
+                expected_account="HighlandTech",
+                paired_by="admin@example.com",
+                status=FTWLocalAgentDeviceStatus.PAUSED,
+                browser_ready=False,
+                pause_requested=True,
+                last_seen_at=now,
+            )
+        )
+    )
+    run_async(
+        repo.create_ftw_local_agent_device(
+            FTWLocalAgentDevice(
+                name="Ready computer",
+                token_hash="ready",
+                token_prefix="ready",
+                expected_account="HighlandTech",
+                paired_by="admin@example.com",
+                status=FTWLocalAgentDeviceStatus.CONNECTED,
+                browser_ready=True,
+                last_seen_at=now - timedelta(seconds=10),
+            )
+        )
+    )
+
+    status = run_async(service.status(paired_by="admin@example.com"))
+
+    assert status.connected is True
+    assert status.status == FTWLocalAgentDeviceStatus.CONNECTED
+    assert status.device_name == "Ready computer"
+
+
+def test_status_prefers_a_login_required_computer_over_a_paused_device():
+    repo = MemoryRepository()
+    settings = Settings(
+        ftw_local_agent_enabled=True,
+        ftw_local_agent_heartbeat_ttl_seconds=90,
+    )
+    service = FTWLocalAgentService(repo=repo, settings=settings)
+    now = datetime.utcnow()
+    for device in (
+        FTWLocalAgentDevice(
+            name="Paused computer",
+            token_hash="paused",
+            token_prefix="paused",
+            expected_account="HighlandTech",
+            paired_by="admin@example.com",
+            status=FTWLocalAgentDeviceStatus.PAUSED,
+            browser_ready=False,
+            pause_requested=True,
+            last_seen_at=now,
+        ),
+        FTWLocalAgentDevice(
+            name="Computer needing FTW login",
+            token_hash="login",
+            token_prefix="login",
+            expected_account="HighlandTech",
+            paired_by="admin@example.com",
+            status=FTWLocalAgentDeviceStatus.LOGIN_REQUIRED,
+            browser_ready=False,
+            last_seen_at=now - timedelta(seconds=10),
+        ),
+    ):
+        run_async(repo.create_ftw_local_agent_device(device))
+
+    status = run_async(service.status(paired_by="admin@example.com"))
+
+    assert status.connected is False
+    assert status.status == FTWLocalAgentDeviceStatus.LOGIN_REQUIRED
+    assert status.device_name == "Computer needing FTW login"
+
+
 def test_heartbeat_and_job_claim_are_pull_only_and_claim_token_is_one_time():
     repo = MemoryRepository()
     settings = Settings(
