@@ -13,6 +13,15 @@ Scope: ShareFile intake through dashboard extraction, Plan Worksheet reconciliat
 - False conflicts found during testing were fixed globally, covered by regression tests, deployed, and replayed in production.
 - Remaining `Action Needed` cases are source/client-data conflicts, invalid source identifiers, or genuinely unresolved FT Williams record identity. They were not silently overwritten.
 
+## Reverification update — 2026-10-06
+
+- Re-ran the identifier/layout/broker/XML/FT Williams automation regression set after the final fixes: **488 tests passed plus 12 subtests**.
+- Re-ran the complete backend suite: **1,045 passed, 2 skipped, 74 subtests passed**. The only warning is an upstream GroundX SDK deprecation notice.
+- Rechecked the public production endpoint: HTTP 200 with `{"status":"ok","stack":"react-python-mongodb"}`.
+- Retried the immutable API 115 / worker 105 release using image `sha256:eaae1b2f0ed64da6f19fdb2289597810d37bf7075b99d576d3d82ab8076aa6a1`. Worker 105 again failed before processing a filing because Atlas returned `using 517 MB of 512 MB; writes are blocked`; the service was immediately restored to API 114 / worker 104 and public health remained OK.
+- A read-only production database audit identified the principal logical-data consumers: `ftwilliams_reviews` **231 MB**, `extracted_fields` **69 MB**, `raw_extractions` **63 MB**, `sharefile_file_index` **28 MB**, `audit_logs` **27 MB**, and `filings` **26 MB**. No production records were deleted.
+- Therefore, EIN/NAIC/contract validation and automatic-update behavior are green in automated regression and the prior successful live receipts/read-backs below remain valid. A new live FT Williams write/read-back on the final image remains blocked until Atlas capacity is increased or a reviewed retention cleanup is authorized.
+
 ## Test plan executed
 
 1. Enumerate every supported file in each client root and verify dashboard package creation.
