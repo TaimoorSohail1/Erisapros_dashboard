@@ -24,6 +24,7 @@ import {
 import type { FormEvent, ReactNode } from "react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
+import { ftwWorkflowStep } from "../ftwWorkflowStep";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   ApiRequestError,
@@ -1966,12 +1967,18 @@ function WorkflowStepper({
   );
   const ftwScheduleStatus = ftwScheduleIsNew ? "New Schedule A prepared" : ftwScheduleMatch ? "Best match selected" : ftwScheduleNeedsDecision ? "Needs your decision" : null;
   const updateSent = isVerifiedFTWilliamsUpdate(filing.ftw_review);
+  const ftwUpdateStep = ftwWorkflowStep({
+    automationCompleted: filing.automation_status === "COMPLETED",
+    currentQuerySucceeded: ftwLoaded,
+    needsDecisionCount,
+    verifiedUpdate: updateSent,
+  });
   const steps = [
     { key: "INTAKE" as const, label: "Intake", detail: "Package received", state: "done" },
     { key: "EXTRACTION" as const, label: "Extraction", detail: filing.extraction_provider || "Waiting", state: (filing.fields || []).length ? "done" : processing ? "active" : "pending" },
     { key: "FTW_LOADED" as const, label: "FTW loaded", detail: ftwLoaded ? "Current values loaded" : ftwQuerying ? "Fetching current values" : "Query current values", state: ftwScheduleNeedsDecision ? "active" : ftwLoaded ? "done" : ftwQuerying ? "active" : "pending" },
     { key: "REVIEW" as const, label: "Review", detail: updateSent ? "Verified update complete" : processing ? "Waiting for extraction" : needsDecisionCount ? `${needsDecisionCount} fields need decision` : "No blockers", state: updateSent ? "done" : processing ? "pending" : needsDecisionCount ? "active" : "done" },
-    { key: "FTW_UPDATE" as const, label: "FTW update", detail: updateSent ? "Verified" : "Send selected changes", state: updateSent ? "done" : "active" },
+    { key: "FTW_UPDATE" as const, label: "FTW update", ...ftwUpdateStep },
   ];
   return (
     <section className="approval-progress-card">
