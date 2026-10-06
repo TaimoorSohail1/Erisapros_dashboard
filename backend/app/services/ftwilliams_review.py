@@ -5625,6 +5625,16 @@ class FTWilliamsReviewService:
                 return "broker purpose contains line/table noise"
 
         if rule_key == "schedule_a_part_i_3e_organizational_code":
+            broker_name = (
+                current_values.get("Name1")
+                or current_values.get("Name01")
+                or self._field_value_by_rule(
+                    fields,
+                    "schedule_a_part_i_3a_name_of_agent_broker_person",
+                )
+            )
+            if not str(broker_name or "").strip():
+                return "organization code cannot be sent without a broker name"
             if current and normalize_compare_value(current) != normalize_compare_value(proposed):
                 return "organization code differs from current FTW value"
 

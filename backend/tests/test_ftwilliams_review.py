@@ -2609,6 +2609,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             {field.mapped_rule_key for field in fields},
         )
 
+    def test_schedule_a_organization_code_is_blocked_without_a_broker_name(self):
+        organization_code = ExtractedField(
+            filing_id="filing",
+            source_field_name="3e. Organizational Code",
+            normalized_field_name="organization_code",
+            mapped_rule_key="schedule_a_part_i_3e_organizational_code",
+            mapped_label="3e. Organizational Code",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            priority=FieldPriority.HIGH,
+            value="3",
+            proposed_value="3",
+        )
+        service = FTWilliamsReviewService()
+
+        safe = service._safe_update_fields(
+            [organization_code],
+            FormType.SCHEDULE_A,
+            {"Code01": ""},
+        )
+        comparison = service._comparison_fields(
+            [organization_code],
+            {},
+            {"Code01": ""},
+            update_fields=safe,
+        )[0]
+
+        self.assertEqual(safe, [])
+        self.assertEqual(comparison.decision, FTWFieldDecision.BLOCKED)
+        self.assertTrue(comparison.validation_blocking)
+        self.assertIn("broker name", comparison.validation_message or "")
+
     def test_administrator_name_change_is_blocked_when_ft_requires_full_contact_block(self):
         administrator = ExtractedField(
             filing_id="filing",

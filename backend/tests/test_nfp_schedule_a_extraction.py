@@ -25,6 +25,7 @@ from app.services.extractor import (
     remove_inapplicable_experience_rated_fields,
     supplement_schedule_a_result_with_local,
 )
+from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
 
 
 def values(fields):
@@ -343,6 +344,22 @@ class NFPScheduleAExtractionTests(unittest.TestCase):
         self.assertEqual(extracted["1g. Policy Year Ending Date"], "04/30/2025")
         self.assertEqual(extracted["3c. Amount of Fees"], "21,762.00")
         self.assertEqual(extract_curalinc_broker_rows(pages)[0].name, "CuraLinc LLC")
+
+        resolved = resolve_schedule_a_result(
+            NormalizedExtractionResult(
+                provider="nfp-regression",
+                fields=extract_curalinc_schedule_a_fields(pages),
+            )
+        )
+        naic = next(field for field in resolved.fields if field.field_name == "1c. NAIC Code")
+        self.assertEqual(naic.value, "624190")
+        self.assertEqual(naic.decision, "REVIEW_REQUIRED")
+        self.assertTrue(
+            any(
+                validation.validator == "naic" and validation.status == "ERROR"
+                for validation in naic.validation_results
+            )
+        )
 
     def test_continental_report_extracts_end_date_and_broker_row(self):
         pages = [(1, """
