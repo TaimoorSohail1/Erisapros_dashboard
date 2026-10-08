@@ -429,6 +429,38 @@ def test_structured_extract_drops_line_9_values_copied_from_nonexperience_and_br
     assert line_9c_fees.label not in fields
 
 
+def test_structured_extract_drops_total_compensation_copied_into_total_retention():
+    rules = schedule_a_rules()
+
+    def by_prefix(prefix: str) -> FieldRule:
+        return next(item for item in rules if item.label.lower().startswith(prefix.lower()))
+
+    line_9c_total_retention = by_prefix("9c(1)(H).")
+    line_10a = by_prefix("10a.")
+    payload = {
+        "schedule_a_financial": {
+            line_9c_total_retention.key: "$1,907.34",
+            line_10a.key: "$10,878.32",
+        },
+        "broker_totals": [{"commission_total": 1522.94, "fee_total": 384.40}],
+        "broker_rows": [
+            {
+                "name": "Gallagher Benefit Services Inc",
+                "commission_total": 1522.94,
+                "fee_total": 384.40,
+            }
+        ],
+    }
+
+    result = normalize_groundx_schedule_a_extract(payload, rules)
+
+    fields = {field.field_name: field.value for field in result.fields}
+    assert fields[line_10a.label] == "$10,878.32"
+    assert fields[by_prefix("3b.").label] == "1522.94"
+    assert fields[by_prefix("3c.").label] == "384.4"
+    assert line_9c_total_retention.label not in fields
+
+
 def test_groundx_structured_extract_404_is_a_safe_fallback():
     service = ExtractionService(field_rules=schedule_a_rules())
     client = AsyncMock()

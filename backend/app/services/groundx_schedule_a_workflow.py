@@ -839,16 +839,60 @@ def _drop_copied_experience_values(
         and _normalize_money(line_9a.value) == _normalize_money(line_10a.value)
     )
     copied_labels: set[str] = {line_9a.field_name} if copied_9a and line_9a else set()
-    if copied_9a:
-        for experience_prefix, compensation_prefix in (("9c(1)(a).", "3b."), ("9c(1)(b).", "3c.")):
-            experience = find(experience_prefix)
-            compensation = find(compensation_prefix)
-            if (
-                experience
-                and compensation
-                and _normalize_money(experience.value) == _normalize_money(compensation.value)
-            ):
-                copied_labels.add(experience.field_name)
+    compensation_pairs = (("9c(1)(a).", "3b."), ("9c(1)(b).", "3c."))
+    copied_compensation_fields: list[NormalizedExtractionField] = []
+    for experience_prefix, compensation_prefix in compensation_pairs:
+        experience = find(experience_prefix)
+        compensation = find(compensation_prefix)
+        if (
+            experience
+            and compensation
+            and _normalize_money(experience.value) == _normalize_money(compensation.value)
+        ):
+            copied_compensation_fields.append(experience)
+
+    # GroundX can also copy a carrier statement's "Total Amount of
+    # Compensation" into 9c(1)(H), even when it correctly emits the same
+    # document's premium in nonexperience-rated line 10a.  Only suppress the
+    # copied retention candidate when there is no independent, non-zero Line 9
+    # evidence and the amount exactly reconciles to the structured Part I
+    # commission plus fee totals.
+    line_9c_total_retention = find("9c(1)(h).")
+    commission = find("3b.")
+    fee = find("3c.")
+    copied_experience_names = {
+        field.field_name for field in copied_compensation_fields
+    }
+    if copied_9a and line_9a:
+        copied_experience_names.add(line_9a.field_name)
+    if line_9c_total_retention:
+        copied_experience_names.add(line_9c_total_retention.field_name)
+    independent_line_9 = any(
+        field.field_name.strip().lower().startswith("9")
+        and field.field_name not in copied_experience_names
+        and _nonzero_money(_normalize_money(field.value))
+        for field in fields
+    )
+    commission_amount = _normalize_money(commission.value) if commission else None
+    fee_amount = _normalize_money(fee.value) if fee else None
+    compensation_total = None
+    if commission_amount is not None or fee_amount is not None:
+        compensation_total = _decimal_string(
+            Decimal(commission_amount or "0") + Decimal(fee_amount or "0")
+        )
+    copied_total_retention = bool(
+        line_10a
+        and _nonzero_money(_normalize_money(line_10a.value))
+        and line_9c_total_retention
+        and compensation_total is not None
+        and _normalize_money(line_9c_total_retention.value) == compensation_total
+        and not independent_line_9
+    )
+
+    if copied_9a or copied_total_retention:
+        copied_labels.update(field.field_name for field in copied_compensation_fields)
+    if copied_total_retention and line_9c_total_retention:
+        copied_labels.add(line_9c_total_retention.field_name)
     return [field for field in fields if field.field_name not in copied_labels]
 
 
