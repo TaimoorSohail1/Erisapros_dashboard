@@ -668,6 +668,52 @@ NFP CORPORATE SERVICES LLC     $1,713.62              $42.70
         self.assertEqual(merged[0].source_page, 3)
         self.assertTrue(merged[0].evidence)
 
+    def test_broker_merge_deduplicates_single_character_ocr_suffix(self):
+        provider_row = ScheduleABrokerRow(
+            name="Nth Insurance Agency dba: Alliance 360",
+            address_line_1="10833 VALLEY VIEW STREET",
+            address_line_2="SUITE 550",
+            city="CYPRESS",
+            state="CA",
+            zip_code="90630",
+            commission_total="3238.63",
+            fee_total="0",
+            confidence=0.97,
+            evidence=[
+                SourceEvidence(
+                    provider="GroundX structured extract",
+                    page=2,
+                    source_text="Nth Insurance Agency dba: Alliance 360 $3,238.63",
+                )
+            ],
+        )
+        local_row = ScheduleABrokerRow(
+            name="Nth Insurance Agency dba: Alliance 360 I",
+            address_line_1="10833 VALLEY VIEW STREET",
+            address_line_2="SUITE 550",
+            city="CYPRESS",
+            state="CA",
+            zip_code="90630",
+            commission_total="3,238.63",
+            fee_total="0.00",
+            confidence=0.99,
+            source_page=2,
+            evidence=[
+                SourceEvidence(
+                    provider="Local layout parser",
+                    page=2,
+                    source_text="Nth Insurance Agency dba: Alliance 360 I $3,238.63",
+                )
+            ],
+        )
+
+        merged = merge_schedule_a_broker_rows([provider_row], [local_row])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].name, "Nth Insurance Agency dba: Alliance 360")
+        self.assertEqual(merged[0].commission_total, "3,238.63")
+        self.assertEqual(len(merged[0].evidence), 2)
+
     def test_broker_merge_discards_parser_fragment_for_same_broker(self):
         complete_row = ScheduleABrokerRow(
             name="HUB INTERNATIONAL TEXAS INC",

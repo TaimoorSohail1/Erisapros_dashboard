@@ -636,6 +636,34 @@ AD&D 592 | Base Commissions
         self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "98,942.65")
         self.assertEqual([(row.name, row.commission_total) for row in brokers], [("REDTAIL LTD", "6,431.27"), ("HUMMEL GROUP INC", "6,431.27")])
 
+    def test_guardian_fee_with_blank_recipient_uses_matching_contract_broker(self):
+        pages = [(2, """
+            Guardian Life Insurance Company of America
+            Plan Number : 00398015 EIN : 13-5123390 NAIC: 64246
+            Data for Period From : 1/1/25 To : 12/31/25
+            The following figure represents commissions that are to be reported on Schedule A, Line 3, Element (b):
+            Contract Identification Name and Address of Recipient of Commissions
+            0002Z407 GALLAGHER BENEFIT SERVICES INC
+            PARK CENTRAL 7/ 12750 MERIT DR SUITE 1000 DALLAS TX 7525
+            Dental (Insured) 10,483.70
+            Total For Contract: 10,483.70
+            Total Commissions Paid On Plan: 10,483.70
+            The following figure represents fees that are to be reported on Schedule A, Line 3, Element (c):
+            Contract Identification Name of Recipient of Fees Amount
+            0002Z407 $10,713.11
+            Total Fees Paid $10,713.11
+            Totals: 349,456.83
+        """)]
+
+        brokers = extract_guardian_broker_rows(pages)
+
+        self.assertEqual(len(brokers), 1)
+        self.assertEqual(brokers[0].name, "GALLAGHER BENEFIT SERVICES INC")
+        self.assertEqual(brokers[0].commission_total, "10,483.70")
+        self.assertEqual(brokers[0].fee_total, "10,713.11")
+        self.assertEqual(brokers[0].fee_rows[0].amount, "10,713.11")
+        self.assertEqual(brokers[0].fee_rows[0].purpose, "FEES")
+
     def test_pomerene_guardian_letter_uses_plan_number_not_broker_code(self):
         pages = [(1, """
             Guardian Life Insurance Company of America

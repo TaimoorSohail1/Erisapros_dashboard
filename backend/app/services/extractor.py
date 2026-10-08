@@ -1214,6 +1214,15 @@ def merge_schedule_a_broker_rows(
         )
         if not identity[0]:
             continue
+        near_name_keys = [
+            key
+            for key in order
+            if _broker_names_match_with_ocr_suffix(key[0], identity[0])
+            and key[1:] == identity[1:]
+            and _broker_row_amounts_match(merged[key], row)
+        ]
+        if len(near_name_keys) == 1:
+            identity = near_name_keys[0]
         # Some carrier tables are returned once as a complete structured row
         # and again as a label fragment such as
         # ``FORT WORTH ST: TX ZIP: 76107-5739`` in the city column.  The
@@ -1340,6 +1349,17 @@ def _canonical_broker_name(value: str | None) -> str:
     return re.sub(rf"(?:\s+{_BROKER_LEGAL_SUFFIX})+$", "", normalized, flags=re.IGNORECASE).strip()
 
 
+def _broker_names_match_with_ocr_suffix(first: str | None, second: str | None) -> bool:
+    """Match a duplicate name carrying one common trailing OCR artifact."""
+    first_name = _canonical_broker_name(first)
+    second_name = _canonical_broker_name(second)
+    if not first_name or not second_name or first_name == second_name:
+        return False
+    shorter, longer = sorted((first_name, second_name), key=len)
+    suffix = longer[len(shorter):].strip()
+    return longer.startswith(f"{shorter} ") and suffix.casefold() in {"i", "l", "1", "|"}
+
+
 def _canonical_broker_address(value: str | None) -> str:
     normalized = normalize_rule_label(value or "")
     return re.sub(rf"^{_BROKER_LEGAL_SUFFIX}\s*[-,:]?\s*", "", normalized, flags=re.IGNORECASE).strip()
@@ -1349,6 +1369,8 @@ def _preferred_broker_name(first: str | None, second: str | None) -> str:
     candidates = [str(value or "").strip() for value in (first, second) if str(value or "").strip()]
     if not candidates:
         return ""
+    if len(candidates) == 2 and _broker_names_match_with_ocr_suffix(*candidates):
+        return min(candidates, key=len)
     return max(
         candidates,
         key=lambda value: (
@@ -9764,20 +9786,39 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
         ):
             if code.upper() != "000NM733" and not is_zero_money(amount):
                 entries.append((code.upper(), clean_extracted_value(name), money_value(amount)))
+    fee_by_contract: dict[str, str] = {}
+    fee_section = re.search(
+        r"The\s+following\s+figure\s+represents\s+fees\b(?P<section>.*?)(?=However\b|Recipient\s+of\s+One\s+Time\b|Group\s+Insurance\s+Coverage|$)",
+        joined,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fee_section:
+        for code, amount in re.findall(
+            r"\b(000[A-Z0-9]{4,5})\b[^\n$]*\$\s*([0-9,]+\.\d{2})",
+            fee_section.group("section"),
+            flags=re.IGNORECASE,
+        ):
+            if not is_zero_money(amount):
+                fee_by_contract[code.upper()] = money_value(amount)
     seen: set[str] = set()
     rows: list[ScheduleABrokerRow] = []
     for code, name, amount in entries:
         if code in seen:
             continue
         seen.add(code)
+        fee_amount = fee_by_contract.get(code, "0.00")
         rows.append(
             ScheduleABrokerRow(
                 name=name,
                 organization_code="3",
                 commission_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")],
-                fee_rows=[],
+                fee_rows=(
+                    [ScheduleABrokerMoneyRow(amount=fee_amount, purpose="FEES")]
+                    if not is_zero_money(fee_amount)
+                    else []
+                ),
                 commission_total=amount,
-                fee_total="0.00",
+                fee_total=fee_amount,
                 source_page=page,
                 confidence=0.98,
             )
