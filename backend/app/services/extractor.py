@@ -34,6 +34,7 @@ from app.models import (
 )
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.groundx_schedule_a_workflow import normalize_groundx_schedule_a_extract
+from app.services.groundx_schedule_a_adapter import adapt_groundx_schedule_a_xray
 from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline
 from app.services.schedule_a_layout_engine import (
     extract_layout_aware_schedule_a_fields,
@@ -385,9 +386,19 @@ class ExtractionService:
         document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
             try:
+                operation_timeout = max(
+                    1.0,
+                    float(
+                        getattr(
+                            settings,
+                            "groundx_operation_timeout_seconds",
+                            getattr(settings, "groundx_max_wait_seconds", 90),
+                        )
+                    ),
+                )
                 result = await asyncio.wait_for(
                     self._extract_with_groundx(file_bytes, file_name, FormType.SCHEDULE_A, "Schedule A"),
-                    timeout=max(1.0, float(getattr(settings, "groundx_max_wait_seconds", 90))),
+                    timeout=operation_timeout,
                 )
                 local_result = local_schedule_a_pdf_result(file_bytes, file_name, rules=self.field_rules)
                 result = supplement_schedule_a_result_with_local(result, local_result)
@@ -497,6 +508,8 @@ class ExtractionService:
         pdf_text_fields: list[NormalizedExtractionField] = []
         schedule_a_broker_rows: list[ScheduleABrokerRow] = []
         schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
+        adapter_classification_signals: set[str] = set()
+        adapter_schedule_a_count = 0
         for payload in structured_payloads:
             structured_result = normalize_groundx_schedule_a_extract(payload, self.field_rules)
             structured_fields.extend(structured_result.fields)
@@ -506,7 +519,17 @@ class ExtractionService:
             )
         for payload in raw_payloads:
             if is_groundx_xray_payload(payload):
+                adapted_xray = adapt_groundx_schedule_a_xray(payload)
                 xray_fields.extend(extract_fields_from_groundx_xray(payload, rules=self.field_rules))
+                schedule_a_broker_rows = merge_schedule_a_broker_rows(
+                    schedule_a_broker_rows,
+                    adapted_xray.broker_rows,
+                )
+                adapter_classification_signals.update(adapted_xray.classification_signals)
+                adapter_schedule_a_count = max(
+                    adapter_schedule_a_count,
+                    adapted_xray.schedule_a_count,
+                )
             elif is_groundx_search_payload(payload):
                 search_fields.extend(self._extract_fields_from_groundx_search(payload))
             else:
@@ -567,7 +590,12 @@ class ExtractionService:
         elif not fields:
             provider = "GroundX X-Ray not ready"
         deduped = dedupe_fields(fields)
-        classification_signals = classification_signals_from_text("\n".join(extract_xray_item_text(raw_payloads)))
+        classification_signals = sorted(
+            {
+                *adapter_classification_signals,
+                *classification_signals_from_text("\n".join(extract_xray_item_text(raw_payloads))),
+            }
+        )
         return NormalizedExtractionResult(
             provider=provider,
             fields=deduped,
@@ -576,6 +604,10 @@ class ExtractionService:
                 "process": poll_raw,
                 "structured_outputs": structured_payloads,
                 "outputs": raw_payloads[2:],
+                "xray_adapter": {
+                    "schedule_a_count": adapter_schedule_a_count,
+                    "multiple_schedule_a_records": adapter_schedule_a_count > 1,
+                },
             },
             classification_signals=classification_signals,
             schedule_a_broker_rows=schedule_a_broker_rows,
@@ -809,18 +841,30 @@ class ExtractionService:
         if xray_url:
             urls.append(xray_url)
 
-        for index, url in enumerate(urls):
-            try:
-                response = await client.get(url, headers=headers if index == 0 else None, timeout=60)
-            except (httpx.TimeoutException, httpx.NetworkError):
-                continue
-            if response.status_code in {400, 401, 403, 404, 408, 429, 500, 502, 503, 504}:
-                continue
-            try:
-                response.raise_for_status()
-                return response.json()
-            except (httpx.HTTPStatusError, ValueError):
-                continue
+        settings = get_settings()
+        attempts = max(1, int(getattr(settings, "groundx_xray_fetch_attempts", 1)))
+        retryable_statuses = {404, 408, 409, 429, 500, 502, 503, 504}
+        for attempt in range(attempts):
+            for index, url in enumerate(urls):
+                try:
+                    response = await client.get(
+                        url,
+                        headers=headers if index == 0 else None,
+                        timeout=60,
+                    )
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    continue
+                if response.status_code in {400, 401, 403}:
+                    continue
+                if response.status_code in retryable_statuses:
+                    continue
+                try:
+                    response.raise_for_status()
+                    return response.json()
+                except (httpx.HTTPStatusError, ValueError):
+                    continue
+            if attempt < attempts - 1:
+                await asyncio.sleep(float(getattr(settings, "groundx_poll_seconds", 3)))
         return None
 
     async def _search_groundx_with_field_schema(
@@ -1553,6 +1597,17 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
         if current is None:
             best[key] = field
             continue
+        if key == "1d. contract/policy number":
+            complete_numeric = _more_complete_source_supported_numeric_identifier(
+                current,
+                field,
+            )
+            if complete_numeric is field:
+                best[key] = _merge_field_provenance(field, [current, field])
+                continue
+            if complete_numeric is current:
+                best[key] = _merge_field_provenance(current, [current, field])
+                continue
         field_quality = _schedule_a_candidate_quality(field)
         current_quality = _schedule_a_candidate_quality(current)
         if field_quality > current_quality:
@@ -1578,6 +1633,42 @@ def select_best_schedule_a_fields(fields: list[NormalizedExtractionField]) -> li
     if all(value in (None, 0) for value in amount_by_prefix.values()):
         selected = [field for field in selected if not field.field_name.strip().lower().startswith("3d.")]
     return selected
+
+
+def _more_complete_source_supported_numeric_identifier(
+    left: NormalizedExtractionField,
+    right: NormalizedExtractionField,
+) -> NormalizedExtractionField | None:
+    """Prefer a complete labeled numeric policy over its truncated prefix."""
+
+    left_digits = re.sub(r"\D", "", str(left.value or ""))
+    right_digits = re.sub(r"\D", "", str(right.value or ""))
+    if not left_digits or not right_digits:
+        return None
+    if not re.fullmatch(r"[\d\s]+", str(left.value or "")):
+        return None
+    if not re.fullmatch(r"[\d\s]+", str(right.value or "")):
+        return None
+
+    longer, shorter = (
+        (left, right)
+        if len(left_digits) > len(right_digits)
+        else (right, left)
+    )
+    longer_digits = left_digits if longer is left else right_digits
+    shorter_digits = right_digits if shorter is right else left_digits
+    if len(longer_digits) == len(shorter_digits) or not longer_digits.startswith(shorter_digits):
+        return None
+
+    evidence_text = "\n".join(
+        [
+            str(longer.source_text or ""),
+            *(str(item.source_text or "") for item in longer.evidence),
+        ]
+    )
+    if longer_digits not in re.sub(r"\D", "", evidence_text):
+        return None
+    return longer
 
 
 def _schedule_a_candidate_quality(field: NormalizedExtractionField) -> tuple[int, int, int]:
@@ -1744,7 +1835,7 @@ def normalize_file_name(value: str) -> str:
 
 
 def extract_fields_from_groundx_xray(raw: Any, rules=None) -> list[NormalizedExtractionField]:
-    fields: list[NormalizedExtractionField] = []
+    fields: list[NormalizedExtractionField] = list(adapt_groundx_schedule_a_xray(raw).fields)
     chunks = raw.get("chunks", []) if isinstance(raw, dict) else []
     for chunk in chunks:
         if not isinstance(chunk, dict):
@@ -3059,6 +3150,7 @@ def local_schedule_a_pdf_result(
         *extract_vsp_broker_rows(page_texts),
         *extract_hartford_broker_rows(page_texts),
         *extract_metlife_bay_bridge_broker_rows(page_texts),
+        *extract_litera_lincoln_schedule_a_broker_rows(page_texts),
         *extract_unitedhealthcare_broker_rows(page_texts),
         *extract_prudential_broker_rows(broker_page_texts),
         *extract_aflac_broker_rows(broker_page_texts),
@@ -4667,8 +4759,8 @@ def extract_litera_lincoln_schedule_a_fields(
         (
             (page, normalize_ocr_text(text or ""))
             for page, text in page_texts
-            if re.search(r"THE\s+LINCOLN\s+NATIONAL\s+LIFE\s+INSURANCE\s+COMPANY", text or "", re.IGNORECASE)
-            and re.search(r"SCHEDULE\s+A\s+REPORTING\s+INFORMATION", text or "", re.IGNORECASE)
+            if re.search(r"THE\s*LINCOLN\s*NATIONAL\s*LIFE\s*INSURANCE\s*COMPANY", text or "", re.IGNORECASE)
+            and re.search(r"SCHEDULE\s*A\s*REPORTING\s*INFORMATION", text or "", re.IGNORECASE)
             and re.search(r"Contract\s+or\s+identification\s+number", text or "", re.IGNORECASE)
         ),
         None,
@@ -4677,8 +4769,8 @@ def extract_litera_lincoln_schedule_a_fields(
         return []
     page, text = main_page
     carrier = re.search(r"Name\s+of\s+insurance\s+carrier\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
-    ein = re.search(r"\((?:b|bo)\)\s*EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
-    naic = re.search(r"\(c\)\s*NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
+    ein = re.search(r"(?:\((?:b|bo)\)\s*)?EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
+    naic = re.search(r"(?:\(c\)\s*)?NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
     contract = re.search(
         r"\(d\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
         text,
@@ -4740,7 +4832,11 @@ def extract_litera_lincoln_schedule_a_fields(
         ("1a. Name of Insurance Company", carrier.group(1) if carrier else None, source),
         ("1b. Insurance Carrier EIN", ein.group(1) if ein else None, source),
         ("1c. NAIC Code", naic.group(1) if naic else None, source),
-        ("1d. Contract/Policy Number", contract.group(1) if contract else None, source),
+        (
+            "1d. Contract/Policy Number",
+            re.sub(r"\s+", "", contract.group(1)) if contract else None,
+            source,
+        ),
         ("1e. Persons Covered (End of Policy Year)", highest[1] if highest else None, source),
         ("1f. Policy Year Beginning Date", _normalize_position_date(highest[2]) if highest else None, source),
         ("1g. Policy Year Ending Date", _normalize_position_date(highest[3]) if highest else None, source),
@@ -4810,7 +4906,7 @@ def extract_litera_lincoln_schedule_a_broker_rows(
     for page, page_text in page_texts:
         text = normalize_ocr_text(page_text or "")
         if not (
-            re.search(r"SCHEDULE\s+A\s+REPORTING\s+INFORMATION", text, re.IGNORECASE)
+            re.search(r"SCHEDULE\s*A\s*REPORTING\s*INFORMATION", text, re.IGNORECASE)
             and re.search(r"Insurance\s+fees\s+and\s+commissions\s+paid", text, re.IGNORECASE)
         ):
             continue
@@ -5373,6 +5469,7 @@ def _extract_fields_from_pages(page_texts: list[tuple[int, str]], *, rules=None)
         extract_combined_chubb_schedule_a_fields(page_texts),
         extract_john_hancock_schedule_a_fields(page_texts),
         extract_metlife_standard_schedule_a_fields(page_texts),
+        extract_litera_lincoln_schedule_a_fields(page_texts),
     ]
     full_text = "\n\n".join(text for _, text in page_texts)
     if full_text:
@@ -9859,7 +9956,15 @@ def extract_reliance_standard_schedule_a_fields(page_texts: list[tuple[int, str]
         "1a. Name of Insurance Company": "Reliance Standard Life Insurance Company",
         "1b. Insurance Carrier EIN": regex_first(joined, [r"EIN\s*:?\s*(\d{2}-\d{7})"]),
         "1c. NAIC Code": regex_first(joined, [r"NAIC\s*:?\s*(\d{5})"]),
-        "1d. Contract/Policy Number": regex_first(joined, [r"Policy\s+Number\s*:?\s*([A-Z0-9-]+)"]),
+        # Keep the value on the same visual line as the label. GroundX can
+        # return the left-hand labels as a vertical block followed by a second
+        # block of values; ``\s*`` used to cross that newline and capture the
+        # next label word (``Policy``) as the contract number.
+        "1d. Contract/Policy Number": regex_first(
+            joined,
+            [r"Policy\s+Number[ \t]*:?[ \t]*([A-Z0-9][A-Z0-9-]{2,})[ \t]*(?:\r?$)"],
+            flags=re.IGNORECASE | re.MULTILINE,
+        ),
         "1e. Persons Covered (End of Policy Year)": regex_first(joined, [r"Ending\s*:?\s*([0-9,]+)"]),
         "1f. Policy Year Beginning Date": period[0] if isinstance(period, tuple) else None,
         "1g. Policy Year Ending Date": period[1] if isinstance(period, tuple) else None,
@@ -9875,12 +9980,58 @@ def extract_reliance_standard_schedule_a_fields(page_texts: list[tuple[int, str]
 def extract_reliance_standard_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
     joined = "\n".join(normalize_ocr_text(text) for _, text in page_texts)
     fields = {field.field_name: field.value for field in extract_reliance_standard_schedule_a_fields(page_texts)}
-    name = regex_first(joined, [r"Payee\s+Name\s*:?\s*(.+?)(?=\n|Payee\s+Address)"])
+    name = regex_first(
+        joined,
+        [
+            r"Payee\s+Name[ \t]*:?[ \t]*(.+?)(?=[ \t]+Total\s+Administrative|\r?$)",
+        ],
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
     if not fields or not name:
         return []
     commission = fields.get("3b. Amount of Commissions") or "0"
     fees = fields.get("3c. Amount of Fees") or "0"
-    return [ScheduleABrokerRow(name=clean_extracted_value(name), address_line_1="P. O. Box 4135", city="Clinton", state="IA", zip_code="52732", organization_code="3", commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")], fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose="ADMINISTRATIVE AND OTHER FEES")], commission_total=commission, fee_total=fees, source_page=1, confidence=0.99)]
+    mail_stop = regex_first(joined, [r"Mail\s+Stop\s*:?\s*([A-Z0-9-]+)"])
+    po_box = regex_first(joined, [r"(P\.?\s*O\.?\s+Box\s+[A-Z0-9-]+)"])
+    location = regex_first(
+        joined,
+        [r"P\.?\s*O\.?\s+Box\s+[A-Z0-9-]+[ \t]+([A-Za-z .'-]+?)\s*,?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)"],
+        groups=True,
+        flags=re.IGNORECASE,
+    )
+    city, state, zip_code = (
+        location if isinstance(location, tuple) else (None, None, None)
+    )
+    source_text = next(
+        (text for _, text in page_texts if "Payee Name" in str(text or "")),
+        joined,
+    )
+    return [
+        ScheduleABrokerRow(
+            name=clean_extracted_value(name),
+            address_line_1=(f"Mail Stop : {mail_stop}" if mail_stop else po_box),
+            address_line_2=po_box if mail_stop else None,
+            city=clean_extracted_value(city or "") or None,
+            state=str(state or "").upper() or None,
+            zip_code=zip_code,
+            organization_code=fields.get("3e. Organizational Code") or "3",
+            commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")],
+            fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose="ADMINISTRATIVE AND OTHER FEES")],
+            commission_total=commission,
+            fee_total=fees,
+            commission_source_text=source_text,
+            fee_source_text=source_text,
+            source_page=page_texts[0][0] if page_texts else 1,
+            confidence=0.99,
+            evidence=[
+                SourceEvidence(
+                    provider="Reliance Standard Schedule A parser",
+                    page=page_texts[0][0] if page_texts else 1,
+                    source_text=source_text,
+                )
+            ],
+        )
+    ]
 
 
 def prefer_authoritative_pomerene_fields(
@@ -9902,6 +10053,13 @@ def prefer_authoritative_pomerene_fields(
             break
     if not authoritative:
         return fields
+    # A layout-specific parser is allowed to replace provider values only
+    # when its candidate has the correct business shape. This prevents a
+    # vertically separated label block from overriding a valid semantic
+    # EyeLevel value with another label such as ``Policy``.
+    authoritative = [
+        field for field in authoritative if _schedule_a_candidate_value_is_valid(field)
+    ]
     owned = {field.field_name for field in authoritative}
     if authoritative_parser is extract_reliance_standard_schedule_a_fields:
         # The OCR provider can confuse the adjacent administrative-fee amount

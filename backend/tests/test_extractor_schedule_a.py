@@ -766,6 +766,51 @@ AD&D 592 | Base Commissions
         self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "10,878.32")
         self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
 
+    def test_pomerene_reliance_vertical_labels_do_not_replace_semantic_policy(self):
+        pages = [(1, """
+            reliance standard INSURANCE INFORMATION FORM 5500 - SCHEDULE A
+            EIN: 36-0883760
+            NAIC: 68381
+            ORG. NUMBER: 3
+            Policyholder Name:
+            Policy Number:
+            Policy Type:
+            Number of covered lives:
+            Policy Contract Year:
+            Pomerene Hospital
+            GL160111
+            GROUP LIFE AND ACCIDENTAL DEATH AND DISMEMBERMENT
+            Beginning: 351
+            01/01/2025 to 12/31/2025
+            Ending: 319
+            Total Premium: $10,878.32
+            Payee Name : Gallagher Benefit Services Inc    Total Administrative and Other Fees : $384.40
+            Payee Address : Mail Stop : 072103    Total Amount of Compensation : $1,907.34
+            P. O. Box 4135 Clinton, IA 52732
+            Total Commission: $1,522.94
+        """)]
+        provider_fields = [
+            NormalizedExtractionField(
+                field_name="1d. Contract/Policy Number",
+                value="GL160111",
+                confidence=0.97,
+                page=1,
+                source_text="EyeLevel semantic policy record",
+            )
+        ]
+
+        merged = prefer_authoritative_pomerene_fields(provider_fields, pages)
+        values = {field.field_name: field.value for field in merged}
+        brokers = extract_reliance_standard_broker_rows(pages)
+
+        self.assertEqual(values["1d. Contract/Policy Number"], "GL160111")
+        self.assertEqual(brokers[0].name, "Gallagher Benefit Services Inc")
+        self.assertEqual(brokers[0].address_line_1, "Mail Stop : 072103")
+        self.assertEqual(brokers[0].address_line_2, "P. O. Box 4135")
+        self.assertEqual(brokers[0].city, "Clinton")
+        self.assertEqual(brokers[0].state, "IA")
+        self.assertEqual(brokers[0].zip_code, "52732")
+
     def test_pomerene_reliance_drops_money_only_provider_broker_name(self):
         pages = [(1, """
             reliance standard INSURANCE INFORMATION FORM 5500 - SCHEDULE A
@@ -1679,7 +1724,7 @@ AD&D 592 | Base Commissions
         }
         rows = extract_litera_lincoln_schedule_a_broker_rows(pages)
 
-        self.assertEqual(values["1d. Contract/Policy Number"], "000400001000 23109")
+        self.assertEqual(values["1d. Contract/Policy Number"], "00040000100023109")
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "88")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,588.17")
         self.assertEqual(values["3b. Amount of Commissions"], "5,938.27")
@@ -1707,6 +1752,59 @@ AD&D 592 | Base Commissions
                 for item in resolved.schedule_a_broker_rows[0].validation_results
             )
         )
+
+    def test_litera_lincoln_image_ocr_accepts_joined_headings_and_preserves_full_policy(self):
+        pages = [
+            (
+                2,
+                """
+                THELINCOLNNATIONALLIFEINSURANCECOMPANY
+                SCHEDULEAREPORTINGINFORMATION
+                (a) Name of insurance carrier: The Lincoln National Life Insurance Company
+                EIN:35-0472300
+                NAIC code: 65676
+                (d) Contract or identification number: 000010233868 00000
+                (Part III, #8) (e) (f) (g)
+                STD 422 01/01/2025 12/31/2025
+                2. Insurance fee and commission information.
+                10. Nonexperience-rated contracts:
+                (a) Total premiums or subscription charges paid to carrier $126,256.23
+                """,
+            )
+        ]
+
+        values = {
+            field.field_name: field.value
+            for field in extract_litera_lincoln_schedule_a_fields(pages)
+        }
+
+        self.assertEqual(values["1b. Insurance Carrier EIN"], "35-0472300")
+        self.assertEqual(values["1c. NAIC Code"], "65676")
+        self.assertEqual(values["1d. Contract/Policy Number"], "00001023386800000")
+
+    def test_local_page_pipeline_includes_litera_lincoln_authoritative_fields(self):
+        pages = [
+            (
+                2,
+                """
+                THELINCOLNNATIONALLIFEINSURANCECOMPANY
+                SCHEDULEAREPORTINGINFORMATION
+                (a) Name of insurance carrier: The Lincoln National Life Insurance Company
+                EIN:35-0472300
+                NAIC code: 65676
+                (d) Contract or identification number: 000010233867 00000
+                (Part III, #8) (e) (f) (g)
+                LTD 422 01/01/2025 12/31/2025
+                2. Insurance fee and commission information.
+                10. Nonexperience-rated contracts:
+                (a) Total premiums or subscription charges paid to carrier $126,256.23
+                """,
+            )
+        ]
+
+        values = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
+
+        self.assertEqual(values["1d. Contract/Policy Number"], "00001023386700000")
 
     def test_litera_lincoln_recovers_dotted_premium_from_xray_glyph_noise(self):
         pages = [
@@ -3699,6 +3797,74 @@ AD&D 592 | Base Commissions
 
         self.assertEqual(result["ingest"]["status"], "complete")
         self.assertEqual(client.get.await_count, 1)
+
+    def test_groundx_xray_fetch_retries_when_artifact_is_not_ready(self):
+        not_ready = SimpleNamespace(status_code=404)
+        ready = SimpleNamespace(
+            status_code=200,
+            raise_for_status=lambda: None,
+            json=lambda: {"chunks": [], "documentPages": []},
+        )
+        client = SimpleNamespace(get=AsyncMock(side_effect=[not_ready, ready]))
+        settings = SimpleNamespace(
+            groundx_xray_fetch_attempts=2,
+            groundx_poll_seconds=1,
+        )
+        service = ExtractionService()
+
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.asyncio.sleep", new=AsyncMock()) as sleep,
+        ):
+            result = asyncio.run(
+                service._fetch_groundx_xray(
+                    client,
+                    "https://api.groundx.ai/api/v1",
+                    {"X-API-Key": "test"},
+                    "document-1",
+                )
+            )
+
+        self.assertEqual(result, {"chunks": [], "documentPages": []})
+        self.assertEqual(client.get.await_count, 2)
+        sleep.assert_awaited_once_with(1)
+
+    def test_schedule_a_uses_separate_groundx_operation_timeout(self):
+        groundx = NormalizedExtractionResult(
+            provider="GroundX structured extract",
+            fields=[
+                NormalizedExtractionField(
+                    field_name="1a. Name of Insurance Company",
+                    value="Test Carrier",
+                    confidence=0.99,
+                )
+            ],
+        )
+        local = NormalizedExtractionResult(provider="Local PDF parser", fields=[])
+        settings = SimpleNamespace(
+            groundx_api_key="test",
+            groundx_bucket_id="test",
+            groundx_max_wait_seconds=90,
+            groundx_operation_timeout_seconds=240,
+        )
+        observed: dict[str, float] = {}
+
+        async def capture_timeout(awaitable, *, timeout):
+            observed["timeout"] = timeout
+            return await awaitable
+
+        service = ExtractionService()
+        with (
+            patch("app.services.extractor.get_settings", return_value=settings),
+            patch("app.services.extractor.extract_schedule_a_classification_signals", return_value=[]),
+            patch("app.services.extractor.local_schedule_a_pdf_result", return_value=local),
+            patch("app.services.extractor.asyncio.wait_for", side_effect=capture_timeout),
+            patch.object(service, "_extract_with_groundx", new=AsyncMock(return_value=groundx)),
+        ):
+            result = asyncio.run(service._extract_schedule_a_unresolved(b"pdf", "schedule-a.pdf"))
+
+        self.assertEqual(result.provider, "GroundX structured extract")
+        self.assertEqual(observed["timeout"], 240)
 
     def test_groundx_failure_keeps_complete_local_fallback_trusted(self):
         fallback = NormalizedExtractionResult(

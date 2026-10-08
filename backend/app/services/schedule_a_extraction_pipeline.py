@@ -117,6 +117,22 @@ def resolve_schedule_a_result(
         if isinstance(result.raw, dict)
         else {}
     )
+    xray_adapter = (
+        result.raw.get("xray_adapter", {})
+        if isinstance(result.raw, dict)
+        else {}
+    )
+    if int(xray_adapter.get("schedule_a_count") or 0) > 1:
+        cross_field_errors.append("multiple_schedule_a_records")
+        _mark_fields_review(
+            result.fields,
+            ("",),
+            validator="multiple_schedule_a_records",
+            reason=(
+                "EyeLevel detected multiple Schedule A policy records in this source. "
+                "A reviewer must separate or select a record before values can be used."
+            ),
+        )
     if int(semantic_resolution.get("group_count") or 0) > 1:
         cross_field_errors.append("multiple_schedule_a_policy_groups")
         _mark_fields_review(

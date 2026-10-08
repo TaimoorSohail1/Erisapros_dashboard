@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     groundx_api_base_url: str = "https://api.groundx.ai/api/v1"
     groundx_poll_seconds: float = 3
     groundx_max_wait_seconds: int = 90
+    # Allow the complete Schedule A operation to finish its bounded ingestion,
+    # structured-output, and X-Ray checks. This is intentionally longer than
+    # one ingestion polling window so completed jobs do not fall back locally
+    # while their extraction artifact is still becoming available.
+    groundx_operation_timeout_seconds: float = 240
+    groundx_xray_fetch_attempts: int = 3
     # Read workflow JSON when the assigned GroundX bucket supports it. Missing
     # extract artifacts safely fall back to X-Ray/local extraction.
     groundx_structured_extract_enabled: bool = True
