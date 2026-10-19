@@ -14,6 +14,7 @@ import re
 from typing import Iterable
 
 from app.models import NormalizedExtractionField, SourceEvidence
+from app.services.schedule_a_pdf_source import source_page
 
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -185,7 +186,7 @@ def extract_pdf_layout(file_bytes: bytes) -> list[LayoutPage]:
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as document:
             for number, page in enumerate(document.pages, start=1):
-                raw_words = page.extract_words(
+                raw_words = source_page(page).extract_words(
                     x_tolerance=2,
                     y_tolerance=3,
                     keep_blank_chars=False,

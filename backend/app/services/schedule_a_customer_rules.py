@@ -1,7 +1,9 @@
 """Customer-authorized defaults for proposed recipients, never FTW snapshots."""
 from decimal import Decimal, InvalidOperation
+import re
 
 from app.models import (
+    ExtractionValidationResult,
     NormalizedExtractionField,
     NormalizedExtractionResult,
     ScheduleABrokerMoneyRow,
@@ -10,6 +12,48 @@ from app.models import (
 )
 
 DEFAULT_CODE_REASON = "Customer rule: Defaulted to 3 because organizational code was blank."
+DEFAULT_NAIC_REASON = "Customer-approved rule: Use 00000 when the carrier NAIC is missing or N/A. This is a default, not a printed identifier."
+
+
+def published_static_default(rule):
+    if (str(rule.field_type).casefold() != "static" or "schedule a" not in str(rule.source).casefold()
+            or getattr(rule.status, "value", rule.status) != "PUBLISHED"):
+        return None
+    match = re.fullmatch(r"\s*Always\s+(Yes|No)\s*[.!]?\s*", str(rule.client_notes or rule.notes or ""), re.I)
+    return match.group(1).title() if match else None
+
+
+def published_static_default_reason(rule):
+    return f"Published rule {rule.key} v{rule.version}: {rule.client_notes or rule.notes}"
+
+
+def apply_published_static_defaults(result, rules) -> None:
+    if not result.fields and not result.schedule_a_broker_rows:
+        return
+    for rule in rules or []:
+        default = published_static_default(rule)
+        if default is None:
+            continue
+        field = next((f for f in result.fields if f.field_name.casefold() == rule.label.casefold()), None)
+        if field is not None and str(field.value or "").strip():
+            if field.value.strip().casefold() != default.casefold():
+                reason = "Printed/extracted value conflicts with the published static default. Preserve the value and confirm the rule."
+                field.validation_results.append(ExtractionValidationResult(validator="business_rule_confirmation", status="ERROR", reason=reason))
+                field.decision = "REVIEW_REQUIRED"
+            continue
+        if field is None:
+            field = NormalizedExtractionField(field_name=rule.label)
+            result.fields.append(field)
+        reason = published_static_default_reason(rule)
+        field.value, field.candidate_values, field.confidence = default, [default], 1.0
+        field.source_text = reason
+        field.evidence = [SourceEvidence(provider="Published field rule default", source_text=reason)]
+        field.decision = "AUTOMATIC" if rule.automatic_update_allowed else "REVIEW_REQUIRED"
+        raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        entry = {"field": field.field_name, "value": default, "rule_key": rule.key, "rule_version": rule.version, "reason": reason}
+        if entry not in raw.setdefault("customer_defaults", []):
+            raw["customer_defaults"].append(entry)
+        result.raw = raw
 
 
 def default_blank_organization_codes(rows: list[ScheduleABrokerRow]) -> list[ScheduleABrokerRow]:
@@ -97,7 +141,9 @@ def exclude_zero_compensation_brokers(
     retained: list[ScheduleABrokerRow] = []
     evidence: list[dict[str, str]] = []
     for row in rows:
-        if _explicit_zero(row.commission_total) and _explicit_zero(row.fee_total):
+        if (row.decision != 'REVIEW_REQUIRED'
+                and not any(v.status == 'ERROR' for v in row.validation_results)
+                and _explicit_zero(row.commission_total) and _explicit_zero(row.fee_total)):
             evidence.append(
                 {
                     "rule": "exclude_zero_compensation_broker",
@@ -143,5 +189,20 @@ def apply_customer_defaults(result: NormalizedExtractionResult) -> None:
         code_field.source_text = DEFAULT_CODE_REASON
         code_field.evidence = [SourceEvidence(provider="Customer configured default", source_text=DEFAULT_CODE_REASON)]
         raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
-        raw["customer_defaults"] = [{"field": code_field.field_name, "value": "3", "reason": DEFAULT_CODE_REASON}]
+        raw.setdefault("customer_defaults", []).append({"field": code_field.field_name, "value": "3", "reason": DEFAULT_CODE_REASON})
+        result.raw = raw
+    carrier_present = any(f.field_name.strip().lower().startswith("1a.") and str(f.value or "").strip()
+                          for f in result.fields)
+    naic = next((f for f in result.fields if f.field_name.strip().lower().startswith("1c.")), None)
+    if carrier_present and (naic is None or str(naic.value or "").strip().casefold() in {"", "n/a", "na", "not provided"}):
+        if naic is None:
+            naic = NormalizedExtractionField(field_name="1c. NAIC Code")
+            result.fields.append(naic)
+        naic.value = "00000"
+        naic.candidate_values = ["00000"]
+        naic.confidence = 1.0
+        naic.source_text = DEFAULT_NAIC_REASON
+        naic.evidence.append(SourceEvidence(provider="Customer configured default", source_text=DEFAULT_NAIC_REASON))
+        raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        raw.setdefault("customer_defaults", []).append({"field": naic.field_name, "value": "00000", "reason": DEFAULT_NAIC_REASON})
         result.raw = raw

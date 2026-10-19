@@ -24,6 +24,10 @@ def map_extraction_to_rules(
             continue
         field_rule = find_rule_for_field(field.field_name, field_rules)
         confidence = normalize_confidence(field.confidence)
+        review_required = (
+            str(field.decision).upper() == "REVIEW_REQUIRED"
+            or any(str(item.status).upper() == "ERROR" for item in field.validation_results)
+        )
         status = ExtractedFieldStatus.MATCHED
         extraction_only = bool(field_rule and field_rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY)
         status_reason = (
@@ -44,6 +48,11 @@ def map_extraction_to_rules(
                 if is_semantically_invalid_value(field, form_type)
                 else "Extractor matched the field name but did not return a value."
             )
+        elif review_required:
+            status = ExtractedFieldStatus.LOW_CONFIDENCE
+            reasons = "; ".join(item.reason for item in field.validation_results
+                                if str(item.status).upper() == "ERROR" and item.reason)
+            status_reason = "Extraction requires review; automatic proposal withheld." + (" " + reasons if reasons else "")
         elif confidence < low_confidence_threshold:
             status = ExtractedFieldStatus.LOW_CONFIDENCE
             status_reason = f"Confidence {confidence:.0%} is below the {low_confidence_threshold:.0%} review threshold."
@@ -58,7 +67,7 @@ def map_extraction_to_rules(
             xml_tag=field_rule.xml_tag if field_rule and not extraction_only else None,
             priority=field_rule.priority if field_rule else FieldPriority.LOW,
             value="" if is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type) else field.value,
-            proposed_value="" if is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type) else field.value,
+            proposed_value="" if review_required or is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type) else field.value,
             confidence=confidence,
             page=field.page,
             source_text=field.source_text,

@@ -10,6 +10,30 @@ from app.services.xml_builder import schedule_a_broker_update_values
 
 
 class ScheduleACustomerRulesTests(unittest.TestCase):
+    def test_unreconciled_zero_provider_recipient_remains_visible_for_review(self):
+        from app.models import ExtractionValidationResult
+        result = NormalizedExtractionResult(provider='External', fields=[], schedule_a_broker_rows=[
+            ScheduleABrokerRow(name='Unread compensation agency', address_line_1='42 EXAMPLE RD',
+                commission_total='0.00', fee_total='0.00', decision='REVIEW_REQUIRED',
+                validation_results=[ExtractionValidationResult(validator='incomplete_source_compensation_table',
+                    status='ERROR', reason='Unread source compensation table.')])])
+        apply_customer_defaults(result)
+        self.assertEqual(len(result.schedule_a_broker_rows), 1)
+        self.assertEqual(result.schedule_a_broker_rows[0].decision, 'REVIEW_REQUIRED')
+
+    def test_missing_naic_uses_approved_default_with_rule_not_ocr_provenance(self):
+        result = NormalizedExtractionResult(provider="EyeLevel", fields=[
+            NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Example Vision Plan", confidence=.99),
+        ])
+        apply_customer_defaults(result)
+        apply_customer_defaults(result)
+        fields = [f for f in result.fields if f.field_name.startswith("1c.")]
+        self.assertEqual(len(fields), 1)
+        self.assertEqual(fields[0].value, "00000")
+        self.assertEqual(fields[0].evidence[0].provider, "Customer configured default")
+        self.assertIsNone(fields[0].page)
+        self.assertEqual(len([d for d in result.raw["customer_defaults"] if d["value"] == "00000"]), 1)
+
     def test_brokers_with_explicit_zero_commissions_and_fees_are_excluded(self):
         result = NormalizedExtractionResult(
             provider="EyeLevel",

@@ -21,6 +21,59 @@ def schedule_a_rules() -> list[FieldRule]:
     return [rule for rule in DEFAULT_FIELD_RULES if form_type_for_rule(rule) == FormType.SCHEDULE_A]
 
 
+def test_explicit_fee_purpose_survives_structured_recipient_consolidation():
+    result = normalize_groundx_schedule_a_extract({'broker_rows': [
+        {'name':'Example Agency LLC', 'address_line_1':'42 Research Road', 'zip_code':'02110', 'commission_total':'125.25'},
+        {'name':'Example Agency LLC', 'address_line_1':'42 Research Road', 'zip_code':'02110', 'fee_total':'25.50', 'purpose':'Annual Service Payment'},
+    ]}, schedule_a_rules())
+    assert len(result.schedule_a_broker_rows) == 1
+    row = result.schedule_a_broker_rows[0]
+    assert row.purpose == 'Annual Service Payment'
+    assert row.commission_rows[0].purpose == 'Commissions'
+    assert row.fee_rows[0].purpose == 'Annual Service Payment'
+
+
+def test_explicit_structured_commission_survives_customer_payment_classification():
+    from app.services.schedule_a_customer_rules import apply_customer_defaults
+
+    result = normalize_groundx_schedule_a_extract(
+        {"broker_rows": {"rows": [{
+            "name": "Example Benefits LLC",
+            "commission_total": "21871.85",
+            "fee_total": "0",
+        }]}},
+        schedule_a_rules(),
+    )
+    apply_customer_defaults(result)
+
+    row = result.schedule_a_broker_rows[0]
+    assert row.commission_total == "21871.85"
+    assert row.fee_total == "0"
+    assert row.commission_rows[0].purpose == "Commissions"
+    assert not any(item["rule"] == "unlabelled_broker_payment_to_fee"
+                   for item in (result.raw or {}).get("customer_rules", []))
+
+
+@pytest.mark.parametrize("code", ["03", "3", "6", "ABC"])
+def test_reported_recipient_code_is_not_replaced_with_a_missing_value_default(code):
+    from app.services.extractor import merge_schedule_a_broker_rows
+    result = normalize_groundx_schedule_a_extract({"broker_rows": {"rows": [{
+        "name": "Example Benefits LLC", "commission_total": "125.50", "organization_code": code,
+    }]}}, schedule_a_rules())
+    row = merge_schedule_a_broker_rows(result.schedule_a_broker_rows, [])[0]
+    assert row.organization_code == code
+    assert row.organization_code_defaulted is False
+
+
+def test_printed_zero_person_count_is_not_dropped_as_missing_information():
+    rules = schedule_a_rules()
+    rule = next(r for r in rules if r.label.startswith("1e."))
+    result = normalize_groundx_schedule_a_extract({"schedule_a_policy": {rule.key: {"value": 0, "page": 1,
+        "sourceText": "Number of persons covered: 0"}}}, rules)
+    actual = next(f for f in result.fields if f.field_name == rule.label)
+    assert actual.value == "0"
+
+
 def test_schema_is_generated_from_schedule_a_rules_and_keeps_groups_small():
     rules = schedule_a_rules()
 

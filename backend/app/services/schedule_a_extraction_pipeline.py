@@ -14,13 +14,24 @@ from decimal import Decimal, InvalidOperation
 from app.models import (
     ExtractionValidationResult,
     FieldRule,
+    FieldRuleApplicability,
+    FormType,
     NormalizedExtractionField,
     NormalizedExtractionResult,
     ScheduleABrokerRow,
+    ScheduleAContractType,
     SourceEvidence,
 )
-from app.services.schedule_a_broker_validation import broker_address_semantic_issue
-from app.services.schedule_a_customer_rules import DEFAULT_CODE_REASON, apply_customer_defaults
+from app.services.field_rules import rules_for_form_type
+from app.services.schedule_a_classification import classify_schedule_a_values, classification_signals_from_text
+from app.services.schedule_a_broker_validation import (
+    SOURCE_REVIEW_VALIDATORS, broker_address_semantic_issue, hold_invalid_source_zip_codes,
+    hold_possible_recipient_aliases, hold_invalid_source_organization_codes,
+)
+from app.services.schedule_a_customer_rules import (
+    DEFAULT_CODE_REASON, DEFAULT_NAIC_REASON, apply_customer_defaults, apply_published_static_defaults,
+    published_static_default, published_static_default_reason,
+)
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -64,8 +75,15 @@ def apply_schedule_a_pipeline(
     """Run canonical resolution authoritatively or as a no-risk shadow diff."""
     # Customer defaults apply independently of the optional canonical validator.
     apply_customer_defaults(result)
+    apply_published_static_defaults(result, rules)
+    hold_invalid_source_zip_codes(result.schedule_a_broker_rows)
+    hold_invalid_source_organization_codes(result.schedule_a_broker_rows)
+    hold_possible_recipient_aliases(result.schedule_a_broker_rows)
+    apply_reported_source_ambiguity_holds(result)
     if authoritative:
-        return resolve_schedule_a_result(result, rules=rules)
+        resolved = resolve_schedule_a_result(result, rules=rules)
+        hold_invalid_source_zip_codes(resolved.schedule_a_broker_rows)
+        return resolved
     if not shadow:
         return result
     candidate = resolve_schedule_a_result(result.model_copy(deep=True), rules=rules)
@@ -73,6 +91,29 @@ def apply_schedule_a_pipeline(
     raw["canonical_shadow_quality"] = candidate.raw["extraction_quality"]
     result.raw = raw
     return result
+
+
+def apply_reported_source_ambiguity_holds(result: NormalizedExtractionResult) -> None:
+    """Known source ambiguities are holds, not optional shadow-only warnings."""
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    ambiguities = raw.get("semantic_resolution", {}).get("ambiguities", [])
+    for item in ambiguities:
+        kind = item.get("type") if isinstance(item, dict) else None
+        if kind == "lives_covered_column_ambiguous":
+            _mark_fields_review(result.fields, ("1e.",), validator=kind,
+                reason="The source does not establish one unambiguous covered-person count. Confirm the population/count rule.")
+        if kind != "combined_commission_fee_source":
+            continue
+        reason = "Source reports one combined commission/fee amount. Its separate payment categories require confirmation."
+        _mark_fields_review(result.fields, ("3b.", "3c.", "3d."), validator=kind, reason=reason)
+        for row in result.schedule_a_broker_rows:
+            if item.get("page") and row.source_page and row.source_page != item["page"]:
+                continue
+            if not any(v.validator == "payment_classification_ambiguity" for v in row.validation_results):
+                row.validation_results.append(ExtractionValidationResult(
+                    validator="payment_classification_ambiguity", status="ERROR", reason=reason,
+                ))
+            row.decision = "REVIEW_REQUIRED"
 
 
 def resolve_schedule_a_result(
@@ -92,7 +133,9 @@ def resolve_schedule_a_result(
                     source_text=field.source_text,
                 )
             )
-        validations = _validate_field(field, rules=rules)
+        validations = [v for v in field.validation_results
+                       if v.status == "ERROR" and v.validator in SOURCE_REVIEW_VALIDATORS]
+        validations.extend(_validate_field(field, rules=rules))
         validations.append(_validate_candidate_consistency(field))
         persons_semantics = _validate_persons_covered_semantics(field)
         if persons_semantics is not None:
@@ -100,7 +143,7 @@ def resolve_schedule_a_result(
         section_context = _validate_financial_section_context(field)
         if section_context is not None:
             validations.append(section_context)
-        validations.append(_validate_source_evidence(field))
+        validations.append(_validate_source_evidence(field, rules=rules))
         field.validation_results = validations
         if any(item.status == "ERROR" for item in validations):
             field.confidence = min(float(field.confidence or 0), REVIEW_CONFIDENCE_CEILING)
@@ -189,7 +232,23 @@ def resolve_schedule_a_result(
         for prefix, label in REQUIRED_SCHEDULE_A_HEADER_FIELDS
         if not any(name.startswith(prefix) for name in present_names)
     ]
-    for rule in rules or []:
+    applicable_rules = rules_for_form_type(FormType.SCHEDULE_A,rules) if rules is not None else []
+    values_by_label = {re.sub(r'[^a-z0-9]+',' ',field.field_name.lower()).strip():field.value for field in result.fields}
+    classification = classify_schedule_a_values(
+        {rule.key:values_by_label.get(re.sub(r'[^a-z0-9]+',' ',rule.label.lower()).strip(),'') for rule in applicable_rules},
+        [*result.classification_signals,*classification_signals_from_text('\n'.join(field.source_text or '' for field in result.fields))],
+    )
+    # The downstream default is not source evidence that one branch is
+    # inapplicable. Keep the strict required-field review when rating is unknown.
+    required_contract_type = (ScheduleAContractType.UNKNOWN if 'DEFAULT_NONEXPERIENCE' in classification.evidence
+                              else classification.contract_type)
+    for rule in applicable_rules:
+        if rule.applicability==FieldRuleApplicability.FORM_5500:
+            continue
+        if required_contract_type==ScheduleAContractType.NONEXPERIENCE_RATED and rule.applicability==FieldRuleApplicability.EXPERIENCE:
+            continue
+        if required_contract_type==ScheduleAContractType.EXPERIENCE_RATED and rule.applicability==FieldRuleApplicability.NONEXPERIENCE:
+            continue
         normalized_label = re.sub(r"[^a-z0-9]+", " ", rule.label.lower()).strip()
         if rule.required and normalized_label not in normalized_present_names and rule.label not in missing_required_fields:
             missing_required_fields.append(rule.label)
@@ -254,12 +313,23 @@ def _validate_field(
 
 def _validate_source_evidence(
     field: NormalizedExtractionField,
+    *, rules=None,
 ) -> ExtractionValidationResult:
     if (field.field_name.strip().lower().startswith("3e.") and field.value == "3"
             and any(item.provider == "Customer configured default" and item.source_text == DEFAULT_CODE_REASON
                     for item in field.evidence)):
         return ExtractionValidationResult(validator="source_evidence", status="PASS",
             reason="Blank organization code follows the explicit customer default; no OCR source page is claimed.")
+    if (field.field_name.strip().lower().startswith("1c.") and field.value == "00000"
+            and any(e.provider == "Customer configured default" and e.source_text == DEFAULT_NAIC_REASON for e in field.evidence)):
+        return ExtractionValidationResult(validator="source_evidence", status="PASS",
+            reason="Missing NAIC follows the approved default; no printed identifier or OCR page is claimed.")
+    for rule in rules or []:
+        if (rule.label.casefold() == field.field_name.casefold() and published_static_default(rule) == field.value
+                and any(e.provider == "Published field rule default" and e.source_text == published_static_default_reason(rule)
+                        for e in field.evidence)):
+            return ExtractionValidationResult(validator="source_evidence", status="PASS",
+                reason="Value follows the supplied published static rule; it is not claimed to be printed in the PDF.")
     pages = [field.page, *(item.page for item in field.evidence)]
     source_texts = [field.source_text, *(item.source_text for item in field.evidence)]
     has_page = any(isinstance(page, int) and page > 0 for page in pages)
@@ -456,7 +526,7 @@ def _validate_financial_section_context(
             or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)
             or re.search(r"\btotal\s+premium\s+received\b", normalized)
             or re.search(
-                r"\btotal\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrie[rl]",
+                r"\btotal\s+premiums?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrie[rl]",
                 normalized,
             )
             or (
@@ -783,7 +853,9 @@ def _validate_broker_rows(
                     source_text=row.name,
                 )
             )
-        validations: list[ExtractionValidationResult] = []
+        validations: list[ExtractionValidationResult] = [
+            v for v in row.validation_results if v.status == "ERROR" and v.validator in SOURCE_REVIEW_VALIDATORS
+        ]
         row_pages = [row.source_page, *(item.page for item in row.evidence)]
         row_source_texts = [item.source_text for item in row.evidence]
         has_row_evidence = any(

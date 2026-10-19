@@ -5050,6 +5050,11 @@ class FTWilliamsReviewService:
             if field.mapped_rule_key != "schedule_a_part_i_1a_name_of_insurance_company":
                 updated.append(field)
                 continue
+            if field.status == ExtractedFieldStatus.LOW_CONFIDENCE and not str(field.proposed_value or "").strip():
+                # Cleanup is not approval: keep an explicit extraction/source
+                # hold withheld instead of reactivating its visible raw value.
+                updated.append(field)
+                continue
             proposed = str(field.proposed_value or field.value or "").strip()
             canonical = self._canonical_carrier_legal_name(proposed)
             if not canonical or canonical == proposed:

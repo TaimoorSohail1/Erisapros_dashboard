@@ -953,25 +953,28 @@ def _combined_compensation_ambiguities(
 ) -> list[dict[str, str | int]]:
     commission = _field_by_prefix(result.fields, "3b.")
     fee = _field_by_prefix(result.fields, "3c.")
-    if commission is None or fee is None:
-        return []
-    if _decimal_identity(commission.value) != _decimal_identity(fee.value):
-        return []
-    amount = _decimal_identity(commission.value)
-    if amount in {None, Decimal("0")}:
+    amounts = {
+        _decimal_identity(field.value) for field in (commission, fee) if field is not None
+    } | {
+        _decimal_identity(value) for row in result.schedule_a_broker_rows
+        for value in (row.commission_total, row.fee_total)
+    }
+    amounts -= {None, Decimal("0")}
+    if not amounts:
         return []
     for line in document.lines:
         page_text = document.pages.get(line.page, "")
         if not re.search(r"commissions?\s*/\s*fees?", page_text, re.IGNORECASE):
             continue
         context = document.context(line, radius=3)
-        if amount not in {_decimal_identity(value) for value in _MONEY.findall(context)}:
+        matches = amounts & {_decimal_identity(value) for value in _MONEY.findall(context)}
+        if not matches:
             continue
         return [
             {
                 "type": "combined_commission_fee_source",
                 "page": line.page,
-                "value": str(commission.value),
+                "value": format(sorted(matches)[0], "f"),
                 "source_text": context,
             }
         ]

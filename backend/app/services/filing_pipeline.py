@@ -625,6 +625,18 @@ def harmonize_schedule_a_business_rule_fields(fields: list[ExtractedField]) -> l
     if not purpose_field:
         return fields
 
+    # A later derived-field pass must not undo a proposal explicitly withheld
+    # by extraction validation. Missing purposes may still be derived normally.
+    if purpose_field.status == ExtractedFieldStatus.LOW_CONFIDENCE and not str(purpose_field.proposed_value or "").strip():
+        return fields
+    if any(field is not None and field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+           and not str(field.proposed_value or "").strip()
+           for field in (commissions_field, fees_field)):
+        purpose_field.proposed_value = ""
+        purpose_field.status = ExtractedFieldStatus.LOW_CONFIDENCE
+        purpose_field.status_reason = "Derived purpose requires review because a payment input is withheld."
+        return fields
+
     derived_purpose = derive_schedule_a_purpose_from_fields(commissions_field, fees_field)
     if not derived_purpose:
         return fields

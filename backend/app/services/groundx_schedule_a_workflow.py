@@ -643,8 +643,12 @@ def _normalize_broker_row(raw: dict[str, Any]) -> ScheduleABrokerRow:
         state=get("state", "province"),
         zip_code=get("zip_code", "zip", "postal_code"),
         organization_code=organization_code,
-        commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose=purpose)] if _nonzero_money(commission) else [],
-        fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose=purpose)] if _nonzero_money(fee) else [],
+        purpose=purpose,
+        # The structured key is itself a category label. Losing it makes a
+        # correctly categorized commission look unlabelled to customer rules.
+        # A generic recipient purpose must not overwrite that category either.
+        commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="Commissions")] if _nonzero_money(commission) else [],
+        fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose=purpose or "Fees")] if _nonzero_money(fee) else [],
         commission_total=commission,
         fee_total=fee,
         commission_source_text=_first_text(
@@ -673,7 +677,7 @@ def _normalize_rule_value(rule: FieldRule, value: Any) -> str | None:
         if not match:
             return None
         count = match.group(1).replace(",", "")
-        return count if int(count) > 0 else None
+        return count
 
     if "date" in validators or label.startswith(("1f.", "1g.")):
         return _normalize_date(clean, end_date=label.startswith("1g."))
@@ -731,8 +735,11 @@ def _nonzero_money(value: str | None) -> bool:
 
 
 def _normalize_organization_code(value: str | None) -> str | None:
-    match = re.match(r"\s*([1-6])(?:\D|$)", str(value or ""))
-    return match.group(1) if match else None
+    text = str(value or "").strip()
+    match = re.match(r"\s*(0?[1-6])(?:\D|$)", text)
+    # An invalid printed code is not a missing code. Preserve it for validation
+    # rather than silently replacing it with the customer default of 3.
+    return match.group(1) if match else text or None
 
 
 def _consolidate_broker_rows(rows: list[ScheduleABrokerRow]) -> list[ScheduleABrokerRow]:
@@ -761,6 +768,7 @@ def _consolidate_broker_rows(rows: list[ScheduleABrokerRow]) -> list[ScheduleABr
         )
         current.commission_rows.extend(row.commission_rows)
         current.fee_rows.extend(row.fee_rows)
+        current.purpose = "; ".join(dict.fromkeys(value for value in (current.purpose, row.purpose) if value)) or None
         current.evidence.extend(row.evidence)
         current.confidence = min(current.confidence, row.confidence)
     return [consolidated[identity] for identity in order]

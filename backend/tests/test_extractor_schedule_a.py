@@ -1165,7 +1165,7 @@ AD&D 592 | Base Commissions
             "39,795.20",
         )
 
-    def test_vsp_compact_report_extracts_one_commission_only_broker_row(self):
+    def test_vsp_compact_report_extracts_one_unclassified_combined_payment(self):
         pages = [
             (
                 1,
@@ -1190,7 +1190,8 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].organization_code, "3")
         self.assertEqual(rows[0].commission_total, "3,984.88")
         self.assertEqual(rows[0].fee_total, "0")
-        self.assertEqual(rows[0].commission_rows[0].purpose, "COMMISSIONS")
+        self.assertEqual(rows[0].commission_rows[0].purpose, "Commissions/Fees (unclassified)")
+        self.assertEqual(rows[0].decision, "REVIEW_REQUIRED")
         self.assertEqual(rows[0].fee_rows, [])
 
         fields = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}
@@ -1665,9 +1666,11 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].address_line_1, "12421 MEREDITH DR")
         self.assertEqual(rows[0].city, "URBANDALE")
         self.assertEqual(rows[0].state, "IA")
-        self.assertEqual(rows[0].zip_code, "50398-0900")
+        # The source literally prints a three-digit suffix; do not invent a
+        # zero merely to satisfy the destination's ZIP shape.
+        self.assertEqual(rows[0].zip_code, "50398-900")
         self.assertEqual(rows[0].commission_total, "21,871.85")
-        self.assertEqual(rows[0].fee_total, "0")
+        self.assertIsNone(rows[0].fee_total, "The source fee column is blank, not a printed zero.")
         self.assertEqual(rows[0].purpose, "COMMISSIONS")
 
     def test_litera_aetna_flattened_native_text_keeps_lives_premium_and_commission_columns(self):
@@ -1705,11 +1708,11 @@ AD&D 592 | Base Commissions
         self.assertEqual(values["1e. Persons Covered (End of Policy Year)"], "211")
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "45,873.97")
         self.assertEqual(rows[0].commission_total, "21,871.85")
-        self.assertEqual(rows[0].fee_total, "0")
+        self.assertIsNone(rows[0].fee_total)
         self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields))
         self.assertEqual(resolved.schedule_a_broker_rows[0].decision, "AUTOMATIC")
 
-    def test_litera_lincoln_voluntary_life_preserves_contract_suffix_and_merges_broker_payments(self):
+    def test_litera_lincoln_voluntary_life_preserves_contract_suffix_and_physical_broker_rows(self):
         pages = [
             (
                 2,
@@ -1757,10 +1760,11 @@ AD&D 592 | Base Commissions
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,588.17")
         self.assertEqual(values["3b. Amount of Commissions"], "5,938.27")
         self.assertEqual(values["3c. Amount of Fees"], "549.77")
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0].commission_total, "5,938.27")
-        self.assertEqual(rows[0].fee_total, "549.77")
-        self.assertEqual(rows[0].fee_rows[0].purpose, "Broker Bonus")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[1].fee_total, "549.77")
+        self.assertEqual(rows[1].fee_rows[0].purpose, "Broker Bonus")
         resolved = resolve_schedule_a_result(
             NormalizedExtractionResult(
                 provider="Lincoln Schedule A reporting parser",
@@ -2388,7 +2392,7 @@ AD&D 592 | Base Commissions
         by_name = {field.field_name: field.value for field in fields}
         rows = extract_cigna_schedule_a_broker_rows(pages)
 
-        self.assertEqual(by_name["1a. Name of Insurance Company"], "Cigna Health and Life Insurance Company and affiliates")
+        self.assertEqual(by_name["1a. Name of Insurance Company"], 'Cigna Health and Life Insurance Company and affiliates ("Cigna")')
         self.assertEqual(by_name["1b. Insurance Carrier EIN"], "59-1031071")
         self.assertEqual(by_name["1c. NAIC Code"], "67369")
         self.assertEqual(by_name["1d. Contract/Policy Number"], "3341244")
@@ -4527,7 +4531,9 @@ LONG FORM INFORMATION
         self.assertEqual(len(rows), 3)
         self.assertEqual(by_name["RSC INSURANCE BROKERAGE INC"].commission_total, "58,596")
         self.assertEqual(by_name["RSC INSURANCE BROKERAGE INC"].fee_total, "0")
-        self.assertEqual(by_name["RSC INSURANCE BROKERAGE INC"].zip_code, "02110")
+        # This source fixture prints 2110. The missing digit must be reviewed,
+        # not inferred from a city or silently inserted by normalization.
+        self.assertEqual(by_name["RSC INSURANCE BROKERAGE INC"].zip_code, "2110")
         self.assertEqual(by_name["IMG"].fee_total, "108")
         self.assertEqual(by_name["IMG"].organization_code, "5")
         self.assertEqual(by_name["Selman & Company, LLC"].fee_total, "13,099")

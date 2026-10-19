@@ -126,9 +126,13 @@ class FieldRuleQATests(unittest.TestCase):
         self.assertEqual(draft.status.value, "DRAFT")
         self.assertTrue(snapshot.version)
         self.assertEqual(result["provider"], "Local document parser")
-        # A missing Schedule A organizational code now adds the explicit
-        # customer-configured default alongside the carrier tracer field.
-        self.assertEqual(result["summary"], {"extracted": 2, "matched": 2, "unmatched": 0, "extraction_only": 0})
+        # Missing organization code and the supplied published Always No rule
+        # are defaults, not additional printed carrier facts.
+        self.assertEqual(result["summary"], {"extracted": 3, "matched": 3, "unmatched": 0, "extraction_only": 0})
+        static_default = next(field for field in result["fields"]
+                              if field["mapped_rule_key"] == "schedule_a_part_iii_11_did_the_insurance_company_fail_to_provide_any_information_necessary_to_complete_schedule_a")
+        self.assertEqual(static_default["value"], "No")
+        self.assertIn("published", static_default["source_text"].lower())
         self.assertEqual(result["fields"][0]["matched_alias"], "QA Carrier Registry Number")
         self.assertEqual(result["fields"][0]["mapped_rule_key"], "schedule_a_part_i_1c_naic_code")
         self.assertEqual(result["fields"][0]["value"], "98765")

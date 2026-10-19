@@ -1121,6 +1121,16 @@ def _schedule_a_broker_row_update_values(
     # It is produced by the broker matcher and is not an incomplete new row.
     if row is None:
         return {}
+    validations = row.get("validation_results", []) if isinstance(row, dict) else getattr(row, "validation_results", [])
+    has_errors = any(
+        str(item.get("status", "") if isinstance(item, dict) else getattr(item, "status", "")).upper() == "ERROR"
+        for item in (validations or [])
+    )
+    if require_complete and (_broker_row_attr(row, "decision").upper() == "REVIEW_REQUIRED" or has_errors):
+        raise FTWPayloadValidationError([FTWFieldValidationIssue(
+            tag=f"Name{index}", value=_broker_row_attr(row, "name"),
+            reason="recipient requires review before an automatic update payload can be generated",
+        )])
     name = _ftw_broker_name(_broker_row_attr(row, "name"))
     address_line_1, address_line_2 = _ftw_broker_address_lines(
         _broker_row_attr(row, "address_line_1"),
@@ -1269,6 +1279,10 @@ def _broker_row_attr(row: object, key: str) -> str:
 
 
 def _broker_row_purpose(row: object, commission: str, fees: str) -> str:
+    # This tag describes fees/other commissions, not base commissions. Do not
+    # manufacture a fee purpose when the fee amount is blank or explicitly zero.
+    if _money_to_float(fees)==0:
+        return ""
     explicit = _broker_row_attr(row, "purpose")
     if explicit:
         return explicit.upper()
