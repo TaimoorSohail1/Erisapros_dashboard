@@ -3297,7 +3297,7 @@ class FTWilliamsReviewService:
             transaction_type="2",
             **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
         )
-        if schedule_a_replacement_data_gaps(records, restore_xml):
+        if schedule_a_replacement_data_gaps(records, restore_xml, require_exact_payment_controls=True):
             return ""
         return restore_xml
 
@@ -6515,6 +6515,7 @@ class FTWilliamsReviewService:
             list(review.schedule_a_records or []),
             review.update_xml_schedule_a,
             matched_ftw_seq_no=None if is_new_schedule else review.schedule_a_match.get("ftw_seq_no"),
+            require_exact_payment_controls=True,
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])

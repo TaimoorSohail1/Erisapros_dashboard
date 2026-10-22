@@ -246,6 +246,7 @@ def build_schedule_a_records_update_xml(
             ftw_plan_id=ftw_plan_id,
             schedule_a_broker_rows=schedule_a_broker_rows if selected_record else None,
             query_subparts=record.get("query_subparts") or {},
+            derive_payment_indicator=selected_record,
         )
         if document_xml:
             documents.append(document_xml)
@@ -261,6 +262,7 @@ def build_schedule_a_records_update_xml(
             ftw_customer_id=ftw_customer_id,
             ftw_plan_id=ftw_plan_id,
             schedule_a_broker_rows=schedule_a_broker_rows,
+            derive_payment_indicator=True,
         )
         if document_xml and len(update_values_for_form(add_new_fields, FormType.SCHEDULE_A)) > 0:
             documents.append(document_xml)
@@ -383,6 +385,7 @@ def _schedule_a_record_document_xml(
     ftw_plan_id: str | None,
     schedule_a_broker_rows: list | None = None,
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
+    derive_payment_indicator: bool = True,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
     field_broker_overrides = {
@@ -418,10 +421,19 @@ def _schedule_a_record_document_xml(
             schedule_a_broker_rows,
         )
         broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
-    values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
-        values,
-        broker_rows,
-    )
+    if derive_payment_indicator:
+        values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
+            values,
+            broker_rows,
+        )
+    elif "OverrideCommissionsAndFees" in current_values:
+        # A replace-style sibling/restore record is a snapshot, not a new
+        # compensation decision. Preserve even an explicit blank; absence
+        # must not become a derived "no payments" checkbox.
+        original_indicator = current_values["OverrideCommissionsAndFees"]
+        values["OverrideCommissionsAndFees"] = (
+            "" if original_indicator is None else str(original_indicator).strip()
+        )
     if not values and not broker_rows:
         return ""
     xml_lines = [
@@ -949,6 +961,7 @@ def schedule_a_replacement_data_gaps(
     xml: str | None,
     *,
     matched_ftw_seq_no: str | None = None,
+    require_exact_payment_controls: bool = False,
 ) -> list[str]:
     if not xml:
         return ["Schedule A replacement XML is missing"]
@@ -967,6 +980,23 @@ def schedule_a_replacement_data_gaps(
     for record, document in zip(ordered_records, documents):
         sequence = str(record.get("ftw_seq_no") or "?").strip() or "?"
         current_values = record.get("query_results") or {}
+        if (selected_sequence and sequence != selected_sequence) or (
+            require_exact_payment_controls and not selected_sequence
+        ):
+            # Compare this control with the original vendor snapshot, not
+            # another serialized payload that might repeat the same defect.
+            indicator_tag = "OverrideCommissionsAndFees"
+            indicator = document.find(indicator_tag)
+            if indicator_tag not in current_values:
+                if indicator is not None:
+                    gaps.append(f"sequence {sequence} added field {indicator_tag}")
+            elif indicator is None:
+                gaps.append(f"sequence {sequence} missing field {indicator_tag}")
+            else:
+                original = current_values[indicator_tag]
+                expected_indicator = "" if original is None else str(original).strip()
+                if str(indicator.text or "").strip() != expected_indicator:
+                    gaps.append(f"sequence {sequence} changed field {indicator_tag}")
         expected_fields = current_values_for_schedule_a_update(current_values)
         actual_fields = {
             child.tag: str(child.text or "").strip()
