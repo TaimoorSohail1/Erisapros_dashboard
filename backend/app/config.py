@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # decisions can be compared with production without changing proposals.
     schedule_a_canonical_validation_enabled: bool = False
     schedule_a_canonical_validation_shadow_enabled: bool = True
+    # Operator-controlled, source-hash-bound client approvals. This does not
+    # enable or otherwise alter FTWilliam automation/update controls.
+    schedule_a_clarifications_path: str | None = None
 
     sharefile_subdomain: str | None = "erisapros"
     sharefile_client_id: str | None = None

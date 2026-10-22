@@ -277,6 +277,10 @@ def _validate_field(
 ) -> list[ExtractionValidationResult]:
     name = field.field_name.strip().lower()
     value = str(field.value or "").strip()
+    from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
+    if name.startswith("3d.") and not value and has_confirmed_rule(field, "combined_payment_commission"):
+        return [ExtractionValidationResult(validator="presence", status="PASS",
+            reason="Fee purpose is not applicable to the approved all-commission payment.")]
     configured = _configured_rule(field.field_name, rules)
     configured_validators = [str(item).strip().lower() for item in (configured.validators if configured else []) if str(item).strip()]
     if configured and not configured_validators:
@@ -315,6 +319,16 @@ def _validate_source_evidence(
     field: NormalizedExtractionField,
     *, rules=None,
 ) -> ExtractionValidationResult:
+    from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
+    if field.field_name.strip().lower().startswith("1e.") and has_confirmed_rule(field, "count_from_6a2"):
+        from app.services.schedule_a_confirmed_clarifications import WORKSHEET_PROVIDER
+        if any(e.provider == WORKSHEET_PROVIDER and re.search(r"(?<!\d)" + re.escape(field.value) + r"(?!\d)", e.source_text or "") for e in field.evidence):
+            return ExtractionValidationResult(validator="source_evidence", status="PASS",
+                reason="Count comes from verified matching worksheet line 6(a)(2), per client approval; it is not claimed as printed in the carrier PDF.")
+    if (field.field_name.strip().lower().startswith(("3c.", "3d."))
+            and has_confirmed_rule(field, "combined_payment_commission") and field.value in {"0", ""}):
+        return ExtractionValidationResult(validator="source_evidence", status="PASS",
+            reason="Zero fee/no fee purpose is derived from the client-approved allocation of the entire source payment to commissions, not printed source data.")
     if (field.field_name.strip().lower().startswith("3e.") and field.value == "3"
             and any(item.provider == "Customer configured default" and item.source_text == DEFAULT_CODE_REASON
                     for item in field.evidence)):
@@ -330,8 +344,12 @@ def _validate_source_evidence(
                         for e in field.evidence)):
             return ExtractionValidationResult(validator="source_evidence", status="PASS",
                 reason="Value follows the supplied published static rule; it is not claimed to be printed in the PDF.")
-    pages = [field.page, *(item.page for item in field.evidence)]
-    source_texts = [field.source_text, *(item.source_text for item in field.evidence)]
+    # Approval references contain dates, hashes and worksheet cell numbers.
+    # Those digits must never corroborate an extracted amount or identifier.
+    from app.services.schedule_a_confirmed_clarifications import APPROVAL_PROVIDER
+    numeric_source_evidence = [item for item in field.evidence if item.provider != APPROVAL_PROVIDER]
+    pages = [field.page, *(item.page for item in numeric_source_evidence)]
+    source_texts = [field.source_text, *(item.source_text for item in numeric_source_evidence)]
     has_page = any(isinstance(page, int) and page > 0 for page in pages)
     has_source_text = any(bool(str(text or "").strip()) for text in source_texts)
     supports_value = any(
@@ -448,6 +466,15 @@ def _validate_persons_covered_semantics(
 ) -> ExtractionValidationResult | None:
     if not field.field_name.strip().lower().startswith("1e."):
         return None
+    from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
+    if has_confirmed_rule(field, "employees_as_covered"):
+        return _result("persons_covered_semantics", True,
+            "The client approved this source employee population; numeric source validation remains required.", field.value)
+    if has_confirmed_rule(field, "count_from_6a2"):
+        from app.services.schedule_a_confirmed_clarifications import WORKSHEET_PROVIDER
+        if any(e.provider == WORKSHEET_PROVIDER for e in field.evidence):
+            return _result("persons_covered_semantics", True,
+                "Client-approved worksheet line 6(a)(2) replaces the printed carrier count. Original PDF evidence is retained but does not override that verified replacement.", field.value)
     extracted = str(field.value or "").replace(",", "").strip()
     for evidence in field.evidence:
         if evidence.provider != "Schedule A covered-lives column":
@@ -538,6 +565,8 @@ def _validate_financial_section_context(
                 and re.search(r"\btotal\s*:\s*\$", normalized)
             )
         )
+        from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
+        valid = valid or has_confirmed_rule(field, "nonexperience_rated")
         expected = "nonexperience-rated/line 10"
     return ExtractionValidationResult(
         validator="section_context",
@@ -856,6 +885,22 @@ def _validate_broker_rows(
         validations: list[ExtractionValidationResult] = [
             v for v in row.validation_results if v.status == "ERROR" and v.validator in SOURCE_REVIEW_VALIDATORS
         ]
+        # The row-level purpose maps to the fee-purpose field. A provider can
+        # put a printed commission heading here even after source reconciliation
+        # has established zero fees. Keep commission categories/components in
+        # commission_rows and the original provider trace, not in fee purpose.
+        # Missing fees and zero-net nonempty fee components are not equivalent
+        # to an established zero fee with no fee components.
+        if (parse_decimal(row.fee_total) == Decimal("0") and not row.fee_rows
+                and row.commission_rows and re.fullmatch(
+                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?)",
+                    str(row.purpose or "").strip(), flags=re.IGNORECASE)):
+            observed_purpose = row.purpose
+            row.purpose = None
+            validations.append(ExtractionValidationResult(
+                validator="zero_fee_purpose_not_applicable", status="PASS",
+                reason=f'Commission category "{observed_purpose}" is retained in the provider trace and commission components. Zero fees with no fee components have no fee purpose.',
+            ))
         row_pages = [row.source_page, *(item.page for item in row.evidence)]
         row_source_texts = [item.source_text for item in row.evidence]
         has_row_evidence = any(

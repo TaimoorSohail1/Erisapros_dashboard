@@ -23,7 +23,7 @@ SOURCE_REVIEW_VALIDATORS = {
 }
 
 
-def hold_local_ocr_recipient_conflicts(result) -> None:
+def hold_local_ocr_recipient_conflicts(result, *, corroborating_rows=None) -> None:
     """A reconciled payment table does not prove an OCR recipient spelling.
 
     Keep the prior provider spelling for a unique same-address/payment anchor
@@ -75,6 +75,31 @@ def hold_local_ocr_recipient_conflicts(result) -> None:
         near_spelling = min(len(left),len(right)) >= 8 and SequenceMatcher(None,left,right).ratio() >= .9
         if near_spelling:
             row.name = previous.name
+        # Re-read source pixels only at this narrow conflict seam. Similar
+        # spelling alone is not approval, nor is provider confidence. Require a
+        # unique full-address/page/payment anchor from the additional reader.
+        independent = corroborating_rows(row.source_page) if near_spelling and row.source_page and corroborating_rows else []
+        anchored = [candidate for candidate in independent if anchor(candidate) == key
+                    and candidate.source_page == row.source_page]
+        corroborated = len(anchored) == 1 and normalize(anchored[0].name) == right and all(
+            money(getattr(anchored[0], category)) is not None
+            and money(getattr(anchored[0], category)) == money(getattr(previous, category))
+            for category in ('commission_total', 'fee_total'))
+        if corroborated:
+            evidence = SourceEvidence(provider='Corroborated recipient identity', page=row.source_page,
+                source_text=f'Original local OCR: {observed}; provider: {previous.name}; separate lossless source OCR: {anchored[0].name}. Full address, page and category amounts match. No payment, purpose or organization code is replaced.')
+            row.evidence.extend([*previous.evidence, *anchored[0].evidence, evidence])
+            row.validation_results.append(ExtractionValidationResult(validator='ocr_recipient_identity_corroboration',
+                status='PASS', reason='Separate source OCR corroborates the provider name at the unique full recipient/payment anchor.'))
+            conflicts.append({'local_ocr_name': observed, 'provider_name': previous.name,
+                'independent_name': anchored[0].name, 'page': row.source_page,
+                'address_line_1': row.address_line_1, 'decision': 'CORROBORATED'})
+            for field in result.fields:
+                if field.field_name.startswith('3a.') and normalize(field.value) in {left, right}:
+                    field.value = previous.name
+                    field.candidate_values = [previous.name]
+                    field.evidence.append(evidence)
+            continue
         reason = 'Local OCR and provider spell the same uniquely anchored recipient differently. Preserve both readings and confirm the source before an automatic update.'
         row.validation_results.append(ExtractionValidationResult(
             validator='ocr_recipient_identity_conflict',status='ERROR',reason=reason))

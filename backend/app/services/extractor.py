@@ -115,8 +115,9 @@ SCHEDULE_A_LAYOUT_OWNED_FIELDS = {
 
 
 class ExtractionService:
-    def __init__(self, field_rules=None):
+    def __init__(self, field_rules=None, *, confirmed_clarifications=None):
         self.field_rules = list(field_rules) if field_rules is not None else DEFAULT_FIELD_RULES
+        self.confirmed_clarifications = confirmed_clarifications
 
     async def extract_document(self, file_bytes: bytes, file_name: str, document_type: DocumentType) -> NormalizedExtractionResult:
         if document_type == DocumentType.PLAN_WORKSHEET:
@@ -387,7 +388,10 @@ class ExtractionService:
             )
             result.schedule_a_worksheet_summaries = aultcare_summaries
             result.schedule_a_broker_rows = extract_aultcare_broker_rows(file_bytes, file_name)
-        hold_local_ocr_recipient_conflicts(result)
+        from app.services.schedule_a_recipient_ocr import RecipientIdentityReader
+        identity_reader = RecipientIdentityReader(file_bytes, extract_litera_lincoln_schedule_a_broker_rows,
+            result.raw if isinstance(result.raw, dict) else {})
+        hold_local_ocr_recipient_conflicts(result, corroborating_rows=identity_reader)
         attach_schedule_a_source_observations(result, semantic_pages)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
@@ -402,6 +406,14 @@ class ExtractionService:
         if file_name.lower().endswith('.pdf'):
             review_pages.extend(visible_native_text_pages(file_bytes))
         apply_source_business_review(result, review_pages)
+        approval = self.confirmed_clarifications
+        if approval is None:
+            from app.services.schedule_a_clarification_registry import clarification_for_source
+            approval = clarification_for_source(file_bytes, getattr(get_settings(), 'schedule_a_clarifications_path', None))
+        if approval is not None:
+            capture_extraction_stage(result, "before_confirmed_client_clarifications")
+            from app.services.schedule_a_confirmed_clarifications import apply_confirmed_clarifications
+            apply_confirmed_clarifications(result, review_pages, approval, file_bytes)
         capture_extraction_stage(result, "before_customer_rules_and_validation")
         settings = get_settings()
         final_result = apply_schedule_a_pipeline(
