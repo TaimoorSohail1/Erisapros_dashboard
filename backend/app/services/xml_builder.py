@@ -962,6 +962,7 @@ def schedule_a_replacement_data_gaps(
     *,
     matched_ftw_seq_no: str | None = None,
     require_exact_payment_controls: bool = False,
+    schedule_a_broker_rows: list | None = None,
 ) -> list[str]:
     if not xml:
         return ["Schedule A replacement XML is missing"]
@@ -1010,9 +1011,20 @@ def schedule_a_replacement_data_gaps(
                 if actual_fields[tag] != str(expected_fields[tag] or "").strip():
                     gaps.append(f"sequence {sequence} changed field {tag}")
 
+        # Only explicit, validated clearing decisions for the selected source
+        # rows may remove these fee leaves. No allowance is made for siblings,
+        # restores, unknown amounts, or an arbitrary missing XML field.
+        approved_fee_clears = {}
+        if selected_sequence and sequence == selected_sequence and schedule_a_broker_rows:
+            approved_fee_clears = {
+                tag: value
+                for tag, value in schedule_a_broker_update_values(schedule_a_broker_rows).items()
+                if value == "" and re.fullmatch(r"FeesPd(?:Amt|Text)\d+", tag)
+            }
         expected_brokers = schedule_a_broker_multipart_rows(
             current_values,
             query_subparts=record.get("query_subparts") or {},
+            overrides=approved_fee_clears,
         )
         if (
             str(current_values.get("OverrideCommissionsAndFees") or "").strip() == "1"
@@ -1216,6 +1228,16 @@ def _schedule_a_broker_row_update_values(
         )
         if str(text or "").strip():
             normalized[tag] = str(text)
+    # A printed zero without a fee purpose has an approved blank FTW wire
+    # representation. Keep explicit clearing overrides so a matched vendor
+    # row cannot retain an old fee or purpose during replace-style merging.
+    # The normalized source row is never changed, and unselected/restore rows
+    # do not pass through this extracted-row adapter.
+    fee_tag = f"FeesPdAmt{index}"
+    if normalized.get(fee_tag) is not None and not purpose:
+        if Decimal(normalized[fee_tag]) == 0:
+            normalized[fee_tag] = ""
+            normalized[f"FeesPdText{index}"] = ""
     return normalized
 
 

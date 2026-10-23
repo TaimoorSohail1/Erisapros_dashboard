@@ -13,7 +13,9 @@ def test_zero_fees_do_not_generate_a_fee_purpose_from_commissions(purpose):
     values=schedule_a_broker_update_values([row],require_complete=True)
     assert values.get('FeesPdText1','')==''
     assert values['CommPdAmt1']=='125.25'
-    assert values['FeesPdAmt1']=='0'
+    # Approved wire representation; source fee_total remains a printed zero.
+    assert values['FeesPdAmt1']==''
+    assert row.fee_total == '0.00'
 
 
 def test_nonzero_fee_keeps_its_printed_purpose():
