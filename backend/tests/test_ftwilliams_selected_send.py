@@ -42,7 +42,7 @@ class SelectedSendTests(unittest.TestCase):
             filing = await repo.create_filing(Filing(file_name="test.pdf", content_type="application/pdf",
                 file_size=1, s3_key="test.pdf", status=FilingStatus.NEEDS_REVIEW,
                 schedule_a_classification_signals=["EXPLICIT_EXPERIENCE_RATED"],
-                schedule_a_broker_rows=[ScheduleABrokerRow(name="Unresolved proposed broker")]))
+                schedule_a_broker_rows=[ScheduleABrokerRow(name="Unresolved proposed broker", decision="REVIEW_REQUIRED")]))
             selected = ExtractedField(filing_id=filing.id, source_field_name="Covered people", normalized_field_name="covered",
                 form_type=FormType.SCHEDULE_A, source_document_type=DocumentType.SCHEDULE_A,
                 mapped_rule_key="schedule_a_part_i_1e_persons_covered_end_of_policy_year", value="12", proposed_value="12")

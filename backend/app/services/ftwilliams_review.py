@@ -5112,16 +5112,21 @@ class FTWilliamsReviewService:
                 "policy ending date",
             ),
         )
-        extracted_by_rule = {
-            str(field.mapped_rule_key or ""): str(field.value or field.proposed_value or "").strip()
-            for field in fields
-        }
+        source_fields_by_rule = {str(field.mapped_rule_key or ""): field for field in fields}
         comparison_by_rule = {
             str(comparison.rule_key or ""): comparison
             for comparison in comparisons
         }
         for rule_key, worksheet_value, same_value, label in checks:
-            extracted_value = extracted_by_rule.get(rule_key, "")
+            field = source_fields_by_rule.get(rule_key)
+            if field is None:
+                continue
+            reviewed = field.status == ExtractedFieldStatus.EDITED and bool(
+                str(field.proposed_value or "").strip()
+            )
+            extracted_value = str(
+                field.proposed_value if reviewed else field.value or field.proposed_value or ""
+            ).strip()
             if not extracted_value or not worksheet_value or same_value(extracted_value, worksheet_value):
                 continue
             comparison = comparison_by_rule.get(rule_key)
@@ -5131,6 +5136,17 @@ class FTWilliamsReviewService:
                 f"The Plan Worksheet {label} ({worksheet_value}) differs from "
                 f"the Schedule A value ({extracted_value})."
             )
+            if reviewed:
+                # The existing audited field-edit command is an explicit value
+                # decision, not an automatic agreement between the documents.
+                # Retain the disagreement as evidence without reopening the
+                # same conflict every time the reviewer refreshes the preview.
+                # Other validation and filing-level safety gates remain intact.
+                comparison.decision_reason = (
+                    f"{comparison.decision_reason or ''} {reason} "
+                    "Value explicitly confirmed by reviewer."
+                ).strip()
+                continue
             comparison.changed = True
             comparison.update_included = False
             comparison.update_exclusion_reason = reason
@@ -6511,11 +6527,21 @@ class FTWilliamsReviewService:
                 f"Cannot safely send Schedule A because XML contains {xml_schedule_count} Schedule A record(s) "
                 f"but exactly {expected_schedule_count} record(s) are expected from the fresh snapshot."
             )
+        resolved_broker_rows = []
+        if check_brokers:
+            _, resolved_broker_rows = self._resolve_schedule_a_brokers(
+                review.schedule_a_broker_rows,
+                review.schedule_a_records,
+                review.schedule_a_match.get("ftw_seq_no"),
+                review.schedule_a_broker_matches,
+                create_new=is_new_schedule,
+            )
         replacement_gaps = schedule_a_replacement_data_gaps(
             list(review.schedule_a_records or []),
             review.update_xml_schedule_a,
             matched_ftw_seq_no=None if is_new_schedule else review.schedule_a_match.get("ftw_seq_no"),
             require_exact_payment_controls=True,
+            schedule_a_broker_rows=resolved_broker_rows,
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])
