@@ -262,7 +262,12 @@ class ExtractionService:
             )
             result.fields = prefer_authoritative_colonial_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_prudential_fields(result.fields, authoritative_pages)
-            result.fields = prefer_authoritative_cigna_summary_fields(result.fields, authoritative_pages)
+            result.fields = prefer_authoritative_cigna_summary_fields(
+                result.fields, authoritative_pages,
+                corroborating_pages=_cigna_document_source_pages(result.raw, file_name),
+            )
+            if not result.schedule_a_broker_rows:
+                result.schedule_a_broker_rows = extract_cigna_schedule_a_broker_rows(authoritative_pages)
             result.fields = prefer_authoritative_united_omaha_fields(result.fields, authoritative_pages)
             hartford_fields = extract_hartford_schedule_a_fields(authoritative_pages)
             if hartford_fields:
@@ -3639,9 +3644,33 @@ def _prefer_authoritative_aetna_attachment_fields(
     return fields
 
 
+def _cigna_document_source_pages(raw: Any, file_name: str) -> list[tuple[int, str]]:
+    """Read Cigna corroboration only from the current completed document."""
+    if not isinstance(raw, dict):
+        return []
+    as_object = lambda value: value if isinstance(value, dict) else {}
+    outputs = raw.get('outputs')
+    queued = as_object(as_object(raw.get('ingest')).get('ingest'))
+    complete = as_object(as_object(raw.get('process')).get('ingest'))
+    documents = as_object(as_object(complete.get('progress')).get('complete')).get('documents')
+    if (not isinstance(outputs, list) or not isinstance(documents, list)
+        or len(outputs) != 1 or len(documents) != 1 or complete.get('status') != 'complete'
+        or not queued.get('processId') or queued['processId'] != complete.get('processId')):
+        return []
+    output, document = outputs[0], documents[0]
+    if not isinstance(output, dict) or not isinstance(document, dict):
+        return []
+    if (output.get('fileName') != file_name or document.get('fileName') != file_name
+        or not output.get('sourceUrl') or output['sourceUrl'] != document.get('sourceUrl')):
+        return []
+    return provider_source_pages(raw)
+
+
 def prefer_authoritative_cigna_summary_fields(
     fields: list[NormalizedExtractionField],
     page_texts: list[tuple[int, str]],
+    *,
+    corroborating_pages: list[tuple[int, str]] | None = None,
 ) -> list[NormalizedExtractionField]:
     """Keep Cigna's certified summary identity ahead of state appendices.
 
@@ -3655,6 +3684,30 @@ def prefer_authoritative_cigna_summary_fields(
     summary_fields = extract_cigna_schedule_a_fields(page_texts)
     if not summary_fields:
         return fields
+    conflicts: dict[str, list[str]] = {}
+    primary = _cigna_primary_schedule_a_page(page_texts)
+    peers = [primary_page for source in (corroborating_pages or [])
+             if (primary_page := _cigna_primary_schedule_a_page([source])) is not None]
+    if primary is not None and len(peers) == 1 and peers[0][0] == primary[0]:
+        # Actual single-page X-Ray cells can corroborate a partially unreadable
+        # scan. Structured answers, state appendices and our own traces are not
+        # eligible. Require the same carrier, contract, count and both dates.
+        local = {field.field_name: field for field in summary_fields}
+        peer = {field.field_name: field for field in extract_cigna_schedule_a_fields([peers[0]])}
+        header = {name for name in peer if re.match(r'^1[a-g]\.', name)}
+        for name in header & local.keys():
+            if normalize_compare_key(peer[name].value) != normalize_compare_key(local[name].value):
+                conflicts[name] = [peer[name].value]
+        anchor_codes = ('1a.', '1d.', '1e.', '1f.', '1g.')
+        anchors = [name for name in local if name.startswith(anchor_codes)]
+        if len(header) == 7 and len(anchors) == 5 and not conflicts and all(name in peer for name in anchors):
+            for name in sorted(header - local.keys()):
+                recovered = peer[name].model_copy(deep=True)
+                recovered.evidence.append(SourceEvidence(
+                    provider='Corroborated Cigna primary-page X-Ray cell',
+                    page=recovered.page, source_text=recovered.source_text,
+                ))
+                summary_fields.append(recovered)
     authoritative = {field.field_name: field for field in summary_fields}
     if "3d. Purpose" not in authoritative:
         commission = authoritative.get("3b. Amount of Commissions")
@@ -3676,9 +3729,19 @@ def prefer_authoritative_cigna_summary_fields(
         for field in fields
         if field.field_name not in authoritative and not field.field_name.startswith("9")
     ]
+    if primary is not None:
+        for field in restored:
+            if field.field_name.startswith(('1b.', '1c.')):
+                field.validation_results.append(ExtractionValidationResult(
+                    validator='cigna_primary_source_identity', status='ERROR',
+                    reason='The primary summary identifier is unreadable and lacks document-bound corroboration. A state appendix or unbound provider candidate cannot replace it.',
+                ))
+                field.decision = 'REVIEW_REQUIRED'
     for field in summary_fields:
         authoritative_field = field.model_copy(deep=True)
-        authoritative_field.candidate_values = [authoritative_field.value]
+        authoritative_field.candidate_values = list(dict.fromkeys(
+            [authoritative_field.value, *conflicts.get(authoritative_field.field_name, [])]
+        ))
         restored.append(authoritative_field)
     return restored
 
@@ -6783,9 +6846,9 @@ def _cigna_primary_schedule_a_page(page_texts: list[tuple[int, str]]) -> tuple[i
         lowered = normalized.lower()
         if (
             "cigna health and life insurance company" in lowered
-            and "summary of all insurance contracts included in part iii" in lowered
+            and re.search(r"summary of all insurance contracts included in part\s+[il1]{3}\b", lowered)
             and "insurance fees and commissions information" in lowered
-            and "part iii welfare benefit contract information" in lowered
+            and re.search(r"part\s+[il1]{3}\s+welfare benefit contract information", lowered)
             and "appendix to 1a" not in lowered
         ):
             return page, normalized
@@ -7052,9 +7115,14 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
     coverage_pattern = (
         r"(?P<ein>\d{2}-\d{7})\s+(?P<naic>\d{4,6})\s+"
         r"(?P<contract>[A-Za-z0-9-]+)\s+(?P<covered>[\d,]+)\s+Employees?\s+"
-        r"(?P<from>\d{1,2}/\d{1,2}/\d{4})\s*-?\s*(?P<to>\d{1,2}/\d{1,2}/\d{4})"
+        r"(?P<from>\d{1,2}/\d{1,2}/\d{4})\s*(?:[-\u2013\u2014]\s*)?(?P<to>\d{1,2}/\d{1,2}/\d{4})"
     )
     coverage = re.search(coverage_pattern, text, flags=re.IGNORECASE)
+    partial_coverage = re.search(
+        r"(?P<contract>[A-Za-z0-9-]+)\s+(?P<covered>[\d,]+)\s+Employees?\s+"
+        r"(?P<from>\d{1,2}/\d{1,2}/\d{4})\s*(?:[-\u2013\u2014]\s*)?(?P<to>\d{1,2}/\d{1,2}/\d{4})",
+        text, re.IGNORECASE,
+    ) if coverage is None else None
     if coverage:
         add("1b. Insurance Carrier EIN", coverage.group("ein"))
         add("1c. NAIC Code", coverage.group("naic"))
@@ -7062,6 +7130,16 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
         add("1e. Persons Covered (End of Policy Year)", coverage.group("covered"))
         add("1f. Policy Year Beginning Date", coverage.group("from"))
         add("1g. Policy Year Ending Date", coverage.group("to"))
+    elif partial_coverage:
+        # A scan can lose the first two cells while retaining a complete
+        # contract/count/period row. Never take a section digit from its header.
+        add('1b. Insurance Carrier EIN', regex_first(text, [r'\(b\)\s*EIN\s+(\d{2}-\d{7})'], flags=re.I))
+        add('1c. NAIC Code', regex_first(text, [r'\(c\)\s*NAIC\s+Code\s+(\d{4,6})'], flags=re.I))
+        for label, column in (
+            ('1d. Contract/Policy Number', 'contract'), ('1e. Persons Covered (End of Policy Year)', 'covered'),
+            ('1f. Policy Year Beginning Date', 'from'), ('1g. Policy Year Ending Date', 'to'),
+        ):
+            add(label, partial_coverage.group(column), source=partial_coverage.group(0))
     else:
         # The production PDF text layer places each label above its value
         # instead of returning a visual row. Parse the same primary page by
@@ -7207,13 +7285,13 @@ def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> l
     commissions = money_value(totals.group("commissions")) if totals else None
     fees = money_value(totals.group("fees")) if totals else None
     address = re.search(
-        r"(?P<address>PO\s+BOX\s+\d+)\s*,\s*(?P<city>[A-Z][A-Z ]+)\s*,\s*(?P<state>[A-Z]{2})\s*,\s*(?P<zip>\d{5}(?:-?\d{4})?)\b",
+        r"(?P<address>PO\s+BOX\s+\d+)\s*,\s*(?P<city>[A-Z][A-Z ]+)\s*[,\.]\s*(?P<state>[A-Z]{2})\s*,\s*(?P<zip>\d{5}(?:-?\d{4})?)\b",
         text,
         flags=re.IGNORECASE,
     )
     if not address:
         address = re.search(
-            r"(?P<address>PO\s+BOX\s+\d+)\s*,\s*(?P<city>[A-Z][A-Z ]+)\s*,\s*(?P<state>[A-Z]{2})\s*,.*?\n\s*(?P<zip>\d{5}(?:-?\d{4})?)\b",
+            r"(?P<address>PO\s+BOX\s+\d+)\s*,\s*(?P<city>[A-Z][A-Z ]+)\s*[,\.]\s*(?P<state>[A-Z]{2})\s*,.*?\n\s*(?P<zip>\d{5}(?:-?\d{4})?)\b",
             text,
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -7228,7 +7306,28 @@ def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> l
     zip_code = address.group("zip") if address else None
     if zip_code and re.fullmatch(r"\d{9}", zip_code):
         zip_code = f"{zip_code[:5]}-{zip_code[5:]}"
-    purpose = "General Agent Payments"
+    # The aggregate can represent this fallback recipient only when one
+    # recipient and one address are actually visible in the primary section.
+    section = re.split(r'Persons\s+receiving\s+commissions\s+and\s+fees', text, maxsplit=1, flags=re.I)[-1]
+    section = re.split(r'Part\s+[il1]{2,3}\s+(?:Investment|Welfare)', section, maxsplit=1, flags=re.I)[0]
+    names = {candidate.strip().rstrip(',') for candidate in section.splitlines()
+             if candidate.strip().upper() == candidate.strip()
+             and re.search(r'\b(?:LLC|INC|CORP|SERVICES|ASSOCIATES|AGENCY|BROKER)\b', candidate)
+             and is_probable_person_or_entity_name(candidate.strip().rstrip(','))}
+    if len(names) != 1 or totals is None or address is None or len(list(address.re.finditer(section))) != 1:
+        return []
+    printed_amounts = re.findall(r'\$\s*([\d,]+(?:\.\d{2})?)', section)
+    if len(printed_amounts) != 2 or any(
+        parse_numeric_amount(literal) != parse_numeric_amount(total)
+        for literal, total in zip(printed_amounts, (commissions, fees))
+    ):
+        return []
+    purpose = regex_first(section, [
+        r'\$\s*[\d,]+(?:\.\d{2})?\s+([A-Za-z][A-Za-z &/.-]+?)\s+'
+        r'[0-9]{1,2}\s*-\s*(?:Insurance\s+Agent|Other\s+Organization|Broker)'
+    ], flags=re.I) if not is_zero_money(fees) else None
+    incomplete_purpose = not is_zero_money(fees) and not purpose
+    source = totals.group(0) + '\n' + section.strip()
     return [
         ScheduleABrokerRow(
             name=name,
@@ -7237,11 +7336,20 @@ def extract_cigna_schedule_a_broker_rows(page_texts: list[tuple[int, str]]) -> l
             state=address.group("state").upper() if address else None,
             zip_code=zip_code,
             organization_code=_cigna_printed_organization_code(text),
-            commission_rows=[ScheduleABrokerMoneyRow(amount=commissions, purpose=purpose)] if commissions else [],
-            fee_rows=[ScheduleABrokerMoneyRow(amount=fees, purpose=purpose)] if fees else [],
+            purpose=purpose,
+            commission_rows=[ScheduleABrokerMoneyRow(amount=commissions, purpose='Commissions')] if not is_zero_money(commissions) else [],
+            fee_rows=[ScheduleABrokerMoneyRow(amount=fees,purpose=purpose)] if not is_zero_money(fees) else [],
             commission_total=commissions,
             fee_total=fees,
             source_page=page,
+            commission_source_text=source,
+            fee_source_text=source,
+            evidence=[SourceEvidence(provider='Cigna primary recipient table', page=page, source_text=source)],
+            validation_results=[ExtractionValidationResult(
+                validator='incomplete_source_compensation_table', status='ERROR',
+                reason='A positive fee is printed but the recipient fee purpose is unreadable. No payment category is substituted.',
+            )] if incomplete_purpose else [],
+            decision='REVIEW_REQUIRED' if incomplete_purpose else 'UNASSESSED',
             confidence=0.995,
         )
     ]
