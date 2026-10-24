@@ -48,7 +48,7 @@ class ZeroFeePurposeTests(unittest.TestCase):
         self.assertEqual(audit['page'],3)
 
     def test_nonpurpose_clearing_is_bounded_to_established_zero_without_fee_components(self):
-        for purpose in ['N/A', 'Insurance fees and commission information']:
+        for purpose in ['N/A', '.', 'Insurance fees and commission information']:
             for overrides in [dict(fee_total=None), dict(fee_total=''), dict(fee_total='25.01'),
                               dict(fee_rows=[ScheduleABrokerMoneyRow(amount='25.01',purpose='Administration'),
                                              ScheduleABrokerMoneyRow(amount='-25.01',purpose='Adjustment')])]:
@@ -56,7 +56,7 @@ class ZeroFeePurposeTests(unittest.TestCase):
                     self.assertEqual(self.resolve(self.row(purpose=purpose,**overrides)).purpose,purpose)
 
     def test_a_real_purpose_containing_heading_words_is_not_erased(self):
-        for purpose in ['Insurance fees and commission information consulting', 'N/A review consulting', 'Information Services']:
+        for purpose in ['Insurance fees and commission information consulting', 'N/A review consulting', 'Information Services', 'Consulting.']:
             with self.subTest(purpose=purpose):
                 self.assertEqual(self.resolve(self.row(purpose=purpose)).purpose,purpose)
 
@@ -75,6 +75,54 @@ class ZeroFeePurposeTests(unittest.TestCase):
 
     def test_other_purpose_is_not_silently_erased(self):
         self.assertEqual(self.resolve(self.row(purpose='Bonus Paid')).purpose,'Bonus Paid')
+
+    def test_generic_compensation_header_is_not_a_zero_fee_recipient_purpose(self):
+        source = ('NAME AND ADDRESS OF SALES ADDITIONAL\n'
+                  'EACH SOLICITING AGENT COMMISSION FEES COMPENSATION\n'
+                  'OR BROKER RECEIVING PAID PAID PAID\nCOMPENSATION:\n'
+                  'Example Agency 3.43 0.00 0.00\n10 Main St\nBoston MA 02199')
+        row = self.row(purpose='Compensation', evidence=[
+            SourceEvidence(provider='Current source table', page=3, source_text=source)])
+        fields = [NormalizedExtractionField(field_name=name, value=value, page=3,
+            source_text=(f'Derived recipient payment category: {value}\n' if name.startswith('3d.') else '') + source,
+            confidence=.99) for name, value in [
+                ('3b. Amount of Commissions', '3.43'), ('3c. Amount of Fees', '0'),
+                ('3d. Purpose', 'Commissions')]]
+        result = resolve_schedule_a_result(NormalizedExtractionResult(provider='test', fields=fields,
+            schedule_a_broker_rows=[row], raw={'original_provider_purpose':'Compensation'}))
+        self.assertIsNone(result.schedule_a_broker_rows[0].purpose)
+        self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+        self.assertEqual(result.raw['not_applicable_broker_purposes'][0]['observed_value'], 'Compensation')
+        self.assertEqual(result.schedule_a_broker_rows[0].evidence[0].source_text, source)
+
+    def test_compensation_is_preserved_without_unambiguous_same_row_heading_evidence(self):
+        header = ('NAME AND ADDRESS OF SALES ADDITIONAL\n'
+                  'EACH SOLICITING AGENT COMMISSION FEES COMPENSATION\n'
+                  'OR BROKER RECEIVING PAID PAID PAID\nCOMPENSATION:\n')
+        for page, name, tail in [(2, 'Example Agency', '3.43 0.00 0.00'),
+                                 (3, 'Different Agency', '3.43 0.00 0.00'),
+                                 (3, 'Example Agency', '3.43 0.00 0.00 Purpose: Compensation'),
+                                 (3, 'Example Agency', '3.43 0.00 0.00 Compensation')]:
+            with self.subTest(page=page, name=name, tail=tail):
+                row = self.row(purpose='Compensation', evidence=[SourceEvidence(
+                    provider='Current source table', page=page, source_text=header + name + ' ' + tail)])
+                self.assertEqual(self.resolve(row).purpose, 'Compensation')
+        self.assertEqual(self.resolve(self.row(purpose='Compensation')).purpose, 'Compensation')
+        for fee, components in [(None, []), ('25.01', []), ('0', [
+                ScheduleABrokerMoneyRow(amount='10', purpose='Administration'),
+                ScheduleABrokerMoneyRow(amount='-10', purpose='Administration')])]:
+            with self.subTest(fee=fee, components=components):
+                row = self.row(purpose='Compensation', fee_total=fee, fee_rows=components,
+                    evidence=[SourceEvidence(provider='Current source table', page=3,
+                        source_text=header + 'Example Agency 3.43 0.00 0.00')])
+                self.assertEqual(self.resolve(row).purpose, 'Compensation')
+
+    def test_single_period_placeholder_does_not_populate_a_zero_fee_purpose(self):
+        before = self.row(purpose='.')
+        actual = self.resolve(before.model_copy(deep=True))
+        self.assertIsNone(actual.purpose)
+        self.assertEqual(actual.commission_rows, before.commission_rows)
+        self.assertEqual(actual.evidence, before.evidence)
 
     def summary(self,*,fee='0',purpose='COMMISSIONS',fee_rows=None,broker_purpose='same_as_summary'):
         source=f'{purpose} 3.43; Fees Paid {fee}; fee purpose N/A'

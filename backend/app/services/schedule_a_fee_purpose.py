@@ -11,6 +11,36 @@ def is_payment_category(value):
         r'commissions?\s*(?:&|and|/)\s*fees?)',str(value or '').strip(),re.I))
 
 
+def is_compensation_table_heading(row):
+    """Recognize an exact generic header, not a recipient's printed purpose.
+
+    The caller must separately establish zero fees without fee components.
+    Require same-page row evidence, the literal recipient name and the sales /
+    fees / additional-compensation header before that name. Any purpose label
+    or occurrence after the recipient keeps the candidate for normal review.
+    """
+    if str(row.purpose or '').strip().casefold() != 'compensation':
+        return False
+    name = re.sub(r'\s+', ' ', str(row.name or '')).strip().casefold()
+    if not name or not row.source_page:
+        return False
+    for evidence in row.evidence:
+        if evidence.page != row.source_page:
+            continue
+        source = re.sub(r'\s+', ' ', str(evidence.source_text or '')).strip().casefold()
+        index = source.find(name)
+        if index < 0 or re.search(r'\bpurpose\b', source):
+            continue
+        heading, recipient = source[:index], source[index:]
+        if (re.search(r'\bname\s+and\s+address\b', heading)
+                and re.search(r'\b(?:soliciting\s+agent|broker\s+receiving)\b', heading)
+                and all(re.search(r'\b' + label + r'\b', heading)
+                        for label in ('sales', 'additional', 'commissions?', 'fees', 'compensation'))
+                and not re.search(r'\bcompensation\b', recipient)):
+            return True
+    return False
+
+
 def _amount(value):
     try:
         result=Decimal(re.sub(r'[$,\s]','',str(value)))

@@ -32,6 +32,7 @@ from app.services.schedule_a_customer_rules import (
     DEFAULT_CODE_REASON, DEFAULT_NAIC_REASON, apply_customer_defaults, apply_published_static_defaults,
     published_static_default, published_static_default_reason,
 )
+from app.services.schedule_a_fee_purpose import is_compensation_table_heading
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -933,10 +934,11 @@ def _validate_broker_rows(
         # Missing fees and zero-net nonempty fee components are not equivalent
         # to an established zero fee with no fee components.
         if (parse_decimal(row.fee_total) == Decimal("0") and not row.fee_rows
-                and row.commission_rows and re.fullmatch(
-                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?|N\s*/\s*A|Not\s+Applicable|"
+                and row.commission_rows and (re.fullmatch(
+                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?|N\s*/\s*A|Not\s+Applicable|\.|"
                     r"Insurance\s+fees\s+and\s+commissions?\s+information\s*:?)",
-                    str(row.purpose or "").strip(), flags=re.IGNORECASE)):
+                    str(row.purpose or "").strip(), flags=re.IGNORECASE)
+                    or is_compensation_table_heading(row))):
             observed_purpose = row.purpose
             raw = dict(result.raw) if isinstance(result.raw, dict) else {'provider_raw': result.raw}
             raw.setdefault('not_applicable_broker_purposes', []).append({
