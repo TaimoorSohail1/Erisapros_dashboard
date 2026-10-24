@@ -158,7 +158,10 @@ def collect_schedule_a_source_observations(page_texts):
                 add_benefit(page, match.group("coverage"), match.group(0).strip())
         for block in re.finditer(
             r"\b(?:9|10)[.)]?\s+Non\s*[- ]?\s*experience\s*[- ]?\s*rated\s+contracts\s+Coverage\s+Amount\s*"
-            r"(?P<body>.*?)\ba\s+Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier[\s.:]*\$?\s*"
+            # OCR can retain the printed subsection underline as "a_". Keep
+            # the full paid-premium label mandatory rather than borrowing an
+            # amount from another subsection or discarding the component table.
+            r"(?P<body>.*?)\ba[._]?\s+Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier[\s.:]*\$?\s*"
             r"(?P<total>" + _PLAIN_AMOUNT + ")", text, re.I | re.S,
         ):
             signature = (page, re.sub(r"\s+", " ", block.group(0)).casefold())

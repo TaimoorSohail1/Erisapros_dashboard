@@ -64,7 +64,7 @@ Local synthetic browser QA verified distinct completed-update, verified-no-chang
 
 A subsequent negative test reproduced a QA boundary gap: leaf comparison silently omitted an unknown nested sibling field or an unrecognized subpart. The guard now rejects unexpected nesting, unrecognized subparts and duplicate subpart containers in every QA Schedule A payload. Existing valid broker subparts still compare independently. The focused boundary/review/evidence suite passes 30 tests and 14 subtests. The full Windows/Linux, exact-image and nine-layout gates must be rerun for this final revision; earlier passing evidence is not relabelled as final-revision verification.
 
-The owner is arranging independent developer review. PR #59 remains a draft, with no merge, production deployment or filing writes authorized by test success alone. Review the latest revision, not only the earlier candidate.
+The owner is arranging independent developer review. PR #59 remains open and unmerged, with no production deployment or filing writes authorized by test success alone. Review the latest revision, not only the earlier candidate.
 
 ## Changed-value source conflict found before release
 
@@ -81,3 +81,9 @@ The Unum reader now bounds the complete paid-premium label to its own section, r
 The additional-field audit also found that zero-fee broker cleanup did not remove a separate, derived commission-heading summary in the fee-purpose scalar. Canonical resolution now omits only that inapplicable summary after the scalar and broker rows establish zero fees without fee components or a real purpose. Raw stages retain the observed value with an explicit not-applicable record. Missing fees, nonzero/offsetting fee components, other printed purposes and unresolved validation errors retain their existing behavior. The published fee-purpose rule remains optional and unchanged.
 
 The focused parser/canonical regression run passes 144 tests and five subtests. Both fixes require final full-platform and pinned-image retesting before release. Earlier evidence is not counted as final-revision verification. The owner-arranged independent developer review must cover the latest PR #59 head.
+
+## Benefit-level premium audit
+
+Revision `da17cf9` passed the full Windows suite (1,422 tests, two skips) and the pinned Linux/frontend run. A separate independent component audit verified the Hartford premium and compensation components, including negative adjustments, and MetLife's benefit-level commission components. It found a source-evidence gap: the MetLife premium total was correct, but the four premium components were absent because the table reader did not accept the OCR subsection label `a_`.
+
+The table reader now permits an underscore or period after subsection `a`, still requiring the full paid-premium label. It does not infer values, change business rules or replace the reported total. A component mismatch retains a review error. Regression tests reproduce the missing evidence, exercise different amounts, exclude unlabelled/other-section totals and prove the mismatch hold. All 53 source-observation/final-evidence tests pass. A replay of the captured real OCR pages independently recovers the four expected premium components and reconciles their sum. This seam replay is not a fresh-provider or whole-pipeline result; final-revision full-platform, exact-image and nine-layout retesting remain required.
