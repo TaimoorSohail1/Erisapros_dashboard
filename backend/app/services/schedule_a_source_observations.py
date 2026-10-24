@@ -303,6 +303,7 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256, s
         for value in values:
             if value['key'] == 'additional_costs' and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO'}:
                 alternatives.setdefault(read['page'], []).append({**value, 'ocr_psm': 6,
+                    'ocr_format': read.get('ocr_format', 'jpeg'), 'ocr_dpi': read.get('dpi', 400),
                     'source_sha256': source_sha256})
     if source_file_name:
         from app.services.schedule_a_final_evidence import completed_document_source_pages
@@ -399,3 +400,40 @@ def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=N
                 field.validation_results.append(ExtractionValidationResult(validator="source_component_total", status="ERROR",
                     reason="Printed premium component sum does not reconcile with its printed total; review the source."))
                 field.decision = "REVIEW_REQUIRED"
+
+
+def supplement_unreadable_cost_source_observations(result, file_bytes, file_name):
+    """Escalate only unresolved local OCR costs, never known-value conflicts."""
+    import hashlib
+    from app.services.schedule_a_cost_ocr import read_lossless_cost_source_pages
+
+    if not file_bytes or not str(file_name).lower().endswith('.pdf'):
+        return
+    raw = result.raw
+    if not isinstance(raw, dict) or not isinstance(raw.get('source_review'), dict):
+        return
+    primary = raw.get('local_ocr_pages') or raw.get('ocr_pages')
+    if not isinstance(primary, list):
+        return
+    pages = [(item['page'], item['text']) for item in primary if isinstance(item, dict)
+             and type(item.get('page')) is int and isinstance(item.get('text'), str)]
+    observations = raw['source_review']
+    conflicts = {item.get('page') for item in observations.get('cost_source_reconciliations', [])
+                 if item.get('action') == 'CONFLICT_REQUIRES_REVIEW'}
+    attempted = set(raw.get('lossless_cost_ocr_attempted_pages') or [])
+    selected = sorted({item['page'] for item in observations['reported_values']
+        if item['key'] == 'additional_costs' and item['value_kind'] == 'UNREADABLE'
+        and item['page'] in {page for page, _ in pages} and item['page'] not in conflicts | attempted})[:3]
+    if not selected:
+        return
+    raw['lossless_cost_ocr_attempted_pages'] = sorted(attempted | set(selected))
+    try:
+        reads = read_lossless_cost_source_pages(file_bytes, selected)
+    except OSError as exc:
+        raw.setdefault('lossless_cost_ocr_errors', []).append({'pages': selected, 'error_type': type(exc).__name__})
+        return
+    raw.setdefault('lossless_cost_source_reads', []).extend(reads)
+    existing = raw.get('local_ocr_source_reads') or (
+        raw.get('ocr_source_reads') if raw.get('source') == 'local_pdf_ocr_parser' else [])
+    raw['local_ocr_source_reads'] = [*(existing if isinstance(existing, list) else []), *reads]
+    _reconcile_cost_source_reads(observations, raw, pages, hashlib.sha256(file_bytes).hexdigest(), file_name)

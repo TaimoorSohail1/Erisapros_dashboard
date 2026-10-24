@@ -53,7 +53,7 @@ from app.services.schedule_a_hartford_grid import recover_hartford_scanned_ident
 from app.services.schedule_a_trace import capture_extraction_stage, extraction_stage
 from app.services.schedule_a_source_review import apply_source_business_review, explicit_missing_person_count
 from app.services.schedule_a_broker_validation import hold_local_ocr_recipient_conflicts
-from app.services.schedule_a_source_observations import attach_schedule_a_source_observations
+from app.services.schedule_a_source_observations import attach_schedule_a_source_observations, supplement_unreadable_cost_source_observations
 from app.services.schedule_a_visual_benefits import attach_visual_benefit_evidence, read_visual_benefit_evidence
 from app.services.schedule_a_final_evidence import attach_final_field_evidence, provider_source_pages, completed_document_source_pages
 
@@ -474,6 +474,7 @@ class ExtractionService:
             grid_corroborating_rows=lambda page:[row for row in grid_corroborated_rows if row.source_page==page])
         attach_schedule_a_source_observations(result, semantic_pages,
             source_sha256=hashlib.sha256(file_bytes).hexdigest(), source_file_name=file_name)
+        supplement_unreadable_cost_source_observations(result, file_bytes, file_name)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,
