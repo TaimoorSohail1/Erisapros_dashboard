@@ -778,15 +778,19 @@ type AutomationPresentation = {
 
 type DashboardUpdateMode = {
   badgeClass: "info" | "ready" | "warn";
-  label: "Automatic update" | "Automatically updated" | "Automatically verified" | "Manual update" | "Manual update required";
+  label: "Automatic update" | "Automatically updated" | "Automatically verified" | "Automatically completed" | "Manual update" | "Manual update required";
 };
 
 function dashboardUpdateMode(filing: Filing): DashboardUpdateMode {
   const automationStatus = filing.automation_status;
   if (automationStatus === "COMPLETED") {
-    return (filing.will_update_count || 0) > 0
-      ? { label: "Automatically updated", badgeClass: "ready" }
-      : { label: "Automatically verified", badgeClass: "ready" };
+    if (filing.verified_receipt_id && filing.verified_update_at && filing.verified_update_action) {
+      return { label: "Automatically updated", badgeClass: "ready" };
+    }
+    if (filing.verified_update_count === 0 && filing.verified_update_at && filing.verified_update_action === "NO_CHANGE") {
+      return { label: "Automatically verified", badgeClass: "ready" };
+    }
+    return { label: "Automatically completed", badgeClass: "ready" };
   }
   if (automationStatus === "ACTION_NEEDED" || automationStatus === "FAILED") {
     return { label: "Manual update required", badgeClass: "warn" };
@@ -801,11 +805,15 @@ function dashboardAutomationState(filing: Filing): AutomationPresentation | null
   const status = filing.automation_status;
   if (!status || status === "DISABLED") return null;
   if (status === "COMPLETED") {
-    const updatedFields = filing.will_update_count || 0;
-    const detail = filing.automation_reasons?.[0]
-      || (updatedFields
+    const updatedFields = filing.verified_update_count;
+    const verifiedWrite = Boolean(filing.verified_receipt_id && filing.verified_update_at && filing.verified_update_action);
+    const verifiedNoop = updatedFields === 0 && filing.verified_update_at && filing.verified_update_action === "NO_CHANGE";
+    const detail = verifiedWrite
+      ? ((updatedFields || 0) > 0
         ? `${updatedFields} FT Williams field${updatedFields === 1 ? "" : "s"} updated and read-back verified.`
-        : "No FT Williams changes were needed; current values already match.");
+        : "FT Williams update read-back verified. Open the receipt for details.")
+      : verifiedNoop ? "No FT Williams changes were needed; current values already match."
+      : "Workflow completed. Open the detailed review for verified update evidence.";
     return { status, label: "Completed", detail, actionLabel: "View result", badgeClass: "ready", tone: "ready" };
   }
   const detail = filing.automation_reasons?.[0] || "The automated FT Williams workflow is evaluating this filing.";

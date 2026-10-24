@@ -2,7 +2,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime
 from urllib.parse import urlsplit
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from app.auth import require_field_rule_admin
 from app.config import get_settings
 from app.models import (
@@ -313,7 +313,7 @@ async def re_evaluate_filing_rules(
 
 
 @router.patch("/{filing_id}/fields/{field_id}")
-async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest):
+async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest, request: Request = None):
     repo = get_repository()
     filing = await repo.get_filing(filing_id)
     if not filing:
@@ -326,6 +326,45 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest)
     existing_field = next((item for item in existing_fields if item.id == field_id), None)
     if not existing_field:
         raise HTTPException(status_code=404, detail="Field not found")
+    if payload.decision == "KEEP_CURRENT":
+        if payload.mark_missing or not existing_review:
+            raise HTTPException(status_code=422, detail="Keep Current requires a current FT Williams comparison.")
+        service = FTWilliamsReviewService()
+        old_target = (existing_review.ftw_customer_id, existing_review.ftw_plan_id,
+                      existing_review.year, existing_review.ftw_seq_no)
+        fresh = await service.prepare_review(filing_id, send_queries=True,
+            reuse_current_snapshot=False, apply_automatic_derivations=False)
+        target = (fresh.ftw_customer_id, fresh.ftw_plan_id, fresh.year, fresh.ftw_seq_no)
+        comparison = next((c for c in fresh.fields if c.field_id == field_id), None)
+        if (not fresh.current_query_success or fresh.current_query_complete is not True
+                or not all(target[:3]) or comparison is None or not comparison.current_value.strip()):
+            raise HTTPException(status_code=409, detail="A complete fresh vendor comparison is required. Refresh FTW data.")
+        if old_target != target or payload.proposed_value != comparison.current_value:
+            raise HTTPException(status_code=409, detail="FT Williams target or current value changed. Review the fresh comparison before keeping it.")
+        latest_filing = await repo.get_filing(filing_id)
+        latest_fields = await repo.list_fields(filing_id)
+        latest = next((f for f in latest_fields if f.id == field_id), None)
+        if latest is None:
+            raise HTTPException(status_code=409, detail="Source field changed. Refresh the filing review.")
+        context = service.current_preservation_context(latest_filing, latest, fresh, comparison.current_value)
+        field = await repo.update_field(filing_id, field_id, latest.proposed_value,
+            status=latest.status, status_reason=latest.status_reason, keep_current_context=context)
+        latest_fields = [field if f.id == field_id else f for f in latest_fields]
+        service._apply_preserved_current_decisions(latest_filing, latest_fields, fresh)
+        counts = service._review_decision_count_updates(fresh)
+        fresh = await repo.upsert_ftwilliams_review(fresh.model_copy(update=counts))
+        await repo.update_filing(filing_id, {**counts, **automation_reset_values(get_settings(),
+            "A reviewer kept the current vendor value; re-evaluate the remaining changes.")})
+        claims = getattr(request.state, "user", {}) if request else {}
+        await repo.add_event(ReviewEvent(filing_id=filing_id, type="KEEP_CURRENT", field_id=field_id,
+            before=comparison.current_value, after=comparison.current_value,
+            reason="Retain existing vendor value without selecting an outbound replacement."))
+        await repo.add_audit(AuditLog(filing_id=filing_id, event="FTWILLIAMS_KEEP_CURRENT",
+            message="Reviewer preserved a fresh current FT Williams value without editing source data.",
+            details={"field_id": field_id, "target": target, "context_sha256": context,
+                     "actor": claims.get("email") or claims.get("sub"), "vendor_write": False}))
+        fresh = await continue_ftw_automation(filing_id, fresh)
+        return {"field": field, "proposed_xml": latest_filing.proposed_xml or "", "ftw_review": fresh}
     proposed_value = "" if payload.mark_missing else payload.proposed_value
     update_tag = resolve_ftw_update_tag(existing_field)
     if not payload.mark_missing and update_tag:
