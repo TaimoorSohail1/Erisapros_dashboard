@@ -4632,14 +4632,14 @@ def extract_litera_aetna_schedule_a_fields(
     page, text = main_page
     carrier_match = re.search(
         r"Name\s+of\s+Insurance\s+Carrier\s*:.*?\n\s*"
-        r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co\.?)\s+or\s+Identification",
+        r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co)\b[.,]?\s+or\s+Identification",
         text,
         re.IGNORECASE | re.DOTALL,
     )
     if not carrier_match:
         carrier_match = re.search(
             r"Name\s+of\s+Insurance\s+Carrier\s*:\s*"
-            r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co\.?)",
+            r"(?P<carrier>Aetna\s+Life\s+Insurance\s+Co)\b[.,]?",
             text,
             re.IGNORECASE,
         )
@@ -4710,7 +4710,7 @@ def extract_litera_aetna_schedule_a_fields(
     mapped_naic = _AETNA_CARRIER_IDENTITIES.get(identity_key)
     naic = appendix_naic[0] if appendix_naic else mapped_naic
 
-    source = "\n".join(
+    source = carrier_match.group(0) + "\n" + "\n".join(
         line for line in text.splitlines()
         if re.search(
             r"Name\s+of\s+Insurance\s+Carrier|EIN\s*:|NAIC\s+Code|persons\s+covered|"
@@ -4838,7 +4838,7 @@ def extract_litera_aetna_schedule_a_broker_rows(
                 "zip": locality.group("zip"),
                 "commission": paid.group("commission"),
                 "fee": paid.group("fee"),
-                "purpose": purpose,
+                "purpose": re.sub(r'^\s*\|+\s*','',purpose),
                 "source": "\n".join(lines[index : next_index + 1]),
             })
         # In flattened OCR a fee-only row can have just one dollar amount.
@@ -4880,7 +4880,7 @@ def extract_litera_aetna_schedule_a_broker_rows(
                     zip_code=normalize_zip_code(str(parsed["zip"])),
                     commission_total=commission,
                     fee_total=fee,
-                    purpose=derive_schedule_a_purpose(commission, fee),
+                    purpose=(parsed["purpose"] if fee is not None and parsed["purpose"] else derive_schedule_a_purpose(commission, fee)),
                     commission_rows=[ScheduleABrokerMoneyRow(amount=commission, purpose="COMMISSIONS")] if commission is not None else [],
                     fee_rows=[ScheduleABrokerMoneyRow(amount=fee, purpose=parsed["purpose"] or "FEES")]
                         if fee is not None and not is_zero_money(fee) else [],

@@ -123,6 +123,8 @@ def resolve_schedule_a_result(
 ) -> NormalizedExtractionResult:
     """Attach evidence, validate values, and fail closed on contradictions."""
     apply_customer_defaults(result)
+    from app.services.schedule_a_fee_purpose import reconcile_derived_fee_purpose_summary
+    reconcile_derived_fee_purpose_summary(result)
     error_fields: set[str] = set()
     for field in result.fields:
         if not field.evidence and (field.page or field.source_text):
@@ -653,8 +655,9 @@ def _validate_carrier_name(value: str) -> ExtractionValidationResult:
     clean = re.sub(r"\s+", " ", value).strip()
     lower = clean.casefold()
     looks_like_sentence_fragment = bool(
-        re.match(r"^(during|is|was|were|has|have|providing|paid|total)\b", lower)
+        re.match(r"^(during|is|was|were|has|have|providing|paid|total|completing)\b", lower)
         or "hereby certifies" in lower
+        or re.search(r"\bcompleting\s+schedule\s+a\b",lower)
     )
     contains_numeric_noise = bool(
         re.search(r"\$\s*\d", clean)
@@ -1037,6 +1040,23 @@ def _validate_broker_rows(
                         reason=f"Broker {label} total is not a valid currency amount.",
                     )
                 )
+            components = getattr(row, label + "_rows")
+            if components:
+                amounts = [parse_decimal(item.amount) for item in components]
+                total = parse_decimal(value)
+                valid = (total is not None and all(
+                    amount is not None and _is_currency_amount(item.amount)
+                    for item, amount in zip(components, amounts)
+                ) and sum(amounts, Decimal("0")) == total)
+                validator = f"broker_{label}_components"
+                validations.append(ExtractionValidationResult(
+                    validator=validator, status="PASS" if valid else "ERROR",
+                    reason=f"Broker {label} component amounts reconcile exactly with their recipient total."
+                    if valid else f"Broker {label} components are invalid or do not reconcile exactly with their recipient total.",
+                ))
+                if not valid:
+                    _mark_fields_review(result.fields, ("3b.",) if label == "commission" else ("3c.", "3d."),
+                        validator=validator, reason=f"A recipient's {label} components need review; no rounding tolerance applies to source amounts.")
         row.validation_results = validations
         row_has_error = any(item.status == "ERROR" for item in validations)
         row.decision = "REVIEW_REQUIRED" if row_has_error else "AUTOMATIC"
@@ -1060,7 +1080,11 @@ def _validate_broker_rows(
     ):
         errors.append("broker_source_evidence")
 
-    separate_benefit_rows = len(_broker_coverage_keys(rows)) > 1
+    # Different benefits within one Schedule A do not remove its aggregate
+    # reconciliation. Preserve the legacy separate-worksheet case only when
+    # the extractor explicitly produced multiple worksheet summaries.
+    separate_benefit_rows = (len(result.schedule_a_worksheet_summaries) > 1
+                             and len(_broker_coverage_keys(rows)) > 1)
     commission_error = False if separate_benefit_rows else _reconcile_broker_total(
         result.fields, rows, "3b.", "commission_total"
     )
@@ -1174,7 +1198,7 @@ def _reconcile_broker_total(
         return False
     actual_values = [parse_decimal(getattr(row, row_attribute)) for row in rows]
     actual = sum((value or Decimal("0") for value in actual_values), Decimal("0"))
-    return abs(expected - actual) > Decimal("0.01")
+    return expected != actual
 
 
 def _broker_coverage_keys(rows: list[ScheduleABrokerRow]) -> set[str]:

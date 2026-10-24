@@ -63,6 +63,79 @@ Part III Welfare Benefit Contract Information
         get_settings.cache_clear()
 
 
+@pytest.mark.parametrize('carrier_suffix', ['.', ',', ''])
+def test_labelled_aetna_carrier_handles_ocr_punctuation_without_reading_adjacent_instructions(carrier_suffix):
+    from app.services.extractor import extract_litera_aetna_schedule_a_fields
+    pages=[(3,f'''AETNA LIFE INSURANCE COMPANY completing Schedule A of Form 5500.
+AND AFFILIATES
+For Fiscal Plan Year beginning 01/01/2024 and ending 12/31/2024
+PART I Information Concerning Insurance Contract Coverage, Fees, and Commissions.
+(a) Name of Insurance Carrier: (d) Contract Number | (e) Approximate Number of
+Aetna Life Insurance Co{carrier_suffix} or Identification: persons covered at the end Policy or contract Year
+(b) EIN: 06-6033492 0042000-Vision of policy or contract year: (f) From: (g) To:
+(c) NAIC Code: See Attached Listing 17 01/01/2024 12/31/2024
+2. Insurance Fees and commissions paid to agents and brokers:
+Part III Welfare Benefit Contract Information
+''')]
+    fields={f.field_name.split('.')[0]:f for f in extract_litera_aetna_schedule_a_fields(pages)}
+    assert fields['1a'].value=='Aetna Life Insurance Co.'
+    assert fields['1d'].value=='0042000-Vision'
+    assert fields['1e'].value=='17'
+
+
+def test_instructions_cannot_be_accepted_as_a_carrier_when_no_other_candidate_is_available():
+    from app.models import NormalizedExtractionField, NormalizedExtractionResult
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+    value='completing Schedule A of Form 5500.'
+    result=resolve_schedule_a_result(NormalizedExtractionResult(provider='test',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value=value,
+            confidence=.99,page=3,source_text=value)]))
+    field=next(f for f in result.fields if f.field_name.startswith('1a.'))
+    assert field.decision=='REVIEW_REQUIRED'
+    assert any(v.validator=='carrier_name' and v.status=='ERROR' for v in field.validation_results)
+
+
+def test_aetna_carrier_repair_survives_the_public_pipeline_with_a_wrong_local_candidate(monkeypatch):
+    from pypdf import PdfReader
+    from app.models import NormalizedExtractionField, NormalizedExtractionResult
+    from app.services import extractor as module
+    for key in ('GROUNDX_API_KEY','EYELEVEL_API_KEY','EYELEVEL_EXTRACT_URL'):
+        monkeypatch.setenv(key,'')
+    monkeypatch.setenv('GROUNDX_BUCKET_ID','0')
+    monkeypatch.setenv('SCHEDULE_A_CANONICAL_VALIDATION_ENABLED','true')
+    monkeypatch.setenv('SCHEDULE_A_CANONICAL_VALIDATION_SHADOW_ENABLED','false')
+    get_settings.cache_clear()
+    source='''AETNA LIFE INSURANCE COMPANY completing Schedule A of Form 5500.
+AND AFFILIATES
+For Fiscal Plan Year beginning 01/01/2024 and ending 12/31/2024
+(a) Name of Insurance Carrier: (d) Contract Number | (e) Approximate Number of
+Aetna Life Insurance Co, or Identification: persons covered at the end Policy or contract Year
+(b) EIN: 06-6033492 0042000-Vision of policy or contract year: (f) From: (g) To:
+(c) NAIC Code: See Attached Listing 17 01/01/2024 12/31/2024
+2. Insurance Fees and commissions paid to agents and brokers:
+Part III Welfare Benefit Contract Information
+'''
+    document=PdfWriter()
+    document.add_blank_page(width=850,height=850)
+    document.add_blank_page(width=850,height=850)
+    document.add_page(PdfReader(BytesIO(_statement(source))).pages[0])
+    stream=BytesIO();document.write(stream)
+    async def recorded_boundary(self,*args):
+        return NormalizedExtractionResult(provider='Recorded provider/local boundary',fields=[
+            NormalizedExtractionField(field_name='1a. Name of Insurance Company',
+                value='completing Schedule A of Form 5500.',confidence=.99,page=3,source_text=source,
+                candidate_values=['Aetna Life Insurance Co.','completing Schedule A of Form 5500.'])],
+            raw={'local_ocr_pages':[{'page':3,'text':source}]})
+    monkeypatch.setattr(module.ExtractionService,'_extract_schedule_a_unresolved',recorded_boundary)
+    try:
+        result=asyncio.run(ExtractionService().extract_schedule_a(stream.getvalue(),'different-ocr-carrier.pdf'))
+        field=next(f for f in result.fields if f.field_name.startswith('1a.'))
+        assert field.value=='Aetna Life Insurance Co.'
+        assert not any(v.validator=='candidate_conflict' and v.status=='ERROR' for v in field.validation_results)
+    finally:
+        get_settings.cache_clear()
+
+
 def test_wrapped_aetna_rows_keep_separate_commission_and_fee_columns():
     from app.services.extractor import extract_litera_aetna_schedule_a_broker_rows
     pages=[(3,'''AETNA LIFE INSURANCE COMPANY AND AFFILIATES

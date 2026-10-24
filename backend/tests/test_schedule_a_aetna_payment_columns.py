@@ -44,6 +44,22 @@ Part III Welfare Benefit Contract Information
     assert rows[0].source_page == 2
 
 
+@pytest.mark.parametrize('purpose', ['Administration','Renewal | incentive'])
+def test_aetna_ocr_column_border_is_not_part_of_the_printed_fee_purpose(purpose):
+    rows=extract_litera_aetna_schedule_a_broker_rows([(3,f'''Aetna Life Insurance Co.
+For Fiscal Plan Year beginning 01/01/2025 and ending 12/31/2025
+2. Insurance Fees and commissions paid to agents and brokers:
+00987654 EXAMPLE BENEFITS AGENCY LLC 42 RESEARCH RD $125.25 $15.50 | {purpose}
+BOSTON MA 02110
+TOTAL $125.25 $15.50
+Part III Welfare Benefit Contract Information
+''')])
+    assert len(rows)==1
+    assert rows[0].fee_rows[0].purpose==purpose
+    assert rows[0].purpose==purpose
+    assert '| '+purpose in rows[0].evidence[0].source_text
+
+
 def test_aetna_keeps_each_paid_recipient_instead_of_only_the_first_row():
     pages = [(1, """AETNA LIFE INSURANCE COMPANY AND AFFILIATES
 For Fiscal Plan Year beginning 01/01/2024 and ending 12/31/2024
