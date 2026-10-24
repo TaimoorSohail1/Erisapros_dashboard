@@ -1,7 +1,7 @@
 """A commission heading must not populate the separate fee-purpose field."""
 import unittest
 
-from app.models import NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, SourceEvidence
+from app.models import NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
 
 
@@ -42,6 +42,36 @@ class ZeroFeePurposeTests(unittest.TestCase):
 
     def test_other_purpose_is_not_silently_erased(self):
         self.assertEqual(self.resolve(self.row(purpose='Bonus Paid')).purpose,'Bonus Paid')
+
+    def summary(self,*,fee='0',purpose='COMMISSIONS',fee_rows=None):
+        source=f'Commissions Paid 3.43; Fees Paid {fee}; fee purpose N/A'
+        fields=[NormalizedExtractionField(field_name=name,value=value,confidence=.99,page=3,source_text=source)
+                for name,value in [('3b. Amount of Commissions','3.43'),('3c. Amount of Fees',fee),('3d. Purpose',purpose)]]
+        result=NormalizedExtractionResult(provider='Source table',fields=fields,
+            schedule_a_broker_rows=[self.row(fee_total=fee,purpose=purpose,fee_rows=fee_rows or [])],
+            raw={'extraction_stages':[{'stage':'provider_candidates','fields':[f.model_dump(mode='json') for f in fields]}]})
+        return resolve_schedule_a_result(result)
+
+    def test_zero_fee_summary_does_not_present_commission_heading_as_a_fee_purpose(self):
+        result=self.summary()
+        self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+        self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],'COMMISSIONS')
+        self.assertTrue(any(r['field']=='3d. Purpose' for r in result.raw['not_applicable_fields']))
+
+    def test_nonzero_or_offsetting_fees_keep_summary_purpose(self):
+        for fee,rows in [('20',[ScheduleABrokerMoneyRow(amount='20',purpose='Consulting')]),
+                         ('0',[ScheduleABrokerMoneyRow(amount='10',purpose='Adjustment'),ScheduleABrokerMoneyRow(amount='-10',purpose='Adjustment')])]:
+            with self.subTest(fee=fee):
+                result=self.summary(fee=fee,fee_rows=rows)
+                self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='COMMISSIONS' for f in result.fields))
+
+    def test_zero_fee_summary_does_not_erase_a_different_printed_purpose(self):
+        result=self.summary(purpose='Bonus Paid')
+        self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='Bonus Paid' for f in result.fields))
+
+    def test_missing_fee_summary_is_not_an_established_zero(self):
+        result=self.summary(fee='')
+        self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='COMMISSIONS' for f in result.fields))
 
 
 if __name__=='__main__':unittest.main()

@@ -155,6 +155,7 @@ def resolve_schedule_a_result(
     _validate_date_order(result.fields, error_fields)
     cross_field_errors = _validate_cross_section_duplicates(result.fields)
     cross_field_errors.extend(_validate_broker_rows(result, result.schedule_a_broker_rows))
+    _omit_inapplicable_zero_fee_summary(result)
     semantic_resolution = (
         result.raw.get("semantic_resolution", {})
         if isinstance(result.raw, dict)
@@ -863,6 +864,38 @@ def _has_explicit_experience_evidence(field: NormalizedExtractionField) -> bool:
         or re.search(r"\bexperience[- ]rated\b", normalized)
         or re.search(r"\b9[abcd](?:\b|\s*\()", normalized)
     )
+
+
+def _omit_inapplicable_zero_fee_summary(result: NormalizedExtractionResult) -> None:
+    """Keep a derived commission category out of the separate fee-purpose scalar.
+
+    Raw candidates/stages remain unchanged. Missing fees, real fee purposes,
+    offsetting fee components and unresolved validation errors are not zeros
+    without a purpose and must retain their existing review path.
+    """
+    fees = [f for f in result.fields if f.field_name.strip().lower().startswith('3c.')]
+    rows = result.schedule_a_broker_rows
+    if (not fees or not rows or any(parse_decimal(f.value) != Decimal('0')
+            or any(v.status == 'ERROR' for v in f.validation_results) for f in fees)):
+        return
+    if any(parse_decimal(row.fee_total) != Decimal('0') or row.fee_rows or row.purpose for row in rows):
+        return
+    if not any((parse_decimal(row.commission_total) or Decimal('0')) > 0 for row in rows):
+        return
+    omitted = [f for f in result.fields if f.field_name.strip().lower().startswith('3d.')
+        and re.fullmatch(r'(?:commissions?(?:\s+paid)?|paid\s+commissions?)',str(f.value or '').strip(),re.I)
+        and not any(v.status == 'ERROR' for v in f.validation_results)]
+    if not omitted:
+        return
+    raw = dict(result.raw) if isinstance(result.raw,dict) else {'provider_raw':result.raw}
+    observations = list(raw.get('not_applicable_fields') or [])
+    for field in omitted:
+        observations.append({'field':field.field_name,'observed_value':field.value,'page':field.page,
+            'rule':'zero_fees_without_fee_purpose',
+            'reason':'Confirmed zero fees with no fee components have no fee purpose. The commission category remains in raw stages and commission components.'})
+    raw['not_applicable_fields'] = observations
+    result.raw = raw
+    result.fields = [f for f in result.fields if not any(f is omitted_field for omitted_field in omitted)]
 
 
 def _validate_broker_rows(

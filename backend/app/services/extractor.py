@@ -10019,6 +10019,25 @@ def extract_delta_dental_schedule_a_fields(
     return _pomerene_fields(values, page=page_texts[0][0] if page_texts else 1, source="Delta Dental Schedule A parser")
 
 
+def _first_unum_paid_premium(text: str) -> tuple[str | None, str]:
+    """Read currency in the labelled paid section, never an OCR section digit.
+
+    The continuation words "TO CARRIER" can be damaged by OCR. The complete
+    paid-premium label and one unambiguous currency amount are still evidence;
+    the next lettered/unpaid section is not part of that evidence.
+    """
+    label = re.search(r'TOTAL\s+PREMIUM\s+OR\s+SUBSCRIPTION\s+CHARGES\s+PAID\b',text,re.I)
+    if not label:
+        return None,''
+    tail = text[label.end():label.end()+350]
+    boundary = re.search(r'(?im)^\s*(?:\([B-Z]\)|[B-Z][.)])\s+|\bPREMIUMS?\s+DUE\s+AND\s+UNPAID\b',tail)
+    section = tail[:boundary.start()] if boundary else tail
+    amounts = re.findall(r'\$\s*([-+]?(?:\d[\d,]*(?:\.\d{2})?|\.\d{2}))(?![\d.])',section)
+    distinct = {parse_numeric_amount(amount) for amount in amounts}
+    quote = text[label.start():label.end()]+section
+    return (amounts[0],quote) if amounts and len(distinct)==1 else (None,quote)
+
+
 def extract_first_unum_schedule_a_fields(
     page_texts: list[tuple[int, str]],
 ) -> list[NormalizedExtractionField]:
@@ -10031,6 +10050,7 @@ def extract_first_unum_schedule_a_fields(
     broker_rows = extract_first_unum_broker_rows(page_texts)
     commission = sum_money_values(*(row.commission_total for row in broker_rows))
     fees = sum_money_values(*(row.fee_total for row in broker_rows))
+    paid_premium,paid_source = _first_unum_paid_premium(joined)
     values = {
         "1a. Name of Insurance Company": "FIRST UNUM LIFE INSURANCE COMPANY",
         "1b. Insurance Carrier EIN": _format_ein(regex_first(joined, [r"TAX\s+ID\s*:\s*(\d{9})"], flags=re.IGNORECASE)),
@@ -10044,9 +10064,13 @@ def extract_first_unum_schedule_a_fields(
         "3c. Amount of Fees": fees,
         "3d. Purpose": derive_schedule_a_purpose(commission, fees) if broker_rows else None,
         "3e. Organizational Code": "3",
-        "10a. Total premiums or subscription charges paid to carrier": regex_first(joined, [r"TOTAL\s+PREMIUM\s+OR\s+SUBSCRIPTION\s+CHARGES\s+PAID\s+TO\s+CARRIER.*?\$\s*([0-9,]+(?:\.\d{2})?)"], flags=re.IGNORECASE | re.DOTALL),
+        "10a. Total premiums or subscription charges paid to carrier": paid_premium,
     }
     fields = _pomerene_fields(values, page=page_texts[0][0] if page_texts else 1, source="First Unum ERISA Schedule A parser")
+    for field in fields:
+        if field.field_name.startswith('10a.'):
+            field.source_text = paid_source
+            field.evidence.append(SourceEvidence(provider='Labelled paid-premium section',page=field.page,source_text=paid_source))
     if isinstance(period, tuple) and end:
         literal_end = normalize_schedule_a_date(period[1], end_of_month=False).replace("-", "/")
         if end != literal_end:
