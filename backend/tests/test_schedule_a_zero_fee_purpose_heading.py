@@ -48,7 +48,7 @@ class ZeroFeePurposeTests(unittest.TestCase):
         self.assertEqual(audit['page'],3)
 
     def test_nonpurpose_clearing_is_bounded_to_established_zero_without_fee_components(self):
-        for purpose in ['N/A', '.', 'Insurance fees and commission information']:
+        for purpose in ['N/A', '.', 'Insurance fees and commission information', 'Sales commission paid', 'Base commissions']:
             for overrides in [dict(fee_total=None), dict(fee_total=''), dict(fee_total='25.01'),
                               dict(fee_rows=[ScheduleABrokerMoneyRow(amount='25.01',purpose='Administration'),
                                              ScheduleABrokerMoneyRow(amount='-25.01',purpose='Adjustment')])]:
@@ -56,7 +56,7 @@ class ZeroFeePurposeTests(unittest.TestCase):
                     self.assertEqual(self.resolve(self.row(purpose=purpose,**overrides)).purpose,purpose)
 
     def test_a_real_purpose_containing_heading_words_is_not_erased(self):
-        for purpose in ['Insurance fees and commission information consulting', 'N/A review consulting', 'Information Services', 'Consulting.']:
+        for purpose in ['Insurance fees and commission information consulting', 'N/A review consulting', 'Information Services', 'Consulting.', 'Sales commission paid consulting']:
             with self.subTest(purpose=purpose):
                 self.assertEqual(self.resolve(self.row(purpose=purpose)).purpose,purpose)
 
@@ -154,10 +154,23 @@ class ZeroFeePurposeTests(unittest.TestCase):
                 self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],heading)
                 self.assertEqual(result.schedule_a_broker_rows[0].commission_total,'3.43')
 
+    def test_sales_commission_category_does_not_block_zero_fee_purpose_cleanup(self):
+        for category in ['Sales commission paid','Sales Commission','Sales Commissions','BASE COMMISSIONS']:
+            with self.subTest(category=category):
+                result=self.summary(purpose='Commissions',broker_purpose=category)
+                self.assertIsNone(result.schedule_a_broker_rows[0].purpose)
+                self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+                self.assertEqual(result.schedule_a_broker_rows[0].commission_total,'3.43')
+                self.assertEqual(result.schedule_a_broker_rows[0].fee_total,'0')
+                self.assertEqual(result.raw['not_applicable_broker_purposes'][0]['observed_value'],category)
+                self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],'Commissions')
+
     def test_base_commissions_summary_is_not_erased_if_real_fees_exist(self):
-        result=self.summary(fee='20',purpose='BASE COMMISSIONS',broker_purpose='Consulting',
-                            fee_rows=[ScheduleABrokerMoneyRow(amount='20',purpose='Consulting')])
-        self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='BASE COMMISSIONS' for f in result.fields))
+        for category in ['BASE COMMISSIONS','Sales commission paid']:
+            with self.subTest(category=category):
+                result=self.summary(fee='20',purpose=category,broker_purpose='Consulting',
+                                    fee_rows=[ScheduleABrokerMoneyRow(amount='20',purpose='Consulting')])
+                self.assertTrue(any(f.field_name.startswith('3d.') and f.value==category for f in result.fields))
 
     def test_zero_fee_summary_does_not_erase_a_different_printed_purpose(self):
         result=self.summary(purpose='Bonus Paid')

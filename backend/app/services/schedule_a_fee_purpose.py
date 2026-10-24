@@ -5,9 +5,15 @@ import re
 from app.models import SourceEvidence
 
 
-def is_payment_category(value):
+def is_commission_category(value):
     return bool(re.fullmatch(
-        r'(?:(?:base\s+)?commissions?(?:\s+paid)?|paid\s+commissions?|fees?(?:\s+paid)?|'
+        r'(?:(?:(?:base|sales)\s+)?commissions?(?:\s+paid)?|paid\s+commissions?)',
+        str(value or '').strip(),re.I))
+
+
+def is_payment_category(value):
+    return is_commission_category(value) or bool(re.fullmatch(
+        r'(?:fees?(?:\s+paid)?|'
         r'commissions?\s*(?:&|and|/)\s*fees?)',str(value or '').strip(),re.I))
 
 

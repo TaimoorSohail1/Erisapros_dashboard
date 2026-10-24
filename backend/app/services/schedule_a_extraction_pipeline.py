@@ -32,7 +32,7 @@ from app.services.schedule_a_customer_rules import (
     DEFAULT_CODE_REASON, DEFAULT_NAIC_REASON, apply_customer_defaults, apply_published_static_defaults,
     published_static_default, published_static_default_reason,
 )
-from app.services.schedule_a_fee_purpose import is_compensation_table_heading
+from app.services.schedule_a_fee_purpose import is_commission_category, is_compensation_table_heading
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -892,7 +892,7 @@ def _omit_inapplicable_zero_fee_summary(result: NormalizedExtractionResult) -> N
     if not any((parse_decimal(row.commission_total) or Decimal('0')) > 0 for row in rows):
         return
     omitted = [f for f in result.fields if f.field_name.strip().lower().startswith('3d.')
-        and re.fullmatch(r'(?:(?:base\s+)?commissions?(?:\s+paid)?|paid\s+commissions?)',str(f.value or '').strip(),re.I)
+        and is_commission_category(f.value)
         and not any(v.status == 'ERROR' for v in f.validation_results)]
     if not omitted:
         return
@@ -934,8 +934,8 @@ def _validate_broker_rows(
         # Missing fees and zero-net nonempty fee components are not equivalent
         # to an established zero fee with no fee components.
         if (parse_decimal(row.fee_total) == Decimal("0") and not row.fee_rows
-                and row.commission_rows and (re.fullmatch(
-                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?|N\s*/\s*A|Not\s+Applicable|\.|"
+                and row.commission_rows and (is_commission_category(row.purpose) or re.fullmatch(
+                    r"(?:N\s*/\s*A|Not\s+Applicable|\.|"
                     r"Insurance\s+fees\s+and\s+commissions?\s+information\s*:?)",
                     str(row.purpose or "").strip(), flags=re.IGNORECASE)
                     or is_compensation_table_heading(row))):
