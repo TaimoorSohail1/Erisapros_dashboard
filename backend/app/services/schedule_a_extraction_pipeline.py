@@ -461,6 +461,11 @@ def _candidate_identity(field_name: str, value: str) -> str:
         digits = re.sub(r"\D", "", clean)
         if 4 <= len(digits) <= 6:
             return f"naic:{digits}"
+    if label.startswith("1a."):
+        # Source OCR may join/split a carrier's brand words. Compare only
+        # whitespace here; preserve every letter, digit and punctuation mark.
+        # This is not permission to merge different legal names or suffixes.
+        return "carrier:" + re.sub(r"\s+", "", clean.casefold())
     return f"text:{clean.casefold()}"
 
 

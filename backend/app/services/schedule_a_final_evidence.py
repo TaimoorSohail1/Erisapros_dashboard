@@ -277,7 +277,7 @@ def attach_final_field_evidence(result, page_texts):
             _attach(field,page,source)
             if code=='1a':
                 rejected=[value for value in field.candidate_values if re.fullmatch(
-                    r'(?:THE\s+CARRIER\s+)?HEREBY\s+CERTIFIES\s+THAT\s+THIS\s+INFORMATION\s+IS\s+COMPLETE\s+AND\s+ACCURATE[.!]?',str(value).strip(),re.I)]
+                    r'(?:THE\s+CARRIER\s+)?HEREBY\s+CERTIFIES\s+THAT\s+THIS\s+INFORMATION\s+IS\s+COMPLETE\s+AND\s+ACCURATE[.!]?(?:\s+PAGE\s*:?\s*\d+)?',str(value).strip(),re.I)]
                 field.candidate_values=[value for value in field.candidate_values if value not in rejected]
                 for value in rejected:
                     record={'field':field.field_name,'candidate':value,'reason':'Certification sentence is not a carrier identity; labelled carrier evidence retained.'}
