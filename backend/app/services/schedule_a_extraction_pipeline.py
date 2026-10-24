@@ -883,7 +883,7 @@ def _omit_inapplicable_zero_fee_summary(result: NormalizedExtractionResult) -> N
     if not any((parse_decimal(row.commission_total) or Decimal('0')) > 0 for row in rows):
         return
     omitted = [f for f in result.fields if f.field_name.strip().lower().startswith('3d.')
-        and re.fullmatch(r'(?:commissions?(?:\s+paid)?|paid\s+commissions?)',str(f.value or '').strip(),re.I)
+        and re.fullmatch(r'(?:(?:base\s+)?commissions?(?:\s+paid)?|paid\s+commissions?)',str(f.value or '').strip(),re.I)
         and not any(v.status == 'ERROR' for v in f.validation_results)]
     if not omitted:
         return
