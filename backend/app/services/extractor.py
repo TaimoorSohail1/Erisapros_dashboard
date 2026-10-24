@@ -435,6 +435,9 @@ class ExtractionService:
                 ]
                 final_result.fields.extend(authoritative_layout_fields)
                 final_result.fields = select_best_schedule_a_fields(final_result.fields)
+        if file_name.lower().endswith('.pdf'):
+            from app.services.schedule_a_native_conflicts import apply_native_provider_conflict_holds
+            apply_native_provider_conflict_holds(final_result,file_bytes)
         capture_extraction_stage(final_result, "final_normalized")
         return final_result
 
