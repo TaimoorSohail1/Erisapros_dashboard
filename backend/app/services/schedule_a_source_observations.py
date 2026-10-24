@@ -260,6 +260,8 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
     if not source_sha256 or not isinstance(raw, dict):
         return
     reads = raw.get('local_ocr_source_reads')
+    if not isinstance(reads, list) and raw.get('source') == 'local_pdf_ocr_parser':
+        reads = raw.get('ocr_source_reads')
     if not isinstance(reads, list):
         return
     pages = {page for page, _ in page_texts}

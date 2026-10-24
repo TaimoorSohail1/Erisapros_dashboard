@@ -89,6 +89,10 @@ INCURRED SPECIFIC COSTS IN CONNECTION WITH THE CONTRACT
     writer.write(stream)
     source = stream.getvalue()
     local = local_schedule_a_pdf_result(source, 'unrelated-example.pdf', rules=[])
+    direct_pages = [(item['page'], item['text']) for item in local.raw['ocr_pages']]
+    attach_schedule_a_source_observations(local, direct_pages, source_sha256=hashlib.sha256(source).hexdigest())
+    direct_cost = next(item for item in local.raw['source_review']['reported_values'] if item['key'] == 'additional_costs')
+    assert direct_cost['value'] == '0.00' and direct_cost['value_kind'] == 'PRINTED_ZERO'
     result = supplement_schedule_a_result_with_local(NormalizedExtractionResult(provider='Provider', fields=[]), local)
     pages = [(item['page'], item['text']) for item in result.raw['local_ocr_pages']]
     assert pages == [(1, primary.strip())]
@@ -142,6 +146,15 @@ def test_unbound_or_wrong_page_source_read_cannot_supply_a_cost(change):
     value = result.raw['source_review']['reported_values'][0]
     assert value['value_kind'] == 'UNREADABLE' and value['value'] == ''
     assert value['decision'] == 'REVIEW_REQUIRED'
+
+
+@pytest.mark.parametrize('source_kind', ['provider', 'local_document_parser', None])
+def test_unmarked_raw_ocr_reads_are_not_accepted_as_direct_local_pdf_evidence(source_kind):
+    primary = [(1, 'incurred specific costs in connection with the policy')]
+    result = NormalizedExtractionResult(provider='test', fields=[], raw={'source': source_kind, 'ocr_source_reads': [
+        {'page': 1, 'psm': 6, 'source_sha256': 'expected', 'text': primary[0][1] + '\nREPORT AMOUNT .00'}]})
+    attach_schedule_a_source_observations(result, primary, source_sha256='expected')
+    assert result.raw['source_review']['reported_values'][0]['value_kind'] == 'UNREADABLE'
 
 
 @pytest.mark.parametrize('primary_amount, alternate_amount', [('25.50', '.00'), ('', '.00'), ('.00', '25.50')])
