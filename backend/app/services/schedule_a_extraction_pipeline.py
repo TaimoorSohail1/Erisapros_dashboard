@@ -934,13 +934,20 @@ def _validate_broker_rows(
         # to an established zero fee with no fee components.
         if (parse_decimal(row.fee_total) == Decimal("0") and not row.fee_rows
                 and row.commission_rows and re.fullmatch(
-                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?)",
+                    r"(?:commissions?(?:\s+paid)?|paid\s+commissions?|N\s*/\s*A|Not\s+Applicable|"
+                    r"Insurance\s+fees\s+and\s+commissions?\s+information\s*:?)",
                     str(row.purpose or "").strip(), flags=re.IGNORECASE)):
             observed_purpose = row.purpose
+            raw = dict(result.raw) if isinstance(result.raw, dict) else {'provider_raw': result.raw}
+            raw.setdefault('not_applicable_broker_purposes', []).append({
+                'name': row.name, 'address_line_1': row.address_line_1, 'page': row.source_page,
+                'observed_value': observed_purpose, 'rule': 'zero_fees_without_fee_purpose',
+            })
+            result.raw = raw
             row.purpose = None
             validations.append(ExtractionValidationResult(
                 validator="zero_fee_purpose_not_applicable", status="PASS",
-                reason=f'Commission category "{observed_purpose}" is retained in the provider trace and commission components. Zero fees with no fee components have no fee purpose.',
+                reason=f'Non-purpose category, placeholder or report heading "{observed_purpose}" is retained in the provider trace. Zero fees with no fee components have no fee purpose.',
             ))
         row_pages = [row.source_page, *(item.page for item in row.evidence)]
         row_source_texts = [item.source_text for item in row.evidence]

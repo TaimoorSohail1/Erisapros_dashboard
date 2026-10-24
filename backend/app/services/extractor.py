@@ -472,7 +472,8 @@ class ExtractionService:
             result.raw if isinstance(result.raw, dict) else {})
         hold_local_ocr_recipient_conflicts(result,corroborating_rows=identity_reader,
             grid_corroborating_rows=lambda page:[row for row in grid_corroborated_rows if row.source_page==page])
-        attach_schedule_a_source_observations(result, semantic_pages)
+        attach_schedule_a_source_observations(result, semantic_pages,
+            source_sha256=hashlib.sha256(file_bytes).hexdigest())
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,
@@ -1317,6 +1318,10 @@ def supplement_schedule_a_result_with_local(
     if local_raw.get("ocr_pages"):
         result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
         result_raw["local_ocr_pages"] = deepcopy(local_raw["ocr_pages"])
+        result.raw = result_raw
+    if local_raw.get("ocr_source_reads"):
+        result_raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        result_raw["local_ocr_source_reads"] = deepcopy(local_raw["ocr_source_reads"])
         result.raw = result_raw
     if local_result.schedule_a_broker_rows and local_raw.get("authoritative_broker_table"):
         result.schedule_a_broker_rows = [
@@ -3354,12 +3359,13 @@ def local_schedule_a_pdf_result(
         extract_schedule_a_acroform(file_bytes) if is_pdf else ([], [])
     )
     ocr_page_texts: list[tuple[int, str]] = []
+    ocr_source_reads: list[dict] = []
     hidden_template_layer = is_pdf and has_blank_schedule_a_form_layer(page_texts)
     if is_pdf and (
         not has_substantive_native_text(page_texts)
         or (hidden_template_layer and not acroform_fields)
     ):
-        ocr_page_texts = extract_image_only_pdf_ocr_pages(file_bytes)
+        ocr_page_texts = extract_image_only_pdf_ocr_pages(file_bytes, source_reads=ocr_source_reads)
         if has_completed_schedule_a_overlay(ocr_page_texts):
             page_texts = ocr_page_texts
             layout_page_texts = ocr_page_texts
@@ -3459,6 +3465,7 @@ def local_schedule_a_pdf_result(
                 {"page": page, "text": text}
                 for page, text in ocr_page_texts
             ],
+            "ocr_source_reads": ocr_source_reads,
         },
         schedule_a_broker_rows=broker_rows,
         schedule_a_worksheet_summaries=(
@@ -3469,7 +3476,7 @@ def local_schedule_a_pdf_result(
     )
 
 
-def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[dict] | None = None) -> list[tuple[int, str]]:
     """OCR a PDF only when its native text layer is empty.
 
     GroundX remains the preferred semantic extractor. This bounded local path
@@ -3513,6 +3520,9 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]
                 )
                 page_text = normalize_ocr_text(completed.stdout)
                 pages.append((index, page_text))
+                if source_reads is not None:
+                    source_reads.append({'page': index, 'psm': 6, 'text': page_text,
+                                         'source_sha256': hashlib.sha256(file_bytes).hexdigest()})
             # Official Schedule A forms use independent table cells. PSM 6 can
             # drop an entire filled value row (including EIN/NAIC/dates), so
             # re-run standard forms in column-aware mode and keep the complete
@@ -3530,7 +3540,11 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes) -> list[tuple[int, str]]
                         errors="replace",
                         timeout=60,
                     )
-                    sparse_pages.append((index, normalize_ocr_text(sparse.stdout)))
+                    sparse_text = normalize_ocr_text(sparse.stdout)
+                    sparse_pages.append((index, sparse_text))
+                    if source_reads is not None:
+                        source_reads.append({'page': index, 'psm': 4, 'text': sparse_text,
+                                             'source_sha256': hashlib.sha256(file_bytes).hexdigest()})
                 if any(text for _, text in sparse_pages):
                     pages = sparse_pages
             return [(page, text) for page, text in pages if text]
@@ -8890,7 +8904,7 @@ def extract_metlife_standard_broker_rows(page_texts: list[tuple[int, str]]) -> l
 def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[ScheduleABrokerRow]:
     name = regex_first(text, [r"Name\s*:\s*([^\n]+)"], flags=re.I)
     address = re.search(
-        r"Address\s*:\s*(?P<street>.*?)\s+City\s*:[ \t]*(?:[. \t]*\n\s*)?"
+        r"Address\s*:\s*(?P<street>.*?)\s+City\s*:[ \t]*(?:[.' \t]*\n\s*)?"
         r"(?P<city>[A-Za-z ]+?)\s+ST\s*:\s*(?P<state>[A-Z]{2})\s+ZIP\s*:\s*(?P<zip>\d{5}(?:-\d{4})?)",
         text, re.I | re.S,
     )
@@ -8914,7 +8928,7 @@ def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[
             coverage_rows.append(ScheduleABrokerMoneyRow(coverage=coverage, amount=money_value(amount), purpose="BASE COMMISSIONS"))
     codes = _metlife_printed_organization_codes(text)
     source_text = text
-    return [ScheduleABrokerRow(
+    row = ScheduleABrokerRow(
         name=clean_extracted_value(name),
         address_line_1=clean_extracted_value(address.group("street")) if address else None,
         city=clean_extracted_value(address.group("city")) if address else None,
@@ -8925,7 +8939,14 @@ def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[
         source_page=source_page, confidence=0.99,
         commission_source_text=source_text, fee_source_text=source_text,
         evidence=[SourceEvidence(provider="MetLife standard broker parser", page=source_page, source_text=source_text)],
-    )]
+    )
+    if address is None and re.search(r'\bAddress\s*:',text,re.I):
+        row.validation_results.append(ExtractionValidationResult(
+            validator='printed_recipient_address_unreadable',status='ERROR',
+            reason='The source prints a recipient address label, but its address cells could not be read. Review the source; do not treat the printed address as absent.'))
+        row.confidence=0.5
+        row.decision='REVIEW_REQUIRED'
+    return [row]
 
 
 def _is_colonial_life_schedule_a_report(text: str) -> bool:

@@ -21,6 +21,7 @@ SOURCE_REVIEW_VALIDATORS = {
     "incomplete_source_compensation_table",
     "ocr_recipient_identity_conflict",
     "cigna_primary_source_identity",
+    "printed_recipient_address_unreadable",
 }
 
 

@@ -53,15 +53,16 @@ def collect_schedule_a_source_observations(page_texts):
               "source_instructions": []}
     seen = set()
     premium_blocks = set()
-    def add_value(key, page, literal, source):
+    def add_value(key, page, literal, source, *, unreadable=False):
         value = format(_decimal(literal), "f") if literal else ""
-        kind = "PRINTED_BLANK" if not literal else "PRINTED_ZERO" if _decimal(literal) == 0 else "PRINTED_VALUE"
+        kind = ("UNREADABLE" if unreadable else "PRINTED_BLANK") if not literal else "PRINTED_ZERO" if _decimal(literal) == 0 else "PRINTED_VALUE"
         identity = (key, page, value, kind)
         if identity in seen:
             return
         seen.add(identity)
         result["reported_values"].append({"key": key, "literal": literal, "value": value,
-            "value_kind": kind, "page": page, "source_text": source, "decision": "SOURCE_ONLY"})
+            "value_kind": kind, "page": page, "source_text": source,
+            "decision": "REVIEW_REQUIRED" if unreadable else "SOURCE_ONLY"})
     def add_benefit(page, literal, source):
         kind, selected = _benefit(literal)
         identity = (page, kind, selected, source)
@@ -213,9 +214,22 @@ def collect_schedule_a_source_observations(page_texts):
         for heading in re.finditer(r"Additional\s+costs\s+incurred|incurred\s+(?:any\s+)?specific\s+costs", text, re.I):
             tail = text[heading.end():heading.end()+600]
             tail = re.split(r"Specify\s+(?:nature|Nature)|Footnotes?\b|(?m:^\s*PART\s+[IV]+\b)", tail, maxsplit=1, flags=re.I)[0]
-            amount = re.search(_CURRENCY, tail)
-            add_value("additional_costs", page, amount.group(0) if amount else "",
-                      text[heading.start():heading.end()] + (tail[:amount.end()] if amount else tail))
+            report_line = re.search(r"REPORT\s+AMOUNT(?P<cell>[^\n]*)", tail, re.I)
+            direct_label = heading.group(0).lower().startswith('additional')
+            cell = report_line.group('cell') if report_line else tail.split('\n', 1)[0] if direct_label else ''
+            amounts = list(re.finditer(_CURRENCY, cell))
+            # Some statements omit the currency sign. A plain decimal must
+            # terminate the labelled amount cell; section digits and dotted
+            # leaders are not money. Multiple different candidates fail closed.
+            terminal = re.search(r"(?<![\d.,])(-?(?:\d[\d,]*\.\d{2}|\.\d{2}))[ \t]*$", cell)
+            if terminal:
+                amounts.extend(re.finditer(r"(?<![\d.,])-?(?:\d[\d,]*\.\d{2}|\.\d{2})(?![\d.,])", cell))
+            amount = amounts[0] if amounts and len({_decimal(item.group(0)) for item in amounts}) == 1 else None
+            complete_label = bool(report_line) or direct_label
+            unreadable = not amount and not (complete_label and re.fullmatch(r"[\s.$_:,-]*", cell))
+            add_value("additional_costs", page, amount.group(0).strip() if amount else "",
+                      text[heading.start():heading.end()] + (tail[:report_line.end()] if report_line else cell),
+                      unreadable=unreadable)
         for match in re.finditer(r"(?:\[\s*[Xx✗✘✓]\s*\]|\(\s*[Xx✗✘✓]\s*\)|☑|☒|✓|✗|✘|(?<!\w)X(?=\s))\s*(?=([^\n]{1,100}))", text):
             kind, literal = _benefit(match.group(1))
             if kind:
@@ -236,8 +250,55 @@ def collect_schedule_a_source_observations(page_texts):
     return result
 
 
-def attach_schedule_a_source_observations(result, page_texts):
+def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
+    """Recover only source-only cost evidence from an already computed read.
+
+    The primary parser route is unchanged. Different amounts or a proven blank
+    cannot be overwritten by an alternative OCR segmentation. Neither mode is
+    an independent provider or a business approval.
+    """
+    if not source_sha256 or not isinstance(raw, dict):
+        return
+    reads = raw.get('local_ocr_source_reads')
+    if not isinstance(reads, list):
+        return
+    pages = {page for page, _ in page_texts}
+    alternatives = {}
+    for read in reads:
+        if (not isinstance(read, dict) or read.get('source_sha256') != source_sha256
+                or read.get('psm') != 6 or type(read.get('page')) is not int
+                or read['page'] not in pages or not isinstance(read.get('text'), str)):
+            continue
+        values = collect_schedule_a_source_observations([(read['page'], read['text'])])['reported_values']
+        for value in values:
+            if value['key'] == 'additional_costs' and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO'}:
+                alternatives.setdefault(read['page'], []).append({**value, 'ocr_psm': 6,
+                    'source_sha256': source_sha256})
+    for page, candidates in alternatives.items():
+        primary = [value for value in observations['reported_values']
+                   if value['key'] == 'additional_costs' and value['page'] == page]
+        distinct = {Decimal(value['value']) for value in candidates}
+        known = [value for value in primary if value['value_kind'] != 'UNREADABLE']
+        conflict = len(distinct) != 1 or any(
+            value['value_kind'] == 'PRINTED_BLANK' or Decimal(value['value']) not in distinct for value in known)
+        action = 'CONFLICT_REQUIRES_REVIEW' if conflict else 'RETAIN_PRIMARY' if known else 'RECOVER_SOURCE_ONLY'
+        observations.setdefault('cost_source_reconciliations', []).append({
+            'page': page, 'primary': primary[0].copy() if len(primary) == 1 else [value.copy() for value in primary],
+            'alternates': candidates, 'action': action,
+        })
+        if conflict:
+            for value in primary:
+                value['decision'] = 'REVIEW_REQUIRED'
+            continue
+        if not known:
+            observations['reported_values'] = [value for value in observations['reported_values']
+                if not (value['key'] == 'additional_costs' and value['page'] == page)]
+            observations['reported_values'].append(candidates[0])
+
+
+def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None):
     observations = collect_schedule_a_source_observations(page_texts)
+    _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256)
     components=observations['premium_components']
     if len(components)==1 and components[0].get('persons_covered') is not None and not any(
         field.field_name.startswith('1e.') for field in result.fields

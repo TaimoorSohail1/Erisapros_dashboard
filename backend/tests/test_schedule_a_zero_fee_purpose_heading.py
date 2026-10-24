@@ -27,6 +27,39 @@ class ZeroFeePurposeTests(unittest.TestCase):
         self.assertEqual(actual.fee_total,'0')
         self.assertTrue(any(v.validator=='zero_fee_purpose_not_applicable' for v in actual.validation_results))
 
+    def test_zero_fee_placeholder_or_section_heading_is_not_a_recipient_purpose(self):
+        for purpose in ['N/A', 'Not Applicable', 'Insurance fees and commission information',
+                        'INSURANCE FEES AND COMMISSIONS INFORMATION:']:
+            with self.subTest(purpose=purpose):
+                before=self.row(purpose=purpose)
+                actual=self.resolve(before.model_copy(deep=True))
+                self.assertIsNone(actual.purpose)
+                self.assertEqual(actual.commission_rows,before.commission_rows)
+                self.assertEqual(actual.fee_total,'0')
+                self.assertTrue(any(v.validator=='zero_fee_purpose_not_applicable' for v in actual.validation_results))
+                self.assertEqual(actual.evidence,before.evidence)
+
+    def test_nonpurpose_normalization_records_the_original_literal_when_no_provider_trace_exists(self):
+        result=resolve_schedule_a_result(NormalizedExtractionResult(provider='test',fields=[],
+            schedule_a_broker_rows=[self.row(purpose='N/A')]))
+        audit=result.raw['not_applicable_broker_purposes'][0]
+        self.assertEqual(audit['observed_value'],'N/A')
+        self.assertEqual(audit['name'],'Example Agency')
+        self.assertEqual(audit['page'],3)
+
+    def test_nonpurpose_clearing_is_bounded_to_established_zero_without_fee_components(self):
+        for purpose in ['N/A', 'Insurance fees and commission information']:
+            for overrides in [dict(fee_total=None), dict(fee_total=''), dict(fee_total='25.01'),
+                              dict(fee_rows=[ScheduleABrokerMoneyRow(amount='25.01',purpose='Administration'),
+                                             ScheduleABrokerMoneyRow(amount='-25.01',purpose='Adjustment')])]:
+                with self.subTest(purpose=purpose,overrides=overrides):
+                    self.assertEqual(self.resolve(self.row(purpose=purpose,**overrides)).purpose,purpose)
+
+    def test_a_real_purpose_containing_heading_words_is_not_erased(self):
+        for purpose in ['Insurance fees and commission information consulting', 'N/A review consulting', 'Information Services']:
+            with self.subTest(purpose=purpose):
+                self.assertEqual(self.resolve(self.row(purpose=purpose)).purpose,purpose)
+
     def test_real_fee_purpose_unchanged(self):
         row=self.row(fee_total='20',purpose='Consulting',fee_rows=[ScheduleABrokerMoneyRow(amount='20',purpose='Consulting')])
         self.assertEqual(self.resolve(row).purpose,'Consulting')
