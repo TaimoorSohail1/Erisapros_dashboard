@@ -12,6 +12,7 @@ Implement the approved nine-layout plan, preserve genuine review safeguards, rel
 - [x] Capture sanitized actual selected dispatch payload and actual vendor read-back values; local regressions pass.
 - [x] Correct completion captions using verified outcomes, including safe legacy-record display; frontend behavior tests pass.
 - [x] Implement QA folder/source/target/parent/sibling write restrictions, including closed-run delayed events and task isolation; local regressions pass.
+- [x] Reject unknown nested Schedule A fields, unrecognized subparts and duplicate subpart containers rather than omitting them from QA preservation comparison; valid broker containers remain supported.
 - [ ] Pass Linux regressions and nine original extraction/mapping comparisons.
 - [ ] Exercise independent same-layout changed-value and clean annotation-free QA fixtures.
 - [ ] Pass wrong-target, ambiguity, deduplication, concurrency, unknown-outcome, auth/quota, rounding and blank/zero tests.
@@ -54,3 +55,13 @@ The source and worksheet must be exact approved bytes in private storage. The no
 Sibling preservation compares vendor business fields and broker rows independently from the outbound serializer. Identifier digits and absent fields are not normalized into invented values. Whole-dollar tolerance applies to the separately approved read-back assessment, not to preserving sibling data.
 
 The common guard is task-local so concurrent sends cannot overwrite each other's authorization. QA bindings survive configuration removal, and registered QA sources cannot invoke automatic Bring Forward. No public test-registration endpoint is introduced.
+
+## Isolated evidence and additional boundary regression
+
+The previous candidate, `6c3ea1b`, passed the complete Windows suite (1,404 tests, two skips), the pinned-image Linux suite (1,393 tests, 13 Windows-specific skips), all frontend behavior checks and the frontend build. All nine original source documents also completed fresh provider extraction with 199 passing comparisons and six verified source-only observations. These are extraction/mapping results, not live filing-update evidence. Source documents and provider artifacts remain private.
+
+Local synthetic browser QA verified distinct completed-update, verified-no-change and legacy captions. The Keep Current interaction retains printed extraction evidence and sends an explicit no-write decision. This local authentication-disabled build is not a release artifact, and it made no vendor requests.
+
+A subsequent negative test reproduced a QA boundary gap: leaf comparison silently omitted an unknown nested sibling field or an unrecognized subpart. The guard now rejects unexpected nesting, unrecognized subparts and duplicate subpart containers in every QA Schedule A payload. Existing valid broker subparts still compare independently. The focused boundary/review/evidence suite passes 30 tests and 14 subtests. The full Windows/Linux, exact-image and nine-layout gates must be rerun for this final revision; earlier passing evidence is not relabelled as final-revision verification.
+
+The owner is arranging independent developer review. PR #59 remains a draft, with no merge, production deployment or filing writes authorized by test success alone. Review the latest revision, not only the earlier candidate.

@@ -80,3 +80,26 @@ class QAWriteGuardTests(unittest.IsolatedAsyncioTestCase):
         batch.append(first)
         with self.assertRaises(ValueError): self.guard.validate_xml(ET.tostring(root,encoding='unicode'))
         with self.assertRaises(ValueError): self.guard.validate_xml(self.replacement().replace('<ScheduleDesc>Selected</ScheduleDesc>', '<FTWSeqNo>9</FTWSeqNo><ScheduleDesc>Selected</ScheduleDesc>'))
+
+    async def test_unrecognized_nested_sibling_data_is_not_silently_ignored(self):
+        for extra in [
+            '<Unexpected><InsContractNum>DIFFERENT</InsContractNum></Unexpected>',
+            '<DOLSubPartData><UnrecognizedPart><NameXX>Different</NameXX></UnrecognizedPart></DOLSubPartData>',
+            '<DOLSubPartData><Broker><Unexpected><NameXX>Different</NameXX></Unexpected></Broker></DOLSubPartData>',
+        ]:
+            with self.subTest(extra=extra):
+                xml = self.replacement().replace('<InsContractNum>000111</InsContractNum>',
+                    '<InsContractNum>000111</InsContractNum>' + extra)
+                with self.assertRaises(ValueError): self.guard.validate_xml(xml)
+
+    async def test_duplicate_subpart_containers_are_rejected(self):
+        xml = self.replacement().replace('<InsContractNum>000111</InsContractNum>',
+            '<InsContractNum>000111</InsContractNum><DOLSubPartData/><DOLSubPartData/>')
+        with self.assertRaises(ValueError): self.guard.validate_xml(xml)
+
+    async def test_valid_sibling_broker_subpart_is_preserved(self):
+        case = deepcopy(self.case)
+        case['baseline_records'][0]['query_subparts'] = {'Broker':[{'Name01':'Broker','CommPdAmt01':'25.10'}]}
+        xml = self.replacement().replace('<InsContractNum>000111</InsContractNum>',
+            '<InsContractNum>000111</InsContractNum><DOLSubPartData><Broker><NameXX>Broker</NameXX><CommPdAmtXX>25.10</CommPdAmtXX></Broker></DOLSubPartData>')
+        QAWriteGuard(self.run,case,self.review).validate_xml(xml)

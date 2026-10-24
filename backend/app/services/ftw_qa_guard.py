@@ -76,13 +76,27 @@ def _scalar(tag, value):
     return ('text',re.sub(r'\s+',' ',text))
 
 
-def _leaf_fields(element):
+def _leaf_fields(element, *, containers=()):
     values = {}
+    seen = set()
     for child in element:
-        if list(child): continue
-        if child.tag in values: raise ValueError('QA payload contains a duplicate field.')
+        if child.tag in seen: raise ValueError('QA payload contains a duplicate field.')
+        seen.add(child.tag)
+        if child.tag in containers: continue
+        if list(child): raise ValueError('QA payload contains an unrecognized nested field.')
         values[child.tag] = _scalar(child.tag,child.text)
     return values
+
+
+def _schedule_fields(document):
+    values = _leaf_fields(document,containers={'DOLSubPartData'})
+    brokers = []
+    for parts in document.findall('./DOLSubPartData'):
+        for row in parts:
+            if row.tag != 'Broker':
+                raise ValueError('QA Schedule A payload contains an unrecognized subpart.')
+            brokers.append(_leaf_fields(row))
+    return values,brokers
 
 
 def _broker_key(tag):
@@ -135,6 +149,9 @@ class QAWriteGuard:
             if node.find('CustomerID') is not None or node.find('PlanID') is not None:
                 raise ValueError('QA writes require exact FTW identities without alternate browser identifiers.')
             if node.tag == 'DOLScheduleAData' and node.findtext('TransactionType') == '2':
+                # Compare all supported business data, never silently omit an
+                # unknown nested structure from the preservation boundary.
+                _schedule_fields(node)
                 schedule_documents.append(node)
             elif node.tag == 'DOL5500Data' and node.findtext('TransactionType') == '1':
                 for child in node:
@@ -167,8 +184,8 @@ class QAWriteGuard:
             if str(record['ftw_seq_no']) == str(target['ftw_seq_no']): continue
             document = by_description[record['query_results']['ScheduleDesc']]
             expected,brokers = _vendor_business(record)
-            actual = {k:v for k,v in _leaf_fields(document).items() if k not in CONTROLS}
-            actual_brokers = [_leaf_fields(row) for row in document.findall('./DOLSubPartData/Broker')]
+            values,actual_brokers = _schedule_fields(document)
+            actual = {k:v for k,v in values.items() if k not in CONTROLS}
             if expected != actual or brokers != actual_brokers:
                 raise ValueError('QA replacement changes an unselected Schedule A or broker component.')
 
