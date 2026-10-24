@@ -227,6 +227,7 @@ def collect_schedule_a_source_observations(page_texts):
             ) if direct_label and not report_line else None
             if qualification:
                 cell = qualification.group('cell')
+            unreadable_adjacent = False
             if report_line and re.fullmatch(r"[\s.$_:,-]*", cell):
                 # X-Ray reading order can place the amount immediately before
                 # its label. Only a complete standalone adjacent amount inside
@@ -244,6 +245,18 @@ def collect_schedule_a_source_observations(page_texts):
                         # Retain ambiguous money-like glyphs for review; never
                         # turn an unreadable nearby value into a proven blank.
                         cell = adjacent.group('cell')
+                        unreadable_adjacent = True
+                following = re.match(r"\r?\n(?P<cell>[^\r\n]*)", tail[report_line.end():])
+                if following:
+                    next_cell = following.group('cell').strip()
+                    valid = re.fullmatch(r"\$?[ \t]*-?(?:\d[\d,]*\.\d{2}|\.\d{2})", next_cell)
+                    money_like = (re.fullmatch(r"[ \t$,.0-9OoIl?\-]+", next_cell)
+                                  and re.search(r"[0-9OoIl?]", next_cell))
+                    if valid or money_like:
+                        # Keep both sides of the label. Conflicting amounts or
+                        # ambiguous glyphs cannot be resolved by reading order.
+                        cell += ' ' + next_cell
+                        unreadable_adjacent |= not bool(valid)
             amounts = list(re.finditer(_CURRENCY, cell))
             # Some statements omit the currency sign. A plain decimal must
             # terminate the labelled amount cell; section digits and dotted
@@ -251,7 +264,8 @@ def collect_schedule_a_source_observations(page_texts):
             terminal = re.search(r"(?<![\d.,])(-?(?:\d[\d,]*\.\d{2}|\.\d{2}))[ \t]*$", cell)
             if terminal:
                 amounts.extend(re.finditer(r"(?<![\d.,])-?(?:\d[\d,]*\.\d{2}|\.\d{2})(?![\d.,])", cell))
-            amount = amounts[0] if amounts and len({_decimal(item.group(0)) for item in amounts}) == 1 else None
+            amount = amounts[0] if (not unreadable_adjacent and amounts
+                and len({_decimal(item.group(0)) for item in amounts}) == 1) else None
             complete_label = bool(report_line) or direct_label
             unreadable = not amount and not (complete_label and re.fullmatch(r"[\s.$_:,-]*", cell))
             add_value("additional_costs", page, amount.group(0).strip() if amount else "",
@@ -337,8 +351,41 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256, s
             observations['reported_values'].append(candidates[0])
 
 
+def _corroborate_broker_component_qualifiers(observations, raw, source_sha256, source_file_name):
+    """Recover a missing qualifier, not amounts/identities, from one bound row."""
+    if not source_sha256 or not source_file_name or not isinstance(raw, dict):
+        return
+    from app.services.schedule_a_final_evidence import completed_document_source_pages
+
+    pages = completed_document_source_pages(raw, source_file_name)
+    provider = collect_schedule_a_source_observations(pages)['broker_components']
+    primary = observations['broker_components']
+    normalized = lambda value: re.sub(r'\s+', ' ', str(value or '')).strip().casefold()
+    identity = lambda row: (row['page'], normalized(row.get('broker_name')), row['category'],
+                            Decimal(row['amount']), normalized(row.get('purpose')))
+    for row in primary:
+        if (row['category'] != 'commission' or not row.get('broker_name')
+                or normalized(row['coverage']) != 'disability'):
+            continue
+        selected = identity(row)
+        matches = [candidate for candidate in provider if identity(candidate) == selected]
+        if len(matches) != 1 or sum(identity(candidate) == selected for candidate in primary) != 1:
+            continue
+        candidate = matches[0]
+        if not re.fullmatch(r'(?:Long|Short)\s+Term\s+Disability', candidate['coverage'], re.I):
+            continue
+        observations.setdefault('component_qualifier_reconciliations', []).append({
+            'primary': row.copy(), 'provider_source': candidate.copy(),
+            'source_kind': 'CURRENT_COMPLETED_PROVIDER_DOCUMENT',
+            'source_file_name': source_file_name, 'source_sha256': source_sha256,
+        })
+        row['coverage'] = candidate['coverage']
+        row['source_text'] = candidate['source_text']
+
+
 def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None, source_file_name=None):
     observations = collect_schedule_a_source_observations(page_texts)
+    _corroborate_broker_component_qualifiers(observations, result.raw, source_sha256, source_file_name)
     _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256, source_file_name)
     components=observations['premium_components']
     if len(components)==1 and components[0].get('persons_covered') is not None and not any(

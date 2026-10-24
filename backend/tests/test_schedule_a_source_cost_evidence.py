@@ -223,6 +223,47 @@ def test_unreadable_cost_can_use_a_complete_blank_from_the_bound_current_provide
     assert reconciliation['primary']['value_kind'] == 'UNREADABLE'
 
 
+def test_current_provider_cost_zero_immediately_below_report_label_is_not_recovered_as_blank():
+    label = 'incurred any specific costs in connection with the acquisition or retention of the contract, '
+    result = NormalizedExtractionResult(provider='test', fields=[],
+        raw=completed_source(label + 'REPORT AMOUNT.\n.00'))
+    attach_schedule_a_source_observations(result, [(1, label + 'report AMOUNL ....ccccceeeessss')],
+        source_sha256='actual-source', source_file_name='example.pdf')
+    cost = next(value for value in result.raw['source_review']['reported_values'] if value['key']=='additional_costs')
+    assert cost['value_kind']=='PRINTED_ZERO' and cost['value']=='0.00'
+    assert cost['decision']=='SOURCE_ONLY' and cost['source_kind']=='CURRENT_COMPLETED_PROVIDER_DOCUMENT'
+    assert result.fields==[]
+
+
+@pytest.mark.parametrize('glyphs', ['.o0', '-00', '25.o1'])
+def test_unreadable_cost_glyphs_below_report_label_are_not_declared_blank(glyphs):
+    values=collect_schedule_a_source_observations([(1,
+        'incurred specific costs in connection with the contract, REPORT AMOUNT.\n'+glyphs)])['reported_values']
+    assert len(values)==1 and values[0]['value_kind']=='UNREADABLE'
+    assert values[0]['value']=='' and values[0]['decision']=='REVIEW_REQUIRED'
+
+
+@pytest.mark.parametrize('amount, expected', [('25.01','25.01'),('-15.02','-15.02'),('$ 86.27','86.27')])
+def test_standalone_cost_below_label_retains_its_actual_decimal(amount, expected):
+    value=collect_schedule_a_source_observations([(1,
+        'incurred specific costs in connection with the contract, REPORT AMOUNT.\n'+amount)])['reported_values'][0]
+    assert value['value_kind']=='PRINTED_VALUE' and value['value']==expected
+
+
+@pytest.mark.parametrize('suffix', ['\n\n25.01', '\nAnother section\n25.01', '\nSpecify nature 25.01'])
+def test_cost_below_label_cannot_be_borrowed_across_a_blank_or_another_label(suffix):
+    value=collect_schedule_a_source_observations([(1,
+        'incurred specific costs in connection with the contract, REPORT AMOUNT.'+suffix)])['reported_values'][0]
+    assert value['value_kind']=='PRINTED_BLANK' and value['value']==''
+
+
+@pytest.mark.parametrize('after', ['25.01', '.o0'])
+def test_unequal_or_unreadable_amounts_around_cost_label_retain_review(after):
+    value=collect_schedule_a_source_observations([(1,
+        'incurred specific costs in connection with the contract\n$15.02\nREPORT AMOUNT.\n'+after)])['reported_values'][0]
+    assert value['value_kind']=='UNREADABLE' and value['decision']=='REVIEW_REQUIRED'
+
+
 @pytest.mark.parametrize('defect', ['wrong_file', 'wrong_process', 'wrong_url', 'two_outputs',
                                    'not_complete', 'other_page', 'structured_only', 'no_hash'])
 def test_cost_recovery_rejects_wrong_document_or_unbound_provider_evidence(defect):
