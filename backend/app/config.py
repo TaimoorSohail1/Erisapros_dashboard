@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     ftw_automation_confidence_threshold: float = 0.95
     ftw_automation_policy_version: str = "2026-09-12-v4"
     ftw_automation_allowed_targets_json: str = "[]"
+    # QA-only folder IDs are retained after run closure as deny-by-default
+    # tombstones. Ordinary filings never load the private registry.
+    ftw_qa_guard_folder_ids_json: str = "[]"
+    ftw_qa_registry_s3_key: str | None = None
     ftw_automation_lease_seconds: int = 600
     # Optional client-local Bring Forward agent. Disabled by default so the
     # established cloud/manual workflow is unchanged until device QA passes.

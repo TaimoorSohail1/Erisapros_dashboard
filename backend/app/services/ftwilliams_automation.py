@@ -42,6 +42,10 @@ def automation_reset_values(settings: Settings, reason: str) -> dict:
         "automation_policy_version": settings.ftw_automation_policy_version if enabled else None,
         "automation_last_evaluated_at": None,
         "automation_completed_at": None,
+        "verified_update_count": None,
+        "verified_update_at": None,
+        "verified_update_action": None,
+        "verified_receipt_id": None,
         "automation_run_id": None,
         "automation_bring_forward_approved_target_key": None,
         "automation_bring_forward_approved_at": None,
@@ -134,6 +138,9 @@ class FTWAutomationPolicy:
             )
 
         if review.bring_forward_required or not review.current_year_exists:
+            from app.services.ftw_qa_guard import is_qa_scoped
+            if is_qa_scoped(filing,self.settings):
+                return self._action_needed('This QA run authorizes existing disposable records only; Bring Forward is not permitted.', 'RESOLVE_ISSUES')
             target_key = self.bring_forward_target_key(review)
             if (
                 filing.automation_bring_forward_submitted_at
@@ -1047,6 +1054,14 @@ class FTWAutomationService:
         }
         if decision.status == FTWAutomationStatus.COMPLETED:
             values["automation_completed_at"] = datetime.utcnow()
+            review = await self.repo.get_ftwilliams_review(filing_id)
+            if review:
+                outcome = FTWilliamsReviewService.verified_outcome_summary(review)
+                if (outcome["verified_update_count"] is None and review.update_attempted_count == 0
+                        and review.current_query_success and review.current_query_complete is True):
+                    outcome = {"verified_update_count": 0, "verified_update_at": datetime.utcnow(),
+                               "verified_update_action": "NO_CHANGE", "verified_receipt_id": None}
+                values.update(outcome)
         await self.repo.update_filing(filing_id, values)
 
     async def _stop_safely(

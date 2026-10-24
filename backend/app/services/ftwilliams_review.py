@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime
 import hashlib
+import json
 import re
 import time
 from urllib.parse import parse_qs, quote, urlsplit
@@ -220,6 +221,7 @@ class FTWilliamsReviewService:
             if not filing or filing.id != filing_id:
                 raise ValueError("Filing not found")
 
+        original_fields = list(fields)
         automatic_field_state = self._automatic_field_state(fields)
 
         query_payload_base = self._query_payload_base()
@@ -650,6 +652,7 @@ class FTWilliamsReviewService:
             update_verification_mismatches=(list(existing_review.update_verification_mismatches or []) if preserve_update_outcome else []),
             update_verification_request_xml=(existing_review.update_verification_request_xml if preserve_update_outcome else None),
             update_verification_response_xml=(existing_review.update_verification_response_xml if preserve_update_outcome else None),
+            update_readback_observations=(list(existing_review.update_readback_observations) if preserve_update_outcome else []),
             schedule_a_restore_attempted=(existing_review.schedule_a_restore_attempted if preserve_update_outcome else False),
             schedule_a_restore_success=(existing_review.schedule_a_restore_success if preserve_update_outcome else None),
             schedule_a_restore_response_xml=(existing_review.schedule_a_restore_response_xml if preserve_update_outcome else None),
@@ -739,6 +742,7 @@ class FTWilliamsReviewService:
             fields=comparison_fields,
             **identity,
         )
+        self._apply_preserved_current_decisions(filing, original_fields, review)
         decision_counts = self._review_decision_count_updates(review)
         review = review.model_copy(update=decision_counts)
         review = await repo.upsert_ftwilliams_review(review)
@@ -756,6 +760,7 @@ class FTWilliamsReviewService:
         )
         filing_contract_updates |= self._review_field_count_updates(fields, classification_relevant_fields)
         filing_contract_updates |= decision_counts
+        filing_contract_updates |= self.verified_outcome_summary(review)
         if ftw_contract_classification:
             filing_contract_updates |= {
                 "ftw_schedule_a_contract_type": ftw_contract_classification.contract_type,
@@ -1449,7 +1454,49 @@ class FTWilliamsReviewService:
         }
 
     @staticmethod
-    def _review_decision_count_updates(review: FTWilliamsReview) -> dict[str, int]:
+    def source_context_sha256(filing) -> str:
+        return hashlib.sha256(json.dumps([filing.s3_key,filing.package_documents,filing.field_rule_set_version],
+            sort_keys=True,default=str).encode()).hexdigest()
+
+    @staticmethod
+    def current_preservation_context(filing, field: ExtractedField, review: FTWilliamsReview, current_value: str) -> str:
+        """Bind a no-write decision to source, rules, destination and vendor value."""
+        context = {
+            "filing_id": filing.id if filing else review.filing_id, "field_id": field.id,
+            "source": FTWilliamsReviewService.source_context_sha256(filing) if filing else review.source_context_sha256,
+            "field": [field.value, field.proposed_value, field.form_type, field.source_document_type,
+                      field.mapped_rule_key, field.xml_tag, field.ftw_field],
+            "target": [review.ftw_customer_id, review.ftw_plan_id, review.year, review.ftw_seq_no],
+            "current": current_value,
+        }
+        return hashlib.sha256(json.dumps(context, sort_keys=True, default=str).encode()).hexdigest()
+
+    @classmethod
+    def _apply_preserved_current_decisions(cls, filing, fields: list[ExtractedField], review: FTWilliamsReview) -> None:
+        if filing is not None:
+            review.source_context_sha256 = cls.source_context_sha256(filing)
+        if not review.source_context_sha256:
+            return
+        by_id = {field.id: field for field in fields}
+        for comparison in review.fields:
+            field = by_id.get(comparison.field_id)
+            if not field or not field.keep_current_context or not comparison.current_value.strip():
+                continue
+            context = cls.current_preservation_context(filing, field, review, comparison.current_value)
+            if field.keep_current_context != context:
+                continue
+            comparison.decision = FTWFieldDecision.KEEP_CURRENT
+            comparison.proposed_value = comparison.current_value
+            comparison.changed = False
+            comparison.update_included = False
+            comparison.validation_blocking = False
+            comparison.validation_status = "VALID"
+            comparison.validation_message = None
+            comparison.update_exclusion_reason = "Audited Keep Current decision; no replacement value will be sent."
+            comparison.decision_reason = comparison.update_exclusion_reason
+
+    @staticmethod
+    def _review_decision_count_updates(review: FTWilliamsReview) -> dict:
         field_conflicts = sum(
             1 for field in review.fields if field.decision == FTWFieldDecision.CONFLICT
         )
@@ -2931,6 +2978,7 @@ class FTWilliamsReviewService:
             "verification_response_xml": None,
             "verification_mismatches": [],
         }
+        review.update_readback_observations = []
         responses = await self._send_update_payload(review)
         sent_form_types = {
             FormType.FORM_5500
@@ -3019,6 +3067,7 @@ class FTWilliamsReviewService:
             verification_mismatches = verification["mismatches"]
             verification_request_xml = verification["request_xml"]
             verification_response_xml = verification["response_xml"]
+            review.update_readback_observations = list(verification.get("observations") or [])
             if verification_success:
                 success = True
             else:
@@ -3110,11 +3159,9 @@ class FTWilliamsReviewService:
             {
                 **attempted_fields[key],
                 "status": "NEEDS_CORRECTION" if key in remaining_field_keys else "VERIFIED",
-                "returned_value": (
-                    mismatches_by_tag.get(str(attempted_fields[key].get("tag") or ""), {}).get("actual")
-                    if key in remaining_field_keys
-                    else attempted_fields[key].get("sent_value")
-                ),
+                "returned_value": self.literal_readback_value(review, attempted_fields[key]),
+                "returned_value_source": "VENDOR_READBACK" if self.literal_readback_value(review, attempted_fields[key]) is not None else "NOT_RETURNED",
+                "comparison_rule": "TAG_AWARE_COMPARISON",
                 "reason": (
                     mismatches_by_tag.get(str(attempted_fields[key].get("tag") or ""), {}).get("reason")
                     or ("FT Williams still returns a different value." if key in remaining_field_keys else "Confirmed by FT Williams read-back.")
@@ -3217,6 +3264,7 @@ class FTWilliamsReviewService:
                 "status": (FilingStatus.NEEDS_REVIEW if selected_field_ids is not None else FilingStatus.APPROVED) if success else FilingStatus.FAILED,
                 **({} if selected_field_ids is not None else {"approved_at": datetime.utcnow() if success else None}),
                 "error_message": review.error_message,
+                **self.verified_outcome_summary(review),
             },
         )
         await repo.add_event(ReviewEvent(filing_id=filing_id, type="FTW_UPDATE" if selected_field_ids is not None else "APPROVE_AND_FTW_UPDATE", reason=reason))
@@ -3272,15 +3320,54 @@ class FTWilliamsReviewService:
         return review
 
     async def _send_update_payload(self, review: FTWilliamsReview) -> list:
+        from app.services.ftw_qa_guard import configure_qa_write_guard
+        await configure_qa_write_guard(review,self.ftwilliams)
         responses = []
+        async def dispatch(operation: str, xml: str):
+            # Persist the *selected* request at the dispatch boundary, not the
+            # subsequently regenerated whole-review preview. Fail before any
+            # vendor write if durable intent evidence cannot be recorded.
+            masked = re.sub(r'(<(?:[\w.-]+:)?KeyID\b[^>]*>).*?(</(?:[\w.-]+:)?KeyID\s*>)',
+                r'\1[REDACTED]\2', xml, flags=re.I | re.S)
+            await get_repository().add_audit(AuditLog(
+                filing_id=review.filing_id, event="FTWILLIAMS_DISPATCH_INTENT",
+                message="Selected FT Williams request recorded before dispatch.",
+                details={"operation": operation, "xml": masked,
+                    "masked_xml_sha256": hashlib.sha256(masked.encode()).hexdigest(),
+                    "target": {"customer": review.ftw_customer_id, "plan": review.ftw_plan_id,
+                               "year": review.year, "sequence": review.ftw_seq_no},
+                    "selected_field_ids": [f.field_id for f in review.fields if f.changed and f.update_included
+                        and f.form_type == (FormType.FORM_5500 if operation == "update_5500" else FormType.SCHEDULE_A)]}))
+            return await self.ftwilliams.send_xml(operation, xml)
         if review.update_xml_5500 and "DOL5500Data" in review.update_xml_5500:
-            form_response = await self.ftwilliams.send_xml("update_5500", review.update_xml_5500)
+            form_response = await dispatch("update_5500", review.update_xml_5500)
             responses.append(form_response)
             if not form_response.success or self._update_response_is_ambiguous(form_response):
                 return responses
         if review.update_xml_schedule_a and "DOLScheduleAData" in review.update_xml_schedule_a:
-            responses.append(await self.ftwilliams.send_xml("update_schedule_a", review.update_xml_schedule_a))
+            responses.append(await dispatch("update_schedule_a", review.update_xml_schedule_a))
         return responses
+
+    @staticmethod
+    def literal_readback_value(review: FTWilliamsReview, result: dict) -> str | None:
+        observations = [o for o in review.update_readback_observations
+            if o.get("form_type") == result.get("form_type")
+            and (result.get("form_type") != FormType.SCHEDULE_A.value
+                 or str(o.get("expected_sequence") or "") == str(review.ftw_seq_no or ""))]
+        if len(observations) != 1:
+            return None
+        return observations[0].get("values", {}).get(result.get("tag"))
+
+    @staticmethod
+    def verified_outcome_summary(review: FTWilliamsReview) -> dict:
+        valid = (review.status == FTWilliamsReviewStatus.UPDATE_SENT
+            and review.update_verification_attempted and review.update_verification_success is True
+            and review.update_remaining_count == 0 and review.update_receipt is not None)
+        receipt = review.update_receipt if valid else None
+        return {"verified_update_count": review.update_confirmed_count if valid else None,
+            "verified_update_at": receipt.verified_at if receipt else None,
+            "verified_update_action": receipt.action if receipt else None,
+            "verified_receipt_id": receipt.receipt_id if receipt else None}
 
     def _build_schedule_a_restore_xml(self, review: FTWilliamsReview) -> str:
         """Build the exact pre-write Schedule A set for emergency restoration."""
@@ -3495,6 +3582,7 @@ class FTWilliamsReviewService:
                     "mismatches": [],
                     "request_xml": "\n\n".join(all_request_xmls) or None,
                     "response_xml": "\n\n".join(all_response_xmls) or None,
+                    "observations": result.get("observations", []),
                 }
             if attempt < max_attempts - 1:
                 await asyncio.sleep(min(2**attempt, 5))
@@ -3503,6 +3591,7 @@ class FTWilliamsReviewService:
             "mismatches": latest_mismatches,
             "request_xml": "\n\n".join(all_request_xmls) or None,
             "response_xml": "\n\n".join(all_response_xmls) or None,
+            "observations": result.get("observations", []),
         }
 
     @staticmethod
@@ -3530,6 +3619,7 @@ class FTWilliamsReviewService:
         response_xmls: list[str] = []
         mismatches: list[dict] = []
         form_documents = self._update_documents(review.update_xml_5500, "DOL5500Data")
+        observations: list[dict] = []
         schedule_documents = self._schedule_update_documents_with_sequences(review)
 
         if form_documents:
@@ -3556,6 +3646,7 @@ class FTWilliamsReviewService:
                     }
                 )
             else:
+                observations.append({"form_type": FormType.FORM_5500.value, "values": dict(status.query_results)})
                 mismatches.extend(
                     self._compare_readback_document(
                         FormType.FORM_5500,
@@ -3590,6 +3681,10 @@ class FTWilliamsReviewService:
                     )
                     continue
                 unused_statuses.remove(matched)
+                observations.append({"form_type": FormType.SCHEDULE_A.value,
+                    "expected_sequence": document.get("__ftw_seq_no"),
+                    "actual_sequence": matched.ftw_seq_no,
+                    "values": dict(matched.query_results), "broker_rows": deepcopy(matched.query_subparts)})
                 mismatches.extend(
                     self._compare_readback_document(
                         FormType.SCHEDULE_A,
@@ -3622,6 +3717,7 @@ class FTWilliamsReviewService:
             "mismatches": mismatches,
             "request_xmls": request_xmls,
             "response_xmls": response_xmls,
+            "observations": observations,
         }
 
     def _schedule_update_documents_with_sequences(self, review: FTWilliamsReview) -> list[dict]:
@@ -4048,6 +4144,7 @@ class FTWilliamsReviewService:
     ) -> str | None:
         comparisons = review.fields or []
         if fields:
+            original_fields = list(fields)
             # Approval reloads the immutable extraction evidence from storage.
             # Reapply the same cross-document identity reconciliation used to
             # prepare the review before validating or sending.  Otherwise a
@@ -4084,6 +4181,8 @@ class FTWilliamsReviewService:
                 review.schedule_a_worksheet_summaries,
             )
             self._mark_structured_broker_comparisons(comparisons, review.schedule_a_broker_rows)
+            rebuilt = review.model_copy(update={"fields":comparisons})
+            self._apply_preserved_current_decisions(None,original_fields,rebuilt)
         field_issues = [
             field
             for field in comparisons

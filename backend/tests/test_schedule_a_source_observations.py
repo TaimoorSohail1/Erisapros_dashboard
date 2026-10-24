@@ -95,6 +95,55 @@ Life 422 01/01/2025 12/31/2025
     assert [v["persons_covered"] for v in result["coverage_counts"]] == ["422", "422"]
 
 
+@pytest.mark.parametrize("label", ["a", "a_", "a."])
+def test_nonexperience_premium_components_accept_ocr_subsection_punctuation(label):
+    text = f"""10 Nonexperience-rated contracts Coverage Amount
+LIFE 11,203.45
+Dental 7,801.02
+Long Term Disability 901.03
+AD&D 45.67
+{label} Total premiums or subscription charges paid to carrier. 19,951.17
+b Additional costs incurred 55.00
+"""
+    result = collect_schedule_a_source_observations([(5, text)])
+    assert [(row["coverage"], row["amount"]) for row in result["premium_components"]] == [
+        ("LIFE", "11203.45"), ("Dental", "7801.02"),
+        ("Long Term Disability", "901.03"), ("AD&D", "45.67"),
+    ]
+    assert result["reconciliations"][0]["result"] == "MATCH"
+    assert result["reconciliations"][0]["component_sum"] == "19951.17"
+
+
+def test_premium_component_ocr_label_retains_total_mismatch_for_review():
+    from app.models import NormalizedExtractionField
+
+    result = NormalizedExtractionResult(provider="test", fields=[NormalizedExtractionField(
+        field_name="10a. Total Premiums Paid", value="32.01", confidence=.99,
+    )])
+    attach_schedule_a_source_observations(result, [(5, """10 Nonexperience-rated contracts Coverage Amount
+LIFE 12.01
+Dental 20.01
+a_ Total premiums or subscription charges paid to carrier. 32.01
+""")])
+    assert result.raw["source_review"]["reconciliations"][0]["result"] == "MISMATCH"
+    assert result.fields[0].value == "32.01"
+    assert result.fields[0].decision == "REVIEW_REQUIRED"
+    assert any(item.validator == "source_component_total" and item.status == "ERROR"
+               for item in result.fields[0].validation_results)
+
+
+@pytest.mark.parametrize("total_label", ["", "b Additional costs incurred 32.02",
+                                            "Total premiums or subscription charges paid to carrier. 32.02"])
+def test_premium_components_require_the_labelled_paid_premium_subsection(total_label):
+    result = collect_schedule_a_source_observations([(5, f"""10 Nonexperience-rated contracts Coverage Amount
+LIFE 12.01
+Dental 20.01
+{total_label}
+""")])
+    assert result["premium_components"] == []
+    assert result["reconciliations"] == []
+
+
 def test_broker_coverage_components_and_wrapped_label_reconcile_without_sample_values():
     result = collect_schedule_a_source_observations([(4, """Name: DIFFERENT AGENT
 Commissions Paid Fees Paid Organization

@@ -2,9 +2,11 @@ import asyncio
 import json
 import subprocess
 import threading
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+import pytest
 
 from app.services import windows_agent_installation
 from app.services.windows_agent_installation import (
@@ -46,6 +48,7 @@ def test_existing_pair_run_and_unpair_commands_remain_available():
     assert unpair.command == "unpair"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises the real Windows registry adapter")
 def test_startup_registration_uses_current_user_registry_without_admin(tmp_path, monkeypatch):
     installed = InstalledAgent(
         root=tmp_path,
@@ -121,6 +124,7 @@ class PairingHandler(BaseHTTPRequestHandler):
         return
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises Windows DPAPI credential storage")
 def test_one_file_setup_pairs_and_installs_into_the_windows_user_profile(tmp_path, monkeypatch):
     source = tmp_path / "download" / "ERISAProsFTWAgentSetup.exe"
     source.parent.mkdir()
@@ -207,6 +211,7 @@ def test_client_password_is_not_modified_before_windows_encrypts_it():
     assert result["password"] == " password with spaces "
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises Windows DPAPI credential storage")
 def test_reinstall_can_remove_a_previously_saved_automatic_login(tmp_path, monkeypatch):
     source = tmp_path / "ERISAProsFTWAgentSetup.exe"
     source.write_bytes(b"agent executable")
@@ -313,6 +318,7 @@ def test_disconnected_reconnect_stops_only_verified_installed_agent_and_preserve
     assert not (installed.root / "update-stop.request").exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises Windows DPAPI credential storage")
 def test_reconnect_replaces_only_device_pairing_and_keeps_saved_ftw_state(tmp_path, monkeypatch):
     source = tmp_path / "download" / "ERISAProsFTWAgentSetup.exe"
     source.parent.mkdir()
@@ -400,6 +406,7 @@ def test_double_click_reconnect_prompts_only_for_new_code_and_preserves_ftw_logi
     assert calls[0]["clear_ftw_login_credentials"] is False
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Exercises Windows DPAPI credential storage")
 def test_failed_reconnect_startup_restores_revoked_credential_for_safe_retry(tmp_path, monkeypatch):
     from app.services.windows_secret_store import save_secret_json
 

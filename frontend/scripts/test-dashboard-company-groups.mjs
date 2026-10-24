@@ -20,8 +20,10 @@ const updateMode = runInNewContext(updateModeRuntime + "\ndashboardUpdateMode", 
 });
 const normalizedUpdateMode = (filing) => JSON.parse(JSON.stringify(updateMode(filing)));
 
-assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 3 }), { label: "Automatically updated", badgeClass: "ready" });
-assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 0 }), { label: "Automatically verified", badgeClass: "ready" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 0, verified_update_count: 3,
+  verified_receipt_id:'receipt', verified_update_at:'2026-10-24', verified_update_action:'SCHEDULE_A_UPDATED' }), { label: "Automatically updated", badgeClass: "ready" });
+assert.deepEqual(normalizedUpdateMode({ automation_status: "COMPLETED", will_update_count: 0, verified_update_count:0,
+  verified_update_at:'2026-10-24', verified_update_action:'NO_CHANGE' }), { label: "Automatically verified", badgeClass: "ready" });
 assert.deepEqual(normalizedUpdateMode({ automation_status: "PROCESSING" }), { label: "Automatic update", badgeClass: "info" });
 assert.deepEqual(normalizedUpdateMode({ automation_status: "ACTION_NEEDED" }), { label: "Manual update required", badgeClass: "warn" });
 assert.deepEqual(normalizedUpdateMode({ automation_status: "DISABLED" }), { label: "Manual update", badgeClass: "warn" });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 import asyncio
+from contextvars import ContextVar
 import base64
 import binascii
 from html import escape
@@ -12,6 +13,12 @@ import httpx
 
 from app.config import get_settings
 from app.models import FTWilliamsEditCheckIssue, FTWilliamsQueryRequest, FTWilliamsQueryResponse, FTWilliamsStatusItem
+
+_QA_WRITE_GUARD = ContextVar('ftw_qa_write_guard',default=None)
+
+
+def set_qa_write_guard(client, guard):
+    _QA_WRITE_GUARD.set((id(client),guard))
 
 
 FTWILLIAMS_QUERY_OPERATIONS = {
@@ -554,6 +561,10 @@ class FTWilliamsService:
         }
 
     async def _post_xml(self, endpoint_url: str, request_xml: str) -> httpx.Response:
+        context = _QA_WRITE_GUARD.get()
+        guard = context[1] if context is not None and context[0] == id(self) else getattr(self,'qa_write_guard',None)
+        if guard is not None:
+            await guard(request_xml)
         last_error: httpx.HTTPError | None = None
         shared_client = await self._get_client(endpoint_url)
         for attempt in range(3):

@@ -123,6 +123,8 @@ def resolve_schedule_a_result(
 ) -> NormalizedExtractionResult:
     """Attach evidence, validate values, and fail closed on contradictions."""
     apply_customer_defaults(result)
+    from app.services.schedule_a_fee_purpose import reconcile_derived_fee_purpose_summary
+    reconcile_derived_fee_purpose_summary(result)
     error_fields: set[str] = set()
     for field in result.fields:
         if not field.evidence and (field.page or field.source_text):
@@ -155,6 +157,7 @@ def resolve_schedule_a_result(
     _validate_date_order(result.fields, error_fields)
     cross_field_errors = _validate_cross_section_duplicates(result.fields)
     cross_field_errors.extend(_validate_broker_rows(result, result.schedule_a_broker_rows))
+    _omit_inapplicable_zero_fee_summary(result)
     semantic_resolution = (
         result.raw.get("semantic_resolution", {})
         if isinstance(result.raw, dict)
@@ -652,8 +655,9 @@ def _validate_carrier_name(value: str) -> ExtractionValidationResult:
     clean = re.sub(r"\s+", " ", value).strip()
     lower = clean.casefold()
     looks_like_sentence_fragment = bool(
-        re.match(r"^(during|is|was|were|has|have|providing|paid|total)\b", lower)
+        re.match(r"^(during|is|was|were|has|have|providing|paid|total|completing)\b", lower)
         or "hereby certifies" in lower
+        or re.search(r"\bcompleting\s+schedule\s+a\b",lower)
     )
     contains_numeric_noise = bool(
         re.search(r"\$\s*\d", clean)
@@ -865,6 +869,38 @@ def _has_explicit_experience_evidence(field: NormalizedExtractionField) -> bool:
     )
 
 
+def _omit_inapplicable_zero_fee_summary(result: NormalizedExtractionResult) -> None:
+    """Keep a derived commission category out of the separate fee-purpose scalar.
+
+    Raw candidates/stages remain unchanged. Missing fees, real fee purposes,
+    offsetting fee components and unresolved validation errors are not zeros
+    without a purpose and must retain their existing review path.
+    """
+    fees = [f for f in result.fields if f.field_name.strip().lower().startswith('3c.')]
+    rows = result.schedule_a_broker_rows
+    if (not fees or not rows or any(parse_decimal(f.value) != Decimal('0')
+            or any(v.status == 'ERROR' for v in f.validation_results) for f in fees)):
+        return
+    if any(parse_decimal(row.fee_total) != Decimal('0') or row.fee_rows or row.purpose for row in rows):
+        return
+    if not any((parse_decimal(row.commission_total) or Decimal('0')) > 0 for row in rows):
+        return
+    omitted = [f for f in result.fields if f.field_name.strip().lower().startswith('3d.')
+        and re.fullmatch(r'(?:(?:base\s+)?commissions?(?:\s+paid)?|paid\s+commissions?)',str(f.value or '').strip(),re.I)
+        and not any(v.status == 'ERROR' for v in f.validation_results)]
+    if not omitted:
+        return
+    raw = dict(result.raw) if isinstance(result.raw,dict) else {'provider_raw':result.raw}
+    observations = list(raw.get('not_applicable_fields') or [])
+    for field in omitted:
+        observations.append({'field':field.field_name,'observed_value':field.value,'page':field.page,
+            'rule':'zero_fees_without_fee_purpose',
+            'reason':'Confirmed zero fees with no fee components have no fee purpose. The commission category remains in raw stages and commission components.'})
+    raw['not_applicable_fields'] = observations
+    result.raw = raw
+    result.fields = [f for f in result.fields if not any(f is omitted_field for omitted_field in omitted)]
+
+
 def _validate_broker_rows(
     result: NormalizedExtractionResult,
     rows: list[ScheduleABrokerRow],
@@ -1004,6 +1040,23 @@ def _validate_broker_rows(
                         reason=f"Broker {label} total is not a valid currency amount.",
                     )
                 )
+            components = getattr(row, label + "_rows")
+            if components:
+                amounts = [parse_decimal(item.amount) for item in components]
+                total = parse_decimal(value)
+                valid = (total is not None and all(
+                    amount is not None and _is_currency_amount(item.amount)
+                    for item, amount in zip(components, amounts)
+                ) and sum(amounts, Decimal("0")) == total)
+                validator = f"broker_{label}_components"
+                validations.append(ExtractionValidationResult(
+                    validator=validator, status="PASS" if valid else "ERROR",
+                    reason=f"Broker {label} component amounts reconcile exactly with their recipient total."
+                    if valid else f"Broker {label} components are invalid or do not reconcile exactly with their recipient total.",
+                ))
+                if not valid:
+                    _mark_fields_review(result.fields, ("3b.",) if label == "commission" else ("3c.", "3d."),
+                        validator=validator, reason=f"A recipient's {label} components need review; no rounding tolerance applies to source amounts.")
         row.validation_results = validations
         row_has_error = any(item.status == "ERROR" for item in validations)
         row.decision = "REVIEW_REQUIRED" if row_has_error else "AUTOMATIC"
@@ -1027,7 +1080,11 @@ def _validate_broker_rows(
     ):
         errors.append("broker_source_evidence")
 
-    separate_benefit_rows = len(_broker_coverage_keys(rows)) > 1
+    # Different benefits within one Schedule A do not remove its aggregate
+    # reconciliation. Preserve the legacy separate-worksheet case only when
+    # the extractor explicitly produced multiple worksheet summaries.
+    separate_benefit_rows = (len(result.schedule_a_worksheet_summaries) > 1
+                             and len(_broker_coverage_keys(rows)) > 1)
     commission_error = False if separate_benefit_rows else _reconcile_broker_total(
         result.fields, rows, "3b.", "commission_total"
     )
@@ -1141,7 +1198,7 @@ def _reconcile_broker_total(
         return False
     actual_values = [parse_decimal(getattr(row, row_attribute)) for row in rows]
     actual = sum((value or Decimal("0") for value in actual_values), Decimal("0"))
-    return abs(expected - actual) > Decimal("0.01")
+    return expected != actual
 
 
 def _broker_coverage_keys(rows: list[ScheduleABrokerRow]) -> set[str]:

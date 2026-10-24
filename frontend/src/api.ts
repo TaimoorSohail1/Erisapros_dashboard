@@ -306,12 +306,12 @@ export async function updateField(
   filingId: string,
   fieldId: string,
   proposedValue: string,
-  options?: { markMissing?: boolean },
+  options?: { markMissing?: boolean; decision?: "SET_VALUE" | "KEEP_CURRENT" },
 ): Promise<{ field: ExtractedField; proposed_xml: string; ftw_review?: FTWilliamsReview | null }> {
   return request("/filings/" + filingId + "/fields/" + fieldId, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ proposed_value: proposedValue, mark_missing: Boolean(options?.markMissing) })
+    body: JSON.stringify({ proposed_value: proposedValue, mark_missing: Boolean(options?.markMissing), decision: options?.decision || "SET_VALUE" })
   });
 }
 

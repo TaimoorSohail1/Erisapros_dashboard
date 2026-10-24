@@ -20,6 +20,7 @@ SOURCE_REVIEW_VALIDATORS = {
     "source_organization_code_shape",
     "incomplete_source_compensation_table",
     "ocr_recipient_identity_conflict",
+    "cigna_primary_source_identity",
 }
 
 
