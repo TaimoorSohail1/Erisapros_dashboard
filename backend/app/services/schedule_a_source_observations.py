@@ -217,6 +217,33 @@ def collect_schedule_a_source_observations(page_texts):
             report_line = re.search(r"REPORT\s+AMOUNT(?P<cell>[^\n]*)", tail, re.I)
             direct_label = heading.group(0).lower().startswith('additional')
             cell = report_line.group('cell') if report_line else tail.split('\n', 1)[0] if direct_label else ''
+            # A carrier can wrap the regulatory cost qualification before its
+            # amount. Require that complete label continuation; never treat an
+            # arbitrary following money line as this cost cell.
+            qualification = re.match(
+                r"\s*by\s+(?:the\s+)?carrier\s*,?\s*service\s*,?\s*or\s*other\s+"
+                r"organi[sz]ation\s+not\s+reported\s+in\s+Part\s+(?:1|I)\s*,?\s*"
+                r"item\s+2\s+above\s*[:.]?[ \t]*(?P<cell>[^\n]*)", tail, re.I,
+            ) if direct_label and not report_line else None
+            if qualification:
+                cell = qualification.group('cell')
+            if report_line and re.fullmatch(r"[\s.$_:,-]*", cell):
+                # X-Ray reading order can place the amount immediately before
+                # its label. Only a complete standalone adjacent amount inside
+                # this cost block qualifies; do not cross a blank line or text.
+                preceding = re.search(
+                    r"(?:^|\n)[ \t]*(?P<amount>\$?[ \t]*-?(?:\d[\d,]*\.\d{2}|\.\d{2}))"
+                    r"[ \t]*\r?\n[ \t]*\Z", tail[:report_line.start()],
+                )
+                if preceding:
+                    cell = preceding.group('amount')
+                else:
+                    adjacent = re.search(r"(?:^|\n)(?P<cell>[^\n]+)\r?\n[ \t]*\Z", tail[:report_line.start()])
+                    if (adjacent and re.fullmatch(r"[ \t$,.0-9OoIl?\-]+", adjacent.group('cell'))
+                            and re.search(r"[0-9OoIl?]", adjacent.group('cell'))):
+                        # Retain ambiguous money-like glyphs for review; never
+                        # turn an unreadable nearby value into a proven blank.
+                        cell = adjacent.group('cell')
             amounts = list(re.finditer(_CURRENCY, cell))
             # Some statements omit the currency sign. A plain decimal must
             # terminate the labelled amount cell; section digits and dotted
@@ -228,7 +255,8 @@ def collect_schedule_a_source_observations(page_texts):
             complete_label = bool(report_line) or direct_label
             unreadable = not amount and not (complete_label and re.fullmatch(r"[\s.$_:,-]*", cell))
             add_value("additional_costs", page, amount.group(0).strip() if amount else "",
-                      text[heading.start():heading.end()] + (tail[:report_line.end()] if report_line else cell),
+                      text[heading.start():heading.end()] + (tail[:report_line.end()] if report_line else
+                          tail[:qualification.end()] if qualification else cell),
                       unreadable=unreadable)
         for match in re.finditer(r"(?:\[\s*[Xx✗✘✓]\s*\]|\(\s*[Xx✗✘✓]\s*\)|☑|☒|✓|✗|✘|(?<!\w)X(?=\s))\s*(?=([^\n]{1,100}))", text):
             kind, literal = _benefit(match.group(1))
@@ -250,7 +278,7 @@ def collect_schedule_a_source_observations(page_texts):
     return result
 
 
-def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
+def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256, source_file_name):
     """Recover only source-only cost evidence from an already computed read.
 
     The primary parser route is unchanged. Different amounts or a proven blank
@@ -263,7 +291,7 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
     if not isinstance(reads, list) and raw.get('source') == 'local_pdf_ocr_parser':
         reads = raw.get('ocr_source_reads')
     if not isinstance(reads, list):
-        return
+        reads = []
     pages = {page for page, _ in page_texts}
     alternatives = {}
     for read in reads:
@@ -276,13 +304,23 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
             if value['key'] == 'additional_costs' and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO'}:
                 alternatives.setdefault(read['page'], []).append({**value, 'ocr_psm': 6,
                     'source_sha256': source_sha256})
+    if source_file_name:
+        from app.services.schedule_a_final_evidence import completed_document_source_pages
+        provider_pages = completed_document_source_pages(raw, source_file_name)
+        values = collect_schedule_a_source_observations(provider_pages)['reported_values']
+        for value in values:
+            if (value['key'] == 'additional_costs' and value['page'] in pages
+                    and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO', 'PRINTED_BLANK'}):
+                alternatives.setdefault(value['page'], []).append({**value,
+                    'source_kind': 'CURRENT_COMPLETED_PROVIDER_DOCUMENT', 'source_file_name': source_file_name,
+                    'source_sha256': source_sha256})
+    value_key = lambda value: ('BLANK', None) if value['value_kind'] == 'PRINTED_BLANK' else ('AMOUNT', Decimal(value['value']))
     for page, candidates in alternatives.items():
         primary = [value for value in observations['reported_values']
                    if value['key'] == 'additional_costs' and value['page'] == page]
-        distinct = {Decimal(value['value']) for value in candidates}
+        distinct = {value_key(value) for value in candidates}
         known = [value for value in primary if value['value_kind'] != 'UNREADABLE']
-        conflict = len(distinct) != 1 or any(
-            value['value_kind'] == 'PRINTED_BLANK' or Decimal(value['value']) not in distinct for value in known)
+        conflict = len(distinct) != 1 or any(value_key(value) not in distinct for value in known)
         action = 'CONFLICT_REQUIRES_REVIEW' if conflict else 'RETAIN_PRIMARY' if known else 'RECOVER_SOURCE_ONLY'
         observations.setdefault('cost_source_reconciliations', []).append({
             'page': page, 'primary': primary[0].copy() if len(primary) == 1 else [value.copy() for value in primary],
@@ -298,9 +336,9 @@ def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256):
             observations['reported_values'].append(candidates[0])
 
 
-def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None):
+def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None, source_file_name=None):
     observations = collect_schedule_a_source_observations(page_texts)
-    _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256)
+    _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256, source_file_name)
     components=observations['premium_components']
     if len(components)==1 and components[0].get('persons_covered') is not None and not any(
         field.field_name.startswith('1e.') for field in result.fields

@@ -473,7 +473,7 @@ class ExtractionService:
         hold_local_ocr_recipient_conflicts(result,corroborating_rows=identity_reader,
             grid_corroborating_rows=lambda page:[row for row in grid_corroborated_rows if row.source_page==page])
         attach_schedule_a_source_observations(result, semantic_pages,
-            source_sha256=hashlib.sha256(file_bytes).hexdigest())
+            source_sha256=hashlib.sha256(file_bytes).hexdigest(), source_file_name=file_name)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,

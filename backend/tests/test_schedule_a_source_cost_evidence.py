@@ -121,10 +121,42 @@ def test_direct_additional_cost_label_reads_its_own_currency_or_plain_decimal_ce
         assert value['value'] == '55.01' and value['value_kind'] == 'PRINTED_VALUE'
 
 
+@pytest.mark.parametrize('amount, expected', [('$0.00', '0.00'), ('$55.01', '55.01'), ('25.02', '25.02')])
+def test_wrapped_direct_cost_qualification_keeps_the_amount_in_its_own_labelled_cell(amount, expected):
+    source = '''Additional costs incurred by carrier, service, or other
+Organization not reported in Part 1, item 2 above: ''' + amount + '''
+Specify Nature of cost:
+Other report amounts $999.00'''
+    cost = collect_schedule_a_source_observations([(2, source)])['reported_values'][0]
+    assert cost['value'] == expected
+    assert cost['value_kind'] == ('PRINTED_ZERO' if expected == '0.00' else 'PRINTED_VALUE')
+    assert 'Organization not reported' in cost['source_text']
+
+
 def test_empty_direct_cost_cell_cannot_borrow_currency_from_a_following_line():
     source = 'b Additional costs incurred ....\nc Other report values $999.00'
     value = collect_schedule_a_source_observations([(1, source)])['reported_values'][0]
     assert value['value'] == '' and value['value_kind'] == 'PRINTED_BLANK'
+
+
+@pytest.mark.parametrize('amount, expected', [('.00', '0.00'), ('$25.01', '25.01'), ('-15.02', '-15.02')])
+def test_cost_amount_directly_before_its_report_label_is_not_mistaken_for_blank(amount, expected):
+    source = 'incurred specific costs in connection with the policy\n' + amount + '\nREPORT AMOUNT.'
+    cost = collect_schedule_a_source_observations([(1, source)])['reported_values'][0]
+    assert cost['value'] == expected and cost['decision'] == 'SOURCE_ONLY'
+
+
+def test_an_unreadable_adjacent_amount_is_not_converted_to_a_printed_blank():
+    source = 'incurred specific costs in connection with the policy\n.o0\nREPORT AMOUNT.'
+    cost = collect_schedule_a_source_observations([(1, source)])['reported_values'][0]
+    assert cost['value_kind'] == 'UNREADABLE' and cost['decision'] == 'REVIEW_REQUIRED'
+
+
+@pytest.mark.parametrize('prefix', ['$25.01\n\n', '$25.01\nOther section\n', 'Other payment $25.01\n'])
+def test_preceding_cost_amount_binding_cannot_cross_blanks_or_other_text(prefix):
+    source = 'incurred specific costs in connection with the policy\n' + prefix + 'REPORT AMOUNT.'
+    cost = collect_schedule_a_source_observations([(1, source)])['reported_values'][0]
+    assert cost['value'] == '' and cost['literal'] == ''
 
 
 @pytest.mark.parametrize('cell', ['$25.01 $99.02', '25.01 99.02'])
@@ -166,4 +198,63 @@ def test_alternate_cost_read_cannot_overwrite_an_actual_amount_or_proven_blank(p
     value = result.raw['source_review']['reported_values'][0]
     assert value['literal'].strip('$ ') == primary_amount
     assert value['decision'] == 'REVIEW_REQUIRED'
+    assert result.raw['source_review']['cost_source_reconciliations'][0]['action'] == 'CONFLICT_REQUIRES_REVIEW'
+
+
+def completed_source(text, filename='example.pdf'):
+    return {'ingest': {'ingest': {'processId': 'CURRENT'}},
+            'process': {'ingest': {'processId': 'CURRENT', 'status': 'complete',
+                'progress': {'complete': {'documents': [{'fileName': filename, 'sourceUrl': 'https://example.test/current'}]}}}},
+            'outputs': [{'fileName': filename, 'sourceUrl': 'https://example.test/current',
+                         'chunks': [{'pageNumbers': [1], 'text': text}]}]}
+
+
+def test_unreadable_cost_can_use_a_complete_blank_from_the_bound_current_provider_page():
+    label = 'incurred any specific costs in connection with the acquisition or retention of the contract, '
+    primary = [(1, label + 'report AMOUNL ....ccccceeeessss')]
+    result = NormalizedExtractionResult(provider='test', fields=[], raw=completed_source(label + 'report amount ....'))
+    attach_schedule_a_source_observations(result, primary, source_sha256='actual-source', source_file_name='example.pdf')
+    cost = result.raw['source_review']['reported_values'][0]
+    assert cost['value_kind'] == 'PRINTED_BLANK' and cost['value'] == '' and cost['literal'] == ''
+    assert cost['decision'] == 'SOURCE_ONLY' and cost['source_kind'] == 'CURRENT_COMPLETED_PROVIDER_DOCUMENT'
+    assert result.fields == []
+    reconciliation = result.raw['source_review']['cost_source_reconciliations'][0]
+    assert reconciliation['action'] == 'RECOVER_SOURCE_ONLY'
+    assert reconciliation['primary']['value_kind'] == 'UNREADABLE'
+
+
+@pytest.mark.parametrize('defect', ['wrong_file', 'wrong_process', 'wrong_url', 'two_outputs',
+                                   'not_complete', 'other_page', 'structured_only', 'no_hash'])
+def test_cost_recovery_rejects_wrong_document_or_unbound_provider_evidence(defect):
+    label = 'incurred any specific costs in connection with the contract, '
+    primary = [(1, label + 'report AMOUNL ....ccccceeeessss')]
+    raw = completed_source(label + 'report amount ....')
+    if defect == 'wrong_process':
+        raw['process']['ingest']['processId'] = 'OTHER'
+    elif defect == 'wrong_url':
+        raw['outputs'][0]['sourceUrl'] = 'https://example.test/other'
+    elif defect == 'two_outputs':
+        raw['outputs'].append(raw['outputs'][0].copy())
+    elif defect == 'not_complete':
+        raw['process']['ingest']['status'] = 'processing'
+    elif defect == 'other_page':
+        raw['outputs'][0]['chunks'][0]['pageNumbers'] = [2]
+    elif defect == 'structured_only':
+        raw.pop('outputs')
+        raw['structured_outputs'] = [{'additional_costs': ''}]
+    result = NormalizedExtractionResult(provider='test', fields=[], raw=raw)
+    attach_schedule_a_source_observations(result, primary,
+        source_sha256=None if defect == 'no_hash' else 'actual-source',
+        source_file_name='other.pdf' if defect == 'wrong_file' else 'example.pdf')
+    value = result.raw['source_review']['reported_values'][0]
+    assert value['value_kind'] == 'UNREADABLE' and value['decision'] == 'REVIEW_REQUIRED'
+
+
+def test_bound_provider_blank_cannot_erase_a_known_printed_amount():
+    label = 'incurred any specific costs in connection with the contract, report amount '
+    result = NormalizedExtractionResult(provider='test', fields=[], raw=completed_source(label + '....'))
+    attach_schedule_a_source_observations(result, [(1, label + '$25.01')],
+        source_sha256='actual-source', source_file_name='example.pdf')
+    value = result.raw['source_review']['reported_values'][0]
+    assert value['value'] == '25.01' and value['decision'] == 'REVIEW_REQUIRED'
     assert result.raw['source_review']['cost_source_reconciliations'][0]['action'] == 'CONFLICT_REQUIRES_REVIEW'
