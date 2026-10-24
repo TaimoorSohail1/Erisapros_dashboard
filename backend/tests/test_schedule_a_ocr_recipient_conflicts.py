@@ -11,6 +11,21 @@ def recipient(name, *, amount='25.50', street='9 EXAMPLE RD'):
         evidence=[SourceEvidence(provider='Independent reader',page=2,source_text=name+' '+street,table_cell=(1,0))])
 
 
+def test_separate_source_read_can_confirm_the_current_name_when_the_provider_is_wrong():
+    previous=recipient('NORTHWEST BENEFITS 3 LLC')
+    current=recipient('NORTHWEST BENEFITS LLC')
+    independent=recipient(current.name)
+    independent.evidence.extend(SourceEvidence(provider=provider,page=2,bounding_box=(1,2,30,40),source_text=independent.name+' 9 EXAMPLE RD')
+        for provider in ['Document-bound Hartford grid identity OCR (PSM 6)','Independent Hartford grid identity OCR (PSM 4/7)'])
+    result=NormalizedExtractionResult(provider='Provider',fields=[],schedule_a_broker_rows=[current],raw={
+        'local_ocr_pages':[{'page':2,'text':'Independent OCR source'}],
+        'extraction_stages':[{'stage':'structured_provider_normalized','broker_rows':[previous.model_dump(mode='json')]}]})
+    hold_local_ocr_recipient_conflicts(result,grid_corroborating_rows=lambda page:[independent])
+    assert result.schedule_a_broker_rows[0].name=='NORTHWEST BENEFITS LLC'
+    assert not any(v.validator=='ocr_recipient_identity_conflict' for v in current.validation_results)
+    assert current.commission_total=='25.50' and current.organization_code=='6'
+
+
 @pytest.mark.parametrize('local,expected',[
     ('NORTHWEST BENEFXTS LLC','NORTHWEST BENEFITS LLC'),
     ('DIFFERENT SERVICES LLC','DIFFERENT SERVICES LLC'),

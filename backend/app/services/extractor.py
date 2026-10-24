@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import calendar
 import csv
 from copy import deepcopy
@@ -48,12 +49,13 @@ from app.services.schedule_a_customer_rules import default_blank_organization_co
 from app.services.schedule_a_classification import classification_signals_from_text
 from app.services.schedule_a_pdf_source import has_substantive_native_text, mapping_note_text_overrides, visible_native_text_pages
 from app.services.schedule_a_hartford_columns import extract_hartford_columnar_brokers, recover_hartford_compensation_pages
+from app.services.schedule_a_hartford_grid import recover_hartford_scanned_identities
 from app.services.schedule_a_trace import capture_extraction_stage, extraction_stage
 from app.services.schedule_a_source_review import apply_source_business_review, explicit_missing_person_count
 from app.services.schedule_a_broker_validation import hold_local_ocr_recipient_conflicts
 from app.services.schedule_a_source_observations import attach_schedule_a_source_observations
 from app.services.schedule_a_visual_benefits import attach_visual_benefit_evidence, read_visual_benefit_evidence
-from app.services.schedule_a_final_evidence import attach_final_field_evidence, provider_source_pages
+from app.services.schedule_a_final_evidence import attach_final_field_evidence, provider_source_pages, completed_document_source_pages
 
 
 SCHEDULE_A_EXPERIENCE_RATED_FIELDS = (
@@ -230,6 +232,7 @@ class ExtractionService:
         result = await self._extract_schedule_a_unresolved(file_bytes, file_name)
         capture_extraction_stage(result, "after_local_supplement")
         semantic_pages = _semantic_page_texts(file_bytes, file_name, result)
+        grid_corroborated_rows = []
         if semantic_pages:
             has_local_ocr_pages = bool(
                 isinstance(result.raw, dict)
@@ -241,10 +244,64 @@ class ExtractionService:
                 and has_substantive_native_text(template_pages)
                 else semantic_pages
             )
-            recovered_pages = recover_hartford_compensation_pages(authoritative_pages, result.raw)
+            grid_identities = recover_hartford_scanned_identities(
+                file_bytes,file_name,authoritative_pages,result.raw,result.schedule_a_broker_rows,
+            )
+            if grid_identities:
+                result.raw['hartford_grid_identity_cells'] = grid_identities
+                result.raw['hartford_grid_identity_source'] = {
+                    'file_name':file_name,'source_sha256':hashlib.sha256(file_bytes).hexdigest(),
+                    'pages':sorted({cell['page'] for cell in grid_identities}),
+                }
+            bound_provider_pages=completed_document_source_pages(result.raw,file_name)
+            recovered_pages = (recover_hartford_compensation_pages(
+                authoritative_pages,result.raw,identity_cells=grid_identities,
+            ) if bound_provider_pages else authoritative_pages)
+            for repair in (result.raw or {}).get('hartford_grid_identity_repairs',[]):
+                identity=repair['identity']
+                matches=[row for row in result.schedule_a_broker_rows if all(
+                    normalize_compare_key(getattr(row,key) or '')==normalize_compare_key(identity[key])
+                    for key in ('address_line_1','city','state','zip_code'))]
+                if len(matches)!=1:
+                    continue
+                row=matches[0]
+                # Only a derived structured identity without its own physical
+                # evidence can be corrected here. Independent source conflicts
+                # remain untouched and are reviewed by the normal validators.
+                if row.source_page is not None or any(item.source_text for item in row.evidence):
+                    continue
+                result.raw.setdefault('hartford_grid_identity_normalizations',[]).append({
+                    'original':{key:getattr(row,key) for key in identity},'source':repair,
+                })
+                for key,value in identity.items():
+                    setattr(row,key,value)
             if recovered_pages != authoritative_pages:
                 authoritative_pages = recovered_pages
                 semantic_pages = recovered_pages
+            if bound_provider_pages:
+                source_rows=extract_hartford_broker_rows(authoritative_pages)
+                identity_keys=('name','address_line_1','address_line_2','city','state','zip_code')
+                def same_source_recipient(left,right):
+                    return all(normalize_compare_key(getattr(left,key) or '')==normalize_compare_key(getattr(right,key) or '')
+                        for key in identity_keys)
+                for index,row in enumerate(result.schedule_a_broker_rows):
+                    matches=[source for source in source_rows if same_source_recipient(row,source)]
+                    if (len(matches)!=1 or sum(same_source_recipient(row,other) for other in result.schedule_a_broker_rows)!=1
+                        or row.source_page is not None or any(item.source_text for item in row.evidence)
+                        or any(v.status=='ERROR' for v in row.validation_results)):
+                        continue
+                    source=matches[0]
+                    if source.decision!='AUTOMATIC' or any(v.status=='ERROR' for v in source.validation_results):
+                        continue
+                    # The provider's category guess is not a second payment.
+                    # Replace only its uniquely matched, derived representation;
+                    # original provider data and independent conflicts survive.
+                    result.raw.setdefault('hartford_source_row_replacements',[]).append({
+                        'original':row.model_dump(mode='json'),'source':source.model_dump(mode='json'),
+                    })
+                    result.schedule_a_broker_rows[index]=source.model_copy(deep=True)
+                if source_rows:
+                    capture_extraction_stage(result,'after_hartford_source_recovery')
             result = enrich_schedule_a_result(
                 result,
                 SemanticDocument.from_page_texts(semantic_pages),
@@ -272,6 +329,23 @@ class ExtractionService:
             hartford_fields = extract_hartford_schedule_a_fields(authoritative_pages)
             if hartford_fields:
                 hartford_brokers = extract_hartford_broker_rows(authoritative_pages)
+                for row in hartford_brokers:
+                    cells=[cell for cell in grid_identities if cell['page']==row.source_page and all(
+                        normalize_compare_key(cell[key])==normalize_compare_key(getattr(row,key) or '')
+                        for key in ('name','address_line_1','city','state','zip_code','organization_code'))]
+                    if len(cells)==1:
+                        cell=cells[0]
+                        row.evidence.append(SourceEvidence(provider='Document-bound Hartford grid identity OCR (PSM 6)',
+                            page=cell['page'],source_text=cell['source_text'],bounding_box=tuple(cell['identity_bounds'])))
+                        secondary=cell.get('independent_identity_read')
+                        if (cell.get('identity_read_agreement') is True and isinstance(secondary,dict)
+                            and row.decision=='AUTOMATIC' and not any(v.status=='ERROR' for v in row.validation_results)):
+                            peer=row.model_copy(deep=True)
+                            for key,value in secondary['identity'].items():
+                                setattr(peer,key,value)
+                            peer.evidence.append(SourceEvidence(provider='Independent Hartford grid identity OCR (PSM 4/7)',
+                                page=cell['page'],source_text=secondary['source_text'],bounding_box=tuple(cell['identity_bounds'])))
+                            grid_corroborated_rows.append(peer)
                 def same_recipient(left, right):
                     return all(normalize_compare_key(getattr(left, key) or '') == normalize_compare_key(getattr(right, key) or '')
                                for key in ('name', 'address_line_1', 'zip_code'))
@@ -396,7 +470,8 @@ class ExtractionService:
         from app.services.schedule_a_recipient_ocr import RecipientIdentityReader
         identity_reader = RecipientIdentityReader(file_bytes, extract_litera_lincoln_schedule_a_broker_rows,
             result.raw if isinstance(result.raw, dict) else {})
-        hold_local_ocr_recipient_conflicts(result, corroborating_rows=identity_reader)
+        hold_local_ocr_recipient_conflicts(result,corroborating_rows=identity_reader,
+            grid_corroborating_rows=lambda page:[row for row in grid_corroborated_rows if row.source_page==page])
         attach_schedule_a_source_observations(result, semantic_pages)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
@@ -3646,24 +3721,7 @@ def _prefer_authoritative_aetna_attachment_fields(
 
 def _cigna_document_source_pages(raw: Any, file_name: str) -> list[tuple[int, str]]:
     """Read Cigna corroboration only from the current completed document."""
-    if not isinstance(raw, dict):
-        return []
-    as_object = lambda value: value if isinstance(value, dict) else {}
-    outputs = raw.get('outputs')
-    queued = as_object(as_object(raw.get('ingest')).get('ingest'))
-    complete = as_object(as_object(raw.get('process')).get('ingest'))
-    documents = as_object(as_object(complete.get('progress')).get('complete')).get('documents')
-    if (not isinstance(outputs, list) or not isinstance(documents, list)
-        or len(outputs) != 1 or len(documents) != 1 or complete.get('status') != 'complete'
-        or not queued.get('processId') or queued['processId'] != complete.get('processId')):
-        return []
-    output, document = outputs[0], documents[0]
-    if not isinstance(output, dict) or not isinstance(document, dict):
-        return []
-    if (output.get('fileName') != file_name or document.get('fileName') != file_name
-        or not output.get('sourceUrl') or output['sourceUrl'] != document.get('sourceUrl')):
-        return []
-    return provider_source_pages(raw)
+    return completed_document_source_pages(raw,file_name)
 
 
 def prefer_authoritative_cigna_summary_fields(
@@ -9664,6 +9722,27 @@ def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         add("1d. Contract/Policy Number", identity_match.group("policy"))
     if lives:
         add("1e. Persons Covered (End of Policy Year)", str(max(lives)), 0.98)
+        # The cover letter can mention the carrier before the insurance page.
+        # A derived maximum still needs the actual labelled benefit/count rows,
+        # not that first mention or a generic description of the statement.
+        for number, text in page_texts:
+            section = re.search(
+                r"Premium was applied as follows during the Plan/Policy Year\s*-\s*(?P<section>.*?)\n\s*Total\s+\$",
+                normalize_ocr_text(text), flags=re.IGNORECASE | re.DOTALL,
+            )
+            counts = re.findall(
+                r"(?m)^\s*[A-Z0-9-]+\s+.+?\$[0-9,]+\.\d{2}[ \t]+([0-9,]+)[ \t]*$",
+                section.group('section') if section else '',
+            )
+            if section and str(max(lives)) in [value.replace(',', '') for value in counts]:
+                field = fields[-1]
+                field.page = number
+                field.source_text = section.group(0)
+                field.evidence = [SourceEvidence(
+                    provider="Hartford labelled benefit/count table; maximum row count",
+                    page=number, source_text=section.group(0),
+                )]
+                break
     if period_match:
         add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period_match.group(1), end_of_month=False))
         add("1g. Policy Year Ending Date", normalize_schedule_a_date(period_match.group(2), end_of_month=True))
