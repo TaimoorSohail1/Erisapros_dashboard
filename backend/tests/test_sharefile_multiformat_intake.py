@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import BackgroundTasks
 
+from app.config import Settings
 from app.models import DocumentType, ShareFileOAuthToken
 from app.repositories import MemoryRepository
 from app.services.sharefile import ShareFileService
@@ -85,6 +86,13 @@ def _legacy_xls() -> bytes:
 
 class MultiFormatIntakeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        settings = Settings(_env_file=None, sharefile_client_id="fixture-client",
+                            sharefile_client_secret="fixture-secret",
+                            sharefile_discover_shared_folders=True)
+        for name in ("app.services.sharefile.get_settings", "app.services.storage.get_settings"):
+            setting_patch = patch(name, return_value=settings)
+            setting_patch.start()
+            self.addCleanup(setting_patch.stop)
         self.repo = MemoryRepository()
         self.repo_patch = patch("app.services.sharefile.get_repository", return_value=self.repo)
         self.repo_patch.start()

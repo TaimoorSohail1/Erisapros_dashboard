@@ -39,6 +39,10 @@ Tracked by issue #58. Implementation is a candidate only, not deployed. A full l
 
 The GitHub repository is public. Private PDFs, client IDs, live snapshots, source hashes tied to client documents, credentials, QA authorization manifests and test evidence must stay in private storage, not this repository or its issue/PR comments.
 
+## First isolated Linux result
+
+The first exact-image Linux run retained 1,366 passing tests, 37 failures and three skips. All frontend behavior checks and the build passed. Twelve failures exercised actual Windows registry, DPAPI, process/signature or DLL-loader interfaces; these tests must run on Windows, not be counted as Linux coverage. Twenty-five mocked ShareFile scan tests depended on a developer's local OAuth/discovery configuration. Their setup now supplies explicit synthetic settings and isolated storage; application defaults and production settings are unchanged. The affected Windows suite passes 79 tests with one existing fixture dependency skip. A fresh full Linux run and a final full Windows run remain required after this test-only correction. Failed evidence is preserved privately, not overwritten.
+
 ## Internal QA registry contract
 
 Two optional server settings scope QA authorization: `FTW_QA_GUARD_FOLDER_IDS_JSON` lists exact registered source folder IDs, including closed-run tombstones; `FTW_QA_REGISTRY_S3_KEY` references a private object under `qa/control/` in the existing file bucket. Ordinary folders do not read that registry.
