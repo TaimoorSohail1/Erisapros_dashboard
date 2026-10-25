@@ -125,7 +125,7 @@ def test_explicit_source_code_is_not_erased_when_it_matches_or_conflicts_with_a_
 
 
 @pytest.mark.parametrize('label', ['Org. Code', 'Org Code', 'Organizational Code',
-    'Organisation Code', 'Organisational Code', 'Organization\nCode', 'Org_Code'])
+    'Organisation Code', 'Organisational Code', 'Organization\nCode', 'Org_Code', 'Org: Code', 'Org/Code'])
 def test_explicit_code_labels_with_abbreviations_and_wrapping_still_prevent_defaulting(monkeypatch, label):
     result = extract_provider_name_suffix(monkeypatch, source_code='LLC', source_code_label=label)
     row = result.schedule_a_broker_rows[0]
