@@ -8,11 +8,12 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.models import DocumentType, FormType
+from app.models import DocumentType, FormType, NormalizedExtractionResult, ScheduleABrokerRow
 from app.services import extractor
 from app.services.field_rules import DEFAULT_FIELD_RULES
 from app.services.mapping import map_extraction_to_rules
 from app.services.xml_builder import schedule_a_broker_update_values
+from app.services.schedule_a_organization_source import reconcile_source_name_tokens
 
 
 def extract_provider_name_suffix(monkeypatch, *, suffix='LLC', source_code=None,
@@ -110,7 +111,7 @@ def test_current_document_name_suffix_is_not_a_printed_recipient_code(monkeypatc
     assert result.raw['source_organization_code_reconciliations'][0]['rejected_provider_candidate'] == suffix
 
 
-@pytest.mark.parametrize('code', ['LLC', 'ABC', '6', '03'])
+@pytest.mark.parametrize('code', ['LLC', 'ABC', '3', '6', '03'])
 def test_explicit_source_code_is_not_erased_when_it_matches_or_conflicts_with_a_name_token(monkeypatch, code):
     result = extract_provider_name_suffix(monkeypatch, source_code=code, provider_code=code)
     row = result.schedule_a_broker_rows[0]
@@ -147,3 +148,30 @@ def test_name_token_correction_requires_exact_recipient_and_payment_evidence(mon
     assert not result.raw.get('source_organization_code_reconciliations')
     assert any(row.organization_code == 'LLC' and row.decision == 'REVIEW_REQUIRED'
                for row in result.schedule_a_broker_rows)
+
+
+@pytest.mark.parametrize('provider_code,expected_defaulted', [('LLC', True), ('3', False), ('ABC', False), (None, False)])
+def test_merged_default_provenance_requires_the_original_provider_name_token(provider_code, expected_defaulted):
+    pages = [(1, '''INSURANCE DATA FOR SCHEDULE A (FORM 5500)
+First Unum Life Insurance Company
+NAME AND ADDRESS OF SALES ADDITIONAL
+EACH SOLICITING AGENT COMMISSION FEES COMPENSATION
+OR BROKER RECEIVING PAID PAID PAID
+Different Advisory LLC 125.25 .00 .00
+PO Box 2100
+Mineola NY 11501
+''')]
+    provider = ScheduleABrokerRow(name='Different Advisory LLC', address_line_1='PO Box 2100',
+        city='Mineola', state='NY', zip_code='11501', commission_total='125.25', fee_total='0',
+        organization_code=provider_code, confidence=.99)
+    # A later adapter has the right scalar code but lost its blank-source marker.
+    current = provider.model_copy(deep=True, update={'organization_code': '3'})
+    result = NormalizedExtractionResult(provider='GroundX structured extract', fields=[],
+        schedule_a_broker_rows=[current], raw={'extraction_stages': [{
+            'stage': 'structured_provider_normalized', 'broker_rows': [provider.model_dump(mode='json')]}]})
+    reconcile_source_name_tokens(result, extractor.extract_first_unum_broker_rows(pages), pages)
+    assert result.schedule_a_broker_rows[0].organization_code_defaulted is expected_defaulted
+    if expected_defaulted:
+        assert result.raw['source_organization_code_reconciliations'][0]['rejected_provider_candidate'] == 'LLC'
+    else:
+        assert not result.raw.get('source_organization_code_reconciliations')
