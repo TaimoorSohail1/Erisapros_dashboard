@@ -475,6 +475,12 @@ class ExtractionService:
         attach_schedule_a_source_observations(result, semantic_pages,
             source_sha256=hashlib.sha256(file_bytes).hexdigest(), source_file_name=file_name)
         supplement_unreadable_cost_source_observations(result, file_bytes, file_name)
+        from app.services.schedule_a_organization_source import reconcile_source_name_tokens
+        bound_code_pages = completed_document_source_pages(result.raw, file_name)
+        code_source_pages = [*semantic_pages, *bound_code_pages]
+        # This letter parser discloses three payment columns and no code column.
+        # Bind recovery to the current document; bucket-wide text cannot clear a hold.
+        reconcile_source_name_tokens(result, extract_first_unum_broker_rows(bound_code_pages), code_source_pages)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,
