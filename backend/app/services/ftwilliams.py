@@ -577,6 +577,11 @@ class FTWilliamsService:
                 retry_client = httpx.AsyncClient(timeout=30)
                 client = retry_client
             try:
+                if attempt > 0 and guard is not None:
+                    # A connection failure may outlive the QA run's authority.
+                    # Re-read permission at every retry, not just once before
+                    # the loop; a denied retry must never reach the vendor.
+                    await guard(request_xml)
                 return await client.post(
                     endpoint_url,
                     content=request_xml.encode("utf-8"),

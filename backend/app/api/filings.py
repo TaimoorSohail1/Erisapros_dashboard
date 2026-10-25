@@ -353,6 +353,12 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest,
         service._apply_preserved_current_decisions(latest_filing, latest_fields, fresh)
         counts = service._review_decision_count_updates(fresh)
         fresh = await repo.upsert_ftwilliams_review(fresh.model_copy(update=counts))
+        # Rebuild the preview from the same fresh vendor snapshot after saving
+        # the no-write decision. Do not leave a kept replacement in displayed
+        # XML or query the vendor a second time for this reviewer command.
+        fresh = await service.prepare_review(filing_id, send_queries=False,
+            apply_automatic_derivations=False,
+            preloaded=(latest_filing, latest_fields, published_rules, fresh))
         await repo.update_filing(filing_id, {**counts, **automation_reset_values(get_settings(),
             "A reviewer kept the current vendor value; re-evaluate the remaining changes.")})
         claims = getattr(request.state, "user", {}) if request else {}
@@ -364,6 +370,7 @@ async def update_field(filing_id: str, field_id: str, payload: FieldEditRequest,
             details={"field_id": field_id, "target": target, "context_sha256": context,
                      "actor": claims.get("email") or claims.get("sub"), "vendor_write": False}))
         fresh = await continue_ftw_automation(filing_id, fresh)
+        latest_filing = await repo.get_filing(filing_id)
         return {"field": field, "proposed_xml": latest_filing.proposed_xml or "", "ftw_review": fresh}
     proposed_value = "" if payload.mark_missing else payload.proposed_value
     update_tag = resolve_ftw_update_tag(existing_field)

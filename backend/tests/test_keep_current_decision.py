@@ -41,7 +41,7 @@ class KeepCurrentDecisionTests(unittest.IsolatedAsyncioTestCase):
              patch('app.api.filings.continue_ftw_automation', AsyncMock(side_effect=lambda fid, r:r)):
             result = await update_field(self.filing.id, self.field.id,
                 FieldEditRequest(proposed_value=self.current if expected is None else expected, decision='KEEP_CURRENT'))
-            self.assertTrue(prepare.await_args.kwargs['send_queries'])
+            self.assertTrue(prepare.await_args_list[0].kwargs['send_queries'])
             return result
 
     async def test_keep_long_current_address_is_no_write_not_an_edit(self):

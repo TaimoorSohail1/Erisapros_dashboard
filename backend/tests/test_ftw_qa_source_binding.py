@@ -7,6 +7,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app.repositories as repositories
@@ -61,6 +62,46 @@ class QASourceBindingTests(unittest.IsolatedAsyncioTestCase):
             self.run['state'] = 'CLOSED'
             with self.assertRaises(ValueError): await self.client._post_xml('https://vendor.invalid',self.xml)
         self.assertEqual(self.http.post.await_count,1)
+
+    async def test_connection_retry_cannot_write_after_run_closes(self):
+        retry_http = SimpleNamespace(post=AsyncMock(return_value='vendor-response'), aclose=AsyncMock())
+        self.http.post.side_effect = httpx.ConnectError('Simulated connection failure before dispatch')
+
+        async def close_run(_delay):
+            self.run['state'] = 'CLOSED'
+
+        with self.patches(), patch('app.services.ftwilliams.httpx.AsyncClient', return_value=retry_http), \
+             patch('app.services.ftwilliams.asyncio.sleep', side_effect=close_run):
+            await configure_qa_write_guard(self.review, self.client)
+            with self.assertRaisesRegex(ValueError, 'closed or expired'):
+                await self.client._post_xml('https://vendor.invalid', self.xml)
+        retry_http.post.assert_not_awaited()
+        retry_http.aclose.assert_awaited_once()
+
+    async def test_connection_retry_cannot_write_after_run_expires(self):
+        retry_http = SimpleNamespace(post=AsyncMock(return_value='vendor-response'), aclose=AsyncMock())
+        self.http.post.side_effect = httpx.ConnectError('Simulated connection failure')
+
+        async def expire_run(_delay):
+            self.run['expires_at'] = '2020-01-01T00:00:00+00:00'
+
+        with self.patches(), patch('app.services.ftwilliams.httpx.AsyncClient', return_value=retry_http), \
+             patch('app.services.ftwilliams.asyncio.sleep', side_effect=expire_run):
+            await configure_qa_write_guard(self.review, self.client)
+            with self.assertRaisesRegex(ValueError, 'closed or expired'):
+                await self.client._post_xml('https://vendor.invalid', self.xml)
+        retry_http.post.assert_not_awaited()
+        retry_http.aclose.assert_awaited_once()
+
+    async def test_connection_retry_succeeds_while_run_remains_authorized(self):
+        retry_http = SimpleNamespace(post=AsyncMock(return_value='vendor-response'), aclose=AsyncMock())
+        self.http.post.side_effect = httpx.ConnectError('Simulated connection failure')
+        with self.patches(), patch('app.services.ftwilliams.httpx.AsyncClient', return_value=retry_http), \
+             patch('app.services.ftwilliams.asyncio.sleep', AsyncMock()):
+            await configure_qa_write_guard(self.review, self.client)
+            self.assertEqual(await self.client._post_xml('https://vendor.invalid', self.xml), 'vendor-response')
+        retry_http.post.assert_awaited_once()
+        retry_http.aclose.assert_awaited_once()
 
     async def test_wrong_source_or_missing_worksheet_never_reaches_network(self):
         for change in ['bytes','worksheet']:

@@ -509,6 +509,17 @@ class FTWilliamsReviewService:
             "ftw_browser_customer_id": browser_customer_id,
             "ftw_browser_plan_id": browser_plan_id,
         }
+        # Resolve audited no-write decisions before constructing either form's
+        # payload. Updating only the comparison afterward leaves the original
+        # replacement value in XML whenever another field keeps that form live.
+        preservation_review = FTWilliamsReview(filing_id=filing_id, fields=comparison_fields, **identity)
+        self._apply_preserved_current_decisions(filing, original_fields, preservation_review)
+        kept_field_ids = {
+            field.field_id for field in comparison_fields
+            if field.decision == FTWFieldDecision.KEEP_CURRENT
+        }
+        safe_form_5500_fields = [field for field in safe_form_5500_fields if field.id not in kept_field_ids]
+        safe_schedule_a_fields = [field for field in safe_schedule_a_fields if field.id not in kept_field_ids]
         ftw_plan_url = self._ftw_plan_page_url(browser_identity, identity.get("year")) if bring_forward_required else None
         payload_validation_issues: list[FTWFieldValidationIssue] = []
         try:
@@ -742,7 +753,7 @@ class FTWilliamsReviewService:
             fields=comparison_fields,
             **identity,
         )
-        self._apply_preserved_current_decisions(filing, original_fields, review)
+        review.source_context_sha256 = preservation_review.source_context_sha256
         decision_counts = self._review_decision_count_updates(review)
         review = review.model_copy(update=decision_counts)
         review = await repo.upsert_ftwilliams_review(review)
@@ -2968,6 +2979,7 @@ class FTWilliamsReviewService:
         verification_mismatches: list[dict] = []
         verification_request_xml: str | None = None
         verification_response_xml: str | None = None
+        verification_observations: list[dict] = []
         schedule_a_snapshot_xml = self._build_schedule_a_restore_xml(review)
         recovery_responses: list = []
         schedule_a_restore = {
@@ -3067,7 +3079,7 @@ class FTWilliamsReviewService:
             verification_mismatches = verification["mismatches"]
             verification_request_xml = verification["request_xml"]
             verification_response_xml = verification["response_xml"]
-            review.update_readback_observations = list(verification.get("observations") or [])
+            verification_observations = deepcopy(verification.get("observations") or [])
             if verification_success:
                 success = True
             else:
@@ -3139,6 +3151,10 @@ class FTWilliamsReviewService:
         review.update_verification_mismatches = verification_mismatches
         review.update_verification_request_xml = verification_request_xml
         review.update_verification_response_xml = verification_response_xml
+        # prepare_review returns a newly persisted review. Carry this attempt's
+        # literal vendor observations across that refresh, not a prior receipt's
+        # observations (or an empty pre-send snapshot).
+        review.update_readback_observations = verification_observations
         review.schedule_a_restore_attempted = bool(schedule_a_restore["attempted"])
         review.schedule_a_restore_success = schedule_a_restore["success"]
         review.schedule_a_restore_response_xml = schedule_a_restore["response_xml"]
