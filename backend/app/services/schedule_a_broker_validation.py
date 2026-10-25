@@ -66,12 +66,13 @@ def hold_local_ocr_recipient_conflicts(result, *, corroborating_rows=None, grid_
             continue
         amounts = [(money(getattr(row, k)),money(getattr(previous, k)))
                    for k in ('commission_total','fee_total')]
-        # Missing and zero stay distinct source values. They may share an
-        # identity anchor only when a known nonzero payment agrees and no
-        # category has a conflicting known nonzero value.
+        # A provider row may aggregate commission and fee source rows. One
+        # matching nonzero category can trigger a source re-read, but never
+        # proves identity by itself. The independent physical row must match
+        # BOTH current category amounts before its spelling may be accepted.
         if not any(a is not None and b is not None and a == b and a != 0 for a,b in amounts):
             continue
-        if any((a or Decimal(0)) != (b or Decimal(0)) for a,b in amounts):
+        if any(a is not None and b is not None and a != 0 and b != 0 and a != b for a,b in amounts):
             continue
         observed = row.name
         near_spelling = min(len(left),len(right)) >= 8 and SequenceMatcher(None,left,right).ratio() >= .9
@@ -92,12 +93,12 @@ def hold_local_ocr_recipient_conflicts(result, *, corroborating_rows=None, grid_
                     and candidate.source_page == row.source_page]
         corroborated = len(anchored) == 1 and normalize(anchored[0].name) == (left if grid_confirmed else right) and all(
             money(getattr(anchored[0], category)) is not None
-            and money(getattr(anchored[0], category)) == money(getattr(previous, category))
+            and money(getattr(anchored[0], category)) == money(getattr(row, category))
             for category in ('commission_total', 'fee_total'))
         if corroborated:
             row.name = anchored[0].name
             evidence = SourceEvidence(provider='Corroborated recipient identity', page=row.source_page,
-                source_text=f'Original local OCR: {observed}; provider: {previous.name}; separate source identity read: {anchored[0].name}. Full address, page and category amounts match. No payment, purpose or organization code is replaced.')
+                source_text=f'Original local OCR: {observed}; provider: {previous.name}; separate source identity read: {anchored[0].name}. Full address, page and both current-row category amounts match the separate physical source read. No payment, purpose or organization code is replaced.')
             row.evidence.extend([*previous.evidence, *anchored[0].evidence, evidence])
             row.validation_results.append(ExtractionValidationResult(validator='ocr_recipient_identity_corroboration',
                 status='PASS', reason='A separate source identity read corroborates this name at the unique full recipient/payment anchor.'))
