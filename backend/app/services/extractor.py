@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
+from time import monotonic
 from typing import Any
 from urllib.parse import unquote_plus
 import zipfile
@@ -605,6 +606,7 @@ class ExtractionService:
         }
 
         async with httpx.AsyncClient(timeout=120) as client:
+            operation_started = monotonic()
             ingest_raw = await self._ingest_groundx_file(client, base_url, headers, file_bytes, file_name)
             process_id = first_value(ingest_raw, ["processId", "process_id", "processID", "id"])
             if not process_id:
@@ -612,7 +614,16 @@ class ExtractionService:
                 process_id = process_ids[0] if process_ids else None
             poll_raw = ingest_raw
             if process_id:
-                poll_raw = await self._poll_groundx_process(client, base_url, headers, str(process_id))
+                poll_budget = None
+                if form_type == FormType.SCHEDULE_A:
+                    operation_budget = max(1.0, float(getattr(settings, "groundx_operation_timeout_seconds", 240)))
+                    # Reuse the current process, not a second ingestion. Reserve
+                    # part of the existing overall budget for extract/X-Ray reads.
+                    poll_budget = max(0.0, operation_budget - (monotonic() - operation_started)
+                                      - min(60.0, operation_budget / 4))
+                poll_raw = await self._poll_groundx_process(
+                    client, base_url, headers, str(process_id), max_wait_seconds=poll_budget,
+                )
 
             raw_payloads: list[Any] = [ingest_raw, poll_raw]
             structured_payloads: list[Any] = []
@@ -865,21 +876,22 @@ class ExtractionService:
         base_url: str,
         headers: dict[str, str],
         process_id: str,
-        max_wait_seconds: int | None = None,
+        max_wait_seconds: float | None = None,
     ) -> Any:
         settings = get_settings()
         wait_seconds = max_wait_seconds if max_wait_seconds is not None else settings.groundx_max_wait_seconds
-        max_attempts = max(1, int(wait_seconds / settings.groundx_poll_seconds))
+        deadline = monotonic() + max(0.0, float(wait_seconds))
+        interval = max(0.01, float(settings.groundx_poll_seconds))
         latest: Any = None
-        for _ in range(max_attempts):
+        while (remaining := deadline - monotonic()) > 0:
             try:
                 response = await client.get(
                     f"{base_url}/ingest/{process_id}",
                     headers=headers,
-                    timeout=min(30, max(5, wait_seconds)),
+                    timeout=min(30, remaining),
                 )
             except (httpx.TimeoutException, httpx.NetworkError):
-                await asyncio.sleep(settings.groundx_poll_seconds)
+                await asyncio.sleep(min(interval, max(0.0, deadline - monotonic())))
                 continue
             response.raise_for_status()
             latest = response.json()
@@ -895,8 +907,8 @@ class ExtractionService:
                 return latest
             if status in {"failed", "error", "errored", "cancelled", "canceled"}:
                 raise RuntimeError(f"GroundX processing failed with status: {status}")
-            await asyncio.sleep(settings.groundx_poll_seconds)
-        return latest
+            await asyncio.sleep(min(interval, max(0.0, deadline - monotonic())))
+        raise TimeoutError(f"GroundX process {process_id} did not reach completion within its polling budget.")
 
     async def _fetch_groundx_document_outputs(
         self,
