@@ -17,7 +17,8 @@ from app.services.schedule_a_organization_source import reconcile_source_name_to
 
 
 def extract_provider_name_suffix(monkeypatch, *, suffix='LLC', source_code=None,
-                                 provider_code=None, bound=True, provider_overrides=None, empty_local=False):
+                                 provider_code=None, bound=True, provider_overrides=None, empty_local=False,
+                                 source_code_label='Organization Code'):
     name = 'Different Advisory (NY) ' + suffix
     clean = f'''INSURANCE DATA FOR SCHEDULE A (FORM 5500)
 1. NAME OF CARRIER, SERVICE OR OTHER ORGANIZATION:
@@ -42,7 +43,7 @@ Mineola NY 11501
 REPORT AMOUNT .00
 '''
     if source_code is not None:
-        clean = clean.replace('6. COVERAGE', f'Organization Code: {source_code}\n6. COVERAGE')
+        clean = clean.replace('6. COVERAGE', f'{source_code_label}: {source_code}\n6. COVERAGE')
     # Reproduce the scanned document's local OCR failure without broadening
     # the parser to guess that an unreadable -00 additional amount means zero.
     local = clean.replace('1,234.56 .00 .00', '1,234.56 .00 -00').replace(
@@ -121,6 +122,15 @@ def test_explicit_source_code_is_not_erased_when_it_matches_or_conflicts_with_a_
         assert row.decision == 'REVIEW_REQUIRED'
         assert any(v.validator == 'source_organization_code_shape' and v.status == 'ERROR'
                    for v in row.validation_results)
+
+
+@pytest.mark.parametrize('label', ['Org. Code', 'Org Code', 'Organizational Code',
+    'Organisation Code', 'Organisational Code', 'Organization\nCode', 'Org_Code'])
+def test_explicit_code_labels_with_abbreviations_and_wrapping_still_prevent_defaulting(monkeypatch, label):
+    result = extract_provider_name_suffix(monkeypatch, source_code='LLC', source_code_label=label)
+    row = result.schedule_a_broker_rows[0]
+    assert row.organization_code == 'LLC' and row.decision == 'REVIEW_REQUIRED'
+    assert not result.raw.get('source_organization_code_reconciliations')
 
 
 def test_other_documents_source_text_cannot_clear_the_unsupported_code(monkeypatch):

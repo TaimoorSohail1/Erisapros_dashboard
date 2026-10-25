@@ -6,7 +6,7 @@ from app.models import ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_customer_rules import default_blank_organization_codes
 
 
-_CODE_LABEL = re.compile(r'\bOrg(?:anization(?:al)?)?\s*Code\b|\bOrganization\s+Type\b', re.I)
+_CODE_LABEL = re.compile(r'\bOrg(?:ani[sz]ation(?:al)?)?[.\s_-]*(?:Code|Type)\b', re.I)
 
 
 def _identity(row):
