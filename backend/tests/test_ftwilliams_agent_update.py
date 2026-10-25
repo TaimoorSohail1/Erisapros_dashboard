@@ -222,23 +222,27 @@ def test_runtime_lock_blocks_replacement_after_process_probe(installation):
     assert installed.executable.read_bytes() == b'MZold-agent'
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Exercises actual Windows process inspection")
 def test_actual_windows_probe_leaves_unrelated_browser_processes_alone(installation):
     # Fixture executable name is installed under a temporary path, never the user's live agent.
     _, installed, _ = installation
     assert REAL_PROCESS_PROBE(installed) == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Exercises actual Windows signature inspection")
 def test_actual_windows_signature_probe_sees_unsigned_fixture(installation):
     _, _, source = installation
     # Invalid PE bytes must fail closed, not be accepted as an unsigned valid package.
     assert REAL_SIGNATURE_PROBE(source) != 'Valid'
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Exercises Windows system files and signature modules")
 def test_windows_signature_helper_can_load_its_own_system_security_module():
     system_file = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32/wscript.exe'
     assert REAL_SIGNATURE_PROBE(system_file) in {'Valid', 'NotTrusted', 'UnknownError', 'NotSigned'}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Exercises real Windows DPAPI encryption")
 def test_update_keeps_dpapi_credentials_decryptable_for_same_windows_user(installation):
     from app.services.windows_secret_store import load_secret_json, save_secret_json
     _, installed, _ = installation
@@ -303,6 +307,7 @@ def test_rollback_timeout_keeps_fail_closed_recovery_marker(installation, monkey
     assert (installed.root / updater.STOP_REQUEST).exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Exercises Windows agent installation entry point")
 def test_existing_setup_does_not_prompt_or_repair_connection(installation, monkeypatch, capsys):
     import asyncio
     from scripts import run_ftw_local_agent as cli

@@ -5,6 +5,7 @@ import pytest
 from app.services import windows_agent_subprocess as system
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Tests Windows DLL search-path isolation")
 def test_frozen_system_child_uses_windows_libraries_and_restores_bundle_path(monkeypatch, tmp_path):
     bundle = tmp_path / 'bundle'
     calls = []
@@ -23,6 +24,7 @@ def test_frozen_system_child_uses_windows_libraries_and_restores_bundle_path(mon
     assert environment['PATH'].startswith(str(bundle))
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Tests Windows DLL search-path isolation")
 def test_frozen_library_path_restored_after_system_launch_failure(monkeypatch):
     calls = []
     monkeypatch.setattr(sys, 'frozen', True, raising=False)

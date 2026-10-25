@@ -11,6 +11,66 @@ def recipient(name, *, amount='25.50', street='9 EXAMPLE RD'):
         evidence=[SourceEvidence(provider='Independent reader',page=2,source_text=name+' '+street,table_cell=(1,0))])
 
 
+def test_aggregate_provider_payment_does_not_hide_a_split_row_name_conflict():
+    prior = recipient('NORTHWEST BENEFITS LLC')
+    prior.fee_total = '7.25'
+    current = recipient('NORTHWEST BENEFXTS LLC')
+    other = recipient(prior.name, amount='0', street='9 EXAMPLE ROAD')
+    other.fee_total = '7.25'
+    independent = recipient(prior.name)
+    result = NormalizedExtractionResult(provider='Provider', fields=[], schedule_a_broker_rows=[current, other], raw={
+        'local_ocr_pages': [{'page': 2, 'text': 'Separate source rows with category subtotals'}],
+        'extraction_stages': [{'stage': 'structured_provider_normalized', 'broker_rows': [prior.model_dump(mode='json')]}]})
+    calls = []
+    def read_rows(page):
+        calls.append(page)
+        return [independent, other]
+    hold_local_ocr_recipient_conflicts(result, corroborating_rows=read_rows)
+    assert calls == [2]
+    assert current.name == prior.name
+    assert current.commission_total == '25.50' and current.fee_total == '0'
+    assert other.commission_total == '0' and other.fee_total == '7.25'
+    assert len(result.schedule_a_broker_rows) == 2
+    assert result.raw['local_ocr_recipient_conflicts'][0]['decision'] == 'CORROBORATED'
+
+
+@pytest.mark.parametrize('reading', ['unavailable', 'aggregate_amounts', 'different_name', 'missing_fee', 'duplicate'])
+def test_split_row_identity_remains_held_without_an_exact_physical_source_read(reading):
+    prior = recipient('NORTHWEST BENEFITS LLC')
+    prior.fee_total = '7.25'
+    current = recipient('NORTHWEST BENEFXTS LLC')
+    independent = recipient('OTHER BENEFITS LLC' if reading == 'different_name' else prior.name)
+    if reading == 'aggregate_amounts':
+        independent.fee_total = '7.25'
+    if reading == 'missing_fee':
+        independent.fee_total = None
+    result = NormalizedExtractionResult(provider='Provider', fields=[], schedule_a_broker_rows=[current], raw={
+        'local_ocr_pages': [{'page': 2, 'text': 'Physical commission row, separate fee row'}],
+        'extraction_stages': [{'stage': 'structured_provider_normalized', 'broker_rows': [prior.model_dump(mode='json')]}]})
+    def read_rows(page):
+        return [] if reading == 'unavailable' else [independent, independent.model_copy(deep=True)] if reading == 'duplicate' else [independent]
+    hold_local_ocr_recipient_conflicts(result, corroborating_rows=read_rows)
+    assert current.decision == 'REVIEW_REQUIRED'
+    assert any(v.validator == 'ocr_recipient_identity_conflict' for v in current.validation_results)
+    assert current.commission_total == '25.50' and current.fee_total == '0'
+    assert len(result.schedule_a_broker_rows) == 1
+
+
+def test_separate_source_read_can_confirm_the_current_name_when_the_provider_is_wrong():
+    previous=recipient('NORTHWEST BENEFITS 3 LLC')
+    current=recipient('NORTHWEST BENEFITS LLC')
+    independent=recipient(current.name)
+    independent.evidence.extend(SourceEvidence(provider=provider,page=2,bounding_box=(1,2,30,40),source_text=independent.name+' 9 EXAMPLE RD')
+        for provider in ['Document-bound Hartford grid identity OCR (PSM 6)','Independent Hartford grid identity OCR (PSM 4/7)'])
+    result=NormalizedExtractionResult(provider='Provider',fields=[],schedule_a_broker_rows=[current],raw={
+        'local_ocr_pages':[{'page':2,'text':'Independent OCR source'}],
+        'extraction_stages':[{'stage':'structured_provider_normalized','broker_rows':[previous.model_dump(mode='json')]}]})
+    hold_local_ocr_recipient_conflicts(result,grid_corroborating_rows=lambda page:[independent])
+    assert result.schedule_a_broker_rows[0].name=='NORTHWEST BENEFITS LLC'
+    assert not any(v.validator=='ocr_recipient_identity_conflict' for v in current.validation_results)
+    assert current.commission_total=='25.50' and current.organization_code=='6'
+
+
 @pytest.mark.parametrize('local,expected',[
     ('NORTHWEST BENEFXTS LLC','NORTHWEST BENEFITS LLC'),
     ('DIFFERENT SERVICES LLC','DIFFERENT SERVICES LLC'),

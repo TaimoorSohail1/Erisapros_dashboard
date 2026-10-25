@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import BackgroundTasks
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import FilingStatus, ShareFileOAuthToken
 from app.repositories import MemoryRepository
 from app.services.sharefile import SHAREFILE_INCREMENTAL_STATE_KEY, ShareFileService
@@ -38,6 +38,15 @@ def _pdf(id_, name):
 
 class TwoSpeedScanTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # The mocked scan must not depend on a developer's .env.local or use
+        # any configured live storage/ShareFile credentials.
+        settings = Settings(_env_file=None, sharefile_client_id="fixture-client",
+                            sharefile_client_secret="fixture-secret",
+                            sharefile_discover_shared_folders=True)
+        for name in ("app.services.sharefile.get_settings", "app.services.storage.get_settings"):
+            setting_patch = patch(name, return_value=settings)
+            setting_patch.start()
+            self.addCleanup(setting_patch.stop)
         self.repo = MemoryRepository()
         self.repo_patch = patch("app.services.sharefile.get_repository", return_value=self.repo)
         self.repo_patch.start()

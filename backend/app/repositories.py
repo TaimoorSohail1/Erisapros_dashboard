@@ -256,6 +256,7 @@ class Repository:
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
         confidence: float | None = None,
+        keep_current_context: str | None = None,
     ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
@@ -306,6 +307,7 @@ class Repository:
     async def list_sharefile_files(self) -> list[dict]: ...
     async def list_sharefile_files_by_item_ids(self, item_ids: set[str]) -> list[dict]: ...
     async def list_sharefile_files_by_package_roots(self, package_root_keys: set[str]) -> list[dict]: ...
+    async def list_sharefile_files_by_package_folder_ids(self, folder_ids: set[str]) -> list[dict]: ...
     async def list_active_sharefile_file_summaries(self) -> list[dict]: ...
     async def get_sharefile_state(self, key: str) -> dict | None: ...
     async def upsert_sharefile_state(self, key: str, values: dict) -> dict: ...
@@ -381,6 +383,9 @@ class MongoRepository(Repository):
         )
         await self.db.sharefile_file_index.create_index(
             "package_root_key", name="sharefile_package_root_idx"
+        )
+        await self.db.sharefile_file_index.create_index(
+            "package_folder_id", name="sharefile_package_folder_idx", sparse=True
         )
         await self.db.sharefile_file_index.create_index(
             "package_key", name="sharefile_package_idx"
@@ -605,6 +610,10 @@ class MongoRepository(Repository):
             "automation_policy_version": 1,
             "automation_last_evaluated_at": 1,
             "automation_completed_at": 1,
+            "verified_update_count": 1,
+            "verified_update_at": 1,
+            "verified_update_action": 1,
+            "verified_receipt_id": 1,
             "automation_run_id": 1,
             "automation_bring_forward_target_key": 1,
             "automation_bring_forward_submitted_at": 1,
@@ -761,11 +770,13 @@ class MongoRepository(Repository):
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
         confidence: float | None = None,
+        keep_current_context: str | None = None,
     ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
         updates = {
             "proposed_value": proposed_value,
+            "keep_current_context": keep_current_context,
             "status": status,
             "updated_at": datetime.utcnow(),
         }
@@ -1293,6 +1304,14 @@ class MongoRepository(Repository):
             return []
         docs = await self.db.sharefile_file_index.find(
             {"package_root_key": {"$in": sorted(package_root_keys)}}
+        ).to_list(10000)
+        return [self._plain_mongo_doc(doc) for doc in docs]
+
+    async def list_sharefile_files_by_package_folder_ids(self, folder_ids: set[str]) -> list[dict]:
+        if not folder_ids:
+            return []
+        docs = await self.db.sharefile_file_index.find(
+            {"package_folder_id": {"$in": sorted(folder_ids)}}
         ).to_list(10000)
         return [self._plain_mongo_doc(doc) for doc in docs]
 
@@ -1832,11 +1851,13 @@ class MemoryRepository(Repository):
         status: ExtractedFieldStatus = ExtractedFieldStatus.EDITED,
         status_reason: str | None = None,
         confidence: float | None = None,
+        keep_current_context: str | None = None,
     ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
             return None
         field.proposed_value = proposed_value
+        field.keep_current_context = keep_current_context
         field.status = status
         if status_reason is not None:
             field.status_reason = status_reason
@@ -2156,6 +2177,10 @@ class MemoryRepository(Repository):
             for record in self.sharefile_files.values()
             if str(record.get("package_root_key") or "") in package_root_keys
         ]
+
+    async def list_sharefile_files_by_package_folder_ids(self, folder_ids: set[str]) -> list[dict]:
+        return [record for record in self.sharefile_files.values()
+                if str(record.get("package_folder_id") or "") in folder_ids]
 
     async def list_active_sharefile_file_summaries(self) -> list[dict]:
         return [

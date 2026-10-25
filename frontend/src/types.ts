@@ -223,6 +223,10 @@ export interface Filing {
   decision_required_count?: number;
   blocked_field_count?: number;
   will_update_count?: number;
+  verified_update_count?: number | null;
+  verified_update_at?: string | null;
+  verified_update_action?: string | null;
+  verified_receipt_id?: string | null;
   kept_current_count?: number;
   skipped_empty_count?: number;
   unchanged_count?: number;
@@ -466,6 +470,7 @@ export interface FTWilliamsReview {
   update_verification_response_xml?: string | null;
   update_attempted_count?: number;
   update_confirmed_count?: number;
+  update_readback_observations?: Array<Record<string, unknown>>;
   update_remaining_count?: number;
   update_results?: Array<{
     field_id?: string | null;

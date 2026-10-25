@@ -1,5 +1,6 @@
 """Final carrier values must retain field-bound source evidence."""
 import asyncio
+import pytest
 
 from app.config import get_settings
 from app.services.extractor import ExtractionService
@@ -96,6 +97,74 @@ def test_two_actual_carrier_names_still_require_review():
     attach_final_field_evidence(result,[(1,'Name of insurance carrier: Example Life Insurance Company')])
     resolve_schedule_a_result(result)
     assert result.fields[0].decision=='REVIEW_REQUIRED'
+
+
+def test_carrier_candidates_with_identical_characters_and_only_spacing_differences_agree():
+    result=NormalizedExtractionResult(provider='External',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value='ExampleHealth Insurance Company 06',confidence=.99,
+            candidate_values=['ExampleHealth Insurance Company 06','Example Health Insurance Company 06'])])
+    attach_final_field_evidence(result,[(2,'Name of insurance carrier: ExampleHealth Insurance Company 06')])
+    resolve_schedule_a_result(result)
+    field=result.fields[0]
+    assert field.decision=='AUTOMATIC'
+    assert field.value=='ExampleHealth Insurance Company 06'
+    assert field.candidate_values==['ExampleHealth Insurance Company 06','Example Health Insurance Company 06']
+
+
+@pytest.mark.parametrize('alternative',[
+    'ExampleHealth Life Insurance Company 06',
+    'ExampleHealth Insurance Company 07',
+    'ExampleHealth Insurance Company 6',
+    'Example-Health Insurance Company 06',
+])
+def test_carrier_spacing_comparison_preserves_other_character_conflicts(alternative):
+    result=NormalizedExtractionResult(provider='External',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value='ExampleHealth Insurance Company 06',confidence=.99,
+            candidate_values=['ExampleHealth Insurance Company 06',alternative])])
+    attach_final_field_evidence(result,[(2,'Name of insurance carrier: ExampleHealth Insurance Company 06')])
+    resolve_schedule_a_result(result)
+    assert result.fields[0].decision=='REVIEW_REQUIRED'
+    assert any(v.validator=='candidate_conflict' and v.status=='ERROR' for v in result.fields[0].validation_results)
+
+
+def test_carrier_spacing_does_not_clear_a_different_carrier_ein():
+    result=NormalizedExtractionResult(provider='External',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value='ExampleHealth Insurance Company',confidence=.99,
+            candidate_values=['ExampleHealth Insurance Company','Example Health Insurance Company']),
+        NormalizedExtractionField(field_name='1b. Insurance Carrier EIN',value='12-3456789',confidence=.99,
+            candidate_values=['12-3456789','12-3456790'])])
+    attach_final_field_evidence(result,[(2,'Name of insurance carrier: ExampleHealth Insurance Company\nEIN: 12-3456789')])
+    resolve_schedule_a_result(result)
+    assert result.fields[0].decision=='AUTOMATIC'
+    assert result.fields[1].decision=='REVIEW_REQUIRED'
+
+
+@pytest.mark.parametrize('page_suffix',[' PAGE: 2',' PAGE 12','\nPAGE: 13'])
+def test_certification_page_number_is_not_an_alternative_carrier(page_suffix):
+    footer='HEREBY CERTIFIES THAT THIS INFORMATION IS COMPLETE AND ACCURATE'+page_suffix
+    result=NormalizedExtractionResult(provider='External',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value='Example Life Insurance Company',confidence=.99,
+            candidate_values=['Example Life Insurance Company',footer])])
+    attach_final_field_evidence(result,[(2,'Name of insurance carrier: Example Life Insurance Company')])
+    resolve_schedule_a_result(result)
+    assert result.fields[0].decision=='AUTOMATIC'
+    assert result.raw['rejected_source_candidates'][0]['candidate']==footer
+
+
+@pytest.mark.parametrize('source_matches',[False,True])
+def test_footer_cleanup_needs_a_labelled_carrier_and_cannot_drop_another_name(source_matches):
+    footer='HEREBY CERTIFIES THAT THIS INFORMATION IS COMPLETE AND ACCURATE PAGE: 2'
+    if source_matches:
+        footer+=' Another Life Insurance Company'
+    result=NormalizedExtractionResult(provider='External',fields=[
+        NormalizedExtractionField(field_name='1a. Name of Insurance Company',value='Example Life Insurance Company',confidence=.99,
+            candidate_values=['Example Life Insurance Company',footer])])
+    source='Name of insurance carrier: Example Life Insurance Company' if source_matches else 'Unrelated correspondence'
+    attach_final_field_evidence(result,[(2,source)])
+    resolve_schedule_a_result(result)
+    assert result.fields[0].decision=='REVIEW_REQUIRED'
+    assert footer in result.fields[0].candidate_values
+    assert not (result.raw or {}).get('rejected_source_candidates')
 
 
 def test_commission_sum_has_recipient_and_calculation_evidence_not_a_fabricated_printed_total():

@@ -576,6 +576,7 @@ class ExtractedField(BaseModel):
     form_type: FormType | None = None
     ftw_current_value: str | None = None
     ftw_resolved_tag: str | None = None
+    keep_current_context: str | None = None
     status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED
     status_reason: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -583,6 +584,7 @@ class ExtractedField(BaseModel):
 
 
 class Filing(BaseModel):
+    qa_run_binding: dict | None = None
     id: str | None = None
     file_name: str
     content_type: str
@@ -638,6 +640,10 @@ class Filing(BaseModel):
     automation_policy_version: str | None = None
     automation_last_evaluated_at: datetime | None = None
     automation_completed_at: datetime | None = None
+    verified_update_count: int | None = None
+    verified_update_at: datetime | None = None
+    verified_update_action: str | None = None
+    verified_receipt_id: str | None = None
     automation_run_id: str | None = None
     automation_bring_forward_approved_target_key: str | None = None
     automation_bring_forward_approved_at: datetime | None = None
@@ -711,6 +717,7 @@ class AuditLog(BaseModel):
 class FieldEditRequest(BaseModel):
     proposed_value: str
     mark_missing: bool = False
+    decision: Literal["SET_VALUE", "KEEP_CURRENT"] = "SET_VALUE"
 
 
 class RejectRequest(BaseModel):
@@ -1050,6 +1057,7 @@ class FTWilliamsUpdateReceipt(BaseModel):
 
 
 class FTWilliamsReview(BaseModel):
+    source_context_sha256: str | None = None
     id: str | None = None
     filing_id: str
     status: FTWilliamsReviewStatus = FTWilliamsReviewStatus.PREVIEW_READY
@@ -1114,6 +1122,7 @@ class FTWilliamsReview(BaseModel):
     update_verification_mismatches: list[dict] = Field(default_factory=list)
     update_verification_request_xml: str | None = None
     update_verification_response_xml: str | None = None
+    update_readback_observations: list[dict] = Field(default_factory=list)
     schedule_a_restore_attempted: bool = False
     schedule_a_restore_success: bool | None = None
     schedule_a_restore_response_xml: str | None = None

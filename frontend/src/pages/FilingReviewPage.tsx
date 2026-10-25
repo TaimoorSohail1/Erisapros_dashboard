@@ -75,6 +75,7 @@ type SendValidationNotice = {
   message: string;
 } | null;
 type FieldSaveOptions = {
+  decision?: "SET_VALUE" | "KEEP_CURRENT";
   markMissing?: boolean;
   successMessage?: string;
   successTitle?: string;
@@ -525,7 +526,7 @@ export function FilingReviewPage() {
     setFieldSavingId(fieldId);
     setToast(null);
     try {
-      const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing });
+      const result = await updateField(id, fieldId, proposedValue, { markMissing: options.markMissing, decision: options.decision });
       setFieldValidationErrors((current) => {
         const next = { ...current };
         delete next[fieldId];
@@ -1298,6 +1299,7 @@ export function FilingReviewPage() {
                         successMessage: `${row.label} is ready for FT Williams review.`,
                       })}
                       onKeepFtw={() => setProposedValue(row, row.currentFtw, {
+                        decision: "KEEP_CURRENT",
                         successTitle: "Current FT Williams value kept",
                         successMessage: `${row.label} will keep its current FT Williams value.`,
                       })}

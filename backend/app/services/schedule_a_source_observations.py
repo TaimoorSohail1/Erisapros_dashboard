@@ -53,15 +53,16 @@ def collect_schedule_a_source_observations(page_texts):
               "source_instructions": []}
     seen = set()
     premium_blocks = set()
-    def add_value(key, page, literal, source):
+    def add_value(key, page, literal, source, *, unreadable=False):
         value = format(_decimal(literal), "f") if literal else ""
-        kind = "PRINTED_BLANK" if not literal else "PRINTED_ZERO" if _decimal(literal) == 0 else "PRINTED_VALUE"
+        kind = ("UNREADABLE" if unreadable else "PRINTED_BLANK") if not literal else "PRINTED_ZERO" if _decimal(literal) == 0 else "PRINTED_VALUE"
         identity = (key, page, value, kind)
         if identity in seen:
             return
         seen.add(identity)
         result["reported_values"].append({"key": key, "literal": literal, "value": value,
-            "value_kind": kind, "page": page, "source_text": source, "decision": "SOURCE_ONLY"})
+            "value_kind": kind, "page": page, "source_text": source,
+            "decision": "REVIEW_REQUIRED" if unreadable else "SOURCE_ONLY"})
     def add_benefit(page, literal, source):
         kind, selected = _benefit(literal)
         identity = (page, kind, selected, source)
@@ -158,7 +159,10 @@ def collect_schedule_a_source_observations(page_texts):
                 add_benefit(page, match.group("coverage"), match.group(0).strip())
         for block in re.finditer(
             r"\b(?:9|10)[.)]?\s+Non\s*[- ]?\s*experience\s*[- ]?\s*rated\s+contracts\s+Coverage\s+Amount\s*"
-            r"(?P<body>.*?)\ba\s+Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier[\s.:]*\$?\s*"
+            # OCR can retain the printed subsection underline as "a_". Keep
+            # the full paid-premium label mandatory rather than borrowing an
+            # amount from another subsection or discarding the component table.
+            r"(?P<body>.*?)\ba[._]?\s+Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier[\s.:]*\$?\s*"
             r"(?P<total>" + _PLAIN_AMOUNT + ")", text, re.I | re.S,
         ):
             signature = (page, re.sub(r"\s+", " ", block.group(0)).casefold())
@@ -210,9 +214,64 @@ def collect_schedule_a_source_observations(page_texts):
         for heading in re.finditer(r"Additional\s+costs\s+incurred|incurred\s+(?:any\s+)?specific\s+costs", text, re.I):
             tail = text[heading.end():heading.end()+600]
             tail = re.split(r"Specify\s+(?:nature|Nature)|Footnotes?\b|(?m:^\s*PART\s+[IV]+\b)", tail, maxsplit=1, flags=re.I)[0]
-            amount = re.search(_CURRENCY, tail)
-            add_value("additional_costs", page, amount.group(0) if amount else "",
-                      text[heading.start():heading.end()] + (tail[:amount.end()] if amount else tail))
+            report_line = re.search(r"REPORT\s+AMOUNT(?P<cell>[^\n]*)", tail, re.I)
+            direct_label = heading.group(0).lower().startswith('additional')
+            cell = report_line.group('cell') if report_line else tail.split('\n', 1)[0] if direct_label else ''
+            # A carrier can wrap the regulatory cost qualification before its
+            # amount. Require that complete label continuation; never treat an
+            # arbitrary following money line as this cost cell.
+            qualification = re.match(
+                r"\s*by\s+(?:the\s+)?carrier\s*,?\s*service\s*,?\s*or\s*other\s+"
+                r"organi[sz]ation\s+not\s+reported\s+in\s+Part\s+(?:1|I)\s*,?\s*"
+                r"item\s+2\s+above\s*[:.]?[ \t]*(?P<cell>[^\n]*)", tail, re.I,
+            ) if direct_label and not report_line else None
+            if qualification:
+                cell = qualification.group('cell')
+            unreadable_adjacent = False
+            if report_line and re.fullmatch(r"[\s.$_:,-]*", cell):
+                # X-Ray reading order can place the amount immediately before
+                # its label. Only a complete standalone adjacent amount inside
+                # this cost block qualifies; do not cross a blank line or text.
+                preceding = re.search(
+                    r"(?:^|\n)[ \t]*(?P<amount>\$?[ \t]*-?(?:\d[\d,]*\.\d{2}|\.\d{2}))"
+                    r"[ \t]*\r?\n[ \t]*\Z", tail[:report_line.start()],
+                )
+                if preceding:
+                    cell = preceding.group('amount')
+                else:
+                    adjacent = re.search(r"(?:^|\n)(?P<cell>[^\n]+)\r?\n[ \t]*\Z", tail[:report_line.start()])
+                    if (adjacent and re.fullmatch(r"[ \t$,.0-9OoIl?\-]+", adjacent.group('cell'))
+                            and re.search(r"[0-9OoIl?]", adjacent.group('cell'))):
+                        # Retain ambiguous money-like glyphs for review; never
+                        # turn an unreadable nearby value into a proven blank.
+                        cell = adjacent.group('cell')
+                        unreadable_adjacent = True
+                following = re.match(r"\r?\n(?P<cell>[^\r\n]*)", tail[report_line.end():])
+                if following:
+                    next_cell = following.group('cell').strip()
+                    valid = re.fullmatch(r"\$?[ \t]*-?(?:\d[\d,]*\.\d{2}|\.\d{2})", next_cell)
+                    money_like = (re.fullmatch(r"[ \t$,.0-9OoIl?\-]+", next_cell)
+                                  and re.search(r"[0-9OoIl?]", next_cell))
+                    if valid or money_like:
+                        # Keep both sides of the label. Conflicting amounts or
+                        # ambiguous glyphs cannot be resolved by reading order.
+                        cell += ' ' + next_cell
+                        unreadable_adjacent |= not bool(valid)
+            amounts = list(re.finditer(_CURRENCY, cell))
+            # Some statements omit the currency sign. A plain decimal must
+            # terminate the labelled amount cell; section digits and dotted
+            # leaders are not money. Multiple different candidates fail closed.
+            terminal = re.search(r"(?<![\d.,])(-?(?:\d[\d,]*\.\d{2}|\.\d{2}))[ \t]*$", cell)
+            if terminal:
+                amounts.extend(re.finditer(r"(?<![\d.,])-?(?:\d[\d,]*\.\d{2}|\.\d{2})(?![\d.,])", cell))
+            amount = amounts[0] if (not unreadable_adjacent and amounts
+                and len({_decimal(item.group(0)) for item in amounts}) == 1) else None
+            complete_label = bool(report_line) or direct_label
+            unreadable = not amount and not (complete_label and re.fullmatch(r"[\s.$_:,-]*", cell))
+            add_value("additional_costs", page, amount.group(0).strip() if amount else "",
+                      text[heading.start():heading.end()] + (tail[:report_line.end()] if report_line else
+                          tail[:qualification.end()] if qualification else cell),
+                      unreadable=unreadable)
         for match in re.finditer(r"(?:\[\s*[Xx✗✘✓]\s*\]|\(\s*[Xx✗✘✓]\s*\)|☑|☒|✓|✗|✘|(?<!\w)X(?=\s))\s*(?=([^\n]{1,100}))", text):
             kind, literal = _benefit(match.group(1))
             if kind:
@@ -233,8 +292,101 @@ def collect_schedule_a_source_observations(page_texts):
     return result
 
 
-def attach_schedule_a_source_observations(result, page_texts):
+def _reconcile_cost_source_reads(observations, raw, page_texts, source_sha256, source_file_name):
+    """Recover only source-only cost evidence from an already computed read.
+
+    The primary parser route is unchanged. Different amounts or a proven blank
+    cannot be overwritten by an alternative OCR segmentation. Neither mode is
+    an independent provider or a business approval.
+    """
+    if not source_sha256 or not isinstance(raw, dict):
+        return
+    reads = raw.get('local_ocr_source_reads')
+    if not isinstance(reads, list) and raw.get('source') == 'local_pdf_ocr_parser':
+        reads = raw.get('ocr_source_reads')
+    if not isinstance(reads, list):
+        reads = []
+    pages = {page for page, _ in page_texts}
+    alternatives = {}
+    for read in reads:
+        if (not isinstance(read, dict) or read.get('source_sha256') != source_sha256
+                or read.get('psm') != 6 or type(read.get('page')) is not int
+                or read['page'] not in pages or not isinstance(read.get('text'), str)):
+            continue
+        values = collect_schedule_a_source_observations([(read['page'], read['text'])])['reported_values']
+        for value in values:
+            if value['key'] == 'additional_costs' and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO'}:
+                alternatives.setdefault(read['page'], []).append({**value, 'ocr_psm': 6,
+                    'ocr_format': read.get('ocr_format', 'jpeg'), 'ocr_dpi': read.get('dpi', 400),
+                    'source_sha256': source_sha256})
+    if source_file_name:
+        from app.services.schedule_a_final_evidence import completed_document_source_pages
+        provider_pages = completed_document_source_pages(raw, source_file_name)
+        values = collect_schedule_a_source_observations(provider_pages)['reported_values']
+        for value in values:
+            if (value['key'] == 'additional_costs' and value['page'] in pages
+                    and value['value_kind'] in {'PRINTED_VALUE', 'PRINTED_ZERO', 'PRINTED_BLANK'}):
+                alternatives.setdefault(value['page'], []).append({**value,
+                    'source_kind': 'CURRENT_COMPLETED_PROVIDER_DOCUMENT', 'source_file_name': source_file_name,
+                    'source_sha256': source_sha256})
+    value_key = lambda value: ('BLANK', None) if value['value_kind'] == 'PRINTED_BLANK' else ('AMOUNT', Decimal(value['value']))
+    for page, candidates in alternatives.items():
+        primary = [value for value in observations['reported_values']
+                   if value['key'] == 'additional_costs' and value['page'] == page]
+        distinct = {value_key(value) for value in candidates}
+        known = [value for value in primary if value['value_kind'] != 'UNREADABLE']
+        conflict = len(distinct) != 1 or any(value_key(value) not in distinct for value in known)
+        action = 'CONFLICT_REQUIRES_REVIEW' if conflict else 'RETAIN_PRIMARY' if known else 'RECOVER_SOURCE_ONLY'
+        observations.setdefault('cost_source_reconciliations', []).append({
+            'page': page, 'primary': primary[0].copy() if len(primary) == 1 else [value.copy() for value in primary],
+            'alternates': candidates, 'action': action,
+        })
+        if conflict:
+            for value in primary:
+                value['decision'] = 'REVIEW_REQUIRED'
+            continue
+        if not known:
+            observations['reported_values'] = [value for value in observations['reported_values']
+                if not (value['key'] == 'additional_costs' and value['page'] == page)]
+            observations['reported_values'].append(candidates[0])
+
+
+def _corroborate_broker_component_qualifiers(observations, raw, source_sha256, source_file_name):
+    """Recover a missing qualifier, not amounts/identities, from one bound row."""
+    if not source_sha256 or not source_file_name or not isinstance(raw, dict):
+        return
+    from app.services.schedule_a_final_evidence import completed_document_source_pages
+
+    pages = completed_document_source_pages(raw, source_file_name)
+    provider = collect_schedule_a_source_observations(pages)['broker_components']
+    primary = observations['broker_components']
+    normalized = lambda value: re.sub(r'\s+', ' ', str(value or '')).strip().casefold()
+    identity = lambda row: (row['page'], normalized(row.get('broker_name')), row['category'],
+                            Decimal(row['amount']), normalized(row.get('purpose')))
+    for row in primary:
+        if (row['category'] != 'commission' or not row.get('broker_name')
+                or normalized(row['coverage']) != 'disability'):
+            continue
+        selected = identity(row)
+        matches = [candidate for candidate in provider if identity(candidate) == selected]
+        if len(matches) != 1 or sum(identity(candidate) == selected for candidate in primary) != 1:
+            continue
+        candidate = matches[0]
+        if not re.fullmatch(r'(?:Long|Short)\s+Term\s+Disability', candidate['coverage'], re.I):
+            continue
+        observations.setdefault('component_qualifier_reconciliations', []).append({
+            'primary': row.copy(), 'provider_source': candidate.copy(),
+            'source_kind': 'CURRENT_COMPLETED_PROVIDER_DOCUMENT',
+            'source_file_name': source_file_name, 'source_sha256': source_sha256,
+        })
+        row['coverage'] = candidate['coverage']
+        row['source_text'] = candidate['source_text']
+
+
+def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None, source_file_name=None):
     observations = collect_schedule_a_source_observations(page_texts)
+    _corroborate_broker_component_qualifiers(observations, result.raw, source_sha256, source_file_name)
+    _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256, source_file_name)
     components=observations['premium_components']
     if len(components)==1 and components[0].get('persons_covered') is not None and not any(
         field.field_name.startswith('1e.') for field in result.fields
@@ -295,3 +447,40 @@ def attach_schedule_a_source_observations(result, page_texts):
                 field.validation_results.append(ExtractionValidationResult(validator="source_component_total", status="ERROR",
                     reason="Printed premium component sum does not reconcile with its printed total; review the source."))
                 field.decision = "REVIEW_REQUIRED"
+
+
+def supplement_unreadable_cost_source_observations(result, file_bytes, file_name):
+    """Escalate only unresolved local OCR costs, never known-value conflicts."""
+    import hashlib
+    from app.services.schedule_a_cost_ocr import read_lossless_cost_source_pages
+
+    if not file_bytes or not str(file_name).lower().endswith('.pdf'):
+        return
+    raw = result.raw
+    if not isinstance(raw, dict) or not isinstance(raw.get('source_review'), dict):
+        return
+    primary = raw.get('local_ocr_pages') or raw.get('ocr_pages')
+    if not isinstance(primary, list):
+        return
+    pages = [(item['page'], item['text']) for item in primary if isinstance(item, dict)
+             and type(item.get('page')) is int and isinstance(item.get('text'), str)]
+    observations = raw['source_review']
+    conflicts = {item.get('page') for item in observations.get('cost_source_reconciliations', [])
+                 if item.get('action') == 'CONFLICT_REQUIRES_REVIEW'}
+    attempted = set(raw.get('lossless_cost_ocr_attempted_pages') or [])
+    selected = sorted({item['page'] for item in observations['reported_values']
+        if item['key'] == 'additional_costs' and item['value_kind'] == 'UNREADABLE'
+        and item['page'] in {page for page, _ in pages} and item['page'] not in conflicts | attempted})[:3]
+    if not selected:
+        return
+    raw['lossless_cost_ocr_attempted_pages'] = sorted(attempted | set(selected))
+    try:
+        reads = read_lossless_cost_source_pages(file_bytes, selected)
+    except OSError as exc:
+        raw.setdefault('lossless_cost_ocr_errors', []).append({'pages': selected, 'error_type': type(exc).__name__})
+        return
+    raw.setdefault('lossless_cost_source_reads', []).extend(reads)
+    existing = raw.get('local_ocr_source_reads') or (
+        raw.get('ocr_source_reads') if raw.get('source') == 'local_pdf_ocr_parser' else [])
+    raw['local_ocr_source_reads'] = [*(existing if isinstance(existing, list) else []), *reads]
+    _reconcile_cost_source_reads(observations, raw, pages, hashlib.sha256(file_bytes).hexdigest(), file_name)

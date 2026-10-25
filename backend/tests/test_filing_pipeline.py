@@ -251,7 +251,7 @@ class FilingPipelineTests(unittest.TestCase):
         self.assertEqual(field.status, ExtractedFieldStatus.LOW_CONFIDENCE)
         self.assertIn("FT Williams pre-send validation", field.status_reason)
 
-    def test_schedule_a_purpose_is_derived_from_commissions_and_fees(self):
+    def test_schedule_a_purpose_is_not_invented_from_commissions_and_fees(self):
         purpose_field = ExtractedField(
             filing_id="filing-1",
             source_field_name="3d. Purpose",
@@ -305,12 +305,13 @@ class FilingPipelineTests(unittest.TestCase):
         fields = harmonize_schedule_a_business_rule_fields([purpose_field, commissions_field, fees_field])
         updated = next(field for field in fields if field.mapped_rule_key == "schedule_a_part_i_3d_purpose")
 
-        self.assertEqual(updated.proposed_value, "COMMISSIONS")
+        self.assertEqual(updated.proposed_value, "N/A")
         self.assertEqual(updated.status, ExtractedFieldStatus.MATCHED)
-        self.assertEqual(updated.page, 2)
-        self.assertIn("Commissions paid", updated.source_text)
+        self.assertIsNone(updated.page)
+        self.assertEqual(updated.confidence, 0.7)
+        self.assertIsNone(updated.source_text)
 
-    def test_schedule_a_purpose_from_uncertain_inputs_stays_in_review(self):
+    def test_uncertain_schedule_a_purpose_is_preserved_without_category_substitution(self):
         purpose_field = ExtractedField(
             filing_id="filing-1",
             source_field_name="3d. Purpose",
@@ -344,9 +345,10 @@ class FilingPipelineTests(unittest.TestCase):
 
         harmonize_schedule_a_business_rule_fields([purpose_field, commissions_field, fees_field])
 
-        self.assertEqual(purpose_field.proposed_value, "COMMISSIONS")
+        self.assertEqual(purpose_field.proposed_value, "N/A")
         self.assertEqual(purpose_field.status, ExtractedFieldStatus.LOW_CONFIDENCE)
-        self.assertIn("needs Review", purpose_field.status_reason)
+        self.assertEqual(purpose_field.confidence, 0.7)
+        self.assertIsNone(purpose_field.source_text)
 
     def test_structured_broker_rows_suppress_duplicate_purpose_and_org_scalars(self):
         purpose_field = ExtractedField(

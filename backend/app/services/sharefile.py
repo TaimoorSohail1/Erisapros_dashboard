@@ -1871,6 +1871,16 @@ class ShareFileService:
             for package_key in packages
         }
         indexed_files = await repo.list_sharefile_files_by_package_roots(package_root_keys)
+        # Paths are display labels: quick poll and webhook ancestry can differ,
+        # and two physical folders may have the same display name. Prefer the
+        # actual filing-folder identity while retaining legacy index reads.
+        physical_roots = {
+            root["id"] for items in packages.values()
+            for item in items if (root := self._package_root_for_file(item))
+        }
+        physical_files = await repo.list_sharefile_files_by_package_folder_ids(physical_roots)
+        indexed_files = list({str(r["item_id"]): r for r in [*indexed_files, *physical_files]
+                              if r.get("item_id")}.values())
         indexed_by_id = {str(record.get("item_id")): record for record in indexed_files if record.get("item_id")}
         relevant_item_ids = {
             str(record.get("item_id"))
@@ -1889,12 +1899,20 @@ class ShareFileService:
         resolved_packages: dict[str, list[dict]] = {}
         for package_key, package_files in list(packages.items()):
             by_id = {file_item["id"]: file_item for file_item in package_files if file_item.get("id")}
+            changed_ids = set(by_id)
+            package_root = self._package_root_for_files(package_files)
             root_key = self._package_root_key_from_package_key(package_key)
             for record in indexed_files:
                 record_root_key = str(record.get("package_root_key") or "")
                 if not record_root_key:
                     record_root_key = self._package_root_key_from_package_key(str(record.get("package_key") or ""))
-                if record_root_key != root_key:
+                record_root = self._package_root_for_file(self._file_item_from_index_record(record))
+                record_folder_id = record.get("package_folder_id") or (record_root or {}).get("id")
+                if package_root and record_folder_id:
+                    belongs = str(record_folder_id) == str(package_root["id"])
+                else:
+                    belongs = record_root_key == root_key
+                if not belongs:
                     continue
                 if record.get("status") in {"DELETED", "IGNORED"}:
                     continue
@@ -1906,12 +1924,11 @@ class ShareFileService:
                     indexed_file["change_type"] = "UNCHANGED"
                     indexed_file["active_schedule_filing"] = str(item_id) in active_schedule_item_ids
                     by_id[item_id] = indexed_file
-            package_root = self._package_root_for_files(package_files)
             if package_root:
                 root_files = await self._scan_package_root(client, token, package_root)
                 for root_file in root_files:
                     item_id = root_file.get("id")
-                    if item_id and item_id not in by_id:
+                    if item_id and item_id not in changed_ids:
                         indexed_record = indexed_by_id.get(str(item_id))
                         if indexed_record:
                             root_file["indexed_status"] = indexed_record.get("status")
@@ -1920,6 +1937,8 @@ class ShareFileService:
                             root_file["indexed_package_root_key"] = indexed_record.get("package_root_key")
                             root_file["active_schedule_filing"] = str(item_id) in active_schedule_item_ids
                         root_file["change_type"] = "UNCHANGED"
+                        # Fresh metadata/classification supersedes cached
+                        # sibling data, including a changed file now UNKNOWN.
                         by_id[item_id] = root_file
             else:
                 sibling_files = await self._find_package_siblings_from_index(package_key)
@@ -2100,13 +2119,13 @@ class ShareFileService:
             package_root["path_parts"],
             root_folder_id=package_root["id"],
         )
-        useful = [
-            item
-            for item in self._dedupe_scanned_files(files)
-            if item.get("document_type") in SUPPORTED_SHAREFILE_DOCUMENT_TYPES
-            and not self._is_excluded_package_document(item)
-        ]
-        return useful
+        candidates = [item for item in self._dedupe_scanned_files(files)
+                      if not self._is_excluded_package_document(item)]
+        # Reuse only unchanged item/version classifications. Unknown supported
+        # formats need content inspection *before* the package type filter.
+        # Keep UNKNOWN entries here to invalidate stale indexed sibling types;
+        # _expand_schedule_a_packages performs the final supported-type filter.
+        return await self._resolve_deferred_content_sniffs(client, token, candidates)
 
     def _is_excluded_package_document(self, file_item: dict) -> bool:
         name = str(file_item.get("name") or "").lower()
@@ -2187,7 +2206,15 @@ class ShareFileService:
         for file_item in sniffable_files:
             existing = existing_by_item_id.get(str(file_item["id"]))
             authoritative_sniff = self._needs_authoritative_content_sniff(file_item.get("name") or "")
-            if existing and not authoritative_sniff and self._sharefile_change_type(existing, file_item) == "UNCHANGED":
+            # The scan intentionally has no classification yet. Comparing that
+            # None with the cached type would falsely call identical bytes an
+            # UPDATED semantic classification, defeating version-based reuse.
+            version_probe = {**file_item, "document_type": (existing or {}).get("document_type")}
+            if (
+                existing and not authoritative_sniff
+                and existing.get("file_name") == file_item.get("name")
+                and self._sharefile_change_type(existing, version_probe) == "UNCHANGED"
+            ):
                 indexed_type = existing.get("document_type")
                 if indexed_type:
                     try:
@@ -2270,6 +2297,7 @@ class ShareFileService:
             "package_key": resolved_package_key,
             "package_root_key": self._package_root_key(file_item),
             "document_type": file_item["document_type"].value if file_item.get("document_type") else None,
+            "package_folder_id": (self._package_root_for_file(file_item) or {}).get("id"),
             "file_size": int(file_item.get("size") or 0),
             "modified_at": file_item.get("modified_at"),
             "created_at_sharefile": file_item.get("created_at"),

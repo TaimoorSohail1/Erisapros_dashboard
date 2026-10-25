@@ -95,6 +95,55 @@ Life 422 01/01/2025 12/31/2025
     assert [v["persons_covered"] for v in result["coverage_counts"]] == ["422", "422"]
 
 
+@pytest.mark.parametrize("label", ["a", "a_", "a."])
+def test_nonexperience_premium_components_accept_ocr_subsection_punctuation(label):
+    text = f"""10 Nonexperience-rated contracts Coverage Amount
+LIFE 11,203.45
+Dental 7,801.02
+Long Term Disability 901.03
+AD&D 45.67
+{label} Total premiums or subscription charges paid to carrier. 19,951.17
+b Additional costs incurred 55.00
+"""
+    result = collect_schedule_a_source_observations([(5, text)])
+    assert [(row["coverage"], row["amount"]) for row in result["premium_components"]] == [
+        ("LIFE", "11203.45"), ("Dental", "7801.02"),
+        ("Long Term Disability", "901.03"), ("AD&D", "45.67"),
+    ]
+    assert result["reconciliations"][0]["result"] == "MATCH"
+    assert result["reconciliations"][0]["component_sum"] == "19951.17"
+
+
+def test_premium_component_ocr_label_retains_total_mismatch_for_review():
+    from app.models import NormalizedExtractionField
+
+    result = NormalizedExtractionResult(provider="test", fields=[NormalizedExtractionField(
+        field_name="10a. Total Premiums Paid", value="32.01", confidence=.99,
+    )])
+    attach_schedule_a_source_observations(result, [(5, """10 Nonexperience-rated contracts Coverage Amount
+LIFE 12.01
+Dental 20.01
+a_ Total premiums or subscription charges paid to carrier. 32.01
+""")])
+    assert result.raw["source_review"]["reconciliations"][0]["result"] == "MISMATCH"
+    assert result.fields[0].value == "32.01"
+    assert result.fields[0].decision == "REVIEW_REQUIRED"
+    assert any(item.validator == "source_component_total" and item.status == "ERROR"
+               for item in result.fields[0].validation_results)
+
+
+@pytest.mark.parametrize("total_label", ["", "b Additional costs incurred 32.02",
+                                            "Total premiums or subscription charges paid to carrier. 32.02"])
+def test_premium_components_require_the_labelled_paid_premium_subsection(total_label):
+    result = collect_schedule_a_source_observations([(5, f"""10 Nonexperience-rated contracts Coverage Amount
+LIFE 12.01
+Dental 20.01
+{total_label}
+""")])
+    assert result["premium_components"] == []
+    assert result["reconciliations"] == []
+
+
 def test_broker_coverage_components_and_wrapped_label_reconcile_without_sample_values():
     result = collect_schedule_a_source_observations([(4, """Name: DIFFERENT AGENT
 Commissions Paid Fees Paid Organization
@@ -160,6 +209,76 @@ Disability 25.50 Base Commissions
 25.50 Sub-total 0 Sub-total
 """)])
     assert result["broker_components"][0]["coverage"] == "Disability"
+
+
+def component_qualifier_case():
+    text='''Name: EXAMPLE AGENCY
+Commissions Paid Fees Paid Organization
+Coverage Amount Purpose Coverage Amount Purpose code
+Life 10.25 Base Commissions
+Long Term —_
+
+Disability 25.50 Base Commissions
+35.75 Sub-total 0 Sub-total
+'''
+    provider_text=text.replace('Long Term —_\n\n','Long Term\n')
+    raw={'ingest':{'ingest':{'processId':'CURRENT'}},
+        'process':{'ingest':{'processId':'CURRENT','status':'complete','progress':{'complete':{
+            'documents':[{'fileName':'example.pdf','sourceUrl':'https://example.test/current'}]}}}},
+        'outputs':[{'fileName':'example.pdf','sourceUrl':'https://example.test/current',
+            'chunks':[{'pageNumbers':[4],'text':provider_text}]}]}
+    row=ScheduleABrokerRow(name='EXAMPLE AGENCY',commission_total='35.75',fee_total='0')
+    result=NormalizedExtractionResult(provider='Example',fields=[],schedule_a_broker_rows=[row],raw=raw)
+    return text, result
+
+
+def test_broker_component_qualifier_can_use_a_unique_matching_bound_provider_source_row():
+    text,result=component_qualifier_case()
+    attach_schedule_a_source_observations(result,[(4,text)],source_sha256='actual-source',source_file_name='example.pdf')
+    assert [(part.coverage,part.amount) for part in result.schedule_a_broker_rows[0].commission_rows]==[
+        ('Life','10.25'),('Long Term Disability','25.50')]
+    assert result.schedule_a_broker_rows[0].commission_total=='35.75' and result.fields==[]
+    trace=result.raw['source_review']['component_qualifier_reconciliations'][0]
+    assert trace['primary']['coverage']=='Disability' and trace['provider_source']['coverage']=='Long Term Disability'
+    assert trace['source_sha256']=='actual-source' and trace['provider_source']['page']==4
+
+
+@pytest.mark.parametrize('defect', ['wrong_file','wrong_process','wrong_url','other_page',
+    'two_outputs','not_complete','structured_only','no_hash','different_broker',
+    'different_amount','different_purpose','duplicate_provider_amount','duplicate_primary_amount'])
+def test_component_qualifier_requires_unique_current_document_page_and_recipient_component(defect):
+    text,result=component_qualifier_case()
+    raw=result.raw
+    if defect=='wrong_process':raw['process']['ingest']['processId']='OTHER'
+    elif defect=='wrong_url':raw['outputs'][0]['sourceUrl']='https://example.test/other'
+    elif defect=='other_page':raw['outputs'][0]['chunks'][0]['pageNumbers']=[5]
+    elif defect=='two_outputs':raw['outputs'].append(raw['outputs'][0].copy())
+    elif defect=='not_complete':raw['process']['ingest']['status']='processing'
+    elif defect=='structured_only':
+        raw.pop('outputs')
+        raw['structured_outputs']=[{'coverage':'Long Term Disability'}]
+    elif defect in {'different_broker','different_amount','different_purpose'}:
+        before,after={'different_broker':('EXAMPLE AGENCY','OTHER AGENCY'),
+            'different_amount':('25.50','25.51'),'different_purpose':('Base Commissions','Other Commissions')}[defect]
+        raw['outputs'][0]['chunks'][0]['text']=raw['outputs'][0]['chunks'][0]['text'].replace(before,after)
+    elif defect=='duplicate_provider_amount':
+        raw['outputs'][0]['chunks'][0]['text']+='\nShort Term\nDisability 25.50 Base Commissions\n'
+    elif defect=='duplicate_primary_amount':
+        text=text.replace('Life 10.25','Life 25.50')
+    attach_schedule_a_source_observations(result,[(4,text)],
+        source_sha256=None if defect=='no_hash' else 'actual-source',
+        source_file_name='other.pdf' if defect=='wrong_file' else 'example.pdf')
+    assert not result.raw['source_review'].get('component_qualifier_reconciliations')
+    assert result.raw['source_review']['broker_components'][1]['coverage']=='Disability'
+    assert result.schedule_a_broker_rows[0].commission_total=='35.75'
+
+
+def test_qualified_primary_component_is_not_overwritten_by_a_different_provider_qualifier():
+    text,result=component_qualifier_case()
+    text=text.replace('Long Term —_\n\n','Short Term\n')
+    attach_schedule_a_source_observations(result,[(4,text)],source_sha256='actual-source',source_file_name='example.pdf')
+    assert result.schedule_a_broker_rows[0].commission_rows[1].coverage=='Short Term Disability'
+    assert not result.raw['source_review'].get('component_qualifier_reconciliations')
 
 
 @pytest.mark.parametrize("prefix, expected", [

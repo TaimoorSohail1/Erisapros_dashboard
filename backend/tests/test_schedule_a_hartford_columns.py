@@ -4,6 +4,50 @@ import pytest
 from app.services.extractor import extract_hartford_broker_rows
 
 
+@pytest.mark.parametrize('first,second', [('11.25','19.50'), ('6.75','102.40')])
+def test_flattened_interleaved_money_keeps_each_commission_with_its_policy(first,second):
+    total=Decimal(first)+Decimal(second)
+    source=f'''Producer and Address EXAMPLE RESEARCH AGENCY LLC 42 TEST RD BOSTON , MA 02110
+Org Code 6 Policy Number 000123-GL 000123-LTD Total
+Commissions Fees Paid Paid $ {first} $ 0.00 $ {second} $ 0.00 $ {total} $ 0.00
+(1) Bonus Paid $ 0.00 $ 0.00 $ 0.00
+(2) Additional Compensation Paid $ 0.00 $ 0.00 $ 0.00
+'''
+    rows=extract_hartford_broker_rows([(2,'Annual Statement of Premiums and Producer Compensation'),(3,source)])
+    assert len(rows)==1
+    assert rows[0].decision=='AUTOMATIC'
+    assert rows[0].commission_total==format(total,'.2f')
+    assert rows[0].fee_total=='0.00'
+    assert [(r.coverage,Decimal(r.amount)) for r in rows[0].commission_rows]==[('000123-GL',Decimal(first)),('000123-LTD',Decimal(second))]
+
+
+def test_combined_columns_do_not_guess_when_two_policy_allocations_reconcile():
+    source='''Producer and Address EXAMPLE RESEARCH AGENCY LLC 42 TEST RD BOSTON , MA 02110
+Org Code 6 Policy Number 000123-GL 000123-LTD Total
+Commissions Fees Paid Paid $ 0.00 $ 2.00 $ 2.00 $ 5.00 $ 2.00 $ 7.00
+(1) Bonus Paid $ 0.00 $ 0.00 $ 0.00
+(2) Additional Compensation Paid $ 0.00 $ 0.00 $ 0.00
+'''
+    # Both readings total 2 commissions and 7 fees but assign the fees to
+    # different policies. A coincidentally matching total is not sufficient.
+    assert extract_hartford_broker_rows([(2,'Annual Statement of Premiums and Producer Compensation'),(3,source)])==[]
+
+
+def test_adjacent_numbered_bonus_and_additional_headings_preserve_each_payment_category():
+    source='''Producer and Address EXAMPLE RESEARCH AGENCY LLC 42 TEST RD BOSTON , MA 02110
+Org Code 6 Policy Number 000123-GL 000123-LTD Total
+Commissions Fees Paid Paid $ 0.00 $ 0.00 $ 0.00 $ 0.00 $ 0.00 $ 0.00
+Paid (1) Bonus (2) Additional Compensation Paid $ 2.25 $ 1.10 $ 4.50 $ 3.20 $ 6.75 $ 4.30
+'''
+    rows=extract_hartford_broker_rows([(2,'Annual Statement of Premiums and Producer Compensation'),(3,source)])
+    assert len(rows)==1
+    assert rows[0].decision=='AUTOMATIC'
+    assert rows[0].commission_total=='0.00' and rows[0].fee_total=='11.05'
+    assert [(r.coverage,r.amount,r.purpose) for r in rows[0].fee_rows]==[
+        ('000123-GL','2.25','BONUS PAID'),('000123-LTD','4.50','BONUS PAID'),
+        ('000123-GL','1.10','ADDITIONAL COMPENSATION'),('000123-LTD','3.20','ADDITIONAL COMPENSATION')]
+
+
 def test_interleaved_hartford_columns_preserve_recipients_and_negative_components():
     header = """Org Policy Commissions (1)Bonus
 Producer and Address Fees Paid Compensation
@@ -98,3 +142,44 @@ Premium was applied as follows during the Plan/Policy Year -
 ''')]
     fields = extract_hartford_schedule_a_fields(pages)
     assert next(field.value for field in fields if field.field_name.startswith('3e.')) == '6'
+
+
+@pytest.mark.parametrize('lives', ['284','731'])
+def test_hartford_count_evidence_uses_the_actual_premium_page_not_the_cover(lives):
+    from app.services.extractor import extract_hartford_schedule_a_fields
+    pages=[(1,'''The Hartford
+Annual Statement of Premiums and Producer Compensation
+HARTFORD LIFE AND ACCIDENT
+Cover letter explaining the report; no insurance table here.
+'''),(2,f'''Premium was applied as follows during the Plan/Policy Year -
+Policy Number Type of Benefit Premium Applied Approximate Lives Covered
+000123-GL Life $123.45 {lives}
+000123-AD AD&D $20.00 12
+Total $143.45
+''')]
+    field=next(f for f in extract_hartford_schedule_a_fields(pages) if f.field_name.startswith('1e.'))
+    assert field.value==lives
+    assert field.page==2
+    assert lives in field.source_text and 'Lives Covered' in field.source_text
+    assert field.evidence and all(e.page==2 and lives in e.source_text for e in field.evidence)
+
+
+def test_reversed_policy_tokens_stay_in_the_payment_row_not_the_recipient_address():
+    pages=[(2,'Annual Statement of Premiums and Producer Compensation'),(3,'''Org Policy Commissions (1) Bonus
+Producer and Address Fees Paid Compensation
+Code Number Paid Paid
+EXAMPLE AGENCY 6 000123-GL $0.00 $0.00 -$2.11 $0.00
+LLC
+000123-AD $0.00 $0.00 $3.22 $0.00
+42 OTHER BLVD
+- GRH 000123 $0.00 $0.00 $4.44 $0.00
+BOSTON, MA 02110
+Total $0.00 $0.00 $5.55 $0.00
+''')]
+    rows=extract_hartford_broker_rows(pages)
+    assert len(rows)==1
+    assert rows[0].decision=='AUTOMATIC'
+    assert rows[0].address_line_1=='42 OTHER BLVD'
+    assert rows[0].fee_total=='5.55'
+    assert [r.amount for r in rows[0].fee_rows]==['-2.11','3.22','4.44']
+    assert all('000123' in r.coverage for r in rows[0].fee_rows)

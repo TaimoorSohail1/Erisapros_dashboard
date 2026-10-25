@@ -122,20 +122,59 @@ def _recipient_evidence(result):
                 _attach(field,proof[0].page,f'Derived recipient payment category: {field.value}\n'+'\n'.join(e.source_text for e in proof),'Reconciled recipient classification')
 
 
+def completed_document_source_pages(raw,file_name):
+    """Read actual page evidence only for one matching completed document."""
+    if not isinstance(raw,dict):
+        return []
+    as_object=lambda value:value if isinstance(value,dict) else {}
+    outputs=raw.get('outputs')
+    queued=as_object(as_object(raw.get('ingest')).get('ingest'))
+    complete=as_object(as_object(raw.get('process')).get('ingest'))
+    documents=as_object(as_object(complete.get('progress')).get('complete')).get('documents')
+    if (not isinstance(outputs,list) or not isinstance(documents,list)
+        or len(outputs)!=1 or len(documents)!=1 or complete.get('status')!='complete'
+        or not queued.get('processId') or queued['processId']!=complete.get('processId')):
+        return []
+    output,document=outputs[0],documents[0]
+    if not isinstance(output,dict) or not isinstance(document,dict):
+        return []
+    if (output.get('fileName')!=file_name or document.get('fileName')!=file_name
+        or not output.get('sourceUrl') or output['sourceUrl']!=document.get('sourceUrl')):
+        return []
+    chunks=output.get('chunks') or []
+    pages=output.get('documentPages') or []
+    if not isinstance(chunks,list) or not isinstance(pages,list):
+        return []
+    for page in pages:
+        if not isinstance(page,dict) or not isinstance(page.get('chunks') or [],list):
+            return []
+        chunks=[*chunks,*(page.get('chunks') or [])]
+    if any(not isinstance(chunk,dict) for chunk in chunks):
+        return []
+    return provider_source_pages(raw)
+
+
 def provider_source_pages(raw):
     """Actual page-bound X-Ray text only, not structured answers or traces."""
     pages={}
     for output in (raw or {}).get('outputs',[]):
         if not isinstance(output,dict):
             continue
-        chunks=list(output.get('chunks') or [])
-        for page in output.get('documentPages') or []:
+        raw_chunks=output.get('chunks') or []
+        chunks=list(raw_chunks) if isinstance(raw_chunks,list) else []
+        document_pages=output.get('documentPages') or []
+        for page in document_pages if isinstance(document_pages,list) else []:
             if isinstance(page,dict):
-                chunks.extend(page.get('chunks') or [])
+                page_chunks=page.get('chunks') or []
+                if isinstance(page_chunks,list):
+                    chunks.extend(page_chunks)
         for chunk in chunks:
+            if not isinstance(chunk,dict):
+                continue
             numbers=chunk.get('pageNumbers') or []
             text=chunk.get('text') or ''
-            if len(numbers)!=1 or not isinstance(numbers[0],int) or numbers[0]<1:
+            if (not isinstance(numbers,list) or len(numbers)!=1 or type(numbers[0]) is not int
+                or numbers[0]<1 or not isinstance(text,str)):
                 continue
             if re.search(r'\bFields?\s+\d+[a-z]\b|\bshould\s+(?:also\s+)?(?:default|check|insert)',text,re.I):
                 continue
@@ -238,7 +277,7 @@ def attach_final_field_evidence(result, page_texts):
             _attach(field,page,source)
             if code=='1a':
                 rejected=[value for value in field.candidate_values if re.fullmatch(
-                    r'(?:THE\s+CARRIER\s+)?HEREBY\s+CERTIFIES\s+THAT\s+THIS\s+INFORMATION\s+IS\s+COMPLETE\s+AND\s+ACCURATE[.!]?',str(value).strip(),re.I)]
+                    r'(?:THE\s+CARRIER\s+)?HEREBY\s+CERTIFIES\s+THAT\s+THIS\s+INFORMATION\s+IS\s+COMPLETE\s+AND\s+ACCURATE[.!]?(?:\s+PAGE\s*:?\s*\d+)?',str(value).strip(),re.I)]
                 field.candidate_values=[value for value in field.candidate_values if value not in rejected]
                 for value in rejected:
                     record={'field':field.field_name,'candidate':value,'reason':'Certification sentence is not a carrier identity; labelled carrier evidence retained.'}

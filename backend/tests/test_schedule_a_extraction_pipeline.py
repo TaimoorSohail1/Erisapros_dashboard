@@ -1,6 +1,6 @@
 import unittest
 
-from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, SourceEvidence
+from app.models import FieldRule, NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, ScheduleAWorksheetSummary, SourceEvidence
 from app.services.schedule_a_extraction_pipeline import apply_schedule_a_pipeline, resolve_schedule_a_result
 
 
@@ -364,7 +364,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             )
         )
 
-    def test_separate_benefit_broker_rows_are_not_reconciled_as_one_schedule(self):
+    def test_separate_benefit_totals_require_explicit_worksheet_boundaries(self):
         source = "Broker fees paid $48,230.78 and $26,143.92"
         result = NormalizedExtractionResult(
             provider="The Standard local parser",
@@ -416,6 +416,16 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             ],
         )
 
+        # Benefit labels alone do not establish separate Schedule As. Without
+        # explicit worksheet boundaries the incomplete aggregate must be held.
+        ambiguous = resolve_schedule_a_result(result.model_copy(deep=True))
+        self.assertIn("broker_fee_total", ambiguous.raw["extraction_quality"]["cross_field_errors"])
+        self.assertTrue(all(row.decision == "REVIEW_REQUIRED" for row in ambiguous.schedule_a_broker_rows))
+
+        result.schedule_a_worksheet_summaries = [
+            ScheduleAWorksheetSummary(source="Schedule A pages 1-2", coverage="LIFE INSURANCE"),
+            ScheduleAWorksheetSummary(source="Schedule A pages 3-4", coverage="LONG TERM DISABILITY"),
+        ]
         resolved = resolve_schedule_a_result(result)
 
         errors = resolved.raw["extraction_quality"]["cross_field_errors"]

@@ -7,7 +7,44 @@ from app.models import (
 )
 
 
-def recover_hartford_compensation_pages(page_texts, raw):
+def _corroborate_flat_identities(text,page,cells):
+    """Repair flattened identity order only from the matching physical cells."""
+    normalize=lambda value:re.sub(r'[^a-z0-9]','',str(value or '').casefold())
+    pieces=re.split(r'(Producer\s+and\s+Address\s+)',text,flags=re.I)
+    repairs=[]
+    for index in range(2,len(pieces),2):
+        block=pieces[index]
+        policy=re.search(r'\bPolicy\s+Number\b',block,re.I)
+        if not policy:
+            continue
+        head=block[:policy.start()]
+        flat=normalize(head)
+        candidates=[cell for cell in cells if cell.get('page')==page
+            and all(isinstance(cell.get(k),str) and cell[k].strip()
+                for k in ('name','address_line_1','city','state','zip_code','organization_code','source_text'))
+            and re.fullmatch(r'\d{1,2}',cell['organization_code'])
+            and cell.get('identity_bounds')
+            and normalize(cell['address_line_1']) in flat
+            and normalize(' '.join(cell[k] for k in ('city','state','zip_code'))) in flat]
+        if len(candidates)!=1:
+            continue
+        cell=candidates[0]
+        code=re.search(r'\bOrg\s+Code\s+(\d{1,2})\b',head,re.I)
+        if code:
+            printed_name=flat.split(normalize(cell['address_line_1']),1)[0]
+            if code.group(1)!=cell['organization_code'] or printed_name!=normalize(cell['name']):
+                return text,[],True
+            continue
+        replacement=(f"{cell['name']}\n{cell['address_line_1']}\n{cell['city']}, "
+            f"{cell['state']} {cell['zip_code']}\nOrg Code {cell['organization_code']} ")
+        pieces[index]=replacement+block[policy.start():]
+        repairs.append({'page':page,'original_flat_identity':head,
+            'identity':{k:cell[k] for k in ('name','address_line_1','city','state','zip_code','organization_code')},
+            'source_text':cell['source_text'],'identity_bounds':cell['identity_bounds']})
+    return ''.join(pieces),repairs,False
+
+
+def recover_hartford_compensation_pages(page_texts, raw, *, identity_cells=None):
     """Use reconciled X-Ray cells when local OCR lost producer tables.
 
     Only actual provider output chunks are eligible, never normalized fields
@@ -42,6 +79,9 @@ def recover_hartford_compensation_pages(page_texts, raw):
                   if 'ANNUAL STATEMENT OF PREMIUMS AND PRODUCER COMPENSATION' in text.upper())
     for page, texts in chunks.items():
         source = '\n'.join(texts)
+        source,identity_repairs,identity_conflict=_corroborate_flat_identities(source,page,identity_cells or [])
+        if identity_conflict:
+            continue
         provider_rows = extract_hartford_columnar_brokers([(0, marker), (page, source)])
         provider_rows = [row for row in provider_rows if row.source_page == page]
         current = extract_hartford_columnar_brokers(page_texts)
@@ -61,12 +101,14 @@ def recover_hartford_compensation_pages(page_texts, raw):
         prefix = re.split(r'Producer\s+and\s+Address', original, maxsplit=1, flags=re.I)[0]
         footer = re.search(r'\(1\)\s*Bonus Paid represents.*', original, re.I | re.S)
         recovered.append((page, prefix + '\n' + source + ('\n' + footer.group(0) if footer else '')))
+        if identity_repairs:
+            raw.setdefault('hartford_grid_identity_repairs',[]).extend(identity_repairs)
     replaced = {page for page, _ in recovered}
     return sorted([(page, text) for page, text in page_texts if page not in replaced] + recovered)
 
 _AMOUNT = r"[-+]?\s*(?:\$|S)?\s*[-+]?\s*\d[\d,]*\.\d{2}(?:\s*\$(?=\s*\$|\s*$))?"
 _POLICY_ROW = re.compile(
-    r"^(?P<identity>.*?)\b(?P<policy>[A-Z0-9]+\s*-\s*[A-Z0-9-]+)\s+"
+    r"^(?P<identity>.*?)(?P<policy>\b[A-Z0-9]+\s*-\s*[A-Z0-9-]+|-\s*[A-Z0-9-]+\s+[A-Z0-9]+)\s+"
     + r"\s+".join(rf"(?P<{key}>{_AMOUNT})" for key in ("commission", "fee", "bonus", "additional"))
     + r"\s*$", re.IGNORECASE,
 )
@@ -87,11 +129,18 @@ def _flat_producer_columns(page, text, components=None):
     headings = (
         ("commission", r"Commissions\s+(?:Fees\s+)?Paid(?:\s+Paid)?"),
         ("fee", r"Fees\s+Paid"),
-        ("bonus", r"\(\s*1\s*\)\s*(?:Paid\s+Bonus|Bonus\s+Paid)"),
+        ("bonus", r"\(\s*1\s*\)\s*(?:Paid\s+Bonus|Bonus(?:\s+Paid)?)"),
         ("additional", r"(?:\(?\s*2\s*\)?\s*\)?\s*Additional\s*\(?\s*Compensation\s+Paid)"),
     )
     for block in re.split(r"Producer\s+and\s+Address\s+", text, flags=re.I)[1:]:
+        # A physically separated name/address cell must retain its line
+        # boundary: a genuine digit in a company name is not a street number.
         identity = re.match(
+            r"(?P<name>[^\n]+)\n(?P<address>(?:\d|P\.?\s*O\.?\s+BOX\b)[^\n]*)\n"
+            r"(?P<city>[A-Z][A-Z .'-]+?)\s*,\s*(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)\s+"
+            r"Org\s+Code\s+(?P<code>\d{1,2})\s+Policy\s+Number\s+"
+            r"(?P<policies>.+?)\s+Total\s+", block, re.I,
+        ) or re.match(
             r"(?P<name>.+?)\s+(?P<address>(?:\d{1,6}\s+.+?\b(?:AVE|AVENUE|RD|ROAD|ST|STREET|BLVD|BOULEVARD|DR|DRIVE|CIRCLE|CIR|WAY)\b(?:\s+(?:STE|SUITE)\s+\w+)?|P\.?\s*O\.?\s+BOX\s+\d+))\s+"
             r"(?P<city>[A-Z][A-Z .'-]+?)\s*,\s*(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)\s+"
             r"Org\s+Code\s+(?P<code>\d{1,2})\s+Policy\s+Number\s+"
@@ -109,20 +158,35 @@ def _flat_producer_columns(page, text, components=None):
         for key, heading in headings:
             if key in columns:
                 continue
-            combined = key == 'commission' and re.match(r"\s*Commissions\s+Fees\s+Paid\s+Paid", tail, re.I)
+            pair = ('commission', 'fee') if key == 'commission' else ('bonus', 'additional')
+            joint_heading = (r"\s*Commissions\s+Fees\s+Paid\s+Paid(?:\s+Paid)?" if key == 'commission' else
+                r"\s*(?:Paid\s+)?\(\s*1\s*\)\s*(?:Paid\s+Bonus|Bonus(?:\s+Paid)?)\s+"
+                r"\(\s*2\s*\)\s*Additional\s+Compensation\s+Paid")
+            combined = re.match(joint_heading, tail[position:], re.I) if key in {'commission', 'bonus'} else None
             if combined:
-                values = re.match(r"\s*(?P<values>" + money + r"(?:\s+" + money + r")*)", tail[combined.end():], re.I)
+                start = position + combined.end()
+                values = re.match(r"\s*(?P<values>" + money + r"(?:\s+" + money + r")*)", tail[start:], re.I)
                 amounts = [_decimal(value) for value in re.findall(money, values.group('values'), re.I)] if values else []
                 width = len(policies) + 1
                 if len(amounts) != 2 * width:
                     break
-                left, right = amounts[:width], amounts[width:]
-                if sum(left[:-1], Decimal(0)) != left[-1] or sum(right[:-1], Decimal(0)) != right[-1]:
-                    break
-                columns.update(commission=left[:-1], fee=right[:-1])
                 raw_values = re.findall(money, values.group('values'), re.I)
-                literals.update(commission=raw_values[:width-1], fee=raw_values[width:-1])
-                position = combined.end() + values.end()
+                candidates = {}
+                for left, right, left_raw, right_raw in (
+                    (amounts[:width], amounts[width:], raw_values[:width], raw_values[width:]),
+                    (amounts[::2], amounts[1::2], raw_values[::2], raw_values[1::2]),
+                ):
+                    if sum(left[:-1], Decimal(0)) == left[-1] and sum(right[:-1], Decimal(0)) == right[-1]:
+                        candidates[(tuple(left), tuple(right))] = (left, right, left_raw, right_raw)
+                # X-Ray may flatten adjacent columns either column-major or
+                # row-major. Exact totals must establish one component matrix;
+                # equal totals alone cannot choose different policy allocations.
+                if len(candidates) != 1:
+                    break
+                left, right, left_raw, right_raw = next(iter(candidates.values()))
+                columns.update({pair[0]:left[:-1], pair[1]:right[:-1]})
+                literals.update({pair[0]:left_raw[:-1], pair[1]:right_raw[:-1]})
+                position = start + values.end()
                 continue
             match = re.search(heading, tail[position:], re.I)
             if match is None:
