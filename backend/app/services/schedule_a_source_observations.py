@@ -33,9 +33,9 @@ _BENEFITS = (
     ("stop_loss", r"Stop\s*[- ]?\s*Loss"),
     ("health", r"Health(?:\s+Insurance)?"),
     ("dental", r"Dental"), ("vision", r"Vision(?:\s+Care)?"),
-    ("life", r"Life(?:\s+Insurance)?"), ("hmo", r"HMO(?:\s+contract)?"),
+    ("life", r"(?:FLEX\s+)?Life(?:\s+Insurance)?"), ("hmo", r"HMO(?:\s+contract)?"),
     ("ppo", r"PPO(?:\s+contract)?"), ("indemnity", r"Indemnity(?:\s+contract)?"),
-    ("other", r"(?:Other(?:\s*\(\s*specify\s*\))?|AD\s*&\s*D|ADD|Accidental\s+Death[^\n]{0,35})"),
+    ("other", r"(?:FLEX\s+)?(?:Other(?:\s*\(\s*specify\s*\))?|AD\s*&\s*D|ADD|Accidental\s+Death[^\n]{0,35})"),
 )
 
 
@@ -145,7 +145,8 @@ def collect_schedule_a_source_observations(page_texts):
         benefit_table = re.search(r"Benefits?\s*(?:&|and)[\s\S]{0,180}?\bContract\s+Type\b", text, re.I)
         if benefit_table:
             date = r"\d{1,2}/\d{1,2}/\d{4}"
-            body = re.split(r"(?im)^[ \t]*(?:[23][.)]\s+Insurance\b|Part\s+[IV]+\b)",
+            body = re.split(r"(?im)^[ \t]*(?:[23][.)]\s+Insurance\b|Part\s+[IV]+\b|"
+                            r"(?:9|10)[.)]?\s+(?:Non\s*[- ]?\s*)?Experience\s*[- ]?\s*rated\s+contracts\b)",
                             text[benefit_table.end():], maxsplit=1)[0]
             for match in re.finditer(r"(?m)^[ \t]*(?P<coverage>[A-Za-z][A-Za-z &/\-]{1,40}?)[ \t]+"
                                      r"(?P<count>[\d,]+)(?![\d,.])(?:[ \t]+(?P<period>[^\n]*))?[ \t]*$", body):
@@ -281,7 +282,25 @@ def collect_schedule_a_source_observations(page_texts):
         ):
             literal = re.split(r"Policy\s+or\s+Contract|Insurance\s+Carrier|Group\s+(?:ID|Number|Legal)", match.group(1), maxsplit=1, flags=re.I)[0].strip()
             if not re.search(r"\bshould\b|\bwould\b|\bfield\s+\d", literal, re.I):
-                add_benefit(page, literal, match.group(0))
+                source = match.group(0)
+                # Only a delimited declared list can continue onto a physical
+                # next line. A numbered section/blank line ends the list.
+                tail = text[match.end():]
+                while literal.rstrip().endswith((',', ';')):
+                    following = re.match(r"\r?\n[ \t]*([A-Za-z][^\r\n]*)", tail)
+                    if not following:
+                        break
+                    candidate = following.group(1).strip()
+                    parts = [part.strip() for part in re.split(r"[,;]", candidate) if part.strip()]
+                    if not parts or not all(_benefit(part)[0] and
+                            _benefit(part)[1].casefold() == part.casefold() for part in parts):
+                        break
+                    literal += '\n' + candidate
+                    source += following.group(0)
+                    tail = tail[following.end():]
+                for part in re.split(r"[,;]", literal):
+                    if part.strip():
+                        add_benefit(page, part.strip(), source)
         for match in re.finditer(r"Benefit\s+and\s+contract\s+type([^\n]*)\n\s*\([a-m]\)\s*([^\n]+)", text, re.I):
             if not re.search(r"check|box", match.group(1), re.I):
                 kind, literal = _benefit(match.group(2))

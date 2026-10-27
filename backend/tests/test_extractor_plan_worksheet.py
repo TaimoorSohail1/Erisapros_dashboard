@@ -20,6 +20,32 @@ from app.services.extractor import (
 
 
 class PlanWorksheetExtractionTests(unittest.TestCase):
+    def test_beginning_counts_do_not_require_optional_instruction_notes(self):
+        for note in ("", "[use previous year's count from 6(a)(2)] "):
+            for count in ("135", "1,839", "0"):
+                with self.subTest(note=note, count=count):
+                    fields = parse_plan_worksheet_text(
+                        "5 Total number of participants at the beginning of the plan year "
+                        f"{note}{count} "
+                        "6(a)(1) Total number of active participants on the first day of the plan year "
+                        f"{note}{count} "
+                        "6(a)(2) Total number of active participants on the last day of the plan year 149 6(b)"
+                    )
+                    values = {field.field_name: field.value for field in fields}
+                    self.assertEqual(values.get("11. Total participants at beginning of year"), count)
+                    self.assertEqual(values.get("13. Active participants at beginning"), count)
+
+    def test_blank_beginning_count_does_not_capture_note_or_next_row_number(self):
+        fields = parse_plan_worksheet_text(
+            "5 Total number of participants at the beginning of the plan year "
+            "6(a)(1) Total number of active participants on the first day of the plan year "
+            "[use previous year's count from 6(a)(2)] "
+            "6(a)(2) Total number of active participants on the last day of the plan year 149 6(b)"
+        )
+        values = {field.field_name: field.value for field in fields}
+        self.assertNotIn("11. Total participants at beginning of year", values)
+        self.assertNotIn("13. Active participants at beginning", values)
+
     def test_fully_insured_table_extracts_unique_carrier_policy_and_dates(self):
         text = """
         Fully-Insured Benefits

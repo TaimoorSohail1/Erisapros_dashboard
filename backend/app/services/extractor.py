@@ -2974,12 +2974,12 @@ def parse_plan_worksheet_text(
 
     beginning_total = regex_first(
         compact,
-        [r"Total number of participants at the beginning of the plan year.*?\]\s*([0-9,]+)\s+6\(a\)\(1\)"],
+        [r"Total number of participants at the beginning of the plan year\s+(?:\[[^\]]*\]\s*)?([0-9,]+)\s+6\(a\)\(1\)"],
         flags=re.IGNORECASE,
     )
     active_beginning = regex_first(
         compact,
-        [r"6\(a\)\(1\)\s+Total number of active participants on the first day of the plan year.*?\]\s*([0-9,]+)\s+6\(a\)\(2\)"],
+        [r"6\(a\)\(1\)\s+Total number of active participants on the first day of the plan year\s+(?:\[[^\]]*\]\s*)?([0-9,]+)\s+6\(a\)\(2\)"],
         flags=re.IGNORECASE,
     )
     active_end = regex_first(
@@ -3495,7 +3495,8 @@ def local_schedule_a_pdf_result(
     )
 
 
-def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[dict] | None = None) -> list[tuple[int, str]]:
+def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[dict] | None = None,
+                                     classification_only: bool = False) -> list[tuple[int, str]]:
     """OCR a PDF only when its native text layer is empty.
 
     GroundX remains the preferred semantic extractor. This bounded local path
@@ -3512,12 +3513,14 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[di
             prefix = os.path.join(temp_dir, "page")
             with open(source, "wb") as handle:
                 handle.write(file_bytes)
+            render_options = (["-f", "1", "-l", "3", "-scale-to", "2000", "-r", "200"]
+                              if classification_only else ["-r", "400"])
             subprocess.run(
-                [pdftoppm, "-jpeg", "-r", "400", source, prefix],
+                [pdftoppm, "-jpeg", *render_options, source, prefix],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=120,
+                timeout=30 if classification_only else 120,
             )
             images = sorted(
                 (
@@ -3535,7 +3538,7 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[di
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=60,
+                    timeout=15 if classification_only else 60,
                 )
                 page_text = normalize_ocr_text(completed.stdout)
                 pages.append((index, page_text))
@@ -3547,7 +3550,7 @@ def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[di
             # re-run standard forms in column-aware mode and keep the complete
             # packet together. This also covers sparse MetLife form packets.
             packet_text = "\n".join(text for _, text in pages).upper()
-            if "SCHEDULE A" in packet_text and "FORM 5500" in packet_text:
+            if not classification_only and "SCHEDULE A" in packet_text and "FORM 5500" in packet_text:
                 sparse_pages: list[tuple[int, str]] = []
                 for index, image_name in enumerate(images, start=1):
                     sparse = subprocess.run(
@@ -5141,6 +5144,45 @@ def reconcile_aetna_part_i_compensation(
     readable. Recognize that table independently, but do not replace provider
     rows unless all money-bearing source rows and the printed total reconcile.
     """
+    # No Part I value is not a printed zero. Preserve unsupported provider
+    # guesses as evidence, but do not let a separate disclosure or premium
+    # populate the empty compensation table. OCR absence requires review,
+    # rather than asserting that the carrier paid nothing.
+    for page, source in page_texts:
+        if not re.search(r"AETNA\s+LIFE\s+INSURANCE\s+(?:COMPANY|CO\b\.?)", source or '', re.I):
+            continue
+        table = schedule_a_broker_table_section(normalize_ocr_text(source or ''))
+        if (not table or not re.search(r"Amount\s+of", table, re.I)
+                or not re.search(r"Fees\s+Paid", table, re.I)
+                or not re.search(r"(?m)^\s*TOTAL\s*$", table, re.I)
+                or re.search(r"\$\s*\d|\b\d[\d,]*\.\d{2}\b", table)):
+            continue
+        reason = ('No payment value was read in the Aetna Part I compensation table. '
+                  'A separate service-provider disclosure does not establish a commission or fee; review the source.')
+        raw = dict(result.raw) if isinstance(result.raw, dict) else {}
+        raw['aetna_unprovided_part_i_compensation'] = {
+            'page': page, 'source_text': table, 'decision': 'REVIEW_REQUIRED',
+            'prior_fields': [f.model_dump(mode='json') for f in result.fields if re.match(r'^3[a-e]\.', f.field_name)],
+            'prior_broker_rows': [row.model_dump(mode='json') for row in result.schedule_a_broker_rows],
+        }
+        for field in result.fields:
+            if not re.match(r'^3[a-e]\.', field.field_name):
+                continue
+            field.candidate_values = list(dict.fromkeys([*field.candidate_values, field.value]))
+            field.value = ''
+            field.confidence = 0
+            field.page, field.source_text = page, table
+            field.decision = 'REVIEW_REQUIRED'
+            field.validation_results.append(ExtractionValidationResult(
+                validator='incomplete_source_compensation_table', status='ERROR', reason=reason))
+        for row in result.schedule_a_broker_rows:
+            row.commission_total = row.fee_total = row.purpose = None
+            row.commission_rows, row.fee_rows = [], []
+            row.decision = 'REVIEW_REQUIRED'
+            row.validation_results.append(ExtractionValidationResult(
+                validator='incomplete_source_compensation_table', status='ERROR', reason=reason))
+        result.raw = raw
+        return
     rows = extract_litera_aetna_schedule_a_broker_rows(page_texts)
     if not rows:
         return
@@ -13123,11 +13165,14 @@ def extract_table_commission_amount(text: str) -> str | None:
 
 
 def schedule_a_broker_table_section(text: str) -> str | None:
+    # OCR commonly renders Roman III as Ill/111. The named welfare heading
+    # is also a hard boundary: no later premium can be a broker payment.
+    boundary = r"(?=Part\s+[Il1]{2,3}\b|Welfare\s+Benefit\s+Contract\s+Information|$)"
     return regex_first(
         text,
         [
-            r"(2\.\s*Insurance\s+Fees\s+and\s+commissions\s+paid\s+to\s+agents\s+and\s+brokers:?.*?)(?=Part\s+II|Part\s+III|$)",
-            r"(Insurance\s+Fees\s+and\s+commissions\s+paid\s+to\s+agents\s+and\s+brokers:?.*?)(?=Part\s+II|Part\s+III|$)",
+            r"(2\.\s*Insurance\s+Fees\s+and\s+commissions\s+paid\s+to\s+agents\s+and\s+brokers:?.*?)" + boundary,
+            r"(Insurance\s+Fees\s+and\s+commissions\s+paid\s+to\s+agents\s+and\s+brokers:?.*?)" + boundary,
         ],
         flags=re.IGNORECASE | re.DOTALL,
     )

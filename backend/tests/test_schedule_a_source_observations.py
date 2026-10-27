@@ -5,6 +5,32 @@ from app.models import NormalizedExtractionResult, ScheduleABrokerRow
 from app.services.schedule_a_source_observations import attach_schedule_a_source_observations
 
 
+def test_multiline_flex_declared_benefits_stop_before_the_next_numbered_section():
+    result = collect_schedule_a_source_observations([(1, '''6. COVERAGE/BENEFITS PROVIDED: FLEX ADD,
+FLEX LIFE,
+LTD
+7. NON-PARTICIPATING CONTRACTS (PREMIUMS):
+Vision appears in an unrelated explanatory note.
+''')])
+    assert result['benefit_types'] == ['life', 'long_term_disability', 'other']
+    assert all(row['page'] == 1 for row in result['benefit_observations'])
+
+
+def test_coverage_table_cannot_consume_premium_amounts_from_later_sections():
+    result = collect_schedule_a_source_observations([(5, '''Benefits & Contract Type Reporting Period
+Dental 275 01/01/2025 12/31/2025
+9 Experience-rated contracts
+10 Nonexperience-rated contracts Coverage Amount
+LIFE 83,501
+Dental 54,821
+Long Term Disability 30,085
+AD&D 4,014
+a Total premiums or subscription charges paid to carrier . 172,421
+''')])
+    assert [row['persons_covered'] for row in result['coverage_counts']] == ['275']
+    assert [row['amount'] for row in result['premium_components']] == ['83501', '54821', '30085', '4014']
+
+
 def test_declared_life_coverage_does_not_select_additional_accidental_death_from_a_note():
     result = collect_schedule_a_source_observations([(1, """1) COVERAGE - LIFE INSURANCE
 When Life is checked, AD&D should also be checked on Form 5500.

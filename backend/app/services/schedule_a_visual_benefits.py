@@ -101,7 +101,19 @@ def checked_benefit_boxes(image, words):
             continue
         output.append({'benefit_type':kind, 'literal':word['text'], 'selected':ink >= .12,
                        'label_bounding_box':[x,y,x+int(word['width']),y+height], **box})
-    return output
+    # A square belongs to its nearest label, not every benefit-like word in
+    # that label's parenthetical description (e.g. Health (other than ...)).
+    # Resolve after collecting candidates so OCR word order cannot change it.
+    by_box = defaultdict(list)
+    for observation in output:
+        by_box[tuple(observation['bounding_box'])].append(observation)
+    resolved = []
+    for candidates in by_box.values():
+        nearest_x = min(item['label_bounding_box'][0] for item in candidates)
+        nearest = [item for item in candidates if item['label_bounding_box'][0] == nearest_x]
+        if len({item['benefit_type'] for item in nearest}) == 1:
+            resolved.append(nearest[0])
+    return sorted(resolved, key=lambda item: (item['bounding_box'][1], item['bounding_box'][0]))
 
 
 def benefit_evidence_from_ocr(image, words, page):

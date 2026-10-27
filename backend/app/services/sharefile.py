@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks
 from app.config import get_settings
 from app.models import AuditLog, DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.repositories import get_repository
-from app.services.extractor import extract_docx_text, extract_pdf_text_pages
+from app.services.extractor import extract_docx_text, extract_pdf_text_pages, extract_image_only_pdf_ocr_pages
 from app.services.intake_formats import is_supported_intake_file, normalize_intake_documents
 from app.services.filing_pipeline import process_extraction_batch
 from app.services.storage import StorageService
@@ -3739,9 +3739,8 @@ class ShareFileService:
         )
 
     def _should_content_sniff(self, file_name: str) -> bool:
-        # Only formats we can cheaply read text from locally. Spreadsheets,
-        # scans and emails are classified by name and folder instead of being
-        # downloaded during the scan.
+        # Content sniffing is deferred to new/changed files after folder walks.
+        # Image-only PDFs use bounded local OCR, never a provider upload.
         name = file_name.lower()
         return name.endswith((".pdf", ".doc", ".docx"))
 
@@ -3763,6 +3762,11 @@ class ShareFileService:
             if name.endswith(".pdf"):
                 pages = extract_pdf_text_pages(file_bytes)
                 text = "\n".join(page_text for _, page_text in pages[:2])
+                if not text.strip():
+                    pages = await asyncio.to_thread(
+                        extract_image_only_pdf_ocr_pages, file_bytes, classification_only=True,
+                    )
+                    text = "\n".join(page_text for _, page_text in pages)
             elif name.endswith((".doc", ".docx")):
                 text = extract_docx_text(file_bytes)
         except Exception:
