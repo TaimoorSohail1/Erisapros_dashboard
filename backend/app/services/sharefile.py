@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -2960,6 +2961,7 @@ class ShareFileService:
                     "intake_note": intake.note,
                     "content_type": content_type,
                     "file_size": len(file_bytes),
+                    "source_sha256": hashlib.sha256(file_bytes).hexdigest(),
                     "document_type": document_type.value,
                     "s3_key": storage["key"],
                     "s3_bucket": storage.get("bucket"),
@@ -2980,7 +2982,13 @@ class ShareFileService:
                 package_documents.append(package_document)
                 processing_documents.append(
                     {
-                        "file_bytes": file_bytes,
+                        # The bytes are already durably stored. Queue only
+                        # references; bulk intake must not retain every PDF
+                        # while waiting for an extraction slot.
+                        "s3_key": storage['key'],
+                        "s3_bucket": storage.get('bucket'),
+                        "storage_path": storage.get('local_path'),
+                        "source_sha256": package_document['source_sha256'],
                         # The extractor keys off the file name, so it must be
                         # the resolved attachment/body/converted workbook.
                         "file_name": intake.file_name,

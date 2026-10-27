@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from datetime import datetime, timedelta
 
@@ -13,6 +14,8 @@ from app.services.ftwilliams_contract import FTWPayloadValidationError
 from app.services.mapping import map_extraction_to_rules
 from app.services.schedule_a_classification import apply_schedule_a_classification, filter_schedule_a_fields_for_contract_type
 from app.services.xml_builder import build_proposed_ftw_xml
+from app.services.storage import StorageService
+from app.services.groundx_checkpoints import GroundXSubmissionUncertain, job_checkpoint_journal
 
 
 async def process_extraction_job(filing_id: str, job_id: str, file_bytes: bytes, file_name: str) -> None:
@@ -30,9 +33,15 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
     jobs = await repo.list_extraction_jobs(filing_id)
     job = next((item for item in jobs if item.id == job_id), None)
     max_attempts = job.max_attempts if job else 3
+    if job and job.status == ExtractionJobStatus.COMPLETED:
+        return
 
     for attempt in range(1, max_attempts + 1):
         try:
+            checkpoints, recorder = await job_checkpoint_journal(repo, filing_id, job_id, rule_snapshot.version)
+            if (job and job.attempts and job.status in {ExtractionJobStatus.EXTRACTING, ExtractionJobStatus.SENT_TO_GROUNDX}
+                    and not checkpoints):
+                raise GroundXSubmissionUncertain('This interrupted extraction predates provider checkpoints. Verify its existing provider process before retrying; no upload was repeated.')
             await repo.update_extraction_job(
                 job_id,
                 {
@@ -54,6 +63,8 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
 
             await repo.update_extraction_job(job_id, {"status": ExtractionJobStatus.EXTRACTING})
             extractor = ExtractionService(rule_snapshot.rules)
+            extractor.groundx_resume_checkpoints = checkpoints
+            extractor.groundx_checkpoint_callback = recorder
             mapped_fields: list[ExtractedField] = []
             providers: list[str] = []
             raw_items: list[dict] = []
@@ -63,7 +74,15 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
 
             for document in documents:
                 file_name = str(document["file_name"])
-                file_bytes = document["file_bytes"]
+                file_bytes = document.get('file_bytes')
+                if file_bytes is None:
+                    file_bytes = await asyncio.to_thread(
+                        StorageService().load_pdf, document['s3_key'],
+                        bucket=document.get('s3_bucket'), local_path=document.get('storage_path'),
+                    )
+                    expected_sha = document.get('source_sha256')
+                    if expected_sha and hashlib.sha256(file_bytes).hexdigest() != expected_sha:
+                        raise ValueError('Stored source differs from the queued document hash; extraction was withheld.')
                 document_type = document.get("document_type") or classify_document(file_name)
                 form_type = form_type_for_document(document_type)
                 extraction = await extractor.extract_document(file_bytes, file_name, document_type)
@@ -230,8 +249,26 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                         },
                     )
             return
+        except asyncio.CancelledError:
+            latest = next((item for item in await repo.list_extraction_jobs(filing_id) if item.id == job_id), None)
+            if latest and latest.status == ExtractionJobStatus.COMPLETED:
+                # The interruption may be in query/dispatch after extraction
+                # persisted. Redelivery must not repeat that completed job.
+                await repo.update_filing(filing_id, {'status': FilingStatus.NEEDS_REVIEW,
+                    'error_message': 'Extraction completed, but subsequent processing was interrupted. Refresh current FT Williams data before further action.'})
+                await repo.add_audit(AuditLog(filing_id=filing_id, event='EXTRACTION_POSTPROCESS_INTERRUPTED',
+                    message='Completed extraction retained; do not replay an uncertain filing update.', details={'job_id': job_id}))
+            else:
+                await repo.update_extraction_job(job_id, {
+                    'status': ExtractionJobStatus.FAILED, 'last_error': 'Extraction interrupted; inspect its provider checkpoint before resuming.',
+                    'next_retry_at': None,
+                })
+                await repo.update_filing(filing_id, {'status': FilingStatus.FAILED,
+                    'error_message': 'Extraction interrupted; provider checkpoints were retained for safe recovery.'})
+            raise
         except Exception as exc:
             error = str(exc)
+            terminal = attempt >= max_attempts or isinstance(exc, GroundXSubmissionUncertain)
             retry_at = datetime.utcnow() + timedelta(seconds=5 * attempt)
             await repo.update_extraction_job(
                 job_id,
@@ -239,7 +276,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "status": ExtractionJobStatus.FAILED,
                     "attempts": attempt,
                     "last_error": error,
-                    "next_retry_at": retry_at if attempt < max_attempts else None,
+                    "next_retry_at": None if terminal else retry_at,
                 },
             )
             await repo.add_audit(
@@ -247,10 +284,10 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     filing_id=filing_id,
                     event="EXTRACTION_FAILED",
                     message=error,
-                    details={"attempt": attempt, "will_retry": attempt < max_attempts},
+                    details={"attempt": attempt, "will_retry": not terminal},
                 )
             )
-            if attempt >= max_attempts:
+            if terminal:
                 await repo.update_filing(filing_id, {"status": FilingStatus.FAILED, "error_message": error})
                 for document in documents:
                     sharefile_item_id = document.get("sharefile_item_id")

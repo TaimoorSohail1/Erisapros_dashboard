@@ -4793,6 +4793,15 @@ class FTWilliamsReviewService:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason
                 validation_blocking = True
+            if (field.form_type == FormType.FORM_5500
+                    and field.source_document_type == DocumentType.PLAN_WORKSHEET
+                    and field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                    and tag in {'TotPartcpBoyCnt', 'TotActPartcpBoyCnt'}
+                    and str(field.source_text or '').strip()
+                    and not extracted_proposed_value.strip()):
+                validation_status = 'REVIEW_REQUIRED'
+                validation_message = 'The worksheet beginning-participant count could not be read; the stored FT Williams value is preserved pending review.'
+                validation_blocking = True
             if not contract_type_allowed:
                 validation_status = "NOT_APPLICABLE"
                 validation_message = (

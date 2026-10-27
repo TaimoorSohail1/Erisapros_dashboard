@@ -402,8 +402,44 @@ def _corroborate_broker_component_qualifiers(observations, raw, source_sha256, s
         row['source_text'] = candidate['source_text']
 
 
+def _corroborate_premium_component_contracts(observations, result, source_file_name):
+    """Repair one OCR glyph only with the exact current-document row/header."""
+    from app.services.schedule_a_final_evidence import completed_document_source_pages
+    if not source_file_name:
+        return
+    headers = {str(field.value).strip() for field in result.fields if field.field_name.startswith('1d.') and field.value}
+    if len(headers) != 1:
+        return
+    header = next(iter(headers))
+    if not any(row.get('contract') and row['contract'] != header
+               and len(row['contract']) == len(header) for row in observations['premium_components']):
+        return
+    provider_pages = completed_document_source_pages(result.raw, source_file_name)
+    candidates = collect_schedule_a_source_observations(provider_pages)['premium_components']
+    coverage_key = lambda value: re.sub(r'[^a-z0-9]', '', str(value or '').casefold())
+    for row in observations['premium_components']:
+        literal = row.get('contract')
+        if not literal or literal == header or len(literal) != len(header):
+            continue
+        if sum(a != b for a, b in zip(literal, header)) != 1:
+            continue
+        matches = [candidate for candidate in candidates
+            if candidate.get('page') == row.get('page')
+            and coverage_key(candidate.get('coverage')) == coverage_key(row.get('coverage'))
+            and candidate.get('persons_covered') == row.get('persons_covered')
+            and _decimal(candidate['amount']) == _decimal(row['amount'])]
+        contracts = {candidate.get('contract') for candidate in matches}
+        if contracts != {header}:
+            continue
+        row['literal_contract'] = literal
+        row['contract'] = header
+        row['contract_resolution'] = {'kind': 'CURRENT_DOCUMENT_ROW_AND_PRIMARY_CONTRACT_AGREE',
+            'page': row['page'], 'source_text': matches[0]['source_text'], 'source_file_name': source_file_name}
+
+
 def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None, source_file_name=None):
     observations = collect_schedule_a_source_observations(page_texts)
+    _corroborate_premium_component_contracts(observations, result, source_file_name)
     _corroborate_broker_component_qualifiers(observations, result.raw, source_sha256, source_file_name)
     _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256, source_file_name)
     components=observations['premium_components']

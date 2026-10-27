@@ -43,8 +43,10 @@ class PlanWorksheetExtractionTests(unittest.TestCase):
             "6(a)(2) Total number of active participants on the last day of the plan year 149 6(b)"
         )
         values = {field.field_name: field.value for field in fields}
-        self.assertNotIn("11. Total participants at beginning of year", values)
-        self.assertNotIn("13. Active participants at beginning", values)
+        self.assertEqual(values.get("11. Total participants at beginning of year"), '')
+        self.assertEqual(values.get("13. Active participants at beginning"), '')
+        self.assertTrue(all(field.decision == 'REVIEW_REQUIRED' for field in fields
+                            if field.field_name.startswith(('11.', '13.'))))
 
     def test_fully_insured_table_extracts_unique_carrier_policy_and_dates(self):
         text = """

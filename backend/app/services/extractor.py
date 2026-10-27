@@ -121,6 +121,8 @@ class ExtractionService:
     def __init__(self, field_rules=None, *, confirmed_clarifications=None):
         self.field_rules = list(field_rules) if field_rules is not None else DEFAULT_FIELD_RULES
         self.confirmed_clarifications = confirmed_clarifications
+        self.groundx_resume_checkpoints = {}
+        self.groundx_checkpoint_callback = None
 
     async def extract_document(self, file_bytes: bytes, file_name: str, document_type: DocumentType) -> NormalizedExtractionResult:
         if document_type == DocumentType.PLAN_WORKSHEET:
@@ -531,6 +533,7 @@ class ExtractionService:
         return final_result
 
     async def _extract_schedule_a_unresolved(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
+        from app.services.groundx_checkpoints import GroundXSubmissionUncertain
         settings = get_settings()
         document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
@@ -553,6 +556,10 @@ class ExtractionService:
                 result = supplement_schedule_a_result_with_local(result, local_result)
                 result.classification_signals = sorted(set(result.classification_signals) | set(document_signals))
                 return result
+            except GroundXSubmissionUncertain:
+                # An uncertain remote submission must not be hidden by a local
+                # fallback or a blind retry of the upload.
+                raise
             except Exception as exc:
                 local_result = local_schedule_a_pdf_result(
                     file_bytes,
@@ -607,13 +614,41 @@ class ExtractionService:
 
         async with httpx.AsyncClient(timeout=120) as client:
             operation_started = monotonic()
-            ingest_raw = await self._ingest_groundx_file(client, base_url, headers, file_bytes, file_name)
+            from app.services.groundx_checkpoints import GroundXSubmissionUncertain, binding_key, source_binding
+            binding = source_binding(file_bytes, file_name, form_type, settings.groundx_bucket_id)
+            checkpoint = self.groundx_resume_checkpoints.get(binding_key(binding))
+            if not checkpoint and any(
+                    item.get('binding', {}).get('source_sha256') == binding['source_sha256']
+                    and item.get('binding', {}).get('form_type') == binding['form_type']
+                    for item in self.groundx_resume_checkpoints.values()):
+                raise GroundXSubmissionUncertain('Provider configuration or filename changed for an existing source submission. Verify the prior process before submitting again.')
+            if checkpoint:
+                saved_process = checkpoint.get('process_id')
+                if not saved_process:
+                    raise GroundXSubmissionUncertain('A prior GroundX submission has an uncertain outcome. Investigate its status before uploading again.')
+                ingest_raw = {'ingest': {'processId': saved_process}}
+            else:
+                if self.groundx_checkpoint_callback:
+                    await self.groundx_checkpoint_callback(binding, 'SUBMITTING')
+                try:
+                    ingest_raw = await self._ingest_groundx_file(client, base_url, headers, file_bytes, file_name)
+                except Exception as exc:
+                    if self.groundx_checkpoint_callback:
+                        raise GroundXSubmissionUncertain('GroundX submission did not return a confirmed outcome; inspect the existing submission before retrying.') from exc
+                    raise
             process_id = first_value(ingest_raw, ["processId", "process_id", "processID", "id"])
             if not process_id:
                 process_ids = find_values(ingest_raw, {"processId", "process_id", "processID"})
                 process_id = process_ids[0] if process_ids else None
+            if not process_id and self.groundx_checkpoint_callback:
+                raise GroundXSubmissionUncertain('GroundX returned no process identifier; inspect the submission before retrying.')
             poll_raw = ingest_raw
             if process_id:
+                if self.groundx_checkpoint_callback:
+                    try:
+                        await self.groundx_checkpoint_callback(binding, 'ACCEPTED', str(process_id))
+                    except Exception as exc:
+                        raise GroundXSubmissionUncertain('The accepted GroundX process could not be journaled; verify it before resuming.') from exc
                 poll_budget = None
                 if form_type == FormType.SCHEDULE_A:
                     operation_budget = max(1.0, float(getattr(settings, "groundx_operation_timeout_seconds", 240)))
@@ -624,6 +659,8 @@ class ExtractionService:
                 poll_raw = await self._poll_groundx_process(
                     client, base_url, headers, str(process_id), max_wait_seconds=poll_budget,
                 )
+                if self.groundx_checkpoint_callback:
+                    await self.groundx_checkpoint_callback(binding, 'PROVIDER_COMPLETED', str(process_id))
 
             raw_payloads: list[Any] = [ingest_raw, poll_raw]
             structured_payloads: list[Any] = []
@@ -3015,6 +3052,22 @@ def parse_plan_worksheet_text(
     add("14. Active participants at end", active_end, 0.93)
     add("15. Retired/separated participants receiving benefits", retired_receiving, 0.93)
     add("16. Other retired/separated participants entitled to benefits", retired_entitled, 0.93)
+
+    for label, value, source_pattern in (
+        ('11. Total participants at beginning of year', beginning_total,
+         r'Total number of participants at the beginning of the plan year'),
+        ('13. Active participants at beginning', active_beginning,
+         r'6\(a\)\(1\)\s+Total number of active participants on the first day of the plan year'),
+    ):
+        present = re.search(source_pattern, compact, re.I)
+        if value is None and present:
+            fields.append(NormalizedExtractionField(
+                field_name=label, value='', confidence=0, decision='REVIEW_REQUIRED',
+                source_text=present.group(0), validation_results=[ExtractionValidationResult(
+                    validator='worksheet_participant_source_missing', status='ERROR',
+                    reason='The worksheet count label is present but its value could not be read. Verify it before automatic updating.',
+                )],
+            ))
 
     if re.search(r"\bwelfare benefit plan\b|\bemployee welfare benefit\b", compact, flags=re.IGNORECASE):
         add("6. Plan is a welfare plan?", "Yes", 0.86)
