@@ -56,6 +56,7 @@ from app.services.schedule_a_source_review import apply_source_business_review, 
 from app.services.schedule_a_broker_validation import hold_local_ocr_recipient_conflicts
 from app.services.schedule_a_source_observations import attach_schedule_a_source_observations, supplement_unreadable_cost_source_observations
 from app.services.schedule_a_visual_benefits import attach_visual_benefit_evidence, read_visual_benefit_evidence
+from app.services.groundx_checkpoints import GroundXSubmissionUncertain, binding_key, source_binding
 from app.services.schedule_a_final_evidence import attach_final_field_evidence, provider_source_pages, completed_document_source_pages
 
 
@@ -178,6 +179,8 @@ class ExtractionService:
                     ),
                     timeout=max(1.0, float(getattr(settings, "groundx_max_wait_seconds", 90))),
                 )
+            except GroundXSubmissionUncertain:
+                raise
             except Exception as exc:
                 return NormalizedExtractionResult(
                     provider=f"Plan Worksheet OCR fallback failed ({safe_error_summary(exc)})",
@@ -533,7 +536,6 @@ class ExtractionService:
         return final_result
 
     async def _extract_schedule_a_unresolved(self, file_bytes: bytes, file_name: str) -> NormalizedExtractionResult:
-        from app.services.groundx_checkpoints import GroundXSubmissionUncertain
         settings = get_settings()
         document_signals = extract_schedule_a_classification_signals(file_bytes, file_name)
         if settings.groundx_api_key and settings.groundx_bucket_id:
@@ -614,7 +616,6 @@ class ExtractionService:
 
         async with httpx.AsyncClient(timeout=120) as client:
             operation_started = monotonic()
-            from app.services.groundx_checkpoints import GroundXSubmissionUncertain, binding_key, source_binding
             binding = source_binding(file_bytes, file_name, form_type, settings.groundx_bucket_id)
             checkpoint = self.groundx_resume_checkpoints.get(binding_key(binding))
             if not checkpoint and any(

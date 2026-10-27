@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 import pytest
 
-from app.models import FormType
+from app.models import DocumentType, FormType
 from app.repositories import MemoryRepository
 from app.services.groundx_checkpoints import binding_key, job_checkpoint_journal, source_binding
 
@@ -54,7 +54,8 @@ def test_ambiguous_submission_cannot_ingest_again():
 
 
 @pytest.mark.parametrize('failure', ['timeout', 'missing_process', 'accepted_checkpoint_failure'])
-def test_submission_error_is_not_hidden_by_local_fallback_or_retried(failure):
+@pytest.mark.parametrize('document_type', [DocumentType.SCHEDULE_A, DocumentType.PLAN_WORKSHEET])
+def test_submission_error_is_not_hidden_by_local_fallback_or_retried(failure, document_type):
     import pytest
     from unittest.mock import patch
     from app.config import Settings
@@ -74,9 +75,9 @@ def test_submission_error_is_not_hidden_by_local_fallback_or_retried(failure):
                                                                 else {'processId': 'accepted-process'}}))
         with patch('app.services.extractor.get_settings', return_value=Settings(_env_file=None, groundx_api_key='offline', groundx_bucket_id=42)):
             with pytest.raises(GroundXSubmissionUncertain):
-                await service.extract_schedule_a(b'not a PDF', 'source.txt')
+                await service.extract_document(b'not a PDF', 'source.txt', document_type)
             with pytest.raises(GroundXSubmissionUncertain):
-                await service.extract_schedule_a(b'not a PDF', 'source.txt')
+                await service.extract_document(b'not a PDF', 'source.txt', document_type)
         service._ingest_groundx_file.assert_awaited_once()
     asyncio.run(run())
 

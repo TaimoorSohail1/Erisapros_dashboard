@@ -17,6 +17,7 @@ New evidence: `outputs/nine-layout-fixes-2026-10-27` in the primary checkout.
 - A present but unreadable worksheet beginning-count cell retains a review hold even when FTWilliam already contains a value.
 - Bulk ShareFile intake queues existing stored-file references instead of retaining all source bytes. Extraction loads the current document within its existing slot and verifies its source hash.
 - Provider submissions are journaled in existing audit storage with job/rule/source/bucket binding. Recovery polls a known process; ambiguous submissions or changed rules stop for investigation. Legacy interrupted jobs without checkpoints cannot silently re-upload.
+- Uncertain provider submissions are propagated for both Schedule A and unreadable-worksheet OCR; neither route hides them as an empty successful extraction.
 - Cancellation cannot downgrade an already completed extraction and cause duplicate dispatch on redelivery. Interrupted post-processing remains review-required.
 - A premium component's one-glyph contract discrepancy is corrected only when a current-document provider row agrees on page, coverage, amount and persons, and its contract equals the primary contract. The original literal and corroborating evidence remain available.
 
@@ -43,6 +44,6 @@ New evidence: `outputs/nine-layout-fixes-2026-10-27` in the primary checkout.
 
 No production changes or filing writes have been made in this correction run. Keep real-client filings, published rules, account configuration, routing and automatic controls unchanged. Real source/date/name/contract conflicts remain review-required.
 
-The user has additionally approved the actual Unum/Apollo sequence 5 and Lincoln STD/Freedom sequence 5 as disposable for update/read-back/restoration. Medical sequence 1 retains its separate date/broker restrictions and its two intentionally saved values; Dental sequence 3 is outside that Medical test.
+The user has additionally approved the two newly distinguished disposable destinations for the actual Unum and Lincoln STD uploads. Exact client/plan/sequence identities and approvals remain in private QA evidence. Medical retains its separate date/broker restrictions and its two intentionally saved values; the Dental destination is outside that Medical test.
 
 Do not claim all fields or all automatic updates passed until new source comparisons, correct matches, dispatch evidence and independent saved-value queries prove that claim.
