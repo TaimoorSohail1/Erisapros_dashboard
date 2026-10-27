@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import lru_cache
 from io import BytesIO
+from itertools import islice
 import re
 
 _FIELD_NOTE=re.compile(r'\bFields?\s+\d+[a-z](?:\b|\()',re.IGNORECASE)
@@ -100,7 +101,7 @@ def visible_native_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
 
 
 @lru_cache(maxsize=2)
-def mapping_note_text_overrides(file_bytes: bytes) -> dict[int, tuple[str, str]]:
+def mapping_note_text_overrides(file_bytes: bytes, *, max_pages: int | None = None) -> dict[int, tuple[str, str]]:
     """Override only annotated pages; leave unannotated extraction unchanged.
 
     Both readers and the geometry engine see the same source characters. The
@@ -113,7 +114,8 @@ def mapping_note_text_overrides(file_bytes: bytes) -> dict[int, tuple[str, str]]
     overrides = {}
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as document:
-            for number, page in enumerate(document.pages, start=1):
+            pages = document.pages if max_pages is None else islice(document.pages, max_pages)
+            for number, page in enumerate(pages, start=1):
                 filtered = source_page(page)
                 if filtered is not page:
                     overrides[number] = (

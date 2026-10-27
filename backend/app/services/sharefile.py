@@ -3768,7 +3768,10 @@ class ShareFileService:
         name = file_name.lower()
         try:
             if name.endswith(".pdf"):
-                pages = extract_pdf_text_pages(file_bytes)
+                # Content recognition consumes two native pages. Do not parse
+                # continuation-page geometry for this preview; full extraction
+                # still uses the uncapped default reader.
+                pages = extract_pdf_text_pages(file_bytes, max_pages=2)
                 text = "\n".join(page_text for _, page_text in pages[:2])
                 if not text.strip():
                     pages = await asyncio.to_thread(
