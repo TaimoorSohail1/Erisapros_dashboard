@@ -635,7 +635,10 @@ class ExtractionService:
                     ingest_raw = await self._ingest_groundx_file(client, base_url, headers, file_bytes, file_name)
                 except Exception as exc:
                     if self.groundx_checkpoint_callback:
-                        raise GroundXSubmissionUncertain('GroundX submission did not return a confirmed outcome; inspect the existing submission before retrying.') from exc
+                        status = getattr(exc, 'status_code', None)
+                        status_hint = f' (HTTP {status})' if isinstance(status, int) and 100 <= status < 600 else ''
+                        raise GroundXSubmissionUncertain('GroundX submission did not return a confirmed outcome'
+                            + status_hint + '; inspect the provider response and existing submission before retrying.') from exc
                     raise
             process_id = first_value(ingest_raw, ["processId", "process_id", "processID", "id"])
             if not process_id:
@@ -902,6 +905,10 @@ class ExtractionService:
                     )
                 ],
                 wait_for_complete=False,
+                # An ingestion POST can have succeeded even when its response
+                # failed. Only our journaled recovery may decide what happens
+                # next; the SDK must not silently submit it again.
+                request_options={"max_retries": 0},
             )
             return response.model_dump(mode="json")
         finally:

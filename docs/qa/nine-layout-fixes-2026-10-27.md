@@ -18,6 +18,7 @@ New evidence: `outputs/nine-layout-fixes-2026-10-27` in the primary checkout.
 - Bulk ShareFile intake queues existing stored-file references instead of retaining all source bytes. Extraction loads the current document within its existing slot and verifies its source hash.
 - Provider submissions are journaled in existing audit storage with job/rule/source/bucket binding. Recovery polls a known process; ambiguous submissions or changed rules stop for investigation. Legacy interrupted jobs without checkpoints cannot silently re-upload.
 - Uncertain provider submissions are propagated for both Schedule A and unreadable-worksheet OCR; neither route hides them as an empty successful extraction.
+- The installed SDK's hidden ingestion POST retries are disabled for this request. Offline transport tests reproduced three submissions after HTTP 500 before the correction, and one submission afterward for server, rate-limit and protocol failures.
 - Cancellation cannot downgrade an already completed extraction and cause duplicate dispatch on redelivery. Interrupted post-processing remains review-required.
 - A premium component's one-glyph contract discrepancy is corrected only when a current-document provider row agrees on page, coverage, amount and persons, and its contract equals the primary contract. The original literal and corroborating evidence remain available.
 
