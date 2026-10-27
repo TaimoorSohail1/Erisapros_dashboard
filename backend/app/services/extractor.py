@@ -260,6 +260,9 @@ class ExtractionService:
                     'pages':sorted({cell['page'] for cell in grid_identities}),
                 }
             bound_provider_pages=completed_document_source_pages(result.raw,file_name)
+            lincoln_pages = recover_lincoln_source_pages(authoritative_pages, result.raw, file_name)
+            if lincoln_pages != authoritative_pages:
+                authoritative_pages = semantic_pages = lincoln_pages
             recovered_pages = (recover_hartford_compensation_pages(
                 authoritative_pages,result.raw,identity_cells=grid_identities,
             ) if bound_provider_pages else authoritative_pages)
@@ -2544,6 +2547,10 @@ def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
         flags=re.IGNORECASE,
     )
     if vendor_total:
+        if (re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', normalized, re.I)
+                and re.search(r'THE\s+LINCOLN\s+NATIONAL', normalized, re.I)
+                and re.match(r'[ \t]+\d', normalized[vendor_total.end():].split('\n',1)[0])):
+            return None
         return vendor_total.group(1)
 
     for match in re.finditer(
@@ -3014,8 +3021,8 @@ def parse_plan_worksheet_text(
     if isinstance(plan_year, tuple) and len(plan_year) >= 2:
         plan_year_begin = normalize_worksheet_date(plan_year[0], default_year, end_of_month=False)
         plan_year_end = normalize_worksheet_date(plan_year[1], default_year, end_of_month=True)
-        add("6. Plan Year Beginning Date", plan_year_begin.replace("/", "-"), 0.95)
-        add("7. Plan Year Ending Date", plan_year_end.replace("/", "-"), 0.95)
+        add("6. Plan Year Beginning Date", plan_year_begin.replace("/", "-") if plan_year_begin else None, 0.95)
+        add("7. Plan Year Ending Date", plan_year_end.replace("/", "-") if plan_year_end else None, 0.95)
 
     beginning_total = regex_first(
         compact,
@@ -3160,7 +3167,9 @@ def normalize_worksheet_date(value: str, default_year: str | None, *, end_of_mon
     clean = str(value or "").strip().replace("-", "/")
     if normalize_compare_key(clean) in {"", "na", "notapplicable", "none"}:
         return None
-    if re.fullmatch(r"\d{1,2}/\d{1,2}", clean) and default_year:
+    if re.fullmatch(r"\d{1,2}/\d{1,2}", clean):
+        if not default_year or not re.fullmatch(r'20\d{2}', str(default_year)):
+            return None
         clean = f"{clean}/{default_year}"
     try:
         return normalize_schedule_a_date(clean, end_of_month=end_of_month)
@@ -3521,7 +3530,7 @@ def local_schedule_a_pdf_result(
             parsed_fields = [field for field in parsed_fields if field.field_name not in authoritative_names]
             parsed_fields.extend(acroform_fields)
     parsed_fields = select_best_schedule_a_fields(parsed_fields)
-    return NormalizedExtractionResult(
+    local_result = NormalizedExtractionResult(
         provider=provider if is_pdf else "Local document parser",
         fields=(
             _multi_record_fields_from_summaries(aultcare_summaries, source="AultCare multi-policy workbook parser")
@@ -3554,6 +3563,15 @@ def local_schedule_a_pdf_result(
             else document_summaries
         ),
     )
+    if (any(re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', text, re.I) for _,text in page_texts)
+            and any(re.search(r'THE\s+LINCOLN\s+NATIONAL', text, re.I) for _,text in page_texts)):
+        complete = reconcile_lincoln_part_i_compensation(local_result,
+            extract_litera_lincoln_schedule_a_broker_rows(page_texts), page_texts)
+        if not complete:
+            # Partial physical rows are retained in the diagnostic ledger;
+            # they cannot replace a complete provider recipient during merge.
+            local_result.schedule_a_broker_rows = []
+    return local_result
 
 
 def extract_image_only_pdf_ocr_pages(file_bytes: bytes, *, source_reads: list[dict] | None = None,
@@ -5298,14 +5316,62 @@ def reconcile_aetna_part_i_compensation(
         ))
 
 
+def recover_lincoln_source_pages(page_texts, raw, file_name):
+    """Use one bound completed read only when partial OCR totals corroborate it.
+
+    A readable differing scalar is a conflict, not permission to prefer a
+    provider. Original local OCR remains in the extraction-stage evidence.
+    """
+    if not isinstance(raw, dict) or not any(re.search(r'THE\s+LINCOLN\s+NATIONAL', text, re.I) for _,text in page_texts):
+        return page_texts
+    alternate = completed_document_source_pages(raw, file_name)
+    if not alternate:
+        return page_texts
+    local_probe = NormalizedExtractionResult(provider='Local source check', fields=[])
+    if reconcile_lincoln_part_i_compensation(local_probe,
+            extract_litera_lincoln_schedule_a_broker_rows(page_texts), page_texts):
+        return page_texts
+    peer_probe = NormalizedExtractionResult(provider='Bound source check', fields=[])
+    if not reconcile_lincoln_part_i_compensation(peer_probe,
+            extract_litera_lincoln_schedule_a_broker_rows(alternate), alternate):
+        return page_texts
+    local_headers = local_probe.raw['lincoln_compensation_reconciliation']['header_totals']
+    peer_headers = peer_probe.raw['lincoln_compensation_reconciliation']['header_totals']
+    payments = lambda rows: {(r['page'], Decimal(r['commission'].replace(',','')), Decimal(r['fee'].replace(',',''))) for r in rows}
+    if not local_headers or payments(local_headers) != payments(peer_headers):
+        return page_texts
+    local_fields = {f.field_name:f for f in extract_litera_lincoln_schedule_a_fields(page_texts)}
+    peer_fields = {f.field_name:f for f in extract_litera_lincoln_schedule_a_fields(alternate)}
+    if '1d. Contract/Policy Number' not in local_fields or '1d. Contract/Policy Number' not in peer_fields:
+        return page_texts
+    if any(name not in peer_fields or normalize_compare_key(field.value) != normalize_compare_key(peer_fields[name].value)
+           for name,field in local_fields.items() if not name.startswith(('3a.','3d.','3e.'))):
+        return page_texts
+    pages = {r['page'] for r in peer_headers}
+    replacements = {page:text for page,text in alternate if page in pages}
+    if pages != set(replacements) or not pages <= {page for page,_ in page_texts}:
+        return page_texts
+    raw['lincoln_bound_source_recovery'] = {'pages':sorted(pages),
+        'reason':'Current completed document, matching contract and readable scalars, matching printed header totals and fully reconciled recipient subtotals.',
+        'local_header_totals':local_headers,'bound_header_totals':peer_headers}
+    return [(page,replacements.get(page,text)) for page,text in page_texts]
+
+
+def _is_litera_lincoln_report(page_texts):
+    packet = '\n'.join(text or '' for _,text in page_texts)
+    return bool(re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', packet, re.I) or (
+        re.search(r'THE\s+LINCOLN\s+NATIONAL\s+LIFE\s+INSURANCE\s+COMPANY', packet, re.I)
+        and re.search(r'Contract\s+or\s+identification\s+number', packet, re.I)
+        and re.search(r'Insurance\s+fee[s]?\s+and\s+commission', packet, re.I)))
+
+
 def extract_litera_lincoln_schedule_a_fields(
     page_texts: list[tuple[int, str]],
 ) -> list[NormalizedExtractionField]:
     """Extract Lincoln's labelled Schedule A reporting statement."""
     # OCR can put the report title at the end of a preceding cover page.
     # Recognition applies to the packet; values still belong to their page.
-    if not any(re.search(r"SCHEDULE\s*A\s*REPORTING\s*INFORMATION", text or "", re.IGNORECASE)
-               for _, text in page_texts):
+    if not _is_litera_lincoln_report(page_texts):
         return []
     main_page = next(
         (
@@ -5323,12 +5389,12 @@ def extract_litera_lincoln_schedule_a_fields(
     ein = re.search(r"(?:\((?:b|bo)\)\s*)?EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
     naic = re.search(r"(?:\(c\)\s*)?NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
     contract = re.search(
-        r"\(d\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
+        r"\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
         text,
         re.IGNORECASE,
     )
     benefit_section = re.search(
-        r"\(Part\s+III\s*,?\s*#?8\).*?\n(?P<body>.*?)\n\s*2\.\s*Insurance\s+fee",
+        r"\(\s*Part\s+III\s*,?\s*#?\s*8\s*\).*?\n(?P<body>.*?)\n\s*2\.\s*Insurance\s+fee",
         text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -5361,6 +5427,8 @@ def extract_litera_lincoln_schedule_a_fields(
         re.IGNORECASE,
     )
     premium_value = money_value(premium.group(1)) if premium else None
+    if premium and re.match(r'[ \t]+\d', text[premium.end():].split('\n',1)[0]):
+        premium_value = None
     premium_source = premium.group(0) if premium else ""
     if not premium_value:
         damaged_premium = re.search(
@@ -5420,7 +5488,11 @@ def extract_litera_lincoln_schedule_a_fields(
         if value and clean_extracted_value(value)
     ]
     broker_rows = extract_litera_lincoln_schedule_a_broker_rows(page_texts)
-    if broker_rows:
+    probe = NormalizedExtractionResult(provider='Lincoln source table', fields=[])
+    complete = reconcile_lincoln_part_i_compensation(probe, broker_rows, page_texts)
+    header_totals = probe.raw.get('lincoln_compensation_reconciliation', {}).get('header_totals', [])
+    headers_agree = header_totals and len({(money_value(h['commission']), money_value(h['fee'])) for h in header_totals}) == 1
+    if broker_rows and (complete or headers_agree):
         broker_source = "\n".join(
             str(item.source_text or "")
             for row in broker_rows
@@ -5430,11 +5502,11 @@ def extract_litera_lincoln_schedule_a_fields(
         for label, total in (
             (
                 "3b. Amount of Commissions",
-                sum_money_values(*(row.commission_total for row in broker_rows)) or "0",
+                header_totals[0]['commission'] if headers_agree else sum_money_values(*(row.commission_total for row in broker_rows)) or "0",
             ),
             (
                 "3c. Amount of Fees",
-                sum_money_values(*(row.fee_total for row in broker_rows)) or "0",
+                header_totals[0]['fee'] if headers_agree else sum_money_values(*(row.fee_total for row in broker_rows)) or "0",
             ),
         ):
             fields.append(
@@ -5444,7 +5516,7 @@ def extract_litera_lincoln_schedule_a_fields(
                     candidate_values=[total],
                     confidence=0.99,
                     page=broker_rows[0].source_page,
-                    source_text=broker_source,
+                    source_text=header_totals[0]['literal'] if headers_agree else broker_source,
                     evidence=[
                         item.model_copy(deep=True)
                         for row in broker_rows
@@ -5459,8 +5531,7 @@ def extract_litera_lincoln_schedule_a_broker_rows(
     page_texts: list[tuple[int, str]],
 ) -> list[ScheduleABrokerRow]:
     """Combine payments only for an identical printed recipient/address."""
-    if not any(re.search(r"SCHEDULE\s*A\s*REPORTING\s*INFORMATION", text or "", re.IGNORECASE)
-               for _, text in page_texts):
+    if not _is_litera_lincoln_report(page_texts):
         return []
     parsed_rows: list[ScheduleABrokerRow] = []
     for page, page_text in page_texts:
@@ -5591,12 +5662,22 @@ def reconcile_lincoln_part_i_compensation(result, parsed_rows, page_texts) -> bo
     if complete:
         result.schedule_a_broker_rows = parsed_rows
         return True
-    def identity(row):
-        return tuple(normalize_compare_key(getattr(row,key) or '') for key in
-                     ('name','address_line_1','address_line_2','city','state','zip_code'))
-    source_identities = {identity(row) for row in parsed_rows}
-    result.schedule_a_broker_rows = [*parsed_rows,*[row for row in result.schedule_a_broker_rows
-                                                  if identity(row) not in source_identities]]
+    raw['lincoln_compensation_reconciliation']['partial_local_rows'] = [row.model_dump(mode='json') for row in parsed_rows]
+    if not result.schedule_a_broker_rows:
+        result.schedule_a_broker_rows = parsed_rows
+    else:
+        identity = lambda row: tuple(normalize_compare_key(getattr(row,key) or '') for key in
+            ('name','address_line_1','address_line_2','city','state','zip_code'))
+        categories = lambda row: {key for key in ('commission_total','fee_total') if total([getattr(row,key)]) != 0}
+        retained = []
+        for row in result.schedule_a_broker_rows:
+            matches = [source for source in parsed_rows if identity(source)==identity(row)]
+            # A physical fee-only row cannot erase the commission carried by
+            # a combined provider row. Category-complete physical candidates
+            # remain visible, held for review when header totals disagree.
+            retained.append(matches[0] if len(matches)==1 and categories(row) <= categories(matches[0]) else row)
+        known = {identity(row) for row in retained}
+        result.schedule_a_broker_rows = retained + [row for row in parsed_rows if identity(row) not in known]
     for item in [*result.schedule_a_broker_rows,*[field for field in result.fields
                                                 if re.match(r'^3[a-e]\.',field.field_name)]]:
         if not any(v.validator=='incomplete_source_compensation_table' for v in item.validation_results):

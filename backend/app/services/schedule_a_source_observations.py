@@ -25,6 +25,7 @@ _BENEFITS = (
     ("long_term_disability", r"LTD(?=\b|-)"),
     ("long_term_disability", r"Long\s*-?\s*term(?:\s+disability|[^\n]{0,30}?\bdisability)"),
     ("temporary_disability", r"Temporary\s+disability"),
+    ("temporary_disability", r"Weekly\s+Income"),
     # Approved Schedule A benefit alias. Only an entire declared code is an
     # interpretation; a contract identifier or incidental DBL mention is not.
     ("temporary_disability", r"DBL(?=\s*$)"),
