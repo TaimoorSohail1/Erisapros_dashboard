@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -10,7 +11,7 @@ from fastapi import BackgroundTasks
 from app.config import get_settings
 from app.models import AuditLog, DocumentType, ExtractionJob, Filing, FilingStatus, ShareFileOAuthToken, ShareFileStatus
 from app.repositories import get_repository
-from app.services.extractor import extract_docx_text, extract_pdf_text_pages
+from app.services.extractor import extract_docx_text, extract_pdf_text_pages, extract_image_only_pdf_ocr_pages
 from app.services.intake_formats import is_supported_intake_file, normalize_intake_documents
 from app.services.filing_pipeline import process_extraction_batch
 from app.services.storage import StorageService
@@ -2960,6 +2961,7 @@ class ShareFileService:
                     "intake_note": intake.note,
                     "content_type": content_type,
                     "file_size": len(file_bytes),
+                    "source_sha256": hashlib.sha256(file_bytes).hexdigest(),
                     "document_type": document_type.value,
                     "s3_key": storage["key"],
                     "s3_bucket": storage.get("bucket"),
@@ -2980,7 +2982,13 @@ class ShareFileService:
                 package_documents.append(package_document)
                 processing_documents.append(
                     {
-                        "file_bytes": file_bytes,
+                        # The bytes are already durably stored. Queue only
+                        # references; bulk intake must not retain every PDF
+                        # while waiting for an extraction slot.
+                        "s3_key": storage['key'],
+                        "s3_bucket": storage.get('bucket'),
+                        "storage_path": storage.get('local_path'),
+                        "source_sha256": package_document['source_sha256'],
                         # The extractor keys off the file name, so it must be
                         # the resolved attachment/body/converted workbook.
                         "file_name": intake.file_name,
@@ -3739,9 +3747,8 @@ class ShareFileService:
         )
 
     def _should_content_sniff(self, file_name: str) -> bool:
-        # Only formats we can cheaply read text from locally. Spreadsheets,
-        # scans and emails are classified by name and folder instead of being
-        # downloaded during the scan.
+        # Content sniffing is deferred to new/changed files after folder walks.
+        # Image-only PDFs use bounded local OCR, never a provider upload.
         name = file_name.lower()
         return name.endswith((".pdf", ".doc", ".docx"))
 
@@ -3763,6 +3770,11 @@ class ShareFileService:
             if name.endswith(".pdf"):
                 pages = extract_pdf_text_pages(file_bytes)
                 text = "\n".join(page_text for _, page_text in pages[:2])
+                if not text.strip():
+                    pages = await asyncio.to_thread(
+                        extract_image_only_pdf_ocr_pages, file_bytes, classification_only=True,
+                    )
+                    text = "\n".join(page_text for _, page_text in pages)
             elif name.endswith((".doc", ".docx")):
                 text = extract_docx_text(file_bytes)
         except Exception:

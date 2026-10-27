@@ -6,6 +6,7 @@ matching digits is not proof: a relevant label must bind the exact value.
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote, quote_plus
 from app.models import SourceEvidence
 from app.services.schedule_a_customer_rules import DEFAULT_CODE_REASON
 
@@ -138,7 +139,11 @@ def completed_document_source_pages(raw,file_name):
     output,document=outputs[0],documents[0]
     if not isinstance(output,dict) or not isinstance(document,dict):
         return []
-    if (output.get('fileName')!=file_name or document.get('fileName')!=file_name
+    # X-Ray filenames may be transport-encoded while the completed document
+    # retains the literal upload name. Compare exact encodings of that name,
+    # never loosely decode or normalize different filenames into an alias.
+    names = {file_name, quote(file_name, safe=''), quote_plus(file_name, safe='')}
+    if (output.get('fileName') not in names or document.get('fileName')!=file_name
         or not output.get('sourceUrl') or output['sourceUrl']!=document.get('sourceUrl')):
         return []
     chunks=output.get('chunks') or []

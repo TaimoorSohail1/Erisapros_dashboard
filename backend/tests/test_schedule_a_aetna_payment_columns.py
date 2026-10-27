@@ -2,6 +2,51 @@ import pytest
 from app.services.extractor import extract_litera_aetna_schedule_a_broker_rows
 
 
+@pytest.mark.parametrize('heading', ['Part III', 'Part Ill', 'Part 111'])
+def test_blank_compensation_table_cannot_read_the_following_premium(heading):
+    from app.services.extractor import extract_schedule_a_fields_from_tables
+    fields = extract_schedule_a_fields_from_tables(f'''Aetna Life Insurance Co.
+2. Insurance Fees and commissions paid to agents and brokers:
+(b) Amount of commissions paid (c) & (d) Fees Paid
+Amount Purpose
+00987654-Medical
+TOTAL
+{heading} Welfare Benefit Contract Information
+9. Non experience rated contracts:
+(a) Total premiums or subscription charges paid to carrier $1250.50
+''', 3)
+    assert not any(field.field_name.startswith('3b.') for field in fields)
+
+
+def test_blank_part_i_does_not_accept_separate_disclosure_as_commission_or_zero_fees():
+    from app.models import NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerRow
+    from app.services.extractor import reconcile_aetna_part_i_compensation
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+    result = NormalizedExtractionResult(provider='External', fields=[
+        NormalizedExtractionField(field_name='3b. Amount of Commissions', value='240.12', confidence=.99),
+        NormalizedExtractionField(field_name='3c. Amount of Fees', value='0', confidence=.99),
+    ], schedule_a_broker_rows=[ScheduleABrokerRow(name='EXAMPLE AGENCY', commission_total='240.12', fee_total='0')],
+       raw={'provider_snapshot': {'commission': '240.12'}})
+    reconcile_aetna_part_i_compensation(result, [(3, '''Aetna Life Insurance Co.
+2. Insurance Fees and commissions paid to agents and brokers:
+(b) Amount of commissions paid (c) & (d) Fees Paid
+Amount Purpose
+00987654-Medical
+TOTAL
+Part Ill Welfare Benefit Contract Information
+Total premiums or subscription charges paid to carrier $1250.50
+'''), (5, 'Service provider disclosure Direct Compensation $240.12')])
+    resolve_schedule_a_result(result)
+    payments = [field for field in result.fields if field.field_name.startswith(('3b.', '3c.'))]
+    assert len(payments) == 2
+    assert all(field.value == '' and field.decision == 'REVIEW_REQUIRED' for field in payments)
+    assert result.schedule_a_broker_rows[0].commission_total is None
+    assert result.schedule_a_broker_rows[0].fee_total is None
+    assert result.schedule_a_broker_rows[0].decision == 'REVIEW_REQUIRED'
+    assert result.raw['provider_snapshot'] == {'commission': '240.12'}
+    assert result.raw['aetna_unprovided_part_i_compensation']['prior_broker_rows'][0]['commission_total'] == '240.12'
+
+
 @pytest.mark.parametrize("fee_text,expected_fee", [("", None), (" $0.00", "0.00"), (" $25.50 Service Fee", "25.50")])
 def test_aetna_reads_payment_columns_without_turning_blank_fees_into_zero(fee_text, expected_fee):
     pages = [(3, f"""AETNA LIFE INSURANCE COMPANY AND AFFILIATES

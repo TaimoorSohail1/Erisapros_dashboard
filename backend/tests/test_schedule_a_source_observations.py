@@ -5,6 +5,65 @@ from app.models import NormalizedExtractionResult, ScheduleABrokerRow
 from app.services.schedule_a_source_observations import attach_schedule_a_source_observations
 
 
+def test_multiline_flex_declared_benefits_stop_before_the_next_numbered_section():
+    result = collect_schedule_a_source_observations([(1, '''6. COVERAGE/BENEFITS PROVIDED: FLEX ADD,
+FLEX LIFE,
+LTD
+7. NON-PARTICIPATING CONTRACTS (PREMIUMS):
+Vision appears in an unrelated explanatory note.
+''')])
+    assert result['benefit_types'] == ['life', 'long_term_disability', 'other']
+    assert all(row['page'] == 1 for row in result['benefit_observations'])
+
+
+def test_coverage_table_cannot_consume_premium_amounts_from_later_sections():
+    result = collect_schedule_a_source_observations([(5, '''Benefits & Contract Type Reporting Period
+Dental 275 01/01/2025 12/31/2025
+9 Experience-rated contracts
+10 Nonexperience-rated contracts Coverage Amount
+LIFE 83,501
+Dental 54,821
+Long Term Disability 30,085
+AD&D 4,014
+a Total premiums or subscription charges paid to carrier . 172,421
+''')])
+    assert [row['persons_covered'] for row in result['coverage_counts']] == ['275']
+    assert [row['amount'] for row in result['premium_components']] == ['83501', '54821', '30085', '4014']
+
+
+@pytest.mark.parametrize('same_document, difference', [(True, None), (False, None),
+                         (True, 'amount'), (True, 'count'), (True, 'page'), (True, 'contract')])
+def test_component_contract_recovery_requires_current_document_and_exact_row(same_document, difference):
+    from app.models import NormalizedExtractionField
+    local = '''Annual Statement of Premiums and Producer Compensation
+Premium was applied as follows during the Plan/Policy Year -
+Policy Number Type of Benefit Premium Applied Approximate # of Lives Covered
+0012346 ADD-BAS $50.20 10
+Total $50.20
+'''
+    provider = local.replace('0012346', '001234G')
+    if difference == 'amount': provider = provider.replace('50.20', '51.20')
+    if difference == 'count': provider = provider.replace('50.20 10', '50.20 11')
+    if difference == 'contract': provider = provider.replace('001234G', '001234F')
+    raw = {
+        'ingest': {'ingest': {'processId': 'current'}},
+        'process': {'ingest': {'processId': 'current', 'status': 'complete', 'progress': {'complete': {
+            'documents': [{'fileName':'source.pdf','sourceUrl':'https://qa.invalid/current'}]}}}},
+        'outputs': [{'fileName': 'source.pdf' if same_document else 'another.pdf',
+            'sourceUrl':'https://qa.invalid/current','chunks':[{'pageNumbers':[3 if difference == 'page' else 2],'text':provider}]}],
+    }
+    result = NormalizedExtractionResult(provider='qa', raw=raw, fields=[
+        NormalizedExtractionField(field_name='1d. Contract/Policy Number', value='001234G')])
+    attach_schedule_a_source_observations(result, [(2,local)], source_file_name='source.pdf')
+    component = result.raw['source_review']['premium_components'][0]
+    recovered = same_document and difference is None
+    assert component['contract'] == ('001234G' if recovered else '0012346')
+    if recovered:
+        assert component['literal_contract'] == '0012346'
+        assert component['contract_resolution']['source_text']
+    assert result.fields[0].value == '001234G'
+
+
 def test_declared_life_coverage_does_not_select_additional_accidental_death_from_a_note():
     result = collect_schedule_a_source_observations([(1, """1) COVERAGE - LIFE INSURANCE
 When Life is checked, AD&D should also be checked on Form 5500.

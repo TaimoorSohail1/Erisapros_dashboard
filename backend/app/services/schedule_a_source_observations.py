@@ -25,6 +25,7 @@ _BENEFITS = (
     ("long_term_disability", r"LTD(?=\b|-)"),
     ("long_term_disability", r"Long\s*-?\s*term(?:\s+disability|[^\n]{0,30}?\bdisability)"),
     ("temporary_disability", r"Temporary\s+disability"),
+    ("temporary_disability", r"Weekly\s+Income"),
     # Approved Schedule A benefit alias. Only an entire declared code is an
     # interpretation; a contract identifier or incidental DBL mention is not.
     ("temporary_disability", r"DBL(?=\s*$)"),
@@ -33,9 +34,9 @@ _BENEFITS = (
     ("stop_loss", r"Stop\s*[- ]?\s*Loss"),
     ("health", r"Health(?:\s+Insurance)?"),
     ("dental", r"Dental"), ("vision", r"Vision(?:\s+Care)?"),
-    ("life", r"Life(?:\s+Insurance)?"), ("hmo", r"HMO(?:\s+contract)?"),
+    ("life", r"(?:FLEX\s+)?Life(?:\s+Insurance)?"), ("hmo", r"HMO(?:\s+contract)?"),
     ("ppo", r"PPO(?:\s+contract)?"), ("indemnity", r"Indemnity(?:\s+contract)?"),
-    ("other", r"(?:Other(?:\s*\(\s*specify\s*\))?|AD\s*&\s*D|ADD|Accidental\s+Death[^\n]{0,35})"),
+    ("other", r"(?:FLEX\s+)?(?:Other(?:\s*\(\s*specify\s*\))?|AD\s*&\s*D|ADD|Accidental\s+Death[^\n]{0,35})"),
 )
 
 
@@ -145,7 +146,8 @@ def collect_schedule_a_source_observations(page_texts):
         benefit_table = re.search(r"Benefits?\s*(?:&|and)[\s\S]{0,180}?\bContract\s+Type\b", text, re.I)
         if benefit_table:
             date = r"\d{1,2}/\d{1,2}/\d{4}"
-            body = re.split(r"(?im)^[ \t]*(?:[23][.)]\s+Insurance\b|Part\s+[IV]+\b)",
+            body = re.split(r"(?im)^[ \t]*(?:[23][.)]\s+Insurance\b|Part\s+[IV]+\b|"
+                            r"(?:9|10)[.)]?\s+(?:Non\s*[- ]?\s*)?Experience\s*[- ]?\s*rated\s+contracts\b)",
                             text[benefit_table.end():], maxsplit=1)[0]
             for match in re.finditer(r"(?m)^[ \t]*(?P<coverage>[A-Za-z][A-Za-z &/\-]{1,40}?)[ \t]+"
                                      r"(?P<count>[\d,]+)(?![\d,.])(?:[ \t]+(?P<period>[^\n]*))?[ \t]*$", body):
@@ -281,7 +283,25 @@ def collect_schedule_a_source_observations(page_texts):
         ):
             literal = re.split(r"Policy\s+or\s+Contract|Insurance\s+Carrier|Group\s+(?:ID|Number|Legal)", match.group(1), maxsplit=1, flags=re.I)[0].strip()
             if not re.search(r"\bshould\b|\bwould\b|\bfield\s+\d", literal, re.I):
-                add_benefit(page, literal, match.group(0))
+                source = match.group(0)
+                # Only a delimited declared list can continue onto a physical
+                # next line. A numbered section/blank line ends the list.
+                tail = text[match.end():]
+                while literal.rstrip().endswith((',', ';')):
+                    following = re.match(r"\r?\n[ \t]*([A-Za-z][^\r\n]*)", tail)
+                    if not following:
+                        break
+                    candidate = following.group(1).strip()
+                    parts = [part.strip() for part in re.split(r"[,;]", candidate) if part.strip()]
+                    if not parts or not all(_benefit(part)[0] and
+                            _benefit(part)[1].casefold() == part.casefold() for part in parts):
+                        break
+                    literal += '\n' + candidate
+                    source += following.group(0)
+                    tail = tail[following.end():]
+                for part in re.split(r"[,;]", literal):
+                    if part.strip():
+                        add_benefit(page, part.strip(), source)
         for match in re.finditer(r"Benefit\s+and\s+contract\s+type([^\n]*)\n\s*\([a-m]\)\s*([^\n]+)", text, re.I):
             if not re.search(r"check|box", match.group(1), re.I):
                 kind, literal = _benefit(match.group(2))
@@ -383,8 +403,44 @@ def _corroborate_broker_component_qualifiers(observations, raw, source_sha256, s
         row['source_text'] = candidate['source_text']
 
 
+def _corroborate_premium_component_contracts(observations, result, source_file_name):
+    """Repair one OCR glyph only with the exact current-document row/header."""
+    from app.services.schedule_a_final_evidence import completed_document_source_pages
+    if not source_file_name:
+        return
+    headers = {str(field.value).strip() for field in result.fields if field.field_name.startswith('1d.') and field.value}
+    if len(headers) != 1:
+        return
+    header = next(iter(headers))
+    if not any(row.get('contract') and row['contract'] != header
+               and len(row['contract']) == len(header) for row in observations['premium_components']):
+        return
+    provider_pages = completed_document_source_pages(result.raw, source_file_name)
+    candidates = collect_schedule_a_source_observations(provider_pages)['premium_components']
+    coverage_key = lambda value: re.sub(r'[^a-z0-9]', '', str(value or '').casefold())
+    for row in observations['premium_components']:
+        literal = row.get('contract')
+        if not literal or literal == header or len(literal) != len(header):
+            continue
+        if sum(a != b for a, b in zip(literal, header)) != 1:
+            continue
+        matches = [candidate for candidate in candidates
+            if candidate.get('page') == row.get('page')
+            and coverage_key(candidate.get('coverage')) == coverage_key(row.get('coverage'))
+            and candidate.get('persons_covered') == row.get('persons_covered')
+            and _decimal(candidate['amount']) == _decimal(row['amount'])]
+        contracts = {candidate.get('contract') for candidate in matches}
+        if contracts != {header}:
+            continue
+        row['literal_contract'] = literal
+        row['contract'] = header
+        row['contract_resolution'] = {'kind': 'CURRENT_DOCUMENT_ROW_AND_PRIMARY_CONTRACT_AGREE',
+            'page': row['page'], 'source_text': matches[0]['source_text'], 'source_file_name': source_file_name}
+
+
 def attach_schedule_a_source_observations(result, page_texts, *, source_sha256=None, source_file_name=None):
     observations = collect_schedule_a_source_observations(page_texts)
+    _corroborate_premium_component_contracts(observations, result, source_file_name)
     _corroborate_broker_component_qualifiers(observations, result.raw, source_sha256, source_file_name)
     _reconcile_cost_source_reads(observations, result.raw, page_texts, source_sha256, source_file_name)
     components=observations['premium_components']

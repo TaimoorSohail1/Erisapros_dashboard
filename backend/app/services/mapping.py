@@ -41,6 +41,11 @@ def map_extraction_to_rules(
         elif not field_rule:
             status = ExtractedFieldStatus.UNMAPPED
             status_reason = "No Field Rules alias matched this extracted field."
+        elif (source_document_type == DocumentType.PLAN_WORKSHEET and any(
+                item.validator == 'worksheet_participant_source_missing' and item.status == 'ERROR'
+                for item in field.validation_results)):
+            status = ExtractedFieldStatus.LOW_CONFIDENCE
+            status_reason = 'Worksheet participant count is present but unreadable; review required.'
         elif is_placeholder_value(field.value) or is_semantically_invalid_value(field, form_type):
             status = ExtractedFieldStatus.MISSING
             status_reason = (

@@ -3,6 +3,20 @@ import pytest
 from app.services.schedule_a_visual_benefits import checked_benefit_boxes
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_one_health_checkbox_cannot_also_select_parenthetical_other(reverse):
+    image = Image.new('L', (450, 200), 255)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((80, 80, 99, 99), outline=0, width=2)
+    draw.line((84, 89, 89, 95, 96, 84), fill=0, width=2)
+    words = [
+        {'text': 'Health', 'left': 110, 'top': 82, 'width': 45, 'height': 17},
+        {'text': '(other', 'left': 160, 'top': 82, 'width': 45, 'height': 17},
+    ]
+    values = checked_benefit_boxes(image, list(reversed(words)) if reverse else words)
+    assert [(item['benefit_type'], item['selected']) for item in values] == [('health', True)]
+
+
 @pytest.mark.parametrize('label,kind', [
     ('Temporary','temporary_disability'), ('Long-term','long_term_disability'),
     ('Supplemental','supplemental_unemployment'), ('Prescription','prescription_drug'),
