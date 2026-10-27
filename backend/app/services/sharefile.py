@@ -3810,6 +3810,16 @@ class ShareFileService:
         ]
         worksheet_score = sum(1 for marker in worksheet_markers if marker in normalized)
         schedule_score = sum(1 for marker in schedule_a_markers if marker in normalized)
+        # Some carrier reports have a complete tax-form title but use different
+        # wording for every coverage label. An entire title line is stronger
+        # evidence than an incidental body reference to "schedule a".
+        if re.search(
+            r"^[ \t]*insurance\s+(?:data|information)\s+for\s+schedule\s+a[ \t]*"
+            r"\([ \t]*form[ \t]+5500[ \t]*\)[ \t]*\r?$",
+            text or "",
+            re.IGNORECASE | re.MULTILINE,
+        ):
+            schedule_score = max(schedule_score, 2)
 
         if worksheet_score >= 2 and worksheet_score > schedule_score:
             return DocumentType.PLAN_WORKSHEET
