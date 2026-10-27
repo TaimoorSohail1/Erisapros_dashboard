@@ -639,7 +639,7 @@ def _split_form_5500_sponsor_address(
                 }
 
     locality_match = re.fullmatch(
-        r"(?P<street>.+),\s*(?P<city>[A-Za-z][A-Za-z .'-]*?)\s*,?\s+(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
+        r"(?P<street>.+),\s*(?P<city>[A-Za-z][A-Za-z .'-]*?)(?:\s*,\s*|\s+)(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
         proposed,
     )
     if locality_match:
@@ -685,6 +685,19 @@ def _split_form_5500_sponsor_address(
 
 
 def _split_form_5500_street_and_line_2(value: str) -> tuple[str, str]:
+    # A labelled office/unit can precede the numbered street. Move the entire
+    # comma-delimited prefix, preserving its name and identifier; normal FTW
+    # validation still rejects either line if it exceeds the contract limit.
+    prefix_match = re.fullmatch(
+        r"(?P<line2>[^,]*\b(?:OFFICE|SUITE|STE|UNIT|ROOM|RM|DEPT|BLDG|BUILDING)"
+        r"\s+(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]+),\s*"
+        r"(?P<street>\d+[A-Za-z]?(?:-\d+[A-Za-z]?)?\s+[^,]+)",
+        str(value or "").strip(" ,"),
+        flags=re.IGNORECASE,
+    )
+    if prefix_match:
+        return prefix_match.group("street").strip(), prefix_match.group("line2").strip()
+
     secondary = (
         r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
         r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
