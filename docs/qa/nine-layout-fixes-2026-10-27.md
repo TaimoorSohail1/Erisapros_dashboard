@@ -20,6 +20,7 @@ New evidence: `outputs/nine-layout-fixes-2026-10-27` in the primary checkout.
 - Uncertain provider submissions are propagated for both Schedule A and unreadable-worksheet OCR; neither route hides them as an empty successful extraction.
 - The installed SDK's hidden ingestion POST retries are disabled for this request. Offline transport tests reproduced three submissions after HTTP 500 before the correction, and one submission afterward for server, rate-limit and protocol failures.
 - Cancellation cannot downgrade an already completed extraction and cause duplicate dispatch on redelivery. Interrupted post-processing remains review-required.
+- The existing dashboard retry action cannot bypass a prior submission by creating a fresh job: active jobs are rejected, verified failed jobs resume with their original journal, and ambiguous, changed-source or changed-rule retries remain held. Its response shape and explicit re-extraction of completed work remain unchanged.
 - A premium component's one-glyph contract discrepancy is corrected only when a current-document provider row agrees on page, coverage, amount and persons, and its contract equals the primary contract. The original literal and corroborating evidence remain available.
 
 ## Verification so far
@@ -30,6 +31,8 @@ New evidence: `outputs/nine-layout-fixes-2026-10-27` in the primary checkout.
 - Exploratory captured-provider/OCR replay recovers all four Hartford recipients, signed components and the previously omitted bonus fees. It does not prove fresh-provider or live-write success.
 - First commit `34c1d25`: Linux image backend suite **1,676 passed; 13 skipped; 166 subtests passed**. Image source hashes and archive identity verified; frontend compatibility checks/build passed. QA compute is terminal and its exact temporary object grant was removed.
 - Follow-up full Windows suite: **1,707 passed; 2 skipped; 166 subtests passed**. Two additional ambiguous-submission cases then passed in the focused 77-test run. The follow-up image still requires Linux verification.
+- Head `f421cf2`: full Windows **1,716 passed / 2 skipped / 166 subtests**; Linux **1,705 passed / 13 skipped / 166 subtests**, plus frontend compatibility tests and build. Exact image/source identity verified. A private 27-PDF Linux wire replay uses real OCR and a 1,792 MiB container limit; the initial harness attempt was stopped for expectation-schema errors and corrected without altering the application image.
+- Subsequent API-path review reproduced six retry/journal bypass failures before correction. The corrected retry and recovery tests pass (24 focused checks); the final API follow-up requires its own full-suite/image verification.
 
 ## Required remaining work
 

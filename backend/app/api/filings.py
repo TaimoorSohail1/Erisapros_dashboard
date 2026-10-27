@@ -11,6 +11,7 @@ from app.models import (
     DocumentType,
     ExtractedFieldStatus,
     ExtractionJob,
+    ExtractionJobStatus,
     FieldEditRequest,
     Filing,
     FilingDetail,
@@ -34,10 +35,12 @@ from app.services.filing_pipeline import (
     harmonize_schedule_a_business_rule_fields,
     harmonize_schedule_a_reference_fields,
     process_package_extraction_job,
+    form_type_for_document,
     remap_existing_fields_with_source_context,
     summarize_mapped_fields,
 )
 from app.services.field_rule_admin import FieldRuleService
+from app.services.groundx_checkpoints import GroundXSubmissionUncertain, binding_key, job_checkpoint_journal, source_binding
 from app.services.field_rules import is_retired_field
 from app.services.ftwilliams_contract import (
     FTWPayloadValidationError,
@@ -212,6 +215,14 @@ async def retry_extraction(filing_id: str, background_tasks: BackgroundTasks):
     filing = await repo.get_filing(filing_id)
     if not filing:
         raise HTTPException(status_code=404, detail="Filing not found")
+    jobs = await repo.list_extraction_jobs(filing_id)
+    latest = max(jobs, key=lambda item: item.created_at) if jobs else None
+    if latest and latest.status in {
+        ExtractionJobStatus.QUEUED, ExtractionJobStatus.SENT_TO_GROUNDX,
+        ExtractionJobStatus.EXTRACTING, ExtractionJobStatus.RAW_EXTRACTION_SAVED,
+        ExtractionJobStatus.MAPPING,
+    }:
+        raise HTTPException(status_code=409, detail="An extraction job is already active. Verify its worker and provider process before retrying.")
     try:
         stored_documents = filing.package_documents or [
             {
@@ -235,7 +246,22 @@ async def retry_extraction(filing_id: str, background_tasks: BackgroundTasks):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    job = await repo.create_extraction_job(ExtractionJob(filing_id=filing.id))
+    if latest and latest.status == ExtractionJobStatus.FAILED and latest.attempts:
+        snapshot = await FieldRuleService(repo).published_snapshot()
+        try:
+            checkpoints, _ = await job_checkpoint_journal(repo, filing.id, latest.id, snapshot.version)
+        except GroundXSubmissionUncertain as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        current_bindings = {binding_key(source_binding(document['file_bytes'], document['file_name'],
+            form_type_for_document(document['document_type']), get_settings().groundx_bucket_id)) for document in documents}
+        if (not checkpoints or not set(checkpoints) <= current_bindings
+                or any(not entry.get('process_id') for entry in checkpoints.values())):
+            raise HTTPException(status_code=409, detail="The prior provider submission is unverified or its source changed. Verify the existing process before retrying; no new upload was queued.")
+        job = latest
+        await repo.update_extraction_job(job.id, {'status': ExtractionJobStatus.QUEUED,
+            'last_error': None, 'next_retry_at': None})
+    else:
+        job = await repo.create_extraction_job(ExtractionJob(filing_id=filing.id))
     await repo.update_filing(filing.id, {"status": FilingStatus.QUEUED, "error_message": None})
     await repo.add_audit(AuditLog(filing_id=filing.id, event="RETRY_QUEUED", message="Extraction retry queued from stored package."))
     background_tasks.add_task(process_package_extraction_job, filing.id, job.id, documents)
