@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from io import BytesIO, StringIO
+from itertools import islice
 import json
 import os
 import re
@@ -2711,7 +2712,7 @@ def extract_text_chunks_from_groundx_search(raw: Any) -> list[str]:
     return chunks
 
 
-def extract_pdf_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+def extract_pdf_text_pages(file_bytes: bytes, *, max_pages: int | None = None) -> list[tuple[int, str]]:
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -2722,9 +2723,11 @@ def extract_pdf_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     except Exception:
         return []
 
-    overrides = mapping_note_text_overrides(file_bytes)
+    overrides = (mapping_note_text_overrides(file_bytes) if max_pages is None else
+                 mapping_note_text_overrides(file_bytes, max_pages=max_pages))
     pages: list[tuple[int, str]] = []
-    for index, page in enumerate(reader.pages, start=1):
+    native_pages = reader.pages if max_pages is None else islice(reader.pages, max_pages)
+    for index, page in enumerate(native_pages, start=1):
         try:
             text = overrides[index][0] if index in overrides else (page.extract_text() or "")
         except Exception:
