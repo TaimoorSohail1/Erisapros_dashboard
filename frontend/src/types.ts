@@ -136,6 +136,13 @@ export interface ScheduleABrokerRow {
   fee_total?: string | null;
   source_page?: number | null;
   confidence?: number;
+  decision?: string;
+  validation_results?: {
+    validator: string;
+    status: string;
+    reason?: string;
+    normalized_value?: string | null;
+  }[];
 }
 
 export interface ScheduleABrokerMatch {

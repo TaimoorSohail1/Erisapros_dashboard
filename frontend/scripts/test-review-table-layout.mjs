@@ -43,7 +43,7 @@ assert.match(
 );
 assert.match(
   source,
-  /automation-decision-summary[\s\S]*?Review fields[\s\S]*?View fields needing attention/,
+  /automation-decision-summary[\s\S]*?Review decisions[\s\S]*?View decisions needing attention/,
   "Action Needed should use a compact decision summary with a direct review action.",
 );
 assert.doesNotMatch(
@@ -888,7 +888,7 @@ assert.match(
 );
 assert.match(
   source,
-  /brokerRowValidationIssues\(draft\)[\s\S]*?setShowDraftValidation\(true\)/,
+  /brokerRowValidationIssues\(draft, false\)[\s\S]*?setShowDraftValidation\(true\)/,
   "Broker rows must be validated before save.",
 );
 assert.match(

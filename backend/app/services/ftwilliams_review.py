@@ -13,10 +13,12 @@ import xml.etree.ElementTree as ET
 
 from app.config import get_settings
 from app.services.schedule_a_customer_rules import default_blank_organization_codes
+from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
 from app.models import (
     AuditLog,
     ClientFacingError,
     DocumentType,
+    ExtractionValidationResult,
     ExtractedField,
     ExtractedFieldStatus,
     FieldPriority,
@@ -1328,6 +1330,45 @@ class FTWilliamsReviewService:
         except FTWPayloadValidationError as exc:
             raise ValueError(self._friendly_broker_validation_error(exc)) from exc
 
+        zip_confirmed = False
+        if payload.action == "edited" and payload.edited_index is not None and filing.schedule_a_broker_rows:
+            # An indexed edit is one row, not permission to replace other rows
+            # or discard the source holds/evidence sent by an older client.
+            if len(rows) != len(filing.schedule_a_broker_rows):
+                raise ValueError("Broker rows changed. Refresh before editing a row.")
+            index = payload.edited_index
+            previous = filing.schedule_a_broker_rows[index]
+            row = rows[index]
+            rows = [row if i == index else saved.model_copy(deep=True)
+                    for i, saved in enumerate(filing.schedule_a_broker_rows)]
+            row.evidence = deepcopy(previous.evidence)
+            row.confidence = previous.confidence
+            for result in previous.validation_results:
+                if result.status == "ERROR" and result.validator in SOURCE_REVIEW_VALIDATORS:
+                    if result not in row.validation_results:
+                        row.validation_results.append(result.model_copy(deep=True))
+            zip_errors = [result for result in row.validation_results
+                          if result.validator == "source_zip_shape" and result.status == "ERROR"]
+            # Only an explicit row save with a complete ZIP can acknowledge this
+            # specific source warning. Never infer missing digits on ingestion.
+            zip_confirmed = bool(zip_errors and re.fullmatch(r"\d{5}(?:-?\d{4})?", (row.zip_code or "").strip()))
+            if zip_confirmed:
+                for result in zip_errors:
+                    result.status = "WARN"
+                    result.reason += " Resolved by explicit reviewer ZIP confirmation."
+                    result.normalized_value = row.zip_code
+                row.validation_results = [v for v in row.validation_results if v.validator != "reviewer_zip_confirmation"]
+                row.validation_results.append(ExtractionValidationResult(
+                    validator="reviewer_zip_confirmation", status="PASS",
+                    reason="Reviewer confirmed the ZIP; original printed source evidence is retained.",
+                    normalized_value=row.zip_code,
+                ))
+            if any(result.status == "ERROR" for result in row.validation_results):
+                row.decision = "REVIEW_REQUIRED"
+            elif previous.decision == "REVIEW_REQUIRED":
+                # A manual correction is not successful automatic extraction.
+                row.decision = "UNASSESSED" if zip_confirmed else "REVIEW_REQUIRED"
+
         await repo.update_filing(filing_id, {"schedule_a_broker_rows": rows, "error_message": None})
         review = await repo.get_ftwilliams_review(filing_id)
         if review:
@@ -1341,7 +1382,8 @@ class FTWilliamsReviewService:
                 filing_id=filing_id,
                 event="FTWILLIAMS_SCHEDULE_A_BROKER_ROWS_UPDATED",
                 message="Reviewer edited the Schedule A broker rows used for the FT Williams update.",
-                details={"broker_row_count": len(rows), "edited_index": payload.edited_index},
+                details={"broker_row_count": len(rows), "edited_index": payload.edited_index,
+                         "reviewer_zip_confirmed": zip_confirmed},
             )
         )
         return updated_review
@@ -1519,6 +1561,11 @@ class FTWilliamsReviewService:
                 match.extracted_index
                 for match in review.schedule_a_broker_matches
                 if not match.resolved
+            }
+            | {
+                index for index, row in enumerate(review.schedule_a_broker_rows)
+                if row.decision == "REVIEW_REQUIRED"
+                or any(result.status == "ERROR" for result in row.validation_results)
             }
         )
         unresolved_plan_year = int(bool(review.plan_year_conflict and not review.plan_year_resolution))

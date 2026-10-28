@@ -597,7 +597,10 @@ export function FilingReviewPage() {
     setSectionFilter("ALL");
     setFormFilter("ALL");
     setContractTypeFilter("ALL");
-    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    const target = planYearConflictRequired ? "plan-year-conflict"
+      : actionRequiredRows.length ? "filing-review-table"
+      : brokerActionRequiredCount ? "schedule-a-broker-rows" : "filing-review-table";
+    window.requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function editAllFields() {
@@ -1164,10 +1167,7 @@ export function FilingReviewPage() {
                   onOpenBringForward={openFtwBringForward}
                   onConfirmBringForward={() => setShowBringForwardConfirm(true)}
                   onOpenTechnical={() => setShowTechnicalDrawer(true)}
-                  onResolve={() => {
-                    setActiveTab("NEEDS_DECISION");
-                    window.requestAnimationFrame(() => document.getElementById("filing-review-table")?.scrollIntoView({ behavior: "smooth", block: "start" }));
-                  }}
+                  onResolve={reviewBlockingFields}
                   onRetry={() => prepareFtw(true)}
                 />
               ) : (
@@ -1208,9 +1208,29 @@ export function FilingReviewPage() {
                 <AlertTriangle size={18} aria-hidden="true" />
                 <div>
                   <strong>{queryStatus?.title || (planYearConflictRequired ? "Confirm the correct plan-year dates" : ftwReview?.ftw_editable === false ? "FT Williams filing is not editable" : `${validationIssueCount} value${validationIssueCount === 1 ? " needs" : "s need"} correction`)}</strong>
-                  <span>{validationIssueCount ? "Correct or deselect affected values. Other selected changes can still be sent." : "Selected changes require a valid, editable FT Williams target."}</span>
+                  <span>{planYearConflictRequired ? "The worksheet and FT Williams have different plan-year dates. Choose the correct period below."
+                    : validationIssueCount ? "Review the affected fields and broker rows before continuing." : "Selected changes require a valid, editable FT Williams target."}</span>
                 </div>
                 <button className="button secondary" type="button" onClick={() => setShowReviewStatus(true)}>Review status details</button>
+              </section>
+            ) : null}
+
+            {planYearConflictRequired && ftwReview?.plan_year_conflict ? (
+              <PlanYearConflictPanel
+                busy={reviewInteractionBusy}
+                conflict={ftwReview.plan_year_conflict}
+                onResolve={resolvePlanYearConflict}
+              />
+            ) : null}
+
+            {brokerActionRequiredCount > 0 ? (
+              <section className="review-issue-summary" role="status" aria-label="Broker review required">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <strong>{brokerActionRequiredCount} broker row{brokerActionRequiredCount === 1 ? " needs" : "s need"} review</strong>
+                  <span>{brokerValidationIssues[0]?.message || "Confirm the broker match below."}</span>
+                </div>
+                <button className="button secondary" type="button" onClick={() => document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review broker rows</button>
               </section>
             ) : null}
 
@@ -1232,14 +1252,6 @@ export function FilingReviewPage() {
                 planUrl={ftwPlanUrl}
                 review={ftwReview}
                 onRefresh={() => prepareFtw(true)}
-              />
-            ) : null}
-
-            {planYearConflictRequired && ftwReview?.plan_year_conflict ? (
-              <PlanYearConflictPanel
-                busy={reviewInteractionBusy}
-                conflict={ftwReview.plan_year_conflict}
-                onResolve={resolvePlanYearConflict}
               />
             ) : null}
 
@@ -1591,7 +1603,7 @@ function AutomationWorkflowNotice({
         <span className={`badge ${presentation.tone}`}>{presentation.label}</span>
         <div className="automation-workflow-copy">
           <strong>{status === "ACTION_NEEDED" && decisionCount
-            ? `${decisionCount} field${decisionCount === 1 ? "" : "s"} need your decision`
+            ? `${decisionCount} decision${decisionCount === 1 ? " needs" : "s need"} your attention`
             : presentation.title}</strong>
           <p>
             {resolvedFieldException || waitingForManualSend
@@ -1599,7 +1611,7 @@ function AutomationWorkflowNotice({
                 ? "All field decisions are complete. Review the changes below, then send them to FT Williams."
                 : "All field decisions are complete. Approve the filing to continue."
               : showReasonList
-              ? "Automation paused safely. Review the highlighted fields to continue."
+              ? "Automation paused safely. Review the pending decisions below to continue."
               : reasons[0] || "No manual action is required while the automated workflow is running."}
           </p>
         </div>
@@ -1608,10 +1620,10 @@ function AutomationWorkflowNotice({
         {showReasonList && compactReasons.length ? (
           <div className="automation-decision-summary">
             <button className="button automation-review-fields" type="button" onClick={onReview}>
-              <ListChecks size={16} /> Review fields
+              <ListChecks size={16} /> Review decisions
             </button>
             <details>
-              <summary>View fields needing attention <span>{decisionCount}</span><ChevronDown size={15} /></summary>
+              <summary>View decisions needing attention <span>{decisionCount}</span><ChevronDown size={15} /></summary>
               <ul className="automation-reason-list">
                 {compactReasons.map((reason) => <li key={reason}>{reason}</li>)}
               </ul>
@@ -3909,7 +3921,7 @@ function PlanYearConflictPanel({
   const ftwFormDates = `${conflict.ftw_form_begin || "Missing"} – ${conflict.ftw_form_end || "Missing"}`;
   const ftwScheduleDates = `${conflict.ftw_schedule_a_begin || "Missing"} – ${conflict.ftw_schedule_a_end || "Missing"}`;
   return (
-    <section className="plan-year-conflict-panel" aria-label="Plan year conflict">
+    <section className="plan-year-conflict-panel" id="plan-year-conflict" aria-label="Plan year conflict">
       <div className="plan-year-conflict-copy">
         <AlertTriangle size={18} />
         <div>
@@ -3934,8 +3946,15 @@ function PlanYearConflictPanel({
   );
 }
 
-function brokerRowValidationIssues(row: ScheduleABrokerRow): string[] {
+function brokerRowValidationIssues(row: ScheduleABrokerRow, includeSourceReview = true): string[] {
   const issues: string[] = [];
+  if (includeSourceReview) {
+    issues.push(...(row.validation_results || []).filter((result) => result.status === "ERROR")
+      .map((result) => result.reason || `Source validation needs review (${result.validator}).`));
+    if (row.decision === "REVIEW_REQUIRED" && !issues.length) {
+      issues.push("The source broker information needs review. Confirm the supporting source before continuing.");
+    }
+  }
   if (!String(row.name || "").trim()) issues.push("Broker / person is required.");
   const organizationCode = String(row.organization_code || "").trim();
   if (!organizationCode) issues.push("Organization code is required.");
@@ -3966,8 +3985,7 @@ function brokerRowValidationIssues(row: ScheduleABrokerRow): string[] {
     }
   }
   if (String(row.zip_code || "").trim()) {
-    const zipDigits = String(row.zip_code).replace(/\D/g, "");
-    if (zipDigits.length !== 5 && zipDigits.length !== 9) issues.push("ZIP code must contain 5 or 9 digits.");
+    if (!/^\d{5}(?:-?\d{4})?$/.test(String(row.zip_code).trim())) issues.push("ZIP code must contain 5 or 9 digits.");
   }
   return issues;
 }
@@ -4007,7 +4025,7 @@ function ScheduleABrokerRowsPanel({
       organization_code: blankCode ? "3" : row.organization_code,
       organization_code_defaulted: blankCode || row.organization_code_defaulted };
     setDraft(nextDraft);
-    setShowDraftValidation(brokerRowValidationIssues(nextDraft).length > 0);
+    setShowDraftValidation(brokerRowValidationIssues(nextDraft, false).length > 0);
   }
 
   function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
@@ -4022,7 +4040,7 @@ function ScheduleABrokerRowsPanel({
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (editingIndex === null || !draft) return;
-    if (brokerRowValidationIssues(draft).length) {
+    if (brokerRowValidationIssues(draft, false).length) {
       setShowDraftValidation(true);
       return;
     }
@@ -4072,8 +4090,8 @@ function ScheduleABrokerRowsPanel({
               const match = matches.find((candidate) => candidate.extracted_index === index);
               const isEditing = editingIndex === index && Boolean(draft);
               const displayRow = editingIndex === index && draft ? draft : row;
-              const rowIssues = brokerRowValidationIssues(displayRow);
-              const draftIssues = isEditing && draft ? brokerRowValidationIssues(draft) : [];
+              const rowIssues = brokerRowValidationIssues(row);
+              const draftIssues = isEditing && draft ? brokerRowValidationIssues(draft, false) : [];
               return (
               <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
               <tr className={isEditing ? "broker-row-editing" : undefined}>
