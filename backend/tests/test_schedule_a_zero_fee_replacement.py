@@ -1,4 +1,4 @@
-"""Approved zero-without-purpose representation must not retain an old fee."""
+"""Approved missing-value defaults retain explicit zeros and a Commission purpose."""
 import xml.etree.ElementTree as ET
 from decimal import Decimal
 
@@ -23,15 +23,15 @@ def broker(fees="0.00", purpose=None):
 
 
 @pytest.mark.parametrize("old_fee,old_purpose", [("0", ""), ("45.50", "OLD SERVICE")])
-def test_reviewed_zero_fee_clears_old_amount_and_purpose_without_changing_source(old_fee, old_purpose):
+def test_reviewed_zero_fee_defaults_purpose_without_changing_source(old_fee, old_purpose):
     row = broker()
     existing = {"Broker": [{"Name1": row.name, "CommPdAmt1": "100",
                            "FeesPdAmt1": old_fee, "FeesPdText1": old_purpose, "Code1": "6"}]}
     values = schedule_a_broker_update_values([row])
     rows = schedule_a_broker_multipart_rows({}, query_subparts=existing, overrides=values)
     assert rows[0]["CommPdAmtXX"] == "125.25"
-    assert "FeesPdAmtXX" not in rows[0]
-    assert "FeesPdTextXX" not in rows[0]
+    assert rows[0]["FeesPdAmtXX"] == "0"
+    assert rows[0]["FeesPdTextXX"] == "COMMISSION"
     assert row.fee_total == "0.00"
 
 
@@ -59,14 +59,16 @@ def test_unknown_fee_is_not_treated_as_a_printed_zero(fee):
         schedule_a_broker_update_values([broker(fee)])
 
 
-def test_preservation_guard_requires_explicit_selected_zero_fee_clear():
+def test_preservation_guard_keeps_default_fields_and_protects_unselected_values():
     record = {"ftw_seq_no": "1", "query_results": {"InsCarrierName": "SAMPLE"},
               "query_subparts": {"Broker": [{"Name1": "SAMPLE ADVISORY LLC",
                   "Code1": "6", "CommPdAmt1": "100", "FeesPdAmt1": "45.50",
                   "FeesPdText1": "OLD SERVICE"}]}}
     xml = build_schedule_a_records_update_xml([record], "1", [], schedule_a_broker_rows=[broker()])
-    assert schedule_a_replacement_data_gaps([record], xml, matched_ftw_seq_no="1")
+    assert not schedule_a_replacement_data_gaps([record], xml, matched_ftw_seq_no="1")
     assert not schedule_a_replacement_data_gaps(
         [record], xml, matched_ftw_seq_no="1", schedule_a_broker_rows=[broker()])
-    # A restore or sibling is never granted this selected-record allowance.
-    assert schedule_a_replacement_data_gaps([record], xml, schedule_a_broker_rows=[broker()])
+    # This same changed payload cannot be used for an unselected sibling.
+    assert schedule_a_replacement_data_gaps([record], xml, matched_ftw_seq_no="2", schedule_a_broker_rows=[broker()])
+    damaged = xml.replace("<FeesPdTextXX>COMMISSION</FeesPdTextXX>", "")
+    assert schedule_a_replacement_data_gaps([record], damaged, matched_ftw_seq_no="1")

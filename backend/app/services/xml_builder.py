@@ -343,7 +343,10 @@ def _document_xml(
         broker_rows = schedule_a_broker_multipart_rows(
             current_values or {},
             overrides=broker_overrides,
+            preserve_zero_compensation=bool(schedule_a_broker_rows or field_broker_overrides),
         )
+        if schedule_a_broker_rows or field_broker_overrides:
+            _default_proposed_multipart_brokers(broker_rows)
         if schedule_a_broker_rows is not None:
             broker_rows = _without_superseded_unpaid_broker_placeholders(
                 broker_rows,
@@ -414,7 +417,10 @@ def _schedule_a_record_document_xml(
         current_values,
         query_subparts=query_subparts,
         overrides=broker_overrides,
+        preserve_zero_compensation=bool(derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides)),
     )
+    if derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides):
+        _default_proposed_multipart_brokers(broker_rows)
     if schedule_a_broker_rows is not None:
         broker_rows = _without_superseded_unpaid_broker_placeholders(
             broker_rows,
@@ -832,6 +838,7 @@ def schedule_a_broker_multipart_rows(
     *,
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
     overrides: dict[str, str] | None = None,
+    preserve_zero_compensation: bool = False,
 ) -> list[dict[str, str]]:
     source_rows = normalize_schedule_a_broker_subparts(
         list((query_subparts or {}).get("Broker") or [])
@@ -897,8 +904,18 @@ def schedule_a_broker_multipart_rows(
     return [
         row
         for row in rows
-        if row and not _schedule_a_broker_has_explicit_zero_compensation(row)
+        if row and (preserve_zero_compensation or not _schedule_a_broker_has_explicit_zero_compensation(row))
     ]
+
+
+def _default_proposed_multipart_brokers(rows: list[dict[str, str]]) -> None:
+    """Selected outbound rows only. Never manufacture read-back evidence."""
+    for row in rows:
+        if not str(row.get("NameXX") or "").strip():
+            continue
+        for tag, value in (("CommPdAmtXX", "0"), ("FeesPdAmtXX", "0"), ("FeesPdTextXX", "COMMISSION")):
+            if not str(row.get(tag) or "").strip():
+                row[tag] = value
 
 
 def _schedule_a_broker_has_explicit_zero_compensation(row: dict[str, str]) -> bool:
@@ -1024,20 +1041,9 @@ def schedule_a_replacement_data_gaps(
                 if actual_fields[tag] != str(expected_fields[tag] or "").strip():
                     gaps.append(f"sequence {sequence} changed field {tag}")
 
-        # Only explicit, validated clearing decisions for the selected source
-        # rows may remove these fee leaves. No allowance is made for siblings,
-        # restores, unknown amounts, or an arbitrary missing XML field.
-        approved_fee_clears = {}
-        if selected_sequence and sequence == selected_sequence and schedule_a_broker_rows:
-            approved_fee_clears = {
-                tag: value
-                for tag, value in schedule_a_broker_update_values(schedule_a_broker_rows).items()
-                if value == "" and re.fullmatch(r"FeesPd(?:Amt|Text)\d+", tag)
-            }
         expected_brokers = schedule_a_broker_multipart_rows(
             current_values,
             query_subparts=record.get("query_subparts") or {},
-            overrides=approved_fee_clears,
         )
         if (
             str(current_values.get("OverrideCommissionsAndFees") or "").strip() == "1"
@@ -1196,6 +1202,15 @@ def _schedule_a_broker_row_update_values(
     zip_code = _broker_row_attr(row, "zip_code")
     commission = _broker_row_attr(row, "commission_total")
     fees = _broker_row_attr(row, "fee_total")
+    for key, value, parts in (("commission_total", commission, "commission_rows"), ("fee_total", fees, "fee_rows")):
+        components = row.get(parts, []) if isinstance(row, dict) else getattr(row, parts, [])
+        if require_complete and not value and components:
+            raise FTWPayloadValidationError([FTWFieldValidationIssue(
+                tag=f"{'CommPdAmt' if key == 'commission_total' else 'FeesPdAmt'}{index}", value="",
+                reason="A supplied payment component needs a verified total; missing does not mean zero.",
+            )])
+    commission = commission or "0"
+    fees = fees or "0"
     code = _broker_row_attr(row, "organization_code") or "3"
     purpose = _broker_row_purpose(row, commission, fees)
 
@@ -1241,16 +1256,6 @@ def _schedule_a_broker_row_update_values(
         )
         if str(text or "").strip():
             normalized[tag] = str(text)
-    # A printed zero without a fee purpose has an approved blank FTW wire
-    # representation. Keep explicit clearing overrides so a matched vendor
-    # row cannot retain an old fee or purpose during replace-style merging.
-    # The normalized source row is never changed, and unselected/restore rows
-    # do not pass through this extracted-row adapter.
-    fee_tag = f"FeesPdAmt{index}"
-    if normalized.get(fee_tag) is not None and not purpose:
-        if Decimal(normalized[fee_tag]) == 0:
-            normalized[fee_tag] = ""
-            normalized[f"FeesPdText{index}"] = ""
     return normalized
 
 
@@ -1344,22 +1349,10 @@ def _broker_row_attr(row: object, key: str) -> str:
 
 
 def _broker_row_purpose(row: object, commission: str, fees: str) -> str:
-    # This tag describes fees/other commissions, not base commissions. Do not
-    # manufacture a fee purpose when the fee amount is blank or explicitly zero.
-    if _money_to_float(fees)==0:
-        return ""
     explicit = _broker_row_attr(row, "purpose")
     if explicit:
         return explicit.upper()
-    commission_amount = _money_to_float(commission)
-    fee_amount = _money_to_float(fees)
-    if commission_amount > 0 and fee_amount > 0:
-        return "COMMISSIONS AND FEES"
-    if commission_amount > 0:
-        return "COMMISSIONS"
-    if fee_amount > 0:
-        return "FEES"
-    return _first_money_row_purpose(row, "commission_rows") or _first_money_row_purpose(row, "fee_rows")
+    return _first_money_row_purpose(row, "fee_rows") or "COMMISSION"
 
 
 def _first_money_row_purpose(row: object, key: str) -> str:

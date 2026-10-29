@@ -1,5 +1,6 @@
 """Customer-authorized defaults for proposed recipients, never FTW snapshots."""
 from decimal import Decimal, InvalidOperation
+import json
 import re
 
 from app.models import (
@@ -13,6 +14,104 @@ from app.models import (
 
 DEFAULT_CODE_REASON = "Customer rule: Defaulted to 3 because organizational code was blank."
 DEFAULT_NAIC_REASON = "Customer-approved rule: Use 00000 when the carrier NAIC is missing or N/A. This is a default, not a printed identifier."
+MISSING_BROKER_DEFAULT_VALIDATOR = "customer_missing_broker_values"
+MISSING_FIELD_DEFAULTS = {
+    "1e.": ("1e. Persons Covered (End of Policy Year)", "0"),
+    "3b.": ("3b. Amount of Commissions", "0"),
+    "3c.": ("3c. Amount of Fees", "0"),
+    "3d.": ("3d. Purpose", "Commission"),
+}
+
+
+def _missing_default_reason(prefix: str) -> str:
+    label, value = MISSING_FIELD_DEFAULTS[prefix]
+    return f"Customer-approved missing-value default: {label} = {value}. This is a configured default, not printed PDF data."
+
+
+def is_approved_missing_field_default(field: NormalizedExtractionField) -> bool:
+    for prefix, (_, value) in MISSING_FIELD_DEFAULTS.items():
+        if field.field_name.strip().lower().startswith(prefix) and field.value == value:
+            return any(e.provider == "Customer configured default" and e.source_text == _missing_default_reason(prefix)
+                       for e in field.evidence)
+    return False
+
+
+def default_blank_broker_values(rows: list[ScheduleABrokerRow]) -> list[ScheduleABrokerRow]:
+    """Default absent proposed values, never an unreadable/held value or a component total."""
+    normalized = []
+    for original in rows:
+        row = original.model_copy(deep=True)
+        if (row.name.strip() and row.decision != "REVIEW_REQUIRED"
+                and not any(v.status == "ERROR" for v in row.validation_results)):
+            defaults = {}
+            for key, parts in (("commission_total", row.commission_rows), ("fee_total", row.fee_rows)):
+                if not str(getattr(row, key) or "").strip() and not parts:
+                    setattr(row, key, "0")
+                    defaults[key] = "0"
+            if (not str(row.purpose or "").strip()
+                    and not any(str(p.purpose or "").strip() for p in row.fee_rows)):
+                row.purpose = "Commission"
+                defaults["purpose"] = "Commission"
+            if defaults:
+                row.validation_results.append(ExtractionValidationResult(
+                    validator=MISSING_BROKER_DEFAULT_VALIDATOR, status="PASS",
+                    reason="Customer-approved missing broker defaults; original source evidence and confidence retained.",
+                    normalized_value=json.dumps(defaults, sort_keys=True),
+                ))
+        normalized.append(row)
+    return normalized
+
+
+def broker_value_was_defaulted(row: ScheduleABrokerRow, key: str) -> bool:
+    for result in row.validation_results:
+        if result.validator == MISSING_BROKER_DEFAULT_VALIDATOR:
+            try:
+                if key in json.loads(result.normalized_value or "{}"):return True
+            except (ValueError, TypeError):
+                continue
+    return False
+
+
+def apply_missing_schedule_a_field_defaults(result: NormalizedExtractionResult) -> None:
+    if any(word in result.provider.casefold() for word in ("manual review", "failed", "failure")):
+        return
+    header = any(f.field_name.strip().lower().startswith(("1a.", "1d.")) and str(f.value or "").strip() for f in result.fields)
+    brokers = [r for r in result.schedule_a_broker_rows if r.name.strip()]
+    broker_context = bool(brokers) or any(f.field_name.strip().lower().startswith("3a.") and str(f.value or "").strip() for f in result.fields)
+    for prefix, (label, value) in MISSING_FIELD_DEFAULTS.items():
+        if not (header if prefix == "1e." else broker_context):
+            continue
+        matches = [f for f in result.fields if f.field_name.strip().lower().startswith(prefix)]
+        field = matches[0] if matches else None
+        if any(str(f.value or "").strip() or f.decision == "REVIEW_REQUIRED"
+                or any(v.status == "ERROR" for v in f.validation_results)
+                or any(str(c or "").strip() for c in f.candidate_values)
+                or re.search(r"\b(?:unreadable|illegible|uncertain|unknown)\b", f.source_text or "", re.I) for f in matches):
+            continue
+        if prefix != "1e.":
+            if any(r.decision == "REVIEW_REQUIRED" or any(v.status == "ERROR" for v in r.validation_results) for r in brokers):
+                continue
+            key = {"3b.": "commission_total", "3c.": "fee_total", "3d.": "purpose"}[prefix]
+            if prefix in {"3b.", "3c."}:
+                parts_key = "commission_rows" if prefix == "3b." else "fee_rows"
+                if any(not str(getattr(r, key) or "").strip() and getattr(r, parts_key) for r in brokers):
+                    continue
+            elif any(not str(r.purpose or "").strip() and any(str(p.purpose or "").strip() for p in r.fee_rows) for r in brokers):
+                continue
+            if any(str(getattr(r, key) or "").strip() not in {"", value} for r in brokers):
+                continue
+        if field is None:
+            field = NormalizedExtractionField(field_name=label)
+            result.fields.append(field)
+        reason = _missing_default_reason(prefix)
+        field.value, field.candidate_values, field.confidence = value, [value], 1.0
+        field.source_text = reason
+        field.evidence.append(SourceEvidence(provider="Customer configured default", source_text=reason))
+        raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}
+        entry = {"field": field.field_name, "value": value, "reason": reason}
+        if entry not in raw.setdefault("customer_defaults", []):
+            raw["customer_defaults"].append(entry)
+        result.raw = raw
 
 
 def published_static_default(rule):
@@ -143,6 +242,7 @@ def exclude_zero_compensation_brokers(
     for row in rows:
         if (row.decision != 'REVIEW_REQUIRED'
                 and not any(v.status == 'ERROR' for v in row.validation_results)
+                and not any(v.validator == MISSING_BROKER_DEFAULT_VALIDATOR for v in row.validation_results)
                 and _explicit_zero(row.commission_total) and _explicit_zero(row.fee_total)):
             evidence.append(
                 {
@@ -169,6 +269,8 @@ def apply_customer_defaults(result: NormalizedExtractionResult) -> None:
         raw.setdefault("customer_rules", []).extend(customer_rule_evidence)
         result.raw = raw
     result.schedule_a_broker_rows = default_blank_organization_codes(result.schedule_a_broker_rows)
+    result.schedule_a_broker_rows = default_blank_broker_values(result.schedule_a_broker_rows)
+    apply_missing_schedule_a_field_defaults(result)
     code_field = next((field for field in result.fields if field.field_name.strip().lower().startswith("3e.")), None)
     if code_field is None:
         code_field = NormalizedExtractionField(field_name="3e. Organizational Code", value="", confidence=0)
