@@ -12,7 +12,7 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
-from app.services.schedule_a_customer_rules import default_blank_organization_codes
+from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values
 from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
 from app.models import (
     AuditLog,
@@ -3997,6 +3997,7 @@ class FTWilliamsReviewService:
             actual_brokers = schedule_a_broker_multipart_rows(
                 actual,
                 query_subparts=actual_subparts,
+                preserve_zero_compensation=True,
             )
             if len(actual_brokers) != len(expected_brokers):
                 mismatches.append(
@@ -5075,7 +5076,7 @@ class FTWilliamsReviewService:
         # Extraction already removes parser duplicates. Rows reaching the review
         # workspace are reviewer-controlled records, so preserve their order and
         # exact values even when two recipients share the same name/address.
-        return default_blank_organization_codes(normalized)
+        return default_blank_broker_values(default_blank_organization_codes(normalized))
 
     def _resolve_schedule_a_brokers(
         self,

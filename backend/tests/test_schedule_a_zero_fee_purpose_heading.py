@@ -1,4 +1,4 @@
-"""A commission heading must not populate the separate fee-purpose field."""
+"""Preserve supplied purposes; cleaned non-purpose artifacts use the new default."""
 import unittest
 
 from app.models import NormalizedExtractionField, NormalizedExtractionResult, ScheduleABrokerMoneyRow, ScheduleABrokerRow, SourceEvidence
@@ -18,14 +18,14 @@ class ZeroFeePurposeTests(unittest.TestCase):
     def resolve(self,row):
         return resolve_schedule_a_result(NormalizedExtractionResult(provider='test',fields=[],schedule_a_broker_rows=[row])).schedule_a_broker_rows[0]
 
-    def test_commission_heading_not_a_zero_fee_purpose(self):
+    def test_supplied_commission_purpose_is_preserved_with_zero_fees(self):
         before=self.row()
         actual=self.resolve(before.model_copy(deep=True))
-        self.assertIsNone(actual.purpose)
+        self.assertEqual(actual.purpose,before.purpose)
         self.assertEqual(actual.commission_rows,before.commission_rows)
         self.assertEqual(actual.commission_total,'3.43')
         self.assertEqual(actual.fee_total,'0')
-        self.assertTrue(any(v.validator=='zero_fee_purpose_not_applicable' for v in actual.validation_results))
+        self.assertFalse(any(v.status=='ERROR' and v.validator=='zero_fee_purpose_not_applicable' for v in actual.validation_results))
 
     def test_zero_fee_placeholder_or_section_heading_is_not_a_recipient_purpose(self):
         for purpose in ['N/A', 'Not Applicable', 'Insurance fees and commission information',
@@ -33,10 +33,10 @@ class ZeroFeePurposeTests(unittest.TestCase):
             with self.subTest(purpose=purpose):
                 before=self.row(purpose=purpose)
                 actual=self.resolve(before.model_copy(deep=True))
-                self.assertIsNone(actual.purpose)
+                self.assertEqual(actual.purpose,'Commission')
                 self.assertEqual(actual.commission_rows,before.commission_rows)
                 self.assertEqual(actual.fee_total,'0')
-                self.assertTrue(any(v.validator=='zero_fee_purpose_not_applicable' for v in actual.validation_results))
+                self.assertTrue(any(v.validator=='customer_missing_broker_values' for v in actual.validation_results))
                 self.assertEqual(actual.evidence,before.evidence)
 
     def test_nonpurpose_normalization_records_the_original_literal_when_no_provider_trace_exists(self):
@@ -90,8 +90,8 @@ class ZeroFeePurposeTests(unittest.TestCase):
                 ('3d. Purpose', 'Commissions')]]
         result = resolve_schedule_a_result(NormalizedExtractionResult(provider='test', fields=fields,
             schedule_a_broker_rows=[row], raw={'original_provider_purpose':'Compensation'}))
-        self.assertIsNone(result.schedule_a_broker_rows[0].purpose)
-        self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+        self.assertEqual(result.schedule_a_broker_rows[0].purpose,'Commission')
+        self.assertTrue(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
         self.assertEqual(result.raw['not_applicable_broker_purposes'][0]['observed_value'], 'Compensation')
         self.assertEqual(result.schedule_a_broker_rows[0].evidence[0].source_text, source)
 
@@ -120,7 +120,7 @@ class ZeroFeePurposeTests(unittest.TestCase):
     def test_single_period_placeholder_does_not_populate_a_zero_fee_purpose(self):
         before = self.row(purpose='.')
         actual = self.resolve(before.model_copy(deep=True))
-        self.assertIsNone(actual.purpose)
+        self.assertEqual(actual.purpose,'Commission')
         self.assertEqual(actual.commission_rows, before.commission_rows)
         self.assertEqual(actual.evidence, before.evidence)
 
@@ -133,11 +133,11 @@ class ZeroFeePurposeTests(unittest.TestCase):
             raw={'extraction_stages':[{'stage':'provider_candidates','fields':[f.model_dump(mode='json') for f in fields]}]})
         return resolve_schedule_a_result(result)
 
-    def test_zero_fee_summary_does_not_present_commission_heading_as_a_fee_purpose(self):
+    def test_zero_fee_summary_keeps_the_supplied_commission_purpose(self):
         result=self.summary()
-        self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+        self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='COMMISSIONS' for f in result.fields))
         self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],'COMMISSIONS')
-        self.assertTrue(any(r['field']=='3d. Purpose' for r in result.raw['not_applicable_fields']))
+        self.assertFalse(any(r['field']=='3d. Purpose' for r in result.raw.get('not_applicable_fields',[])))
 
     def test_nonzero_or_offsetting_fees_keep_summary_purpose(self):
         for fee,rows in [('20',[ScheduleABrokerMoneyRow(amount='20',purpose='Consulting')]),
@@ -150,19 +150,19 @@ class ZeroFeePurposeTests(unittest.TestCase):
         for heading in ['BASE COMMISSIONS', 'Base Commission', 'Base Commissions Paid']:
             with self.subTest(heading=heading):
                 result=self.summary(purpose=heading,broker_purpose=None)
-                self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+                self.assertTrue(any(f.field_name.startswith('3d.') and f.value==heading for f in result.fields))
                 self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],heading)
                 self.assertEqual(result.schedule_a_broker_rows[0].commission_total,'3.43')
 
-    def test_sales_commission_category_does_not_block_zero_fee_purpose_cleanup(self):
+    def test_supplied_sales_commission_purposes_survive_zero_fees(self):
         for category in ['Sales commission paid','Sales Commission','Sales Commissions','BASE COMMISSIONS']:
             with self.subTest(category=category):
                 result=self.summary(purpose='Commissions',broker_purpose=category)
-                self.assertIsNone(result.schedule_a_broker_rows[0].purpose)
-                self.assertFalse(any(f.field_name.startswith('3d.') and f.value for f in result.fields))
+                self.assertEqual(result.schedule_a_broker_rows[0].purpose,category)
+                self.assertTrue(any(f.field_name.startswith('3d.') and f.value=='Commissions' for f in result.fields))
                 self.assertEqual(result.schedule_a_broker_rows[0].commission_total,'3.43')
                 self.assertEqual(result.schedule_a_broker_rows[0].fee_total,'0')
-                self.assertEqual(result.raw['not_applicable_broker_purposes'][0]['observed_value'],category)
+                self.assertFalse(result.raw.get('not_applicable_broker_purposes'))
                 self.assertEqual(result.raw['extraction_stages'][0]['fields'][2]['value'],'Commissions')
 
     def test_base_commissions_summary_is_not_erased_if_real_fees_exist(self):

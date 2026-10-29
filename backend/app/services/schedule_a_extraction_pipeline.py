@@ -31,8 +31,9 @@ from app.services.schedule_a_broker_validation import (
 from app.services.schedule_a_customer_rules import (
     DEFAULT_CODE_REASON, DEFAULT_NAIC_REASON, apply_customer_defaults, apply_published_static_defaults,
     published_static_default, published_static_default_reason,
+    is_approved_missing_field_default, MISSING_BROKER_DEFAULT_VALIDATOR, broker_value_was_defaulted,
 )
-from app.services.schedule_a_fee_purpose import is_commission_category, is_compensation_table_heading
+from app.services.schedule_a_fee_purpose import is_compensation_table_heading
 
 
 REVIEW_CONFIDENCE_CEILING = 0.5
@@ -158,7 +159,6 @@ def resolve_schedule_a_result(
     _validate_date_order(result.fields, error_fields)
     cross_field_errors = _validate_cross_section_duplicates(result.fields)
     cross_field_errors.extend(_validate_broker_rows(result, result.schedule_a_broker_rows))
-    _omit_inapplicable_zero_fee_summary(result)
     semantic_resolution = (
         result.raw.get("semantic_resolution", {})
         if isinstance(result.raw, dict)
@@ -323,6 +323,9 @@ def _validate_source_evidence(
     field: NormalizedExtractionField,
     *, rules=None,
 ) -> ExtractionValidationResult:
+    if is_approved_missing_field_default(field):
+        return ExtractionValidationResult(validator="source_evidence", status="PASS",
+            reason="Value follows the customer-approved missing-value default; no printed value or OCR confidence is claimed.")
     from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
     if field.field_name.strip().lower().startswith("1e.") and has_confirmed_rule(field, "count_from_6a2"):
         from app.services.schedule_a_confirmed_clarifications import WORKSHEET_PROVIDER
@@ -716,8 +719,8 @@ def _validate_contract(value: str) -> ExtractionValidationResult:
 
 def _validate_persons(value: str) -> ExtractionValidationResult:
     clean = value.replace(",", "").strip()
-    valid = bool(re.fullmatch(r"\d+", clean)) and 0 < int(clean) <= 5_000_000
-    return _result("persons_covered", valid, "Valid persons-covered count." if valid else "Expected a positive whole-number persons-covered count.", clean)
+    valid = bool(re.fullmatch(r"\d+", clean)) and 0 <= int(clean) <= 5_000_000
+    return _result("persons_covered", valid, "Valid persons-covered count." if valid else "Expected a nonnegative whole-number persons-covered count.", clean)
 
 
 def _validate_integer(value: str) -> ExtractionValidationResult:
@@ -875,38 +878,6 @@ def _has_explicit_experience_evidence(field: NormalizedExtractionField) -> bool:
     )
 
 
-def _omit_inapplicable_zero_fee_summary(result: NormalizedExtractionResult) -> None:
-    """Keep a derived commission category out of the separate fee-purpose scalar.
-
-    Raw candidates/stages remain unchanged. Missing fees, real fee purposes,
-    offsetting fee components and unresolved validation errors are not zeros
-    without a purpose and must retain their existing review path.
-    """
-    fees = [f for f in result.fields if f.field_name.strip().lower().startswith('3c.')]
-    rows = result.schedule_a_broker_rows
-    if (not fees or not rows or any(parse_decimal(f.value) != Decimal('0')
-            or any(v.status == 'ERROR' for v in f.validation_results) for f in fees)):
-        return
-    if any(parse_decimal(row.fee_total) != Decimal('0') or row.fee_rows or row.purpose for row in rows):
-        return
-    if not any((parse_decimal(row.commission_total) or Decimal('0')) > 0 for row in rows):
-        return
-    omitted = [f for f in result.fields if f.field_name.strip().lower().startswith('3d.')
-        and is_commission_category(f.value)
-        and not any(v.status == 'ERROR' for v in f.validation_results)]
-    if not omitted:
-        return
-    raw = dict(result.raw) if isinstance(result.raw,dict) else {'provider_raw':result.raw}
-    observations = list(raw.get('not_applicable_fields') or [])
-    for field in omitted:
-        observations.append({'field':field.field_name,'observed_value':field.value,'page':field.page,
-            'rule':'zero_fees_without_fee_purpose',
-            'reason':'Confirmed zero fees with no fee components have no fee purpose. The commission category remains in raw stages and commission components.'})
-    raw['not_applicable_fields'] = observations
-    result.raw = raw
-    result.fields = [f for f in result.fields if not any(f is omitted_field for omitted_field in omitted)]
-
-
 def _validate_broker_rows(
     result: NormalizedExtractionResult,
     rows: list[ScheduleABrokerRow],
@@ -925,16 +896,15 @@ def _validate_broker_rows(
                 )
             )
         validations: list[ExtractionValidationResult] = [
-            v for v in row.validation_results if v.status == "ERROR" and v.validator in SOURCE_REVIEW_VALIDATORS
+            v for v in row.validation_results if (v.status == "ERROR" and v.validator in SOURCE_REVIEW_VALIDATORS)
+            or v.validator == MISSING_BROKER_DEFAULT_VALIDATOR
         ]
-        # The row-level purpose maps to the fee-purpose field. A provider can
-        # put a printed commission heading here even after source reconciliation
-        # has established zero fees. Keep commission categories/components in
-        # commission_rows and the original provider trace, not in fee purpose.
-        # Missing fees and zero-net nonempty fee components are not equivalent
-        # to an established zero fee with no fee components.
+        # Proven non-purpose artifacts keep their original trace and use the
+        # new customer default. Supplied recipient purposes are preserved, and
+        # a defaulted zero must not masquerade as an explicit printed zero.
         if (parse_decimal(row.fee_total) == Decimal("0") and not row.fee_rows
-                and row.commission_rows and (is_commission_category(row.purpose) or re.fullmatch(
+                and not broker_value_was_defaulted(row, "fee_total")
+                and row.commission_rows and (re.fullmatch(
                     r"(?:N\s*/\s*A|Not\s+Applicable|\.|"
                     r"Insurance\s+fees\s+and\s+commissions?\s+information\s*:?)",
                     str(row.purpose or "").strip(), flags=re.IGNORECASE)
@@ -946,10 +916,10 @@ def _validate_broker_rows(
                 'observed_value': observed_purpose, 'rule': 'zero_fees_without_fee_purpose',
             })
             result.raw = raw
-            row.purpose = None
+            row.purpose = "Commission"
             validations.append(ExtractionValidationResult(
-                validator="zero_fee_purpose_not_applicable", status="PASS",
-                reason=f'Non-purpose category, placeholder or report heading "{observed_purpose}" is retained in the provider trace. Zero fees with no fee components have no fee purpose.',
+                validator=MISSING_BROKER_DEFAULT_VALIDATOR, status="PASS",
+                reason=f'Non-purpose placeholder or report heading "{observed_purpose}" is retained in the trace. Missing purpose follows the approved Commission default.',
             ))
         row_pages = [row.source_page, *(item.page for item in row.evidence)]
         row_source_texts = [item.source_text for item in row.evidence]
