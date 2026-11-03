@@ -476,7 +476,12 @@ def _schedule_a_record_document_xml(
         f"      <Year>{escape(str(year or '[Year]'))}</Year>",
     ]
     xml_lines.extend(f"      <{tag}>{escape(value)}</{tag}>" for tag, value in sorted(values.items()))
-    xml_lines.extend(_schedule_a_subpart_xml_lines(broker_rows))
+    if replace_broker_roster and not broker_rows:
+        # Keep an explicit empty roster in the sent intent so read-back must
+        # prove that the vendor removed every previous recipient.
+        xml_lines.append("      <DOLSubPartData />")
+    else:
+        xml_lines.extend(_schedule_a_subpart_xml_lines(broker_rows))
     joined = "\n".join(xml_lines)
     return f"""    <DOLScheduleAData>
 {joined}

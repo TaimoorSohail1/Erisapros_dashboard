@@ -3912,6 +3912,8 @@ class FTWilliamsReviewService:
             }
             subparts: dict[str, list[dict[str, str]]] = {}
             for container in element.findall("./DOLSubPartData"):
+                if data_tag == "DOLScheduleAData" and len(container) == 0:
+                    subparts["Broker"] = []
                 for record in list(container):
                     row = {
                         child.tag: str(child.text or "").strip()
@@ -4017,7 +4019,7 @@ class FTWilliamsReviewService:
                     }
                 )
         expected_brokers = list((expected.get("__subparts__") or {}).get("Broker") or [])
-        if form_type == FormType.SCHEDULE_A and expected_brokers:
+        if form_type == FormType.SCHEDULE_A and "Broker" in (expected.get("__subparts__") or {}):
             actual_brokers = schedule_a_broker_multipart_rows(
                 actual,
                 query_subparts=actual_subparts,
