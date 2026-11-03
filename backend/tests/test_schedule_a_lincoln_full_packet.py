@@ -117,7 +117,10 @@ Part III - Welfare Benefit Contract Information
         assert all(row.name==broker_name for row in rows)
         commission = next(row for row in rows if row.address_line_1 == '77 INVENTED CIR')
         fee = next(row for row in rows if row.address_line_1 == '77 INVENTED CIRCLE')
-        assert commission.purpose is None, 'A fee purpose on another row is not this recipient\'s printed purpose.'
+        assert commission.purpose in (None, 'Commission'), 'Never copy another recipient\'s printed fee purpose.'
+        if commission.purpose == 'Commission':
+            from app.services.schedule_a_customer_rules import broker_value_was_defaulted
+            assert broker_value_was_defaulted(commission, 'purpose'), 'A derived purpose must retain its default provenance.'
         assert Decimal(commission.commission_total) == Decimal('125.25')
         assert Decimal(fee.fee_total) == Decimal('15.50' if table_state=='conflicting_total' else '25.50')
         assert fee.purpose == 'Annual Service Payment'
