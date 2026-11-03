@@ -964,6 +964,9 @@ def _combined_compensation_ambiguities(
         return []
     for line in document.lines:
         page_text = document.pages.get(line.page, "")
+        from app.services.schedule_a_vsp_rules import approved_vsp_commission_label
+        if approved_vsp_commission_label(page_text):
+            continue
         if not re.search(r"commissions?\s*/\s*fees?", page_text, re.IGNORECASE):
             continue
         context = document.context(line, radius=3)

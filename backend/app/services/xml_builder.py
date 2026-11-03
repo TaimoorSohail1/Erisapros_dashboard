@@ -18,7 +18,7 @@ from app.services.ftwilliams_tags import (
     resolve_ftw_update_tag,
     values_meaningfully_different,
 )
-from app.services.schedule_a_broker_matching import normalize_schedule_a_broker_subparts
+from app.services.schedule_a_broker_matching import normalize_schedule_a_broker_subparts, broker_identity_is_confirmed
 from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
 
 
@@ -224,6 +224,7 @@ def build_schedule_a_records_update_xml(
     ftw_plan_id: str | None = None,
     schedule_a_broker_rows: list | None = None,
     form_5500_current_values: dict[str, str] | None = None,
+    replace_broker_roster: bool = False,
 ) -> str:
     settings = get_settings()
     key_id = settings.ftwlink_key_id or "[FTWLINK_KEY_ID]"
@@ -248,7 +249,18 @@ def build_schedule_a_records_update_xml(
             ftw_plan_id=ftw_plan_id,
             schedule_a_broker_rows=schedule_a_broker_rows if selected_record else None,
             query_subparts=record.get("query_subparts") or {},
-            derive_payment_indicator=selected_record,
+            replace_broker_roster=selected_record and replace_broker_roster,
+            # A selected policy/count update is not a compensation decision.
+            # Only recompute the no-payment checkbox when payment data is part
+            # of this send; preserve even a blank/absent existing checkbox otherwise.
+            derive_payment_indicator=selected_record and (
+                any(row is not None for row in schedule_a_broker_rows or []) or replace_broker_roster
+                or any(
+                    tag in {"InsBrokerCommTotAmt", "InsBrokerFeesTotAmt", "OverrideCommissionsAndFees"}
+                    or _schedule_a_broker_tag_index(tag) is not None
+                    for tag in update_values_for_form(update_fields, FormType.SCHEDULE_A)
+                )
+            ),
         )
         if document_xml:
             documents.append(document_xml)
@@ -358,8 +370,6 @@ def _document_xml(
             overrides=broker_overrides,
             preserve_zero_compensation=bool(schedule_a_broker_rows or field_broker_overrides),
         )
-        if schedule_a_broker_rows or field_broker_overrides:
-            _default_proposed_multipart_brokers(broker_rows)
         if schedule_a_broker_rows is not None:
             broker_rows = _without_superseded_unpaid_broker_placeholders(
                 broker_rows,
@@ -402,8 +412,14 @@ def _schedule_a_record_document_xml(
     schedule_a_broker_rows: list | None = None,
     query_subparts: dict[str, list[dict[str, str]]] | None = None,
     derive_payment_indicator: bool = True,
+    replace_broker_roster: bool = False,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
+    if replace_broker_roster:
+        # These are vendor-calculated totals, not writable source amounts.
+        # Replacing the roster must not echo stale prior-recipient totals.
+        values.pop("InsBrokerCommTotAmt", None)
+        values.pop("InsBrokerFeesTotAmt", None)
     field_broker_overrides = {
         tag: value
         for tag, value in values.items()
@@ -427,14 +443,12 @@ def _schedule_a_record_document_xml(
     # replace the reviewer's final values for the selected broker fields.
     broker_overrides.update(field_broker_overrides)
     broker_rows = schedule_a_broker_multipart_rows(
-        current_values,
-        query_subparts=query_subparts,
+        {} if replace_broker_roster else current_values,
+        query_subparts={} if replace_broker_roster else query_subparts,
         overrides=broker_overrides,
-        preserve_zero_compensation=bool(derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides)),
+        preserve_zero_compensation=not derive_payment_indicator or bool(schedule_a_broker_rows or field_broker_overrides),
     )
-    if derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides):
-        _default_proposed_multipart_brokers(broker_rows)
-    if schedule_a_broker_rows is not None:
+    if any(row is not None for row in schedule_a_broker_rows or []) or replace_broker_roster:
         broker_rows = _without_superseded_unpaid_broker_placeholders(
             broker_rows,
             schedule_a_broker_rows,
@@ -897,19 +911,6 @@ def schedule_a_broker_multipart_rows(
             multipart[_schedule_a_broker_multipart_tag(tag)] = text
         rows.append(multipart)
 
-    # Exact duplicate FT Williams subparts are data corruption, not distinct
-    # business recipients. Collapse them before applying positional overrides
-    # so a safe replay repairs totals instead of multiplying compensation.
-    unique_rows: list[dict[str, str]] = []
-    seen_rows: set[tuple[tuple[str, str], ...]] = set()
-    for row in rows:
-        signature = tuple(sorted((str(tag), str(value).strip()) for tag, value in row.items()))
-        if signature in seen_rows:
-            continue
-        seen_rows.add(signature)
-        unique_rows.append(row)
-    rows = unique_rows
-
     for tag, value in (overrides or {}).items():
         parsed = _schedule_a_broker_tag_index(tag)
         if not parsed:
@@ -922,15 +923,32 @@ def schedule_a_broker_multipart_rows(
         if text:
             rows[index - 1][multipart_tag] = text
         else:
-            rows[index - 1].pop(multipart_tag, None)
+            # An explicit blank is a reviewed clear, unlike an omitted field.
+            rows[index - 1][multipart_tag] = ""
     # Only recipients explicitly proposed for this update get the new purpose
     # rule. Current/sibling/restore snapshots must remain byte-value faithful.
     touched = {parsed[1] for tag in (overrides or {}) if (parsed := _schedule_a_broker_tag_index(tag))}
     for index in touched:
         row = rows[index - 1]
+        _default_proposed_multipart_brokers([row])
         purpose = canonical_broker_payment_purpose(row.get("CommPdAmtXX"), row.get("FeesPdAmtXX"))
         if purpose and row.get("NameXX"):
             row["FeesPdTextXX"] = purpose
+    # Exact duplicate FT Williams subparts are data corruption, not distinct
+    # business recipients. Collapse them after applying positional overrides
+    # so duplicate removal cannot shift a selected destination index.
+    unique_rows: list[dict[str, str]] = []
+    seen_rows: set[tuple[tuple[str, str], ...]] = set()
+    for index, row in enumerate(rows, start=1):
+        if touched and index not in touched and _schedule_a_broker_has_explicit_zero_compensation(row):
+            continue
+        signature = tuple(sorted((str(tag), str(value).strip()) for tag, value in row.items()))
+        if signature in seen_rows:
+            continue
+        seen_rows.add(signature)
+        unique_rows.append(row)
+    rows = unique_rows
+
     return [
         row
         for row in rows
@@ -1023,6 +1041,7 @@ def schedule_a_replacement_data_gaps(
     matched_ftw_seq_no: str | None = None,
     require_exact_payment_controls: bool = False,
     schedule_a_broker_rows: list | None = None,
+    replace_broker_roster: bool = False,
 ) -> list[str]:
     if not xml:
         return ["Schedule A replacement XML is missing"]
@@ -1059,6 +1078,9 @@ def schedule_a_replacement_data_gaps(
                 if str(indicator.text or "").strip() != expected_indicator:
                     gaps.append(f"sequence {sequence} changed field {indicator_tag}")
         expected_fields = current_values_for_schedule_a_update(current_values)
+        if replace_broker_roster and selected_sequence and sequence == selected_sequence:
+            expected_fields.pop("InsBrokerCommTotAmt", None)
+            expected_fields.pop("InsBrokerFeesTotAmt", None)
         actual_fields = {
             child.tag: str(child.text or "").strip()
             for child in list(document)
@@ -1075,6 +1097,10 @@ def schedule_a_replacement_data_gaps(
             current_values,
             query_subparts=record.get("query_subparts") or {},
         )
+        if replace_broker_roster and selected_sequence and sequence == selected_sequence:
+            expected_brokers = schedule_a_broker_multipart_rows({},
+                overrides=schedule_a_broker_update_values(schedule_a_broker_rows or []),
+                preserve_zero_compensation=True)
         if (
             str(current_values.get("OverrideCommissionsAndFees") or "").strip() == "1"
             and str(actual_fields.get("OverrideCommissionsAndFees") or "").strip() == "1"
@@ -1195,7 +1221,6 @@ def _schedule_a_subpart_xml_lines(rows: list[dict[str, str]]) -> list[str]:
         lines.extend(
             f"          <{tag}>{escape(value)}</{tag}>"
             for tag, value in sorted(row.items())
-            if str(value or "").strip()
         )
         lines.append("        </Broker>")
     lines.append("      </DOLSubPartData>")
@@ -1277,6 +1302,7 @@ def _schedule_a_broker_row_update_values(
         f"Code{index}": code,
     }
     normalized: dict[str, str] = {}
+    identity_confirmed = not isinstance(row, dict) and broker_identity_is_confirmed(row)
     for tag, value in values.items():
         text = normalize_ftw_update_value(
             FormType.SCHEDULE_A,
@@ -1284,7 +1310,8 @@ def _schedule_a_broker_row_update_values(
             value,
             uppercase_text=True,
         )
-        if str(text or "").strip():
+        if str(text or "").strip() or (identity_confirmed and re.fullmatch(
+            r"(?:AddressLine1|AddressLine2|City|State|ZipCode)\d+", tag)):
             normalized[tag] = str(text)
     return normalized
 

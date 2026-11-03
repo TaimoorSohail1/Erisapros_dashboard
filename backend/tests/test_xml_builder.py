@@ -160,7 +160,7 @@ class XmlBuilderTests(unittest.TestCase):
             ftw_customer_id="customer",
             ftw_plan_id="plan",
             year="2025",
-            schedule_a_broker_rows=[],
+            schedule_a_broker_rows=[None, {"name":"PAID BROKER", "commission_total":"125", "fee_total":"0", "organization_code":"3"}],
         )
 
         brokers = ET.fromstring(xml).findall(".//DOLSubPartData/Broker")
@@ -1285,6 +1285,7 @@ class XmlBuilderTests(unittest.TestCase):
             customer_id="04-2103905",
             plan_id="04-2103905502",
             year="2025",
+            schedule_a_broker_rows=[], replace_broker_roster=True,  # Confirmed empty roster, not an unrelated scalar send.
         )
 
         self.assertIn("<OverrideCommissionsAndFees>1</OverrideCommissionsAndFees>", xml)
@@ -1316,6 +1317,7 @@ class XmlBuilderTests(unittest.TestCase):
             customer_id="04-2103905",
             plan_id="04-2103905502",
             year="2025",
+            schedule_a_broker_rows=[{"name":"Paid Broker", "commission_total":"250", "fee_total":"0", "organization_code":"3"}],
         )
 
         self.assertIn("<OverrideCommissionsAndFees>0</OverrideCommissionsAndFees>", xml)

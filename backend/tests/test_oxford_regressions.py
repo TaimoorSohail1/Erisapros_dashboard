@@ -102,7 +102,8 @@ def test_absent_scalar_code_does_not_override_an_explicit_recipient_code():
     result = NormalizedExtractionResult(provider="EyeLevel", fields=[],
         schedule_a_broker_rows=[ScheduleABrokerRow(name="Recipient", organization_code="6")])
     apply_customer_defaults(result)
-    assert result.fields[0].value == "6"
+    code = next(field for field in result.fields if field.field_name.startswith("3e."))
+    assert code.value == "6"
     assert result.schedule_a_broker_rows[0].organization_code == "6"
 
 

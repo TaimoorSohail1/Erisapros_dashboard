@@ -19,10 +19,10 @@ BOSTON MA 02110
     assert [(row.name,row.commission_total) for row in rows]==[
         ('FIRST BENEFITS AGENCY LLC','125.25'),('SECOND BENEFITS AGENCY LLC','100.00'),
     ]
-    assert all(row.decision=='REVIEW_REQUIRED' for row in rows)
+    assert all(row.decision!='REVIEW_REQUIRED' for row in rows)
     fields={field.field_name.split('.')[0]:field for field in extract_vsp_schedule_a_fields([(1,source)])}
     assert fields['3b'].value=='225.25'
-    assert fields['3b'].decision=='REVIEW_REQUIRED'
+    assert fields['3b'].decision!='REVIEW_REQUIRED'
 
 
 @pytest.mark.parametrize('compact', [False, True])

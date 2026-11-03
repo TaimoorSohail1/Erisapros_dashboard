@@ -31,15 +31,17 @@ def test_reviewed_zero_fee_defaults_purpose_without_changing_source(old_fee, old
     rows = schedule_a_broker_multipart_rows({}, query_subparts=existing, overrides=values)
     assert rows[0]["CommPdAmtXX"] == "125.25"
     assert rows[0]["FeesPdAmtXX"] == "0"
-    assert rows[0]["FeesPdTextXX"] == "COMMISSION"
+    assert rows[0]["FeesPdTextXX"] == "COMMISSIONS"
     assert row.fee_total == "0.00"
 
 
 @pytest.mark.parametrize("fee", ["25.50", "-25.50"])
-def test_nonzero_fees_keep_exact_amount_and_purpose(fee):
-    values = schedule_a_broker_update_values([broker(fee, "Annual service")])
+def test_nonzero_fees_keep_exact_amount_and_send_payment_categories(fee):
+    row = broker(fee, "Annual service")
+    values = schedule_a_broker_update_values([row])
     assert Decimal(values["FeesPdAmt1"]) == Decimal(fee)
-    assert values["FeesPdText1"] == "ANNUAL SERVICE"
+    assert values["FeesPdText1"] == "COMMISSIONS AND FEES"
+    assert row.purpose == "Annual service"
 
 
 def test_unselected_and_restore_payloads_keep_vendor_zero_representation():
@@ -70,5 +72,6 @@ def test_preservation_guard_keeps_default_fields_and_protects_unselected_values(
         [record], xml, matched_ftw_seq_no="1", schedule_a_broker_rows=[broker()])
     # This same changed payload cannot be used for an unselected sibling.
     assert schedule_a_replacement_data_gaps([record], xml, matched_ftw_seq_no="2", schedule_a_broker_rows=[broker()])
-    damaged = xml.replace("<FeesPdTextXX>COMMISSION</FeesPdTextXX>", "")
+    damaged = xml.replace("<FeesPdTextXX>COMMISSIONS</FeesPdTextXX>", "")
+    assert damaged != xml, "The negative control must actually remove the sent purpose."
     assert schedule_a_replacement_data_gaps([record], damaged, matched_ftw_seq_no="1")

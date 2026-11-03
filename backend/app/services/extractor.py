@@ -536,6 +536,22 @@ class ExtractionService:
         if file_name.lower().endswith('.pdf'):
             from app.services.schedule_a_native_conflicts import apply_native_provider_conflict_holds
             apply_native_provider_conflict_holds(final_result,file_bytes)
+            from app.services.schedule_a_broker_roster import attest_source_broker_roster
+            roster_raw = final_result.raw if isinstance(final_result.raw, dict) else {}
+            if final_result.schedule_a_broker_rows and any(isinstance(stage, dict)
+                and stage.get("stage") == "structured_provider_normalized" and stage.get("broker_rows")
+                for stage in roster_raw.get("extraction_stages", [])):
+                try:
+                    attest_source_broker_roster(final_result,
+                        extract_schedule_a_broker_rows_from_document(file_bytes, file_name),
+                        hashlib.sha256(file_bytes).hexdigest())
+                except Exception as exc:
+                    # Optional deletion permission must fail closed without
+                    # preventing the ordinary extraction/review flow.
+                    roster_raw["broker_roster_attestation"] = {"status": "NOT_ESTABLISHED",
+                        "reason": "Independent source read failed; existing brokers must be preserved.",
+                        "error_type": type(exc).__name__}
+                    final_result.raw = roster_raw
         capture_extraction_stage(final_result, "final_normalized")
         return final_result
 
@@ -10280,7 +10296,8 @@ def extract_vsp_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
             ))
         for match in matches:
             amount = money_value(match.group("amount"))
-            combined = bool(re.search(r"commissions?\s*/\s*fees?", '\n'.join(value for _,value in page_texts), re.I))
+            from app.services.schedule_a_vsp_rules import approved_vsp_commission_label
+            combined = bool(re.search(r"commissions?\s*/\s*fees?", text, re.I)) and not approved_vsp_commission_label(text)
             source_text = (
                 ("VSP combined commissions/fees (unclassified): " if combined else "VSP commission broker row: ")
                 + f"{clean_extracted_value(match.group('name'))}; {amount}."

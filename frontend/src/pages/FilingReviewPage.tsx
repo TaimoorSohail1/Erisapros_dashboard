@@ -25,6 +25,7 @@ import type { FormEvent, ReactNode } from "react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
 import { ftwWorkflowStep } from "../ftwWorkflowStep";
+import { brokerMatchChoices, type BrokerMatchChoice } from "../brokerMatchChoices";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   ApiRequestError,
@@ -1351,6 +1352,7 @@ export function FilingReviewPage() {
             {activeTab === "ALL" || (activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0) ? (
               <ScheduleABrokerRowsPanel
                 busy={ftwBusy}
+                choices={brokerMatchChoices(ftwReview)}
                 matches={scheduleABrokerMatches}
                 onConfirm={saveScheduleABrokerMatch}
                 onSaveRows={saveScheduleABrokerRows}
@@ -3992,18 +3994,21 @@ function brokerRowValidationIssues(row: ScheduleABrokerRow, includeSourceReview 
 
 function ScheduleABrokerRowsPanel({
   busy,
+  choices,
   matches,
   onConfirm,
   onSaveRows,
   rows,
 }: {
   busy: boolean;
+  choices: BrokerMatchChoice[];
   matches: ScheduleABrokerMatch[];
   onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   rows: ScheduleABrokerRow[];
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [changingMatchIndex, setChangingMatchIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
   const [showDraftValidation, setShowDraftValidation] = useState(false);
   const editorRef = useRef<HTMLTableRowElement | null>(null);
@@ -4109,14 +4114,17 @@ function ScheduleABrokerRowsPanel({
                 <td data-label="Fees">{displayRow.fee_total || "0"}</td>
                 <td data-label="Purpose">{formatBrokerPurpose(displayRow) || "-"}</td>
                 <td data-label="FT Williams row">
-                  {match?.resolved ? (
+                  {match?.resolved && changingMatchIndex !== index ? (
+                    <>
                     <span className="broker-match-status broker-match-ready">
                       {match.status === "CONFIRMED_NEW" || match.status === "AUTO_NEW"
                         ? "New broker row"
                         : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
                     </span>
+                    <button className="button secondary" type="button" disabled={busy} onClick={() => setChangingMatchIndex(index)}>Change match</button>
+                    </>
                   ) : match ? (
-                    <BrokerMatchDecision match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />
+                    <BrokerMatchDecision key={`${index}-${match.ftw_index ?? "new"}`} choices={choices} match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />
                   ) : (
                     <span className="broker-match-status">Load current FTW data to match</span>
                   )}
@@ -4207,21 +4215,23 @@ function ScheduleABrokerRowsPanel({
 
 function BrokerMatchDecision({
   busy,
+  choices,
   match,
   onConfirm,
 }: {
   busy: boolean;
+  choices: BrokerMatchChoice[];
   match: ScheduleABrokerMatch;
   onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
 }) {
-  const candidates = match.candidate_ftw_indexes || [];
-  const [selected, setSelected] = useState(candidates[0]?.toString() || "");
+  const candidates = choices.length ? choices : (match.candidate_ftw_indexes || []).map((index) => ({ index, label: `FT Williams row ${index + 1}` }));
+  const [selected, setSelected] = useState(match.ftw_index?.toString() ?? candidates[0]?.index.toString() ?? "");
   return (
     <div className="broker-match-decision">
       {candidates.length ? (
         <>
           <select value={selected} onChange={(event) => setSelected(event.target.value)} disabled={busy} aria-label="FT Williams broker row">
-            {candidates.map((index) => <option key={index} value={index}>FT Williams row {index + 1}</option>)}
+            {candidates.map(({ index, label }) => <option key={index} value={index}>{label}</option>)}
           </select>
           <button className="button secondary" type="button" disabled={busy || selected === ""} onClick={() => onConfirm(match.extracted_index, Number(selected), false)}>Match row</button>
         </>

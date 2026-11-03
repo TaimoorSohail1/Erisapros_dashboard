@@ -89,10 +89,10 @@ class MissingScheduleADefaultTests(unittest.TestCase):
         self.assertEqual(values["CommPdAmt1"],"12.3")
         self.assertEqual(schedule_a_broker_update_values([None]),{})
 
-    def test_selected_schedule_defaults_preserved_brokers_but_not_siblings_or_restores(self):
+    def test_selected_explicit_broker_defaults_but_not_siblings_or_restores(self):
         records=[{"ftw_seq_no":n,"query_results":{"ScheduleDesc":"TEST"+n,"InsCarrierName":"Example Life","Name1":"EXISTING BROKER","Code1":"3"}}for n in ["1","2"]]
         updates=[field("schedule_a_part_i_1e_persons_covered_end_of_policy_year","0")]
-        xml=build_schedule_a_records_update_xml(records,"1",updates,schedule_a_broker_rows=[None],year="2025")
+        xml=build_schedule_a_records_update_xml(records,"1",updates,schedule_a_broker_rows=[{"name":"EXISTING BROKER", "organization_code":"3"}],year="2025")
         documents=ET.fromstring(xml).findall(".//DOLScheduleAData")
         selected=documents[0].find("./DOLSubPartData/Broker");sibling=documents[1].find("./DOLSubPartData/Broker")
         self.assertEqual(selected.findtext("CommPdAmtXX"),"0")

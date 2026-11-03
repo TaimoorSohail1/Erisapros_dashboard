@@ -254,8 +254,11 @@ def normalize_ftw_update_value(
     normalized_text = normalized_text.upper() if uppercase_text else normalized_text
     if len(normalized_text) > max_length:
         # Authorized free-text shortening belongs at the outbound boundary.
-        # Identifiers, structured addresses and codes retain their strict checks.
-        if truncate_text and (tag in {"SDName", "PlanName", "InsCarrierName", "PlanSponsorName"} or re.fullmatch(r"Name(?:\d+|XX)", tag)):
+        # Parse/validate structured values first. Only descriptive text may
+        # follow the client's first-N-characters rule; never crop identifiers.
+        if truncate_text and (tag in {"SDName", "PlanName", "InsCarrierName", "PlanSponsorName",
+                "SDCity"}
+                or re.fullmatch(r"(?:Name|City|FeesPdText)(?:\d+|XX)", tag)):
             return normalized_text[:max_length]
         _raise(tag, text, f"maximum length is {max_length} characters")
     return normalized_text
