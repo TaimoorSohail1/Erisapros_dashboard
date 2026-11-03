@@ -364,6 +364,12 @@ def values_meaningfully_different(
 ) -> bool:
     current = str(current_value or "").strip()
     proposed = str(proposed_value or "").strip()
+    if tag in {"PlanName", "SDName", "PlanSponsorName"}:
+        # Client rule: only commas/periods are insignificant in plan identity.
+        # Do not extend carrier aliases or '&'/'and' matching to sponsor names.
+        def identity_name(value: str) -> str:
+            return re.sub(r"\s+", " ", re.sub(r"[,.]", "", value).casefold()).strip()
+        return identity_name(current) != identity_name(proposed)
     if tag == "InsCarrierName":
         current_carrier = _normalize_carrier_name_compare(current)
         proposed_carrier = _normalize_carrier_name_compare(proposed)

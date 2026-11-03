@@ -236,7 +236,10 @@ class FTWilliamsSchemaService:
                 if (element.tag, value) in trusted_preserved_values:
                     continue
                 try:
-                    normalize_ftw_update_value(form_type, element.tag, value)
+                    # Serialization must already have applied the approved text
+                    # shortening. Validation must not silently accept an oversized
+                    # raw XML value that would still be rejected by FT Williams.
+                    normalize_ftw_update_value(form_type, element.tag, value, truncate_text=False)
                 except FTWPayloadValidationError as exc:
                     reason = exc.issues[0].reason if exc.issues else str(exc)
                     correction = self._correction(element.tag)

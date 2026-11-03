@@ -31,7 +31,7 @@ class XmlBuilderTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["NameXX"], "ALTERITY GROUP LLC")
 
-    def test_long_broker_administration_name_uses_safe_ftw_abbreviation(self):
+    def test_long_broker_administration_name_uses_client_first_35_rule(self):
         carrier = ExtractedField(
             filing_id="filing",
             source_field_name="1a. Name of Insurance Company",
@@ -66,7 +66,7 @@ class XmlBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("<NameXX>MERCER HEALTH &amp; BENEFITS ADMIN LLC</NameXX>", xml)
+        self.assertEqual(ET.fromstring(xml).findtext(".//NameXX"), "MERCER HEALTH & BENEFITS ADMINISTRATION LLC"[:35])
 
     def test_new_outbound_text_updates_are_uppercase(self):
         field = ExtractedField(
@@ -265,7 +265,7 @@ class XmlBuilderTests(unittest.TestCase):
                 ],
             )
 
-    def test_schedule_a_new_broker_uses_legal_name_when_dba_suffix_exceeds_ftw_limit(self):
+    def test_schedule_a_new_broker_truncates_without_rewriting_dba_name(self):
         xml = build_schedule_a_records_update_xml(
             [
                 {
@@ -287,9 +287,9 @@ class XmlBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("<NameXX>NTH INSURANCE AGENCY</NameXX>", xml)
+        self.assertEqual(ET.fromstring(xml).findtext(".//NameXX"), "NTH INSURANCE AGENCY DBA: ALLIANCE 360 I"[:35].strip())
 
-    def test_schedule_a_new_broker_safely_abbreviates_standard_legal_name_words(self):
+    def test_schedule_a_new_broker_truncates_without_abbreviating_legal_name_words(self):
         xml = build_schedule_a_records_update_xml(
             [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
             "1",
@@ -306,9 +306,9 @@ class XmlBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("<NameXX>MGMT COMP GROUP/NORTHEAST INC</NameXX>", xml)
+        self.assertEqual(ET.fromstring(xml).findtext(".//NameXX"), "MANAGEMENT COMPENSATION GROUP/NORTHEAST INC"[:35])
 
-    def test_schedule_a_broker_reviewer_purpose_is_sent(self):
+    def test_schedule_a_broker_purpose_follows_client_payment_categories(self):
         xml = build_schedule_a_records_update_xml(
             [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
             "1",
@@ -327,7 +327,7 @@ class XmlBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("<FeesPdTextXX>BENEFITS CONSULTING</FeesPdTextXX>", xml)
+        self.assertIn("<FeesPdTextXX>COMMISSIONS AND FEES</FeesPdTextXX>", xml)
 
     def test_schedule_a_broker_rejects_invalid_state_before_send(self):
         with self.assertRaisesRegex(FTWPayloadValidationError, "expected a two-letter US state code"):
@@ -435,9 +435,8 @@ class XmlBuilderTests(unittest.TestCase):
             )
         self.assertIn("<CodeXX>3</CodeXX>", xml)
 
-    def test_schedule_a_new_broker_rejects_unshortenable_name_over_ftw_limit(self):
-        with self.assertRaisesRegex(FTWPayloadValidationError, "maximum length is 35 characters"):
-            build_schedule_a_records_update_xml(
+    def test_schedule_a_new_broker_truncates_unshortenable_name_to_ftw_limit(self):
+        xml = build_schedule_a_records_update_xml(
                 [{"ftw_seq_no": "1", "query_results": {"InsCarrierName": "Existing Carrier"}}],
                 "1",
                 [],
@@ -451,7 +450,8 @@ class XmlBuilderTests(unittest.TestCase):
                         "commission_total": "2340.80",
                     }
                 ],
-            )
+        )
+        self.assertEqual(ET.fromstring(xml).findtext(".//NameXX"), "A VERY LONG BROKER LEGAL NAME THAT CANNOT BE SAFELY SHORTENED"[:35].strip())
 
     def test_discovered_comparison_field_never_enters_ftw_xml(self):
         field = ExtractedField(

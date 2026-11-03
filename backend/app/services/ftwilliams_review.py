@@ -12,7 +12,7 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
-from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values
+from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values, normalize_broker_payment_purposes
 from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
 from app.models import (
     AuditLog,
@@ -551,6 +551,7 @@ class FTWilliamsReviewService:
                 add_new_schedule_a=create_new_schedule_a,
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
+                form_5500_current_values=form_5500_current,
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1163,6 +1164,7 @@ class FTWilliamsReviewService:
                 add_new_schedule_a=payload.create_new,
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
+                form_5500_current_values=form_5500_current,
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -5076,7 +5078,7 @@ class FTWilliamsReviewService:
         # Extraction already removes parser duplicates. Rows reaching the review
         # workspace are reviewer-controlled records, so preserve their order and
         # exact values even when two recipients share the same name/address.
-        return default_blank_broker_values(default_blank_organization_codes(normalized))
+        return normalize_broker_payment_purposes(default_blank_broker_values(default_blank_organization_codes(normalized)))
 
     def _resolve_schedule_a_brokers(
         self,
@@ -5993,7 +5995,8 @@ class FTWilliamsReviewService:
                 review.schedule_a_records, identity.get("ftw_seq_no"), identity,
                 add_new_schedule_a=bool(review.schedule_a_match.get("create_new")),
                 new_schedule_desc=review.schedule_a_match.get("schedule_desc"),
-                schedule_a_broker_rows=resolved_brokers)
+                schedule_a_broker_rows=resolved_brokers,
+                form_5500_current_values=review.form_5500_current_values)
             if not review.update_xml_schedule_a:
                 raise ValueError("Current FT Williams Schedule A data is incomplete. Refresh it before sending the selected fields.")
 
@@ -6611,6 +6614,7 @@ class FTWilliamsReviewService:
         add_new_schedule_a: bool = False,
         new_schedule_desc: str | None = None,
         schedule_a_broker_rows: list | None = None,
+        form_5500_current_values: dict[str, str] | None = None,
     ) -> str:
         if schedule_update_blocked:
             return ""
@@ -6624,6 +6628,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 transaction_type="2",
                 schedule_a_broker_rows=schedule_a_broker_rows,
+                form_5500_current_values=form_5500_current_values,
                 **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
             )
         matched_seq = str(matched_ftw_seq_no or "").strip()

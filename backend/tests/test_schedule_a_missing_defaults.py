@@ -57,14 +57,15 @@ class MissingScheduleADefaultTests(unittest.TestCase):
     def test_missing_broker_values_are_defaulted_without_mutating_input(self):
         row=ScheduleABrokerRow(name="TEST BROKER",organization_code="3",confidence=.94)
         result=FTWilliamsReviewService()._normalized_schedule_a_broker_rows([row])[0]
-        self.assertEqual((result.commission_total,result.fee_total,result.purpose),("0","0","Commission"))
+        self.assertEqual((result.commission_total,result.fee_total,result.purpose),("0","0","COMMISSION"))
         self.assertEqual((row.commission_total,row.fee_total,row.purpose),(None,None,None))
         self.assertEqual(result.confidence,.94)
 
     def test_provided_values_components_and_review_holds_are_not_erased(self):
         supplied=ScheduleABrokerRow(name="TEST",commission_total="-12.30",fee_total="4.25",purpose="Consulting",organization_code="3")
         result=FTWilliamsReviewService()._normalized_schedule_a_broker_rows([supplied])[0]
-        self.assertEqual((result.commission_total,result.fee_total,result.purpose),("-12.30","4.25","Consulting"))
+        self.assertEqual((result.commission_total,result.fee_total,result.purpose),("-12.30","4.25","COMMISSIONS AND FEES"))
+        self.assertEqual(supplied.purpose, "Consulting")
         held=supplied.model_copy(update={"commission_total":None,"purpose":None,"decision":"REVIEW_REQUIRED"})
         result=FTWilliamsReviewService()._normalized_schedule_a_broker_rows([held])[0]
         self.assertIsNone(result.commission_total);self.assertIsNone(result.purpose)
@@ -80,11 +81,11 @@ class MissingScheduleADefaultTests(unittest.TestCase):
         self.assertEqual(len(result.schedule_a_broker_rows),1)
         self.assertEqual(result.schedule_a_broker_rows[0].purpose,"Commission")
 
-    def test_outbound_defaults_and_supplied_purposes_survive_zero_fees(self):
+    def test_outbound_defaults_and_payment_based_purposes_survive_zero_fees(self):
         values=schedule_a_broker_update_values([{"name":"TEST BROKER","organization_code":"3"}])
         self.assertEqual((values.get("CommPdAmt1"),values.get("FeesPdAmt1"),values.get("FeesPdText1")),("0","0","COMMISSION"))
         values=schedule_a_broker_update_values([{"name":"TEST","commission_total":"12.30","fee_total":"0","purpose":"Consulting","organization_code":"3"}])
-        self.assertEqual(values["FeesPdText1"],"CONSULTING")
+        self.assertEqual(values["FeesPdText1"],"COMMISSIONS")
         self.assertEqual(values["CommPdAmt1"],"12.3")
         self.assertEqual(schedule_a_broker_update_values([None]),{})
 
