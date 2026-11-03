@@ -51,6 +51,9 @@ FORM_5500_ALLOWED_UPDATE_TAGS = set(FORM_5500_UPDATE_TAGS_BY_RULE.values()) | {
 
 SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {
     "ScheduleDesc",
+    # Editable x.PlanSponsorName, maxlength=70 on the 2025 disposable FTW form.
+    # Used only to inherit a missing new-schedule header from its parent 5500.
+    "PlanSponsorName",
     # Verified against the 2025 FT Williams Schedule A test form. This is the
     # HTML/ftwLink field behind the "No commissions or fees paid" checkbox.
     "OverrideCommissionsAndFees",
@@ -122,6 +125,7 @@ TEXT_LIMITS = {
     "InsCarrierName": 70,
     "InsContractNum": 40,
     "PlanName": 140,
+    "PlanSponsorName": 70,
     "ScheduleDesc": 8,
 }
 
@@ -132,6 +136,7 @@ def normalize_ftw_update_value(
     value: object,
     *,
     uppercase_text: bool = False,
+    truncate_text: bool = True,
 ) -> str:
     text = str(value or "").strip()
     if not text:
@@ -245,10 +250,15 @@ def normalize_ftw_update_value(
     max_length = _text_limit(tag)
     if any(ord(character) < 32 for character in text):
         _raise(tag, text, "control characters are not allowed")
-    if len(text) > max_length:
-        _raise(tag, text, f"maximum length is {max_length} characters")
     normalized_text = re.sub(r"\s+", " ", text)
-    return normalized_text.upper() if uppercase_text else normalized_text
+    normalized_text = normalized_text.upper() if uppercase_text else normalized_text
+    if len(normalized_text) > max_length:
+        # Authorized free-text shortening belongs at the outbound boundary.
+        # Identifiers, structured addresses and codes retain their strict checks.
+        if truncate_text and (tag in {"SDName", "PlanName", "InsCarrierName", "PlanSponsorName"} or re.fullmatch(r"Name(?:\d+|XX)", tag)):
+            return normalized_text[:max_length]
+        _raise(tag, text, f"maximum length is {max_length} characters")
+    return normalized_text
 
 
 def ftw_expected_format(tag: str) -> str:

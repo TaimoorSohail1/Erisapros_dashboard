@@ -3499,7 +3499,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.schedule_a_broker_rows[1].address_line_1, "144 TURNPIKE RD STE 330")
         self.assertEqual(review.schedule_a_broker_rows[1].commission_total, "16512.76")
         self.assertEqual(review.schedule_a_broker_rows[1].fee_total, "25.50")
-        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "Contingent Compensation")
+        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "COMMISSIONS AND FEES")
 
     def test_reviewer_can_fix_one_broker_without_being_blocked_by_another_invalid_row(self):
         repo = repositories.get_repository()
@@ -3531,7 +3531,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(len(review.schedule_a_broker_rows), 2)
         self.assertEqual(review.schedule_a_broker_rows[1].commission_total, "16512.76")
-        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "CONTINGENT COMPENSATION")
+        self.assertEqual(review.schedule_a_broker_rows[1].purpose, "COMMISSIONS")
 
     def test_reviewer_broker_edit_returns_exact_invalid_field(self):
         repo = repositories.get_repository()

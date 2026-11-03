@@ -187,6 +187,36 @@ def _explicit_zero(value: object) -> bool:
     return amount is not None and amount == 0
 
 
+def canonical_broker_payment_purpose(commission: object, fees: object) -> str | None:
+    """Client-approved destination label, based on signed, verified amounts."""
+    amounts = [_money_decimal(value) for value in (commission, fees)]
+    if any(amount is None or not amount.is_finite() for amount in amounts):
+        return None
+    has_commission, has_fee = (amount != 0 for amount in amounts)
+    if has_commission and has_fee:
+        return "COMMISSIONS AND FEES"
+    if has_fee:
+        return "FEES"
+    return "COMMISSIONS" if has_commission else "COMMISSION"
+
+
+def normalize_broker_payment_purposes(rows: list[ScheduleABrokerRow]) -> list[ScheduleABrokerRow]:
+    """Transform proposals only, retaining source evidence and unresolved holds."""
+    normalized = []
+    for original in rows:
+        row = original.model_copy(deep=True)
+        if row.name.strip() and row.decision != "REVIEW_REQUIRED" and not any(v.status == "ERROR" for v in row.validation_results):
+            purpose = canonical_broker_payment_purpose(row.commission_total, row.fee_total)
+            if purpose and purpose != row.purpose:
+                row.validation_results.append(ExtractionValidationResult(
+                    validator="customer_broker_payment_purpose", status="PASS",
+                    reason=f"Client-approved purpose derived from nonzero commission/fee categories. Original purpose: {row.purpose or '(blank)'}. Source evidence retained.",
+                    normalized_value=purpose))
+                row.purpose = purpose
+        normalized.append(row)
+    return normalized
+
+
 def _decimal_text(value: Decimal) -> str:
     rendered = format(value, "f")
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered

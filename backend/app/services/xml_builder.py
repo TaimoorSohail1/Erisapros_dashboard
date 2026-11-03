@@ -19,6 +19,7 @@ from app.services.ftwilliams_tags import (
     values_meaningfully_different,
 )
 from app.services.schedule_a_broker_matching import normalize_schedule_a_broker_subparts
+from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
 
 
 FTW_DATE_TAGS = {
@@ -222,6 +223,7 @@ def build_schedule_a_records_update_xml(
     ftw_customer_id: str | None = None,
     ftw_plan_id: str | None = None,
     schedule_a_broker_rows: list | None = None,
+    form_5500_current_values: dict[str, str] | None = None,
 ) -> str:
     settings = get_settings()
     key_id = settings.ftwlink_key_id or "[FTWLINK_KEY_ID]"
@@ -252,6 +254,17 @@ def build_schedule_a_records_update_xml(
             documents.append(document_xml)
     if add_new_fields:
         new_current_values = {"ScheduleDesc": new_schedule_desc or _schedule_desc_from_fields(add_new_fields, records)}
+        # The caller supplies the freshly queried parent for this exact plan/year.
+        # Never inherit another Schedule A's carrier, policy, broker or header data.
+        for target, source in {
+            "PlanName": "PlanName", "PlanSponsorName": "SDName", "EIN": "SDEIN",
+            "PlanNum": "SponsDfePlanNum", "PlanYearBeginDate": "PlanYearBeginDate",
+            "PlanYearEndDate": "PlanYearEndDate",
+        }.items():
+            value = (form_5500_current_values or {}).get(source)
+            if str(value or "").strip():
+                new_current_values[target] = normalize_ftw_update_value(
+                    FormType.SCHEDULE_A, target, value, uppercase_text=True)
         document_xml = _schedule_a_record_document_xml(
             add_new_fields,
             new_current_values,
@@ -531,6 +544,9 @@ def update_values_for_form(
         tag = resolve_ftw_update_tag(field)
         if not tag:
             continue
+        if current_values is not None and tag in {"PlanName", "SDName", "PlanSponsorName"}:
+            if not values_meaningfully_different(resolve_ftw_current_value(field, current_values), field.proposed_value, tag=tag):
+                continue
         proposed = normalize_ftw_update_value(
             form_type,
             tag,
@@ -743,6 +759,12 @@ def full_replace_values_for_schedule_a(
     if force_current_values and not fields:
         return values
     proposed_values = update_values_for_form(overlay_fields, FormType.SCHEDULE_A)
+    for field in overlay_fields:
+        tag = resolve_ftw_update_tag(field)
+        if tag in {"PlanName", "PlanSponsorName"} and not values_meaningfully_different(
+            resolve_ftw_current_value(field, current_values), field.proposed_value, tag=tag
+        ):
+            proposed_values.pop(tag, None)
     if use_canonical_carrier:
         canonical_carrier = str(
             current_values.get("InsCarrierName")
@@ -901,6 +923,14 @@ def schedule_a_broker_multipart_rows(
             rows[index - 1][multipart_tag] = text
         else:
             rows[index - 1].pop(multipart_tag, None)
+    # Only recipients explicitly proposed for this update get the new purpose
+    # rule. Current/sibling/restore snapshots must remain byte-value faithful.
+    touched = {parsed[1] for tag in (overrides or {}) if (parsed := _schedule_a_broker_tag_index(tag))}
+    for index in touched:
+        row = rows[index - 1]
+        purpose = canonical_broker_payment_purpose(row.get("CommPdAmtXX"), row.get("FeesPdAmtXX"))
+        if purpose and row.get("NameXX"):
+            row["FeesPdTextXX"] = purpose
     return [
         row
         for row in rows
@@ -1260,48 +1290,8 @@ def _schedule_a_broker_row_update_values(
 
 
 def _ftw_broker_name(value: str) -> str:
-    """Fit a broker legal name using only unambiguous standard abbreviations.
-
-    FT Williams caps broker names at 35 characters.  Keep the extracted name
-    intact everywhere else and transform only the outbound FTW value.  If the
-    legal name still cannot fit after safe substitutions, the normal contract
-    validator rejects it instead of silently truncating identity-bearing text.
-    """
-    name = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(name) <= 35:
-        return name
-    legal_name = re.split(
-        r"\s+(?:D\s*/?\s*B\s*/?\s*A|DOING\s+BUSINESS\s+AS)\s*:?\s*",
-        name,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0].strip(" ,-:")
-    candidate = legal_name if legal_name else name
-    if len(candidate) <= 35:
-        return candidate
-
-    standard_abbreviations = (
-        ("ADMINISTRATION", "ADMIN"),
-        ("MANAGEMENT", "MGMT"),
-        ("COMPENSATION", "COMP"),
-        ("CORPORATION", "CORP"),
-        ("INCORPORATED", "INC"),
-        ("SERVICES", "SVCS"),
-        ("INSURANCE", "INS"),
-        ("COMPANY", "CO"),
-        ("ASSOCIATION", "ASSN"),
-        ("INTERNATIONAL", "INTL"),
-    )
-    for word, abbreviation in standard_abbreviations:
-        candidate = re.sub(
-            rf"\b{word}\b",
-            abbreviation,
-            candidate,
-            flags=re.IGNORECASE,
-        )
-        if len(candidate) <= 35:
-            return candidate
-    return candidate
+    """Keep source spelling; the FTW contract applies the approved first-35 rule."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
@@ -1349,6 +1339,9 @@ def _broker_row_attr(row: object, key: str) -> str:
 
 
 def _broker_row_purpose(row: object, commission: str, fees: str) -> str:
+    canonical = canonical_broker_payment_purpose(commission, fees)
+    if canonical:
+        return canonical
     explicit = _broker_row_attr(row, "purpose")
     if explicit:
         return explicit.upper()
