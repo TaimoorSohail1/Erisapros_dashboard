@@ -187,10 +187,10 @@ Total Payments Made to Carrier: $39,000.12
                 if indicator is not None:
                     current["OverrideCommissionsAndFees"] = indicator
                 records = [{"ftw_seq_no": "1", "query_results": current,
-                    "query_subparts": {"Broker": [{"NameXX": "Existing recipient", "CodeXX": "3"}]}},
+                    "query_subparts": {"Broker": [{"NameXX": "Existing recipient", "CodeXX": "3", "CommPdAmtXX": "0", "FeesPdAmtXX": "0"}]}},
                     {"ftw_seq_no": "2", "query_results": {"ScheduleDesc": "DENTAL", "InsPrsnCoveredEoyCnt": "7"}}]
                 xml = build_schedule_a_records_update_xml(records, "1", [field],
-                    ftw_customer_id="111", ftw_plan_id="222", year="2025")
+                    ftw_customer_id="111", ftw_plan_id="222", year="2025", schedule_a_broker_rows=[])
                 documents = ET.fromstring(xml).findall(".//DOLScheduleAData")
                 selected = documents[0]
                 self.assertEqual(selected.findtext("InsPrsnCoveredEoyCnt"), "21")

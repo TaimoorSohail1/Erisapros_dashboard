@@ -554,7 +554,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
-                replace_broker_roster=broker_roster_is_complete(schedule_a_broker_rows),
+                replace_broker_roster=self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, identity.get("ftw_seq_no")),
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1168,7 +1168,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
-                replace_broker_roster=broker_roster_is_complete(schedule_a_broker_rows),
+                replace_broker_roster=self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no),
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -5150,13 +5150,31 @@ class FTWilliamsReviewService:
         matches = match_schedule_a_brokers(extracted_rows, current_rows, decisions=decisions)
         if not all(match.resolved for match in matches):
             return matches, []
+        replace_roster = self._can_replace_broker_roster(extracted_rows, records, sequence)
         resolved = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches,
-            source_roster_complete=broker_roster_is_complete(extracted_rows))
-        if broker_roster_is_complete(extracted_rows):
+            source_roster_complete=replace_roster)
+        if replace_roster:
             # Only a source-attested roster may remove prior-year recipients.
             # Unknown/incomplete sources keep the existing positional overrides.
             resolved = [row for row in resolved if row is not None and broker_row_has_payment(row)]
         return matches, resolved
+
+    @staticmethod
+    def _can_replace_broker_roster(rows, records, sequence) -> bool:
+        if not broker_roster_is_complete(rows):
+            return False
+        record = next((record for record in records if str(record.get("ftw_seq_no") or "") == str(sequence or "")), None)
+        for current in current_schedule_a_broker_rows(record):
+            for tag, value in current.items():
+                if not str(value or "").strip():
+                    continue
+                if re.fullmatch(r"ForeignAddy(?:XX|\d{1,2})", tag) and str(value) == "0":
+                    continue
+                if not re.fullmatch(r"(?:Name|AddressLine1|AddressLine2|City|State|ZipCode|CommPdAmt|FeesPdAmt|FeesPdText|Code)(?:XX|\d{1,2})", tag):
+                    # Do not discard foreign-address or newer vendor fields
+                    # that the current source roster cannot represent.
+                    return False
+        return True
 
     def _same_schedule_a_selection(self, previous: dict | None, current: dict | None) -> bool:
         if bool((previous or {}).get("create_new")) != bool((current or {}).get("create_new")):
@@ -6035,7 +6053,8 @@ class FTWilliamsReviewService:
                 new_schedule_desc=review.schedule_a_match.get("schedule_desc"),
                 schedule_a_broker_rows=resolved_brokers,
                 form_5500_current_values=review.form_5500_current_values,
-                replace_broker_roster=include_broker_updates and broker_roster_is_complete(review.schedule_a_broker_rows))
+                replace_broker_roster=include_broker_updates and self._can_replace_broker_roster(
+                    review.schedule_a_broker_rows, review.schedule_a_records, identity.get("ftw_seq_no")))
             if not review.update_xml_schedule_a:
                 raise ValueError("Current FT Williams Schedule A data is incomplete. Refresh it before sending the selected fields.")
 
@@ -6053,7 +6072,7 @@ class FTWilliamsReviewService:
             row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
             for row in review.schedule_a_broker_rows or []
         ]
-        if broker_roster_is_complete(extracted_rows):
+        if self._can_replace_broker_roster(extracted_rows, review.schedule_a_records, review.ftw_seq_no):
             selected = next((record for record in review.schedule_a_records
                 if str(record.get("ftw_seq_no")) == str(review.ftw_seq_no)), None)
             paid_rows = [row for row in extracted_rows if broker_row_has_payment(row)]
@@ -6771,7 +6790,8 @@ class FTWilliamsReviewService:
             matched_ftw_seq_no=None if is_new_schedule else review.schedule_a_match.get("ftw_seq_no"),
             require_exact_payment_controls=True,
             schedule_a_broker_rows=resolved_broker_rows,
-            replace_broker_roster=check_brokers and broker_roster_is_complete(review.schedule_a_broker_rows),
+            replace_broker_roster=check_brokers and self._can_replace_broker_roster(
+                review.schedule_a_broker_rows, review.schedule_a_records, review.schedule_a_match.get("ftw_seq_no")),
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])

@@ -254,7 +254,7 @@ def build_schedule_a_records_update_xml(
             # Only recompute the no-payment checkbox when payment data is part
             # of this send; preserve even a blank/absent existing checkbox otherwise.
             derive_payment_indicator=selected_record and (
-                schedule_a_broker_rows is not None
+                any(row is not None for row in schedule_a_broker_rows or []) or replace_broker_roster
                 or any(
                     tag in {"InsBrokerCommTotAmt", "InsBrokerFeesTotAmt", "OverrideCommissionsAndFees"}
                     or _schedule_a_broker_tag_index(tag) is not None
@@ -370,8 +370,6 @@ def _document_xml(
             overrides=broker_overrides,
             preserve_zero_compensation=bool(schedule_a_broker_rows or field_broker_overrides),
         )
-        if schedule_a_broker_rows or field_broker_overrides:
-            _default_proposed_multipart_brokers(broker_rows)
         if schedule_a_broker_rows is not None:
             broker_rows = _without_superseded_unpaid_broker_placeholders(
                 broker_rows,
@@ -448,11 +446,9 @@ def _schedule_a_record_document_xml(
         {} if replace_broker_roster else current_values,
         query_subparts={} if replace_broker_roster else query_subparts,
         overrides=broker_overrides,
-        preserve_zero_compensation=bool(derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides)),
+        preserve_zero_compensation=not derive_payment_indicator or bool(schedule_a_broker_rows or field_broker_overrides),
     )
-    if derive_payment_indicator and (schedule_a_broker_rows or field_broker_overrides):
-        _default_proposed_multipart_brokers(broker_rows)
-    if schedule_a_broker_rows is not None:
+    if any(row is not None for row in schedule_a_broker_rows or []) or replace_broker_roster:
         broker_rows = _without_superseded_unpaid_broker_placeholders(
             broker_rows,
             schedule_a_broker_rows,
@@ -934,6 +930,7 @@ def schedule_a_broker_multipart_rows(
     touched = {parsed[1] for tag in (overrides or {}) if (parsed := _schedule_a_broker_tag_index(tag))}
     for index in touched:
         row = rows[index - 1]
+        _default_proposed_multipart_brokers([row])
         purpose = canonical_broker_payment_purpose(row.get("CommPdAmtXX"), row.get("FeesPdAmtXX"))
         if purpose and row.get("NameXX"):
             row["FeesPdTextXX"] = purpose
@@ -942,7 +939,9 @@ def schedule_a_broker_multipart_rows(
     # so duplicate removal cannot shift a selected destination index.
     unique_rows: list[dict[str, str]] = []
     seen_rows: set[tuple[tuple[str, str], ...]] = set()
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
+        if touched and index not in touched and _schedule_a_broker_has_explicit_zero_compensation(row):
+            continue
         signature = tuple(sorted((str(tag), str(value).strip()) for tag, value in row.items()))
         if signature in seen_rows:
             continue

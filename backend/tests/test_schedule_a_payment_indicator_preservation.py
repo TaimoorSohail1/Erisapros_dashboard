@@ -70,7 +70,8 @@ class PaymentIndicatorPreservationTests(unittest.TestCase):
     def test_selected_control_still_follows_final_positive_and_negative_payments(self):
         for amount in ['25', '-25', '0']:
             with self.subTest(amount=amount):
-                row = documents(build([record(1, '1', amount)], schedule_a_broker_rows=[]))['A1']
+                row = documents(build([record(1, '1', amount)], schedule_a_broker_rows=[{
+                    'name':'Existing Broker', 'commission_total':amount, 'fee_total':'0', 'organization_code':'3'}]))['A1']
                 self.assertEqual(row.findtext('OverrideCommissionsAndFees'), '1' if amount == '0' else '0')
 
     def test_shared_plan_year_updates_do_not_change_sibling_payment_control(self):
