@@ -33,7 +33,7 @@ class PaymentIndicatorPreservationTests(unittest.TestCase):
     def test_unselected_missing_control_is_not_introduced(self):
         rows = documents(build([record(1), record(2)]))
         self.assertIsNone(rows['A2'].find('OverrideCommissionsAndFees'))
-        self.assertEqual(rows['A1'].findtext('OverrideCommissionsAndFees'), '1')
+        self.assertIsNone(rows['A1'].find('OverrideCommissionsAndFees'))
 
     def test_unselected_blank_control_is_retained_as_blank(self):
         row = documents(build([record(1), record(2, '')]))['A2']
@@ -70,7 +70,7 @@ class PaymentIndicatorPreservationTests(unittest.TestCase):
     def test_selected_control_still_follows_final_positive_and_negative_payments(self):
         for amount in ['25', '-25', '0']:
             with self.subTest(amount=amount):
-                row = documents(build([record(1, '1', amount)]))['A1']
+                row = documents(build([record(1, '1', amount)], schedule_a_broker_rows=[]))['A1']
                 self.assertEqual(row.findtext('OverrideCommissionsAndFees'), '1' if amount == '0' else '0')
 
     def test_shared_plan_year_updates_do_not_change_sibling_payment_control(self):

@@ -1165,7 +1165,7 @@ AD&D 592 | Base Commissions
             "39,795.20",
         )
 
-    def test_vsp_compact_report_extracts_one_unclassified_combined_payment(self):
+    def test_vsp_compact_report_uses_client_approved_commission_label(self):
         pages = [
             (
                 1,
@@ -1190,8 +1190,8 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].organization_code, "3")
         self.assertEqual(rows[0].commission_total, "3,984.88")
         self.assertEqual(rows[0].fee_total, "0")
-        self.assertEqual(rows[0].commission_rows[0].purpose, "Commissions/Fees (unclassified)")
-        self.assertEqual(rows[0].decision, "REVIEW_REQUIRED")
+        self.assertEqual(rows[0].commission_rows[0].purpose, "COMMISSIONS")
+        self.assertEqual(rows[0].decision, "UNASSESSED")
         self.assertEqual(rows[0].fee_rows, [])
 
         fields = {field.field_name: field.value for field in _extract_fields_from_pages(pages)}

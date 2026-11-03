@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 import re
 from typing import Mapping
 
 from app.models import ScheduleABrokerMatch, ScheduleABrokerRow
+
+BROKER_IDENTITY_ATTRIBUTES = ("name", "address_line_1", "address_line_2", "city", "state", "zip_code")
+
+
+def broker_identity_review_key(row: ScheduleABrokerRow) -> str:
+    return hashlib.sha256(json.dumps([str(getattr(row, attr) or "").strip()
+        for attr in BROKER_IDENTITY_ATTRIBUTES], separators=(",", ":")).encode()).hexdigest()
+
+
+def broker_identity_is_confirmed(row: ScheduleABrokerRow) -> bool:
+    return any(v.validator == "reviewer_broker_identity_confirmation" and v.status == "PASS"
+        and v.normalized_value == broker_identity_review_key(row) for v in row.validation_results)
 
 
 def match_schedule_a_brokers(
@@ -16,6 +30,17 @@ def match_schedule_a_brokers(
     """Match extracted brokers to FT rows without relying on row order."""
     decisions = decisions or {}
     normalized_current = [_current_broker_row(row) for row in current_rows]
+    reserved: set[int] = set()
+    for source_index, decision in decisions.items():
+        if source_index < 0 or source_index >= len(extracted_rows):
+            raise ValueError("The extracted broker row no longer exists. Refresh before matching.")
+        if not decision.get("create_new") and decision.get("ftw_index") is not None:
+            index = int(decision["ftw_index"])
+            if index < 0 or index >= len(current_rows):
+                raise ValueError("The FT Williams broker row no longer exists. Refresh before matching.")
+            if index in reserved:
+                raise ValueError(f"FT Williams broker row {index + 1} was assigned more than once.")
+            reserved.add(index)
     assigned: set[int] = set()
     matches: list[ScheduleABrokerMatch] = []
 
@@ -28,7 +53,7 @@ def match_schedule_a_brokers(
                 duplicate_rows = [
                     index
                     for index, current in enumerate(normalized_current)
-                    if index not in assigned and _same_broker_business_row(row, current)
+                    if index not in assigned and index not in reserved and _same_broker_business_row(row, current)
                 ]
                 if len(duplicate_rows) == 1:
                     ftw_index = duplicate_rows[0]
@@ -76,7 +101,7 @@ def match_schedule_a_brokers(
         available = [
             index
             for index in range(len(current_rows))
-            if index not in assigned and _has_broker_content(normalized_current[index])
+            if index not in assigned and index not in reserved and _has_broker_content(normalized_current[index])
         ]
         name_matches = [
             index
@@ -84,6 +109,9 @@ def match_schedule_a_brokers(
             if _broker_name_key(row.name)
             and _broker_name_key(row.name) == _broker_name_key(normalized_current[index].name)
         ]
+        possible_name_matches = list(name_matches)
+        name_matches = [index for index in name_matches
+                        if not _location_conflicts(row, normalized_current[index])]
         identity_scores = {
             index: _secondary_identity_score(row, normalized_current[index]) for index in name_matches
         }
@@ -114,6 +142,11 @@ def match_schedule_a_brokers(
                 and _broker_address_key(row) == _broker_address_key(normalized_current[index])
             )
         ]
+        possible_address_matches = list(address_matches)
+        address_matches = [index for index in address_matches
+                           if not _location_conflicts(row, normalized_current[index])
+                           and _broker_alias_core_key(row.name)
+                           and _broker_alias_core_key(row.name) == _broker_alias_core_key(normalized_current[index].name)]
 
         selected: int | None = None
         reason = ""
@@ -151,11 +184,12 @@ def match_schedule_a_brokers(
                     resolved=True,
                     reason=reason,
                     current_row=normalized_current[selected],
+                    candidate_ftw_indexes=available,
                 )
             )
             continue
 
-        candidates = identity_matches or name_matches or address_matches
+        candidates = identity_matches or name_matches or address_matches or possible_name_matches or possible_address_matches
         if not candidates:
             matches.append(
                 ScheduleABrokerMatch(
@@ -173,9 +207,7 @@ def match_schedule_a_brokers(
                 status="NEEDS_CONFIRMATION",
                 resolved=False,
                 reason=(
-                    "More than one FT Williams broker row could match; select the correct row."
-                    if candidates
-                    else "No safe FT Williams broker match was found; select a row or add this as new."
+                    "Broker location details differ or more than one row could match; confirm the correct row or add as new."
                 ),
                 candidate_ftw_indexes=candidates or available,
             )
@@ -188,6 +220,8 @@ def resolved_schedule_a_broker_rows(
     extracted_rows: list[ScheduleABrokerRow],
     current_rows: list[dict[str, str]],
     matches: list[ScheduleABrokerMatch],
+    *,
+    source_roster_complete: bool = False,
 ) -> list[ScheduleABrokerRow | None]:
     """Return positional overrides while preserving every unmatched FT row."""
     if any(not match.resolved for match in matches):
@@ -200,6 +234,9 @@ def resolved_schedule_a_broker_rows(
         elif match.ftw_index is not None:
             if aligned[match.ftw_index] is not None:
                 raise ValueError(f"FT Williams broker row {match.ftw_index + 1} was assigned more than once.")
+            if broker_identity_is_confirmed(row):
+                aligned[match.ftw_index] = row
+                continue
             # A source that exposes fewer broker rows than FT Williams is not a
             # complete per-recipient breakdown. Its commission/fee figures may
             # be summary totals, so applying them to one matched row can double
@@ -208,7 +245,7 @@ def resolved_schedule_a_broker_rows(
             lacks_row_identity_detail = not any(
                 (row.address_line_1, row.address_line_2, row.city, row.state, row.zip_code)
             )
-            if len(extracted_rows) < len(current_rows) and lacks_row_identity_detail:
+            if len(extracted_rows) < len(current_rows) and lacks_row_identity_detail and not source_roster_complete:
                 continue
             current = _current_broker_row(current_rows[match.ftw_index])
             # FT Williams often stores a suite/unit in AddressLine1 while the
@@ -332,11 +369,37 @@ def _secondary_identity_score(extracted: ScheduleABrokerRow, current: ScheduleAB
     address_matches = bool(
         _key(extracted.address_line_1) and _key(extracted.address_line_1) == _key(current.address_line_1)
     )
-    zip_matches = bool(_key(extracted.zip_code) and _key(extracted.zip_code) == _key(current.zip_code))
+    zip_matches = bool(_zip_key(extracted.zip_code) and _zip_key(extracted.zip_code) == _zip_key(current.zip_code))
     return int(address_matches) + int(zip_matches)
 
 
+def _zip_key(value: object) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"\D", "", text)[:5] if re.fullmatch(r"\d{5}(?:-?\d{4})?", text) else _key(text)
+
+
+def _location_conflicts(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:
+    """Known contradictory locations must not be overridden by a unique name."""
+    first_address, second_address = _broker_address_key(extracted), _broker_address_key(current)
+    address_conflict = bool(first_address and second_address and first_address != second_address)
+    if address_conflict:
+        def parts(row):
+            text = " ".join(str(value or "") for value in (row.address_line_1, row.address_line_2))
+            street, *unit = re.split(r"\b(?:SUITE|STE|UNIT)\b|#", text, maxsplit=1, flags=re.I)
+            return _broker_address_key(ScheduleABrokerRow(name="", address_line_1=street)), _key(unit[0]) if unit else ""
+        first_street, first_unit = parts(extracted)
+        second_street, second_unit = parts(current)
+        # An omitted suite is missing evidence, not a contradictory suite.
+        address_conflict = first_street != second_street or bool(first_unit and second_unit and first_unit != second_unit)
+    pairs = [(_zip_key(extracted.zip_code), _zip_key(current.zip_code))]
+    pairs.extend((_key(getattr(extracted, attr)), _key(getattr(current, attr)))
+                 for attr in ("city", "state"))
+    return address_conflict or any(first and second and first != second for first, second in pairs)
+
+
 def _same_broker_business_row(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:
+    if _location_conflicts(extracted, current):
+        return False
     if not _broker_name_key(extracted.name) or _broker_name_key(extracted.name) != _broker_name_key(current.name):
         return False
     if _secondary_identity_score(extracted, current) == 0 and not _broker_compensation_matches(extracted, current):
@@ -377,6 +440,14 @@ def _broker_name_key(value: object) -> str:
     }
     words = re.findall(r"[A-Z0-9]+", str(value or "").upper())
     return "".join(aliases.get(word, word) for word in words)
+
+
+def _broker_alias_core_key(value: object) -> str:
+    text = re.split(r"\bD\s*/?\s*B\s*/?\s*A\b", str(value or ""), maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"\b(?:INC(?:ORPORATED)?|LLC|LTD|CORP(?:ORATION)?)\.?\s*$", "", text, flags=re.I)
+    text = re.sub(r"\bNORTHEAST\b", "NE", text, flags=re.I)
+    text = re.sub(r"\bAND\b", "", text, flags=re.I)
+    return _broker_name_key(text)
 
 
 def _broker_compensation_matches(extracted: ScheduleABrokerRow, current: ScheduleABrokerRow) -> bool:

@@ -1285,6 +1285,7 @@ class XmlBuilderTests(unittest.TestCase):
             customer_id="04-2103905",
             plan_id="04-2103905502",
             year="2025",
+            schedule_a_broker_rows=[],  # Explicit compensation send; count-only sends preserve this checkbox.
         )
 
         self.assertIn("<OverrideCommissionsAndFees>1</OverrideCommissionsAndFees>", xml)
@@ -1316,6 +1317,7 @@ class XmlBuilderTests(unittest.TestCase):
             customer_id="04-2103905",
             plan_id="04-2103905502",
             year="2025",
+            schedule_a_broker_rows=[],  # Explicit compensation send; count-only sends preserve this checkbox.
         )
 
         self.assertIn("<OverrideCommissionsAndFees>0</OverrideCommissionsAndFees>", xml)

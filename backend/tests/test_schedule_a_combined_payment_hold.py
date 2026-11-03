@@ -28,7 +28,7 @@ def test_combined_payment_requires_review_even_when_provider_puts_it_only_in_com
 def test_vsp_parser_labels_a_combined_payment_as_unclassified_not_commission_only():
     pages = [(1, """VSP vision care Schedule A Form (5500) Insurance Information
 Insurance Carrier: Vision Service Plan
-Commissions/Fees Paid for Policy Agent or Broker or Contract Year
+Commissions/Fees paid in total
 Different Advisory Inc $1,234.5650 Other RdBoston MA 02110
 """)]
     row = extract_vsp_broker_rows(pages)[0]

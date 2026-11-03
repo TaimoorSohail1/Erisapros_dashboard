@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from app.config import get_settings
 from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values, normalize_broker_payment_purposes
 from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
+from app.services.schedule_a_broker_roster import broker_roster_is_complete, broker_row_has_payment
+from app.services.schedule_a_broker_matching import BROKER_IDENTITY_ATTRIBUTES, broker_identity_review_key, broker_identity_is_confirmed
 from app.models import (
     AuditLog,
     ClientFacingError,
@@ -552,6 +554,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
+                replace_broker_roster=broker_roster_is_complete(schedule_a_broker_rows),
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1165,6 +1168,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
+                replace_broker_roster=broker_roster_is_complete(schedule_a_broker_rows),
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1255,7 +1259,8 @@ class FTWilliamsReviewService:
         payload: FTWilliamsBrokerMatchesRequest,
     ) -> FTWilliamsReview:
         repo = get_repository()
-        if not await repo.get_filing(filing_id):
+        filing = await repo.get_filing(filing_id)
+        if not filing:
             raise ValueError("Filing not found")
         review = await repo.get_ftwilliams_review(filing_id)
         if not review:
@@ -1293,6 +1298,18 @@ class FTWilliamsReviewService:
                 )
             )
 
+        selected_record = next((record for record in review.schedule_a_records
+            if str(record.get("ftw_seq_no") or "") == str(review.ftw_seq_no or "")), None)
+        # Validate the complete decision set against this Schedule A snapshot
+        # before saving anything. Never persist an out-of-range/stale target.
+        match_schedule_a_brokers(
+            self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows),
+            current_schedule_a_broker_rows(selected_record),
+            decisions={decision.extracted_index: {
+                "ftw_index": decision.ftw_index,
+                "create_new": decision.status == "CONFIRMED_NEW",
+            } for decision in decisions},
+        )
         review.schedule_a_broker_matches = decisions
         await repo.upsert_ftwilliams_review(review)
         updated_review = await self.prepare_review(filing_id, send_queries=False)
@@ -1345,6 +1362,12 @@ class FTWilliamsReviewService:
                     for i, saved in enumerate(filing.schedule_a_broker_rows)]
             row.evidence = deepcopy(previous.evidence)
             row.confidence = previous.confidence
+            if any(getattr(previous, attr) != getattr(row, attr) for attr in BROKER_IDENTITY_ATTRIBUTES):
+                row.validation_results = [v for v in row.validation_results if v.validator != "reviewer_broker_identity_confirmation"]
+                row.validation_results.append(ExtractionValidationResult(
+                    validator="reviewer_broker_identity_confirmation", status="PASS",
+                    normalized_value=broker_identity_review_key(row),
+                    reason="Reviewer explicitly edited this recipient identity; original source evidence is retained."))
             for result in previous.validation_results:
                 if result.status == "ERROR" and result.validator in SOURCE_REVIEW_VALIDATORS:
                     if result not in row.validation_results:
@@ -3893,7 +3916,6 @@ class FTWilliamsReviewService:
                     row = {
                         child.tag: str(child.text or "").strip()
                         for child in list(record)
-                        if str(child.text or "").strip()
                     }
                     if row:
                         subparts.setdefault(record.tag, []).append(row)
@@ -4016,7 +4038,7 @@ class FTWilliamsReviewService:
             for index, expected_broker in enumerate(expected_brokers):
                 actual_broker = matched_actual_brokers[index] if index < len(matched_actual_brokers) else {}
                 for tag, expected_value in expected_broker.items():
-                    actual_value = actual_broker.get(tag)
+                    actual_value = actual_broker.get(tag, "" if expected_value == "" else None)
                     if actual_value is None or not self._readback_values_equal(expected_value, actual_value, tag=tag):
                         mismatches.append(
                             {
@@ -4906,6 +4928,16 @@ class FTWilliamsReviewService:
                     if invalid_current_value
                     else "FT Williams is blank and the extracted value is valid."
                 )
+            elif (
+                field.form_type == FormType.FORM_5500
+                and field.source_document_type == DocumentType.PLAN_WORKSHEET
+                and tag in {"TotPartcpBoyCnt", "TotActPartcpBoyCnt"}
+                and field.status == ExtractedFieldStatus.MATCHED
+                and field.confidence >= 0.8
+                and str(field.source_text or "").strip()
+            ):
+                decision = FTWFieldDecision.WILL_UPDATE
+                decision_reason = "The verified worksheet beginning-participant count takes precedence over the carried-forward value."
             elif field.status == ExtractedFieldStatus.EDITED:
                 decision = FTWFieldDecision.WILL_UPDATE
                 decision_reason = "A reviewer confirmed the proposed FT Williams value."
@@ -5118,7 +5150,13 @@ class FTWilliamsReviewService:
         matches = match_schedule_a_brokers(extracted_rows, current_rows, decisions=decisions)
         if not all(match.resolved for match in matches):
             return matches, []
-        return matches, resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches)
+        resolved = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches,
+            source_roster_complete=broker_roster_is_complete(extracted_rows))
+        if broker_roster_is_complete(extracted_rows):
+            # Only a source-attested roster may remove prior-year recipients.
+            # Unknown/incomplete sources keep the existing positional overrides.
+            resolved = [row for row in resolved if row is not None and broker_row_has_payment(row)]
+        return matches, resolved
 
     def _same_schedule_a_selection(self, previous: dict | None, current: dict | None) -> bool:
         if bool((previous or {}).get("create_new")) != bool((current or {}).get("create_new")):
@@ -5996,7 +6034,8 @@ class FTWilliamsReviewService:
                 add_new_schedule_a=bool(review.schedule_a_match.get("create_new")),
                 new_schedule_desc=review.schedule_a_match.get("schedule_desc"),
                 schedule_a_broker_rows=resolved_brokers,
-                form_5500_current_values=review.form_5500_current_values)
+                form_5500_current_values=review.form_5500_current_values,
+                replace_broker_roster=include_broker_updates and broker_roster_is_complete(review.schedule_a_broker_rows))
             if not review.update_xml_schedule_a:
                 raise ValueError("Current FT Williams Schedule A data is incomplete. Refresh it before sending the selected fields.")
 
@@ -6014,6 +6053,12 @@ class FTWilliamsReviewService:
             row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
             for row in review.schedule_a_broker_rows or []
         ]
+        if broker_roster_is_complete(extracted_rows):
+            selected = next((record for record in review.schedule_a_records
+                if str(record.get("ftw_seq_no")) == str(review.ftw_seq_no)), None)
+            paid_rows = [row for row in extracted_rows if broker_row_has_payment(row)]
+            if len(current_schedule_a_broker_rows(selected)) != len(paid_rows):
+                return True
         for match in review.schedule_a_broker_matches or []:
             if not match.resolved:
                 continue
@@ -6030,10 +6075,15 @@ class FTWilliamsReviewService:
             if not match.current_row:
                 return True
             extracted = extracted_rows[match.extracted_index]
+            if broker_identity_is_confirmed(extracted) and any(
+                getattr(extracted, attr) != getattr(match.current_row, attr) for attr in BROKER_IDENTITY_ATTRIBUTES
+            ):
+                return True
             for attribute, tag in (
                 ("commission_total", "CommPdAmtXX"),
                 ("fee_total", "FeesPdAmtXX"),
                 ("organization_code", "CodeXX"),
+                ("purpose", "FeesPdTextXX"),
             ):
                 proposed = getattr(extracted, attribute)
                 current = getattr(match.current_row, attribute)
@@ -6615,6 +6665,7 @@ class FTWilliamsReviewService:
         new_schedule_desc: str | None = None,
         schedule_a_broker_rows: list | None = None,
         form_5500_current_values: dict[str, str] | None = None,
+        replace_broker_roster: bool = False,
     ) -> str:
         if schedule_update_blocked:
             return ""
@@ -6646,6 +6697,7 @@ class FTWilliamsReviewService:
             all_record_fields=all_record_fields,
             transaction_type="2",
             schedule_a_broker_rows=schedule_a_broker_rows,
+            replace_broker_roster=replace_broker_roster,
             **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
         )
 
@@ -6719,6 +6771,7 @@ class FTWilliamsReviewService:
             matched_ftw_seq_no=None if is_new_schedule else review.schedule_a_match.get("ftw_seq_no"),
             require_exact_payment_controls=True,
             schedule_a_broker_rows=resolved_broker_rows,
+            replace_broker_roster=check_brokers and broker_roster_is_complete(review.schedule_a_broker_rows),
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])

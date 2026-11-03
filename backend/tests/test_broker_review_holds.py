@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.repositories as repositories
 from app.models import (
-    ExtractionValidationResult, Filing, FTWilliamsReview,
+    ExtractionValidationResult, Filing, FormType, FTWilliamsReview,
     FTWilliamsScheduleABrokerRowsRequest, ScheduleABrokerMatch,
     ScheduleABrokerRow, SourceEvidence,
 )
@@ -91,6 +91,38 @@ class BrokerReviewHoldTests(unittest.TestCase):
     def test_invalid_zip_remains_rejected(self):
         with self.assertRaisesRegex(ValueError, "ZIP"):
             self.save([broker()], [broker(zip_code="50398-900")])
+
+    def test_edited_broker_identity_reaches_the_explicitly_selected_ftw_row(self):
+        from app.services.schedule_a_broker_matching import resolved_schedule_a_broker_rows
+        original = broker(validation_results=[], decision="AUTOMATIC", fee_total="0")
+        submitted = original.model_copy(update={"name": "CORRECTED BROKER LLC", "address_line_1": "42 MAIN ST"})
+        stored = self.save([original], [submitted])
+        match = ScheduleABrokerMatch(extracted_index=0, ftw_index=0, status="CONFIRMED", resolved=True)
+        current = [{"NameXX": original.name, "AddressLine1XX": original.address_line_1, "CommPdAmtXX": "21871.85"}]
+        updated = resolved_schedule_a_broker_rows(stored.schedule_a_broker_rows, current, [match])[0]
+        self.assertEqual(updated.name, "CORRECTED BROKER LLC")
+        self.assertEqual(updated.address_line_1, "42 MAIN ST")
+        self.assertEqual(updated.commission_total, original.commission_total)
+
+    def test_confirmed_identity_edit_can_clear_an_old_suite_without_restoring_it(self):
+        import xml.etree.ElementTree as ET
+        from app.services.xml_builder import build_schedule_a_records_update_xml
+        original = broker(validation_results=[], decision="AUTOMATIC", fee_total="0", address_line_2="OLD SUITE")
+        submitted = original.model_copy(update={"address_line_2": ""})
+        stored = self.save([original], [submitted])
+        xml = build_schedule_a_records_update_xml([{ "ftw_seq_no": "1", "query_results": {"ScheduleDesc": "TEST"},
+            "query_subparts": {"Broker": [{"NameXX": original.name, "AddressLine2XX": "OLD SUITE"}]}}],
+            "1", [], year="2025", schedule_a_broker_rows=stored.schedule_a_broker_rows)
+        self.assertEqual(ET.fromstring(xml).findtext(".//Broker/AddressLine2XX"), "")
+        self.assertNotIn("OLD SUITE", xml)
+        service = FTWilliamsReviewService()
+        expected = service._update_documents(xml, "DOLScheduleAData")[0]
+        broker_row = expected["__subparts__"]["Broker"][0]
+        self.assertIn("AddressLine2XX", broker_row)
+        mismatches = service._compare_readback_document(FormType.SCHEDULE_A, expected,
+            {"ScheduleDesc": "TEST", "OverrideCommissionsAndFees": "0"},
+            actual_subparts={"Broker": [{**broker_row, "AddressLine2XX": "OLD SUITE"}]})
+        self.assertTrue(any("AddressLine2" in item["tag"] for item in mismatches))
 
     def test_blank_zip_does_not_clear_source_hold(self):
         stored = self.save([broker()], [broker(zip_code="")])
