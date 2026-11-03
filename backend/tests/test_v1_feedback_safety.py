@@ -14,6 +14,21 @@ from app.models import NormalizedExtractionField, NormalizedExtractionResult, So
 
 
 class V1FeedbackSafetyTests(unittest.TestCase):
+    def test_empty_replacement_roster_readback_must_confirm_old_rows_are_gone(self):
+        xml = build_schedule_a_records_update_xml([{"ftw_seq_no": "1", "query_results": {
+            "ScheduleDesc": "TEST"}, "query_subparts": {"Broker": [{
+                "NameXX": "Old broker", "CommPdAmtXX": "100"}]}}], "1", [], year="2025",
+            schedule_a_broker_rows=[], replace_broker_roster=True)
+        service = FTWilliamsReviewService()
+        expected = service._update_documents(xml, "DOLScheduleAData")[0]
+        self.assertEqual(expected.get("__subparts__"), {"Broker": []})
+        mismatch = service._compare_readback_document(FormType.SCHEDULE_A, expected,
+            {"ScheduleDesc": "TEST", "OverrideCommissionsAndFees": "1"},
+            actual_subparts={"Broker": [{"NameXX": "Old broker", "CommPdAmtXX": "100"}]})
+        self.assertTrue(any(row.get("tag") == "DOLSubPartData/Broker" for row in mismatch))
+        self.assertEqual(service._compare_readback_document(FormType.SCHEDULE_A, expected,
+            {"ScheduleDesc": "TEST", "OverrideCommissionsAndFees": "1"}, actual_subparts={}), [])
+
     def test_confirmed_empty_roster_does_not_reuse_stale_vendor_payment_totals(self):
         records = [{"ftw_seq_no": "1", "query_results": {"ScheduleDesc": "TEST",
             "InsBrokerCommTotAmt": "100", "InsBrokerFeesTotAmt": "20", "PlanYearBeginDate": "01/01/2025"},
