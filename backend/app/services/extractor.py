@@ -536,7 +536,7 @@ class ExtractionService:
         if file_name.lower().endswith('.pdf'):
             from app.services.schedule_a_native_conflicts import apply_native_provider_conflict_holds
             apply_native_provider_conflict_holds(final_result,file_bytes)
-            from app.services.schedule_a_broker_roster import attest_source_broker_roster, separate_service_provider_disclosures, source_roster_review
+            from app.services.schedule_a_broker_roster import attest_source_broker_roster, note_incomplete_source_roster, separate_service_provider_disclosures, source_roster_review
             separate_service_provider_disclosures(final_result, review_pages)
             roster_raw = final_result.raw if isinstance(final_result.raw, dict) else {}
             if final_result.schedule_a_broker_rows and any(isinstance(stage, dict)
@@ -553,6 +553,8 @@ class ExtractionService:
                         "reason": "Independent source read failed; existing brokers must be preserved.",
                         "error_type": type(exc).__name__}
                     final_result.raw = roster_raw
+                    note_incomplete_source_roster(final_result,
+                        'Independent full-document broker read failed; existing brokers will be preserved.')
         from app.services.schedule_a_broker_roster import source_roster_review
         final_result.schedule_a_broker_roster = source_roster_review(final_result.schedule_a_broker_rows, final_result.schedule_a_broker_roster)
         capture_extraction_stage(final_result, "final_normalized")

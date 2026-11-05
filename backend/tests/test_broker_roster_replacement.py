@@ -11,6 +11,19 @@ import xml.etree.ElementTree as ET
 
 
 class BrokerRosterReplacementTests(unittest.TestCase):
+    def test_completeness_holds_explain_missing_read_source_evidence_and_totals(self):
+        for missing, expected in [('read','full-document'),('evidence','page evidence'),('totals','section totals')]:
+            with self.subTest(missing=missing):
+                result=self.verified()
+                independent=[r.model_copy(deep=True) for r in result.schedule_a_broker_rows]
+                if missing=='read': independent=[]
+                if missing=='evidence': independent[0].evidence=[]
+                if missing=='totals': result.fields=[]
+                attest_source_broker_roster(result,independent,'a'*64)
+                status=source_roster_review(result.schedule_a_broker_rows,result.schedule_a_broker_roster)
+                self.assertEqual(status.mode,'PRESERVE')
+                self.assertTrue(any(expected in reason for reason in status.reasons),status.reasons)
+
     def test_unclassified_empty_roster_cannot_be_reported_as_verified_noop(self):
         from app.models import ScheduleABrokerRosterReview
         review=FTWilliamsReview(filing_id='qa',current_query_success=True,current_query_complete=True,
@@ -73,6 +86,15 @@ class BrokerRosterReplacementTests(unittest.TestCase):
         result.schedule_a_broker_rows[0].organization_code='6'
         attest_source_broker_roster(result,independent,'a'*64)
         self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,'PRESERVE')
+
+    def test_organization_source_agreement_honors_blank_default_but_not_explicit_zero(self):
+        for source_code,mode in [(None,'REPLACE'),('','REPLACE'),(' \t','REPLACE'),('03','REPLACE'),('0','PRESERVE')]:
+            with self.subTest(source_code=source_code):
+                result=self.verified()
+                independent=[r.model_copy(deep=True) for r in result.schedule_a_broker_rows]
+                independent[0].organization_code=source_code
+                attest_source_broker_roster(result,independent,'a'*64)
+                self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,mode)
 
     def test_more_than_seven_recipients_need_zero_row_assignments(self):
         result=self.verified(count=9)

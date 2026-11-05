@@ -78,9 +78,13 @@ def _key(row):
         _money(row.commission_total), _money(row.fee_total))
 
 
+def _organization_code(row):
+    return re.sub(r'^0+(?=\d)', '', str(row.organization_code or '').strip() or '3')
+
+
 def _fingerprint(rows):
     from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
-    keys = [(*_key(row), str(row.organization_code or "3"),
+    keys = [(*_key(row), _organization_code(row),
              canonical_broker_payment_purpose(row.commission_total, row.fee_total)) for row in rows]
     return hashlib.sha256(json.dumps(sorted(keys, key=lambda key: json.dumps(key)), separators=(",", ":")).encode()).hexdigest()
 
@@ -102,47 +106,57 @@ def broker_roster_is_complete(rows):
     return bool(set.intersection(*proofs))
 
 
+def note_incomplete_source_roster(result, reason):
+    previous = result.schedule_a_broker_roster
+    status = previous.model_copy(deep=True) if previous else ScheduleABrokerRosterReview()
+    status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
+    status.reasons = [reason]
+    result.schedule_a_broker_roster = status
+
+
 def attest_source_broker_roster(result, independent_rows, source_sha256):
     rows = result.schedule_a_broker_rows
     for row in rows:
         row.validation_results = [v for v in row.validation_results if v.validator != VALIDATOR]
-    if not rows or not independent_rows or not re.fullmatch(r"[a-f0-9]{64}", str(source_sha256)):
-        return
+    if not rows or not independent_rows:
+        return note_incomplete_source_roster(result, 'No complete independent full-document broker read is available; existing brokers will be preserved.')
+    if not re.fullmatch(r"[a-f0-9]{64}", str(source_sha256)):
+        return note_incomplete_source_roster(result, 'The source PDF identity could not be verified; existing brokers will be preserved.')
     if len(result.schedule_a_worksheet_summaries) > 1:
-        return
+        return note_incomplete_source_roster(result, 'Multiple Schedule A summaries require separate source-roster verification.')
     raw = result.raw if isinstance(result.raw, dict) else {}
     if int(raw.get("semantic_resolution", {}).get("group_count") or 0) > 1:
-        return
+        return note_incomplete_source_roster(result, 'Multiple source contracts require separate broker-roster verification.')
     provider = next((stage for stage in raw.get("extraction_stages", [])
                      if stage.get("stage") == "structured_provider_normalized"), {})
     try:
         provider_rows = [ScheduleABrokerRow.model_validate(row) for row in provider.get("broker_rows", [])
                          if row.get('source_page') not in raw.get('service_provider_disclosure_pages', [])]
     except (ValueError, TypeError):
-        return
+        return note_incomplete_source_roster(result, 'Provider broker information could not be validated against the source roster.')
     # Running the same local parser twice is not independent corroboration.
     if not provider_rows or Counter(_key(row) for row in provider_rows) != Counter(_key(row) for row in independent_rows):
-        return
+        return note_incomplete_source_roster(result, 'Provider recipients or payment categories do not agree with the independent source read.')
     if any(row.decision == "REVIEW_REQUIRED" or row.confidence < .8
            or any(v.status == "ERROR" for v in row.validation_results)
            or not row.source_page or not any(e.page == row.source_page and e.source_text for e in row.evidence)
            or _money(row.commission_total) is None or _money(row.fee_total) is None
            for row in [*rows, *independent_rows]):
-        return
+        return note_incomplete_source_roster(result, 'Broker classification, amounts, confidence or page evidence are insufficient for automatic replacement.')
     if Counter(_key(row) for row in rows) != Counter(_key(row) for row in independent_rows):
-        return
+        return note_incomplete_source_roster(result, 'Final recipients or payment categories do not agree with the independent source read.')
     # Provider recovery may legitimately correct its original code. The FINAL
     # code must still agree with the independent source read (including the
     # approved blank-to-3 default); matching names and amounts alone cannot
     # approve a different recipient classification.
-    source_key = lambda row: (*_key(row), re.sub(r'^0+(?=\d)', '', str(row.organization_code or '3').strip()))
+    source_key = lambda row: (*_key(row), _organization_code(row))
     if Counter(source_key(row) for row in rows) != Counter(source_key(row) for row in independent_rows):
-        return
+        return note_incomplete_source_roster(result, 'Final broker organization codes do not agree with the independent source read.')
     for prefix, attribute in (("3b.", "commission_total"), ("3c.", "fee_total")):
         totals = {Decimal(value) for field in result.fields if field.field_name.lower().startswith(prefix)
                   and field.decision != "REVIEW_REQUIRED" and (value := _money(field.value)) is not None}
         if len(totals) != 1 or sum((Decimal(_money(getattr(row, attribute))) for row in rows), Decimal(0)) not in totals:
-            return
+            return note_incomplete_source_roster(result, 'Broker payments do not reconcile with verified commission and fee section totals.')
     proof = source_sha256 + ":" + _fingerprint(rows)
     for row in rows:
         row.validation_results.append(ExtractionValidationResult(validator=VALIDATOR, status="PASS",
