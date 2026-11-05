@@ -1,6 +1,6 @@
 """Broker-list replacement and source-section regressions."""
 import unittest
-from app.models import NormalizedExtractionResult, ScheduleABrokerRow, NormalizedExtractionField, SourceEvidence, FTWilliamsReview, ScheduleABrokerMatch
+from app.models import NormalizedExtractionResult, ScheduleABrokerRow, NormalizedExtractionField, SourceEvidence, FTWilliamsReview, ScheduleABrokerMatch, FormType
 from app.services.extractor import reconcile_aetna_part_i_compensation
 from app.services.schedule_a_broker_roster import attest_source_broker_roster
 from app.services.ftwilliams_review import FTWilliamsReviewService
@@ -11,6 +11,60 @@ import xml.etree.ElementTree as ET
 
 
 class BrokerRosterReplacementTests(unittest.TestCase):
+    def test_replacement_sends_totals_from_final_roster_and_verifies_them(self):
+        from app.services.xml_builder import schedule_a_replacement_data_gaps
+        records=[{'ftw_seq_no':'1','query_results':{'ScheduleDesc':'QA',
+            'InsBrokerCommTotAmt':'900','InsBrokerFeesTotAmt':'50'}}]
+        rows=[ScheduleABrokerRow(name='Current Broker',commission_total='100',fee_total='-20',
+            purpose='COMMISSIONS AND FEES')]
+        xml=build_schedule_a_records_update_xml(records,'1',[],year='2025',
+            schedule_a_broker_rows=rows,replace_broker_roster=True)
+        document=ET.fromstring(xml).find('.//DOLScheduleAData')
+        self.assertEqual(document.findtext('InsBrokerCommTotAmt'),'100')
+        self.assertEqual(document.findtext('InsBrokerFeesTotAmt'),'-20')
+        self.assertEqual(schedule_a_replacement_data_gaps(records,xml,matched_ftw_seq_no='1',
+            schedule_a_broker_rows=rows,replace_broker_roster=True),[])
+        service=FTWilliamsReviewService()
+        expected=service._update_documents(xml,'DOLScheduleAData')[0]
+        actual={k:v for k,v in expected.items() if not k.startswith('__') and k!='InsBrokerCommTotAmt'}
+        mismatches=service._compare_readback_document(FormType.SCHEDULE_A,expected,actual,
+            actual_subparts=expected['__subparts__'])
+        self.assertTrue(any(m.get('tag')=='InsBrokerCommTotAmt' for m in mismatches))
+
+    def test_replacement_totals_use_exact_signed_final_rows_and_preserve_siblings(self):
+        records=[{'ftw_seq_no':'1','query_results':{'ScheduleDesc':'QA','InsBrokerCommTotAmt':'900',
+            'InsBrokerFeesTotAmt':'50','InsPolicyFromDate':'10/01/2025'}},
+            {'ftw_seq_no':'2','query_results':{'ScheduleDesc':'SIBLING','InsBrokerCommTotAmt':'321',
+             'InsBrokerFeesTotAmt':'17'},'query_subparts':{'Broker':[{'NameXX':'Sibling','CommPdAmtXX':'321','FeesPdAmtXX':'17'}]}}]
+        rows=[ScheduleABrokerRow(name='First',commission_total='100.10',fee_total='-20.20'),
+              ScheduleABrokerRow(name='Second',commission_total='-0.01',fee_total='20.20')]
+        xml=build_schedule_a_records_update_xml(records,'1',[],year='2025',
+            schedule_a_broker_rows=rows,replace_broker_roster=True)
+        selected,sibling=ET.fromstring(xml).findall('.//DOLScheduleAData')
+        self.assertEqual(selected.findtext('InsBrokerCommTotAmt'),'100.09')
+        self.assertEqual(selected.findtext('InsBrokerFeesTotAmt'),'0')
+        self.assertEqual(selected.findtext('OverrideCommissionsAndFees'),'0')
+        self.assertEqual(selected.findtext('InsPolicyFromDate'),'10/01/2025')
+        self.assertEqual(sibling.findtext('InsBrokerCommTotAmt'),'321')
+        self.assertEqual(sibling.findtext('InsBrokerFeesTotAmt'),'17')
+        self.assertEqual(sibling.findtext('.//Broker/NameXX'),'Sibling')
+
+    def test_replacement_guard_rejects_missing_or_stale_header_totals(self):
+        from app.services.xml_builder import schedule_a_replacement_data_gaps
+        records=[{'ftw_seq_no':'1','query_results':{'ScheduleDesc':'QA'}}]
+        rows=[ScheduleABrokerRow(name='Current',commission_total='100',fee_total='-20')]
+        xml=build_schedule_a_records_update_xml(records,'1',[],year='2025',
+            schedule_a_broker_rows=rows,replace_broker_roster=True)
+        for tag in ('InsBrokerCommTotAmt','InsBrokerFeesTotAmt'):
+            for replacement in (None,'900'):
+                with self.subTest(tag=tag,replacement=replacement):
+                    root=ET.fromstring(xml);document=root.find('.//DOLScheduleAData');node=document.find(tag)
+                    if replacement is None: document.remove(node)
+                    else: node.text=replacement
+                    gaps=schedule_a_replacement_data_gaps(records,ET.tostring(root,encoding='unicode'),
+                        matched_ftw_seq_no='1',schedule_a_broker_rows=rows,replace_broker_roster=True)
+                    self.assertTrue(any(tag in gap for gap in gaps),gaps)
+
     def coverage(self,count=1):
         return {'source_sha256':'a'*64,'page_count':count,
             'pages':[{'page':i,'text_sha256':'b'*64,'readable':True} for i in range(1,count+1)]}

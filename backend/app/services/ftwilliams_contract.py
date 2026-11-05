@@ -57,6 +57,11 @@ SCHEDULE_A_ALLOWED_UPDATE_TAGS = set(SCHEDULE_A_TAGS_BY_RULE.values()) | {
     # Verified against the 2025 FT Williams Schedule A test form. This is the
     # HTML/ftwLink field behind the "No commissions or fees paid" checkbox.
     "OverrideCommissionsAndFees",
+    # Type-2 broker replacement must send these header totals explicitly.
+    # Disposable vendor read-back proved omission clears them, rather than
+    # recalculating them from the replacement Broker subparts.
+    "InsBrokerCommTotAmt",
+    "InsBrokerFeesTotAmt",
 }
 
 SCHEDULE_A_REPEATABLE_BROKER_TAG_BASES = {
