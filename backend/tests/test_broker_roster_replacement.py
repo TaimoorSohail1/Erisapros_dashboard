@@ -154,4 +154,24 @@ $240,148.74 Yes No""")]
         self.assertEqual(result.schedule_a_broker_roster.state, "NEEDS_REVIEW")
 
 
+class BrokerEditInvalidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_excluding_last_preview_row_keeps_roster_review_and_disclosure_evidence(self):
+        from app.models import ScheduleABrokerRosterReview, FTWilliamsScheduleABrokerRowsRequest
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        previous=ScheduleABrokerRosterReview(other_disclosures=[{'name':'Separate provider','amount':'240148.74'}])
+        filing=SimpleNamespace(schedule_a_broker_rows=[ScheduleABrokerRow(name='Source broker')],schedule_a_broker_roster=previous)
+        review=FTWilliamsReview(filing_id='qa')
+        repo=SimpleNamespace(get_filing=AsyncMock(return_value=filing),update_filing=AsyncMock(),
+            get_ftwilliams_review=AsyncMock(return_value=review),upsert_ftwilliams_review=AsyncMock(),add_audit=AsyncMock())
+        service=FTWilliamsReviewService()
+        with patch('app.services.ftwilliams_review.get_repository',return_value=repo), patch.object(service,'prepare_review',AsyncMock(return_value=review)):
+            await service.update_schedule_a_broker_rows('qa',FTWilliamsScheduleABrokerRowsRequest(rows=[],action='excluded'))
+        status=repo.update_filing.call_args.args[1]['schedule_a_broker_roster']
+        self.assertIsNotNone(status,'An edited empty preview must not become an unreviewed legacy field-only extraction')
+        status=ScheduleABrokerRosterReview.model_validate(status)
+        self.assertEqual(status.mode,'PRESERVE')
+        self.assertEqual(status.other_disclosures,previous.other_disclosures)
+
+
 if __name__ == "__main__": unittest.main()

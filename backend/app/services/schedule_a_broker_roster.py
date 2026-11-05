@@ -144,7 +144,7 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
 
 def source_roster_review(rows, previous=None):
     """Derive source eligibility from current evidence, never saved row matches."""
-    status = previous.model_copy(deep=True) if previous else ScheduleABrokerRosterReview()
+    status = ScheduleABrokerRosterReview.model_validate(previous).model_copy(deep=True) if previous else ScheduleABrokerRosterReview()
     status.state, status.mode = "NEEDS_REVIEW", "PRESERVE"
     status.replacement_count = sum(broker_row_has_payment(row) for row in rows)
     status.roster_sha256 = _fingerprint(rows)

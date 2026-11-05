@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from app.config import get_settings
 from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values, normalize_broker_payment_purposes
 from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
-from app.services.schedule_a_broker_roster import broker_roster_is_complete, broker_row_has_payment, bind_roster_review
+from app.services.schedule_a_broker_roster import broker_roster_is_complete, broker_row_has_payment, bind_roster_review, source_roster_review
 from app.services.schedule_a_broker_matching import BROKER_IDENTITY_ATTRIBUTES, broker_identity_review_key, broker_identity_is_confirmed
 from app.models import (
     AuditLog,
@@ -1406,7 +1406,10 @@ class FTWilliamsReviewService:
 
         for row in rows:
             row.validation_results = [v for v in row.validation_results if v.validator != "complete_source_broker_roster"]
-        await repo.update_filing(filing_id, {"schedule_a_broker_rows": rows, "schedule_a_broker_roster": None, "error_message": None})
+        invalidated_roster = source_roster_review(rows, getattr(filing, "schedule_a_broker_roster", None))
+        invalidated_roster.reasons.insert(0, "Broker edits invalidate source-list verification. Reprocess or review the complete source before replacement.")
+        await repo.update_filing(filing_id, {"schedule_a_broker_rows": rows,
+            "schedule_a_broker_roster": invalidated_roster.model_dump(mode="json"), "error_message": None})
         review = await repo.get_ftwilliams_review(filing_id)
         if review:
             # Row indexes may change after an edit or exclusion. Re-resolve them
@@ -2885,16 +2888,19 @@ class FTWilliamsReviewService:
         # A cached snapshot can omit a Schedule A that was manually added in
         # FT Williams after the cache was populated.
         can_reuse_current_snapshot = False
+        reviewed_broker_snapshot = (existing_review.schedule_a_broker_roster.current_snapshot_sha256
+            if existing_review and existing_review.schedule_a_broker_roster else None)
         review = await self.prepare_review(
             filing_id,
             send_queries=refresh_current_before_update,
             reuse_current_snapshot=can_reuse_current_snapshot,
         )
-        if (existing_review and existing_review.schedule_a_broker_roster and review.schedule_a_broker_roster
+        if (reviewed_broker_snapshot and review.schedule_a_broker_roster
                 and (selected_field_ids is None or include_broker_updates)
-                and existing_review.schedule_a_broker_roster.current_snapshot_sha256
-                != review.schedule_a_broker_roster.current_snapshot_sha256):
-            raise ValueError("FTWilliam destination or broker data changed after review. Refresh and review the new broker replacement before sending.")
+                and reviewed_broker_snapshot != review.schedule_a_broker_roster.current_snapshot_sha256):
+            error_message = "FTWilliam destination or broker data changed after review. Refresh and review the new broker replacement before sending."
+            await self._record_update_failure(repo, filing_id, review, error_message)
+            raise ValueError(error_message)
         if not review.configured:
             error_message = "FT Williams endpoint and KeyID must be configured before sending approved updates."
             await self._record_update_failure(repo, filing_id, review, error_message)
