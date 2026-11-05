@@ -2,7 +2,7 @@ import type { FTWilliamsReview } from "./types";
 
 export interface BrokerMatchChoice { index: number; label: string }
 
-export function brokerMatchChoices(review: FTWilliamsReview | null): BrokerMatchChoice[] {
+export function brokerCurrentRows(review: FTWilliamsReview | null): Record<string, unknown>[] {
   const record = review?.schedule_a_records?.find((item) => String(item.ftw_seq_no) === String(review.ftw_seq_no));
   if (!record) return [];
   const subparts = record.query_subparts as { Broker?: Record<string, unknown>[] } | undefined;
@@ -20,6 +20,11 @@ export function brokerMatchChoices(review: FTWilliamsReview | null): BrokerMatch
       rows = [...grouped].sort(([first], [second]) => first - second).map(([, row]) => row);
     }
   }
+  return rows;
+}
+
+export function brokerMatchChoices(review: FTWilliamsReview | null): BrokerMatchChoice[] {
+  const rows = brokerCurrentRows(review);
   const value = (row: Record<string, unknown>, name: string) => String(Object.entries(row)
     .find(([tag]) => new RegExp(`^${name}(?:XX|\\d{1,2})$`).test(tag))?.[1] ?? "").trim();
   return rows.map((row, index) => ({ index, label: `FT Williams row ${index + 1}: ${[

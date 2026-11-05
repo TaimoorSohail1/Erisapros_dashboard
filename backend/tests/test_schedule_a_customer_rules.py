@@ -34,7 +34,7 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
         self.assertIsNone(fields[0].page)
         self.assertEqual(len([d for d in result.raw["customer_defaults"] if d["value"] == "00000"]), 1)
 
-    def test_brokers_with_explicit_zero_commissions_and_fees_are_excluded(self):
+    def test_confirmed_unpaid_brokers_stay_in_source_preview_but_not_replacement(self):
         result = NormalizedExtractionResult(
             provider="EyeLevel",
             fields=[],
@@ -56,7 +56,9 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
 
         apply_customer_defaults(result)
 
-        self.assertEqual([row.name for row in result.schedule_a_broker_rows], ["Paid Broker"])
+        self.assertEqual([row.name for row in result.schedule_a_broker_rows], ["Zero Broker", "Paid Broker"])
+        from app.services.schedule_a_broker_roster import broker_row_has_payment
+        self.assertEqual([row.name for row in result.schedule_a_broker_rows if broker_row_has_payment(row)], ["Paid Broker"])
         exclusion = next(
             item
             for item in result.raw["customer_rules"]
@@ -64,7 +66,7 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
         )
         self.assertEqual(exclusion["broker"], "Zero Broker")
 
-    def test_unlabelled_positive_broker_payment_is_classified_as_a_fee(self):
+    def test_unclassified_broker_payment_requires_review_without_inventing_fee_category(self):
         result = NormalizedExtractionResult(
             provider="EyeLevel",
             fields=[],
@@ -83,10 +85,10 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
         apply_customer_defaults(result)
 
         row = result.schedule_a_broker_rows[0]
-        self.assertEqual(row.commission_total, "0")
-        self.assertEqual(row.fee_total, "450.25")
-        self.assertEqual(row.purpose, "FEES")
-        self.assertEqual(result.raw["customer_rules"][0]["rule"], "unlabelled_broker_payment_to_fee")
+        self.assertEqual(row.commission_total, "450.25")
+        self.assertEqual(row.fee_total, "0")
+        self.assertEqual(row.decision, "REVIEW_REQUIRED")
+        self.assertTrue(any(v.validator == "payment_classification_ambiguity" and v.status == "ERROR" for v in row.validation_results))
 
     def enrich(self, text, value="17"):
         return enrich_schedule_a_result(

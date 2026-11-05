@@ -25,7 +25,7 @@ import type { FormEvent, ReactNode } from "react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "../router";
 import { ftwWorkflowStep } from "../ftwWorkflowStep";
-import { brokerMatchChoices, type BrokerMatchChoice } from "../brokerMatchChoices";
+import { brokerMatchChoices, brokerCurrentRows, type BrokerMatchChoice } from "../brokerMatchChoices";
 import { useDialogFocus } from "../ui/useDialogFocus";
 import {
   ApiRequestError,
@@ -48,7 +48,7 @@ import {
   updateField,
   updateFTWilliamsScheduleABrokerRows,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
@@ -313,7 +313,8 @@ export function FilingReviewPage() {
   const ftwReview = filing?.ftw_review || null;
   const ftwPlanUrl = ftwPlanPageUrl(ftwReview);
   const scheduleAContractType = ftwReview?.schedule_a_contract_type || filing?.schedule_a_contract_type || "UNKNOWN";
-  const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows?.length ? ftwReview.schedule_a_broker_rows : filing?.schedule_a_broker_rows || [];
+  const scheduleABrokerRows = ftwReview?.schedule_a_broker_rows ?? filing?.schedule_a_broker_rows ?? [];
+  const brokerRoster = ftwReview?.schedule_a_broker_roster ?? filing?.schedule_a_broker_roster;
   const scheduleABrokerMatches = ftwReview?.schedule_a_broker_matches || [];
   const planYearConflictRequired = Boolean(
     ftwReview?.plan_year_conflict
@@ -365,7 +366,7 @@ export function FilingReviewPage() {
         : []
     ),
   ]);
-  const brokerActionRequiredCount = brokerActionRequiredIndexes.size;
+  const brokerActionRequiredCount = brokerRoster ? (brokerRoster.mode === "REPLACE" ? 0 : 1) : brokerActionRequiredIndexes.size;
   const hardValidationBlockerCount = fieldValidationBlockerRows.length + brokerValidationIssues.length;
   const actionRequiredCount = actionRequiredRows.length + brokerActionRequiredCount + (planYearConflictRequired ? 1 : 0);
   const actionRequiredLabels = [
@@ -427,7 +428,8 @@ export function FilingReviewPage() {
   const scheduleAMatchLabel = scheduleAIsNew ? "New prepared" : ftwReview?.schedule_a_match ? "Matched" : "Pending";
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
   const scheduleABrokersReady = (
-    (!scheduleABrokerRows.length || ftwReview?.schedule_a_broker_match_complete !== false)
+    (brokerRoster ? brokerRoster.mode === "REPLACE"
+      : !scheduleABrokerRows.length && ftwReview?.schedule_a_broker_match_complete !== false)
     && brokerValidationIssues.length === 0
   );
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
@@ -908,7 +910,7 @@ export function FilingReviewPage() {
       setToast({
         tone: "success",
         title: action === "edited" ? "Broker row updated" : "Broker row excluded",
-        message: "The FT Williams preview was rebuilt. Confirm the broker matches before sending.",
+        message: "The FT Williams preview was rebuilt. Review the source broker list and its verification status before sending.",
       });
       return true;
     } catch (error) {
@@ -1228,8 +1230,8 @@ export function FilingReviewPage() {
               <section className="review-issue-summary" role="status" aria-label="Broker review required">
                 <AlertTriangle size={18} aria-hidden="true" />
                 <div>
-                  <strong>{brokerActionRequiredCount} broker row{brokerActionRequiredCount === 1 ? " needs" : "s need"} review</strong>
-                  <span>{brokerValidationIssues[0]?.message || "Confirm the broker match below."}</span>
+                  <strong>Broker list needs review</strong>
+                  <span>{brokerRoster?.reasons[0] || brokerValidationIssues[0]?.message || "Verify the complete source broker list below."}</span>
                 </div>
                 <button className="button secondary" type="button" onClick={() => document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review broker rows</button>
               </section>
@@ -1352,9 +1354,8 @@ export function FilingReviewPage() {
             {activeTab === "ALL" || (activeTab === "NEEDS_DECISION" && brokerActionRequiredCount > 0) ? (
               <ScheduleABrokerRowsPanel
                 busy={ftwBusy}
-                choices={brokerMatchChoices(ftwReview)}
-                matches={scheduleABrokerMatches}
-                onConfirm={saveScheduleABrokerMatch}
+                currentRows={brokerCurrentRows(ftwReview)}
+                roster={brokerRoster}
                 onSaveRows={saveScheduleABrokerRows}
                 rows={scheduleABrokerRows}
               />
@@ -3726,7 +3727,7 @@ function FTWilliamsSendConfirmationModal({
           {brokerRowCount > 0 ? (
             <label className="ftw-send-broker-selection">
               <input type="checkbox" checked={includeBrokerUpdates} disabled={busy} onChange={(event) => onToggleBrokers(event.target.checked)} />
-              Include prepared broker changes (their values and matches must be valid). Unchecked keeps current FTW broker rows unchanged.
+              Include the verified broker-list replacement. Unchecked keeps current FTW brokers unchanged.
             </label>
           ) : null}
 
@@ -3994,21 +3995,18 @@ function brokerRowValidationIssues(row: ScheduleABrokerRow, includeSourceReview 
 
 function ScheduleABrokerRowsPanel({
   busy,
-  choices,
-  matches,
-  onConfirm,
+  currentRows,
+  roster,
   onSaveRows,
   rows,
 }: {
   busy: boolean;
-  choices: BrokerMatchChoice[];
-  matches: ScheduleABrokerMatch[];
-  onConfirm: (extractedIndex: number, ftwIndex?: number, createNew?: boolean) => void;
+  currentRows: Record<string, unknown>[];
+  roster?: ScheduleABrokerRosterReview | null;
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   rows: ScheduleABrokerRow[];
 }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [changingMatchIndex, setChangingMatchIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
   const [showDraftValidation, setShowDraftValidation] = useState(false);
   const editorRef = useRef<HTMLTableRowElement | null>(null);
@@ -4021,7 +4019,8 @@ function ScheduleABrokerRowsPanel({
     return () => window.cancelAnimationFrame(frame);
   }, [editingIndex]);
 
-  if (!rows.length) return null;
+  if (!rows.length && !roster && !currentRows.length) return null;
+  const currentValue = (row: Record<string, unknown>, name: string) => String(Object.entries(row).find(([tag]) => new RegExp(`^${name}(?:XX|\\d{1,2})$`).test(tag))?.[1] ?? "");
 
   function beginEdit(row: ScheduleABrokerRow, index: number) {
     setEditingIndex(index);
@@ -4071,6 +4070,26 @@ function ScheduleABrokerRowsPanel({
         <PanelHeading icon={<ListChecks size={16} />} title="Schedule A broker rows" />
         <span>{rows.length} extracted</span>
       </div>
+      <div className="broker-roster-summary" role="status">
+        <strong>{roster?.mode === "REPLACE" ? (roster.state === "VERIFIED_EMPTY" ? "Verified empty" : "Verified list") : "Needs review"}</strong>
+        <p>{roster?.mode === "REPLACE"
+          ? `Will replace ${roster.existing_count} existing brokers with ${roster.replacement_count} verified broker${roster.replacement_count === 1 ? "" : "s"}.`
+          : "Existing FTWilliam brokers will be preserved until the complete source list and payment categories are verified."}</p>
+        {roster?.reasons.map((reason) => <p key={reason}>{reason}</p>)}
+        <details><summary>Current FTWilliam brokers ({currentRows.length})</summary>
+          <ul>{currentRows.map((row, index) => <li key={index}>
+            {["Name", "AddressLine1", "AddressLine2", "City", "State", "ZipCode"].map((tag) => currentValue(row, tag)).filter(Boolean).join(", ")}
+            {` — Commissions: ${currentValue(row, "CommPdAmt") || "Blank"}; Fees: ${currentValue(row, "FeesPdAmt") || "Blank"}; Purpose: ${currentValue(row, "FeesPdText") || "Blank"}`}
+          </li>)}</ul>
+        </details>
+        {roster?.other_disclosures.map((item, index) => <details key={index}>
+          <summary>Unclassified service-provider disclosure: {item.name} — {item.amount ? `$${item.amount}` : "Amount unconfirmed"} (page {item.page})</summary>
+          <p>{item.address}</p><p>This separate disclosure is not a verified Schedule A commission or fee.</p><pre>{item.source_text}</pre>
+        </details>)}
+        {roster?.evidence.length ? <details><summary>Source evidence</summary>
+          {roster.evidence.map((item, index) => <p key={index}>Page {item.page}: {item.source_text}</p>)}
+        </details> : null}
+      </div>
       <div
         aria-label="Schedule A broker rows"
         className="schedule-a-broker-table-wrap"
@@ -4086,13 +4105,11 @@ function ScheduleABrokerRowsPanel({
               <th>Commissions</th>
               <th>Fees</th>
               <th>Purpose</th>
-              <th>FT Williams row</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row, index) => {
-              const match = matches.find((candidate) => candidate.extracted_index === index);
               const isEditing = editingIndex === index && Boolean(draft);
               const displayRow = editingIndex === index && draft ? draft : row;
               const rowIssues = brokerRowValidationIssues(row);
@@ -4110,26 +4127,9 @@ function ScheduleABrokerRowsPanel({
                   {displayRow.organization_code_defaulted && displayRow.organization_code === "3" ?
                     <small className="broker-draft-badge">Defaulted to 3 because organizational code was blank.</small> : null}
                 </td>
-                <td data-label="Commissions">{displayRow.commission_total || "0"}</td>
-                <td data-label="Fees">{displayRow.fee_total || "0"}</td>
+                <td data-label="Commissions">{displayRow.commission_total ?? "Unconfirmed"}</td>
+                <td data-label="Fees">{displayRow.fee_total ?? "Unconfirmed"}</td>
                 <td data-label="Purpose">{formatBrokerPurpose(displayRow) || "-"}</td>
-                <td data-label="FT Williams row">
-                  {match?.resolved && changingMatchIndex !== index ? (
-                    <>
-                    <span className="broker-match-status broker-match-ready">
-                      {match.status === "CONFIRMED_NEW" || match.status === "AUTO_NEW"
-                        ? "New broker row"
-                        : `Matched to row ${(match.ftw_index ?? 0) + 1}`}
-                    </span>
-                    <button className="button secondary" type="button" disabled={busy} onClick={() => setChangingMatchIndex(index)}>Change match</button>
-                    </>
-                  ) : match ? (
-                    <BrokerMatchDecision key={`${index}-${match.ftw_index ?? "new"}`} choices={choices} match={match} busy={busy || rowIssues.length > 0} onConfirm={onConfirm} />
-                  ) : (
-                    <span className="broker-match-status">Load current FTW data to match</span>
-                  )}
-                  {match?.reason ? <small className="broker-match-reason">{match.reason}</small> : null}
-                </td>
                 <td data-label="Actions">
                   <div className="broker-row-actions">
                     <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
@@ -4143,7 +4143,7 @@ function ScheduleABrokerRowsPanel({
               </tr>
               {rowIssues.length ? (
                 <tr className="broker-row-validation-summary">
-                  <td colSpan={8}>
+                  <td colSpan={7}>
                     <div role="alert">
                       <AlertTriangle size={15} />
                       <div>
@@ -4159,7 +4159,7 @@ function ScheduleABrokerRowsPanel({
               ) : null}
               {isEditing && draft ? (
                 <tr className="broker-edit-row" ref={editorRef}>
-                  <td colSpan={8}>
+                  <td colSpan={7}>
                     <form className="broker-edit-form" onSubmit={submitEdit}>
                       <div className="broker-edit-toolbar">
                         <div>
@@ -4195,7 +4195,7 @@ function ScheduleABrokerRowsPanel({
                       </label>
                       <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
                       <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
-                      <label className="broker-purpose-input">Purpose<input maxLength={70} value={draft.purpose || ""} onChange={(event) => updateDraft("purpose", event.target.value)} /></label>
+                      <label className="broker-purpose-input">Proposed purpose<input readOnly value={formatBrokerPurpose(draft)} /><small>Derived from classified commission and fee totals. Printed wording stays in source evidence.</small></label>
                     </form>
                   </td>
                 </tr>
@@ -4207,7 +4207,7 @@ function ScheduleABrokerRowsPanel({
         </table>
       </div>
       {rows.length > 1 ? (
-        <p>Each extracted broker is matched separately. Existing unmatched FT Williams broker rows are preserved.</p>
+        <p>Verified paid recipients replace the selected Schedule A broker list. Confirmed unpaid recipients are excluded from that replacement.</p>
       ) : null}
     </section>
   );
@@ -4259,11 +4259,16 @@ function organizationCodeLabel(value?: string | null) {
 }
 
 function formatBrokerPurpose(row: ScheduleABrokerRow) {
-  if (row.purpose?.trim()) return row.purpose.trim();
-  return [...new Set([...(row.commission_rows || []), ...(row.fee_rows || [])]
-    .map((item) => String(item.purpose || "").trim())
-    .filter(Boolean))]
-    .join(", ");
+  const nonzero = (value?: string | null) => {
+    const text = String(value ?? "").trim().replace(/[$,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
+    return /^-?\d+(?:\.\d+)?$/.test(text) ? /[1-9]/.test(text) : null;
+  };
+  const commission = nonzero(row.commission_total);
+  const fees = nonzero(row.fee_total);
+  if (commission === null || fees === null || row.validation_results?.some((v) =>
+    v.validator === "payment_classification_ambiguity" && v.status === "ERROR")) return "Unclassified";
+  if (commission && fees) return "COMMISSIONS AND FEES";
+  return commission ? "COMMISSIONS" : fees ? "FEES" : "COMMISSION";
 }
 
 function FTWilliamsComparisonPanel({

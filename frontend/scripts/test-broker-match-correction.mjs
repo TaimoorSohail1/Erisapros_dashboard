@@ -23,6 +23,14 @@ assert.deepEqual(choiceResult([{ Name1: "First" }, { ForeignAddy01: "0" }, { Nam
   [{ index: 0, label: "FT Williams row 1: First" }, { index: 1, label: "FT Williams row 2: Second" }]);
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
+const readyCode = source.slice(source.indexOf("  const scheduleABrokersReady = ("), source.indexOf("  const form5500SafetyReady ="));
+const ready = (brokerRoster, scheduleABrokerRows = []) => runInNewContext(`${readyCode}\nscheduleABrokersReady`, {
+  brokerRoster, scheduleABrokerRows, ftwReview: null, brokerValidationIssues: [],
+});
+assert.equal(ready(null), true, "Field-only/Form 5500 flows propose no broker replacement and remain available.");
+assert.equal(ready({mode:"PRESERVE"}), false, "An empty but unverified new extraction still needs review.");
+assert.equal(ready(null, [{name:"Unverified broker"}]), false, "Legacy row matches cannot authorize a roster.");
+assert.equal(ready({mode:"REPLACE"}, [{name:"Verified broker"}]), true);
 const parts = source.slice(source.indexOf("function ScheduleABrokerRowsPanel("), source.indexOf("function formatBrokerAddress("));
 const runtime = ts.transpileModule(parts, { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
 const dom = new JSDOM("<div id='root'></div>", { url: "https://example.test/" });
@@ -38,22 +46,26 @@ const Panel = runInNewContext(`${runtime}\nScheduleABrokerRowsPanel`, {
   brokerRowValidationIssues: () => [], organizationCodeLabel: () => "3", formatBrokerAddress: () => "10 Main St",
   formatBrokerPurpose: () => "COMMISSIONS",
 });
-const calls = [];
+const purposeCode = source.slice(source.indexOf("function formatBrokerPurpose("), source.indexOf("function FTWilliamsComparisonPanel("));
+const purpose = runInNewContext(`${ts.transpileModule(purposeCode, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\nformatBrokerPurpose`);
+for (const [commission, fees, expected] of [["100","0","COMMISSIONS"],["0","-557","FEES"],["100","-100","COMMISSIONS AND FEES"],["0","0","COMMISSION"],[null,"0","Unclassified"]]) {
+  assert.equal(purpose({commission_total: commission, fee_total: fees, purpose: "Incorrect printed label"}), expected);
+}
 const root = createRoot(document.getElementById("root"));
-await act(async () => root.render(React.createElement(Panel, {
-  busy: false, rows: [{ name: "Example Broker", commission_total: "10" }],
-  matches: [{ extracted_index: 0, ftw_index: 0, resolved: true, status: "AUTO_MATCHED", reason: "Automatic" }],
-  choices: [{ index: 0, label: "FT Williams row 1: Example Broker, 10 Main St" },
-    { index: 1, label: "FT Williams row 2: Correct Broker, 20 Main St" }],
-  onConfirm: (...args) => calls.push(args), onSaveRows: async () => true,
-})));
-const change = [...document.querySelectorAll("button")].find((button) => button.textContent === "Change match");
-assert.ok(change, "An already matched broker must offer a correction control.");
-await act(async () => change.click());
-const select = document.querySelector('select[aria-label="FT Williams broker row"]');
-assert.ok(select?.textContent.includes("Correct Broker, 20 Main St"), "Show destination identity, not only its row number.");
-await act(async () => { select.value = "1"; select.dispatchEvent(new window.Event("change", { bubbles: true })); });
-await act(async () => [...document.querySelectorAll("button")].find((button) => button.textContent === "Match row").click());
-assert.deepEqual(calls, [[0, 1, false]], "Correction must send the exact selected source and target indexes.");
+const base = {busy:false, onSaveRows:async()=>true,
+  currentRows:[{NameXX:"Old broker", AddressLine1XX:"99 OLD ST",CommPdAmtXX:"200",FeesPdAmtXX:"0",FeesPdTextXX:"COMMISSIONS"}],
+  rows:[{name:"Current broker",commission_total:"10",fee_total:"0"}],
+  roster:{state:"VERIFIED",mode:"REPLACE",existing_count:2,replacement_count:1,reasons:[],evidence:[],other_disclosures:[]}};
+await act(async () => root.render(React.createElement(Panel, base)));
+assert.ok(document.body.textContent.includes("Will replace 2 existing brokers with 1 verified broker."));
+assert.ok(document.body.textContent.includes("Old broker, 99 OLD ST"));
+assert.ok(document.body.textContent.includes("Commissions: 200"));
+assert.ok(!document.body.textContent.includes("Matched to row"));
+assert.ok(![...document.querySelectorAll("button")].some(b=>/Change match|Match row|Add as new/.test(b.textContent)));
+assert.ok([...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Edit"), "Keep source correction controls");
+await act(async () => root.render(React.createElement(Panel,{...base,rows:[],roster:{...base.roster,state:"NEEDS_REVIEW",mode:"PRESERVE",reasons:["Blank Schedule A table"],other_disclosures:[{name:"Example Advisory",page:5,amount:"240148.74",payment_category:"UNCLASSIFIED_DIRECT_COMPENSATION"}]}})));
+assert.ok(document.body.textContent.includes("Existing FTWilliam brokers will be preserved"));
+assert.ok(document.body.textContent.includes("$240148.74 (page 5)"));
+assert.ok(document.body.textContent.includes("not a verified Schedule A commission or fee"));
 await act(async () => root.unmount());
-console.log("Broker match correction renders and sends the selected destination.");
+console.log("Verified replacement and ambiguous-disclosure previews pass without individual row assignments.");

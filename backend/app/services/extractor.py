@@ -536,7 +536,8 @@ class ExtractionService:
         if file_name.lower().endswith('.pdf'):
             from app.services.schedule_a_native_conflicts import apply_native_provider_conflict_holds
             apply_native_provider_conflict_holds(final_result,file_bytes)
-            from app.services.schedule_a_broker_roster import attest_source_broker_roster
+            from app.services.schedule_a_broker_roster import attest_source_broker_roster, separate_service_provider_disclosures, source_roster_review
+            separate_service_provider_disclosures(final_result, review_pages)
             roster_raw = final_result.raw if isinstance(final_result.raw, dict) else {}
             if final_result.schedule_a_broker_rows and any(isinstance(stage, dict)
                 and stage.get("stage") == "structured_provider_normalized" and stage.get("broker_rows")
@@ -552,6 +553,8 @@ class ExtractionService:
                         "reason": "Independent source read failed; existing brokers must be preserved.",
                         "error_type": type(exc).__name__}
                     final_result.raw = roster_raw
+        from app.services.schedule_a_broker_roster import source_roster_review
+        final_result.schedule_a_broker_roster = source_roster_review(final_result.schedule_a_broker_rows, final_result.schedule_a_broker_roster)
         capture_extraction_stage(final_result, "final_normalized")
         return final_result
 
@@ -5280,6 +5283,8 @@ def reconcile_aetna_part_i_compensation(
             row.validation_results.append(ExtractionValidationResult(
                 validator='incomplete_source_compensation_table', status='ERROR', reason=reason))
         result.raw = raw
+        from app.services.schedule_a_broker_roster import separate_service_provider_disclosures
+        separate_service_provider_disclosures(result, page_texts)
         return
     rows = extract_litera_aetna_schedule_a_broker_rows(page_texts)
     if not rows:

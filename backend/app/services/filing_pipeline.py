@@ -69,6 +69,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
             providers: list[str] = []
             raw_items: list[dict] = []
             schedule_a_broker_rows: list[ScheduleABrokerRow] = []
+            source_rosters = []
             schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = []
             schedule_a_classification_signals: list[str] = []
 
@@ -89,6 +90,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                 providers.append(f"{document_label(document_type)}: {extraction.provider}")
                 schedule_a_worksheet_summaries.extend(extraction.schedule_a_worksheet_summaries)
                 if document_type == DocumentType.SCHEDULE_A:
+                    source_rosters.append(extraction.schedule_a_broker_roster)
                     schedule_a_broker_rows.extend(extraction.schedule_a_broker_rows)
                     schedule_a_classification_signals.extend(extraction.classification_signals)
                 raw_items.append(
@@ -113,6 +115,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                             "document_type": document_type.value,
                             "raw": extraction.raw,
                             "schedule_a_broker_rows": [row.model_dump(mode="json") for row in extraction.schedule_a_broker_rows],
+                            "schedule_a_broker_roster": extraction.schedule_a_broker_roster.model_dump(mode="json") if extraction.schedule_a_broker_roster else None,
                             "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in extraction.schedule_a_worksheet_summaries],
                             "classification_signals": extraction.classification_signals,
                         },
@@ -185,6 +188,7 @@ async def process_package_extraction_job(filing_id: str, job_id: str, documents:
                     "schedule_a_contract_type_evidence": list(contract_classification.evidence),
                     "schedule_a_classification_signals": schedule_a_classification_signals,
                     "schedule_a_broker_rows": [row.model_dump(mode="json") for row in schedule_a_broker_rows],
+                    "schedule_a_broker_roster": source_rosters[0].model_dump(mode="json") if len(source_rosters) == 1 and source_rosters[0] else None,
                     "schedule_a_worksheet_summaries": [summary.model_dump(mode="json") for summary in schedule_a_worksheet_summaries],
                     "proposed_xml": proposed_xml,
                     "error_message": None,
