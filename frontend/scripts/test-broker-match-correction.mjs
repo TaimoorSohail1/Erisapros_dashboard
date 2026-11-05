@@ -23,6 +23,14 @@ assert.deepEqual(choiceResult([{ Name1: "First" }, { ForeignAddy01: "0" }, { Nam
   [{ index: 0, label: "FT Williams row 1: First" }, { index: 1, label: "FT Williams row 2: Second" }]);
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
+const readyCode = source.slice(source.indexOf("  const scheduleABrokersReady = ("), source.indexOf("  const form5500SafetyReady ="));
+const ready = (brokerRoster, scheduleABrokerRows = []) => runInNewContext(`${readyCode}\nscheduleABrokersReady`, {
+  brokerRoster, scheduleABrokerRows, ftwReview: null, brokerValidationIssues: [],
+});
+assert.equal(ready(null), true, "Field-only/Form 5500 flows propose no broker replacement and remain available.");
+assert.equal(ready({mode:"PRESERVE"}), false, "An empty but unverified new extraction still needs review.");
+assert.equal(ready(null, [{name:"Unverified broker"}]), false, "Legacy row matches cannot authorize a roster.");
+assert.equal(ready({mode:"REPLACE"}, [{name:"Verified broker"}]), true);
 const parts = source.slice(source.indexOf("function ScheduleABrokerRowsPanel("), source.indexOf("function formatBrokerAddress("));
 const runtime = ts.transpileModule(parts, { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
 const dom = new JSDOM("<div id='root'></div>", { url: "https://example.test/" });

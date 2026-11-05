@@ -428,7 +428,8 @@ export function FilingReviewPage() {
   const scheduleAMatchLabel = scheduleAIsNew ? "New prepared" : ftwReview?.schedule_a_match ? "Matched" : "Pending";
   const scheduleASafetyReady = !expectsScheduleACurrent || scheduleACurrentLoaded || (scheduleAIsNew && Boolean(ftwReview?.schedule_a_records?.length));
   const scheduleABrokersReady = (
-    (brokerRoster?.mode === "REPLACE")
+    (brokerRoster ? brokerRoster.mode === "REPLACE"
+      : !scheduleABrokerRows.length && ftwReview?.schedule_a_broker_match_complete !== false)
     && brokerValidationIssues.length === 0
   );
   const form5500SafetyReady = !expectsForm5500Current || form5500CurrentLoaded;
