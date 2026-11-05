@@ -77,6 +77,8 @@ class V1FeedbackSafetyTests(unittest.TestCase):
             NormalizedExtractionField(field_name="3c. Amount of Fees", value="0")], schedule_a_broker_rows=source_rows,
             raw={"extraction_stages": [{"stage": "structured_provider_normalized",
                 "broker_rows": [row.model_dump(mode="json") for row in source_rows]}]})
+        result.raw['independent_source_page_coverage']={'source_sha256':'a'*64,'page_count':1,
+            'pages':[{'page':1,'text_sha256':'b'*64,'readable':True}]}
         attest_source_broker_roster(result, [row.model_copy(deep=True) for row in source_rows], "a" * 64)
         self.assertTrue(broker_roster_is_complete(result.schedule_a_broker_rows))
         current = [{"ftw_seq_no": "1", "query_results": {"ScheduleDesc": "TEST"}, "query_subparts": {"Broker": [
