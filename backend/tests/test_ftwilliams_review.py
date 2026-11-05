@@ -3301,10 +3301,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         review = run_async(FTWilliamsReviewService(FakeFTWilliamsCurrentTagService()).prepare_review(filing.id, send_queries=True))
         broker_name = next(item for item in review.fields if item.rule_key == "schedule_a_part_i_3a_name_of_agent_broker_person")
 
-        self.assertTrue(review.schedule_a_broker_match_complete)
+        self.assertFalse(review.schedule_a_broker_match_complete)
+        self.assertEqual(review.schedule_a_broker_roster.mode, "PRESERVE")
         self.assertFalse(broker_name.update_included)
-        self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
-        self.assertNotIn("<NameXX>March</NameXX>", review.update_xml_schedule_a)
+        self.assertEqual(review.update_xml_schedule_a, "", "Unverified source rows cannot authorize broker replacement")
+        self.assertEqual(review.schedule_a_broker_rows[0].name, "NFP LLC")
 
     def test_explicit_broker_field_edit_remains_authoritative_with_structured_rows(self):
         edited = ExtractedField(
@@ -3383,13 +3384,11 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["3a. Name of Agent/Broker/Person"].decision, "NO_CHANGE")
         self.assertEqual(by_label["3b. Amount of Commissions"].decision, "NO_CHANGE")
         self.assertFalse(by_label["3a. Name of Agent/Broker/Person"].validation_blocking)
-        self.assertTrue(review.schedule_a_broker_match_complete)
+        self.assertFalse(review.schedule_a_broker_match_complete)
+        self.assertEqual(review.schedule_a_broker_roster.mode, "PRESERVE")
         self.assertEqual([match.status for match in review.schedule_a_broker_matches], ["AUTO_NEW", "AUTO_NEW"])
-        self.assertIn("<NameXX>NFP LLC</NameXX>", review.update_xml_schedule_a)
-        self.assertIn("<NameXX>NFP CORPORATE SERVICES NY LLC</NameXX>", review.update_xml_schedule_a)
-        self.assertIn("<CommPdAmtXX>1576</CommPdAmtXX>", review.update_xml_schedule_a)
-        self.assertIn("<NameXX>NFP INS SERVICES INC</NameXX>", review.update_xml_schedule_a)
-        self.assertEqual(review.update_xml_schedule_a.count("<Broker>"), 3)
+        self.assertEqual(review.update_xml_schedule_a, "", "Old row matching is insufficient to verify a source roster")
+        self.assertEqual([r.name for r in review.schedule_a_broker_rows], ["NFP CORPORATE SERVICES NY LLC", "NFP INS SERVICES INC"])
 
     def test_reviewer_can_remove_parser_fragment_and_rebuild_broker_preview(self):
         repo = repositories.get_repository()

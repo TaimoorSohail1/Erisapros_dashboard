@@ -519,6 +519,19 @@ class ScheduleABrokerMatch(BaseModel):
     current_row: ScheduleABrokerRow | None = None
 
 
+class ScheduleABrokerRosterReview(BaseModel):
+    state: Literal["VERIFIED", "VERIFIED_EMPTY", "NEEDS_REVIEW"] = "NEEDS_REVIEW"
+    mode: Literal["REPLACE", "PRESERVE"] = "PRESERVE"
+    source_sha256: str | None = None
+    roster_sha256: str | None = None
+    current_snapshot_sha256: str | None = None
+    existing_count: int = 0
+    replacement_count: int = 0
+    reasons: list[str] = Field(default_factory=list)
+    evidence: list[SourceEvidence] = Field(default_factory=list)
+    other_disclosures: list[dict] = Field(default_factory=list)
+
+
 class ScheduleAWorksheetValue(BaseModel):
     label: str
     value: str
@@ -554,6 +567,7 @@ class NormalizedExtractionResult(BaseModel):
     raw: dict | list | str | None = None
     classification_signals: list[str] = Field(default_factory=list)
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_broker_roster: ScheduleABrokerRosterReview | None = None
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
 
 
@@ -632,6 +646,7 @@ class Filing(BaseModel):
     ftw_schedule_a_contract_type: ScheduleAContractType = ScheduleAContractType.UNKNOWN
     ftw_schedule_a_contract_type_reason: str | None = None
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_broker_roster: ScheduleABrokerRosterReview | None = None
     schedule_a_worksheet_summaries: list[ScheduleAWorksheetSummary] = Field(default_factory=list)
     proposed_xml: str | None = None
     automation_status: FTWAutomationStatus = FTWAutomationStatus.DISABLED
@@ -1083,6 +1098,7 @@ class FTWilliamsReview(BaseModel):
     schedule_a_candidates: list[dict] = Field(default_factory=list)
     schedule_a_records: list[dict] = Field(default_factory=list)
     schedule_a_broker_rows: list[ScheduleABrokerRow] = Field(default_factory=list)
+    schedule_a_broker_roster: ScheduleABrokerRosterReview | None = None
     schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
     schedule_a_broker_match_complete: bool = True
     decision_required_count: int = 0

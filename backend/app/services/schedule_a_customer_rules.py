@@ -238,7 +238,13 @@ def classify_unlabelled_broker_payments_as_fees(
             ]
         )
         explicitly_commission = "commission" in labels.casefold()
-        if commission is not None and commission > 0 and not explicitly_commission:
+        confirmed_other_payment = bool(re.search(r"\b(?:fees?|bonus|bonuses|additional\s+compensation)\b", labels, re.I))
+        if commission is not None and commission != 0 and not explicitly_commission and not confirmed_other_payment:
+            row.decision = "REVIEW_REQUIRED"
+            if not any(v.validator == "payment_classification_ambiguity" for v in row.validation_results):
+                row.validation_results.append(ExtractionValidationResult(validator="payment_classification_ambiguity", status="ERROR",
+                    reason="The payment is not identified as commission or confirmed non-commission compensation. Confirm its category."))
+        if commission is not None and commission != 0 and not explicitly_commission and confirmed_other_payment:
             current_fee = _money_decimal(row.fee_total) or Decimal("0")
             row.commission_total = "0"
             row.fee_total = _decimal_text(current_fee + commission)
@@ -257,7 +263,7 @@ def classify_unlabelled_broker_payments_as_fees(
                     "rule": "unlabelled_broker_payment_to_fee",
                     "broker": row.name,
                     "amount": _decimal_text(commission),
-                    "reason": "A positive broker payment without a commission label is reported as a Schedule A fee.",
+                    "reason": "Confirmed non-commission broker compensation is reported as a signed Schedule A fee.",
                 }
             )
         normalized.append(row)
@@ -290,9 +296,9 @@ def apply_customer_defaults(result: NormalizedExtractionResult) -> None:
     result.schedule_a_broker_rows, fee_classification_evidence = (
         classify_unlabelled_broker_payments_as_fees(result.schedule_a_broker_rows)
     )
-    result.schedule_a_broker_rows, zero_broker_evidence = exclude_zero_compensation_brokers(
-        result.schedule_a_broker_rows
-    )
+    # Keep confirmed unpaid recipients in the source preview and completeness proof.
+    # They are excluded only from the verified replacement, never from evidence.
+    _, zero_broker_evidence = exclude_zero_compensation_brokers(result.schedule_a_broker_rows)
     customer_rule_evidence = [*fee_classification_evidence, *zero_broker_evidence]
     if customer_rule_evidence:
         raw = dict(result.raw) if isinstance(result.raw, dict) else {"provider_raw": result.raw}

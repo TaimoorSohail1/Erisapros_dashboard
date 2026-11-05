@@ -145,6 +145,19 @@ export interface ScheduleABrokerRow {
   }[];
 }
 
+export interface ScheduleABrokerRosterReview {
+  state: "VERIFIED" | "VERIFIED_EMPTY" | "NEEDS_REVIEW";
+  mode: "REPLACE" | "PRESERVE";
+  source_sha256?: string | null;
+  roster_sha256?: string | null;
+  current_snapshot_sha256?: string | null;
+  existing_count: number;
+  replacement_count: number;
+  reasons: string[];
+  evidence: Array<{ page?: number | null; source_text?: string | null }>;
+  other_disclosures: Array<{ name?: string; address?: string; page?: number; amount?: string | null; payment_category?: string; source_text?: string }>;
+}
+
 export interface ScheduleABrokerMatch {
   extracted_index: number;
   ftw_index?: number | null;
@@ -246,6 +259,7 @@ export interface Filing {
   ftw_schedule_a_contract_type?: ScheduleAContractType;
   ftw_schedule_a_contract_type_reason?: string | null;
   schedule_a_broker_rows?: ScheduleABrokerRow[];
+  schedule_a_broker_roster?: ScheduleABrokerRosterReview | null;
   schedule_a_worksheet_summaries?: ScheduleAWorksheetSummary[];
   proposed_xml?: string | null;
   rejection_reason?: string | null;
@@ -436,6 +450,7 @@ export interface FTWilliamsReview {
   schedule_a_candidates?: Array<Record<string, unknown>>;
   schedule_a_records?: Array<Record<string, unknown>>;
   schedule_a_broker_rows?: ScheduleABrokerRow[];
+  schedule_a_broker_roster?: ScheduleABrokerRosterReview | null;
   schedule_a_broker_matches?: ScheduleABrokerMatch[];
   schedule_a_broker_match_complete?: boolean;
   decision_required_count?: number;

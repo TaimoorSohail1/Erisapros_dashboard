@@ -10,9 +10,54 @@ import hashlib
 import json
 import re
 
-from app.models import ExtractionValidationResult, ScheduleABrokerRow
+from app.models import ExtractionValidationResult, ScheduleABrokerRow, ScheduleABrokerRosterReview, SourceEvidence
 
 VALIDATOR = "complete_source_broker_roster"
+
+
+def separate_service_provider_disclosures(result, page_texts):
+    """Keep Schedule C disclosures as evidence, never Schedule A payments."""
+    disclosures = list(result.schedule_a_broker_roster.other_disclosures) if result.schedule_a_broker_roster else []
+    disclosure_pages = set()
+    mixed_pages = set()
+    for page, text in page_texts:
+        section = re.search(r"Schedule\s+C\b|Service\s+Provider\s+Information", text, re.I)
+        if not section:
+            continue
+        if re.search(r"Insurance\s+Fees\s+and\s+commissions\s+paid\s+to\s+agents", text, re.I):
+            mixed_pages.add(page)
+        else:
+            disclosure_pages.add(page)
+        disclosure_text = text[section.start():]
+        for match in re.finditer(r"Broker\s+Information:\s*([^\n]+)\n([^\n]+)(.*?)(?=Broker\s+Information:|Direct\s+Billed\s+Fees|\Z)", disclosure_text, re.I | re.S):
+            name, address, remainder = match.groups()
+            if not name.strip() or name.lstrip().startswith('$'):
+                continue
+            money = re.search(r"\$\s*([\d,]+\.\d{2})", remainder)
+            disclosure = {"name": name.strip(), "address": address.strip(), "page": page,
+                "source_form": "SERVICE_PROVIDER_DISCLOSURE", "amount": money.group(1).replace(',', '') if money else None,
+                "payment_category": "UNCLASSIFIED_DIRECT_COMPENSATION", "source_text": text}
+            if disclosure not in disclosures: disclosures.append(disclosure)
+    original = list(result.schedule_a_broker_rows)
+    raw = dict(result.raw) if isinstance(result.raw, dict) else {}
+    names = {re.sub(r'\W', '', d['name']).casefold() for d in disclosures}
+    excluded = [r for r in original if r.source_page in disclosure_pages or (
+        r.source_page is None and raw.get('aetna_unprovided_part_i_compensation')
+        and re.sub(r'\W', '', r.name).casefold() in names)]
+    result.schedule_a_broker_rows = [r for r in original if r not in excluded]
+    for row in result.schedule_a_broker_rows:
+        if row.source_page in mixed_pages and re.sub(r'\W', '', row.name).casefold() in names:
+            row.decision = 'REVIEW_REQUIRED'
+            if not any(v.validator == 'source_section_ambiguity' for v in row.validation_results):
+                row.validation_results.append(ExtractionValidationResult(validator='source_section_ambiguity',status='ERROR',
+                    reason='Schedule A and separate service-provider information share this page. Confirm row-level section evidence before replacement.'))
+    if disclosures or excluded:
+        raw['excluded_service_provider_broker_candidates'] = [r.model_dump(mode='json') for r in excluded]
+        raw['service_provider_disclosure_pages'] = sorted(disclosure_pages)
+        result.raw = raw
+        result.schedule_a_broker_roster = ScheduleABrokerRosterReview(other_disclosures=disclosures,
+            reasons=["Schedule A completeness must be established independently of separate service-provider disclosures."],
+            evidence=[SourceEvidence(provider="Service-provider disclosure", page=d['page'], source_text=d['source_text']) for d in disclosures])
 
 
 def _money(value):
@@ -34,7 +79,10 @@ def _key(row):
 
 
 def _fingerprint(rows):
-    return hashlib.sha256(json.dumps(sorted(_key(row) for row in rows), separators=(",", ":")).encode()).hexdigest()
+    from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
+    keys = [(*_key(row), str(row.organization_code or "3"),
+             canonical_broker_payment_purpose(row.commission_total, row.fee_total)) for row in rows]
+    return hashlib.sha256(json.dumps(sorted(keys, key=lambda key: json.dumps(key)), separators=(",", ":")).encode()).hexdigest()
 
 
 def broker_row_has_payment(row):
@@ -68,7 +116,8 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
     provider = next((stage for stage in raw.get("extraction_stages", [])
                      if stage.get("stage") == "structured_provider_normalized"), {})
     try:
-        provider_rows = [ScheduleABrokerRow.model_validate(row) for row in provider.get("broker_rows", [])]
+        provider_rows = [ScheduleABrokerRow.model_validate(row) for row in provider.get("broker_rows", [])
+                         if row.get('source_page') not in raw.get('service_provider_disclosure_pages', [])]
     except (ValueError, TypeError):
         return
     # Running the same local parser twice is not independent corroboration.
@@ -91,3 +140,39 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
     for row in rows:
         row.validation_results.append(ExtractionValidationResult(validator=VALIDATOR, status="PASS",
             normalized_value=proof, reason="Independent full-document recipient/payment read agrees exactly with this source roster and both section totals."))
+
+
+def source_roster_review(rows, previous=None):
+    """Derive source eligibility from current evidence, never saved row matches."""
+    status = previous.model_copy(deep=True) if previous else ScheduleABrokerRosterReview()
+    status.state, status.mode = "NEEDS_REVIEW", "PRESERVE"
+    status.replacement_count = sum(broker_row_has_payment(row) for row in rows)
+    status.roster_sha256 = _fingerprint(rows)
+    status.evidence = list(status.evidence) + [e for row in rows for e in row.evidence if e not in status.evidence]
+    if broker_roster_is_complete(rows):
+        proof = next(v.normalized_value for v in rows[0].validation_results
+                     if v.validator == VALIDATOR and v.status == "PASS")
+        status.source_sha256 = proof.split(":")[0]
+        status.state = "VERIFIED" if status.replacement_count else "VERIFIED_EMPTY"
+        status.mode = "REPLACE"
+        status.reasons = []
+        status.evidence = [e for row in rows for e in row.evidence]
+    else:
+        status.reasons = list(dict.fromkeys([*status.reasons,
+            "A complete, independently corroborated Schedule A broker list and classified payments are required. Existing brokers will be preserved."]))
+    return status
+
+
+def bind_roster_review(rows, previous, records, identity, can_replace):
+    """Bind the preview to the exact selected destination and its fresh roster."""
+    status = source_roster_review(rows, previous)
+    selected = next((r for r in records if str(r.get('ftw_seq_no') or '') == str(identity.get('ftw_seq_no') or '')), None)
+    from app.services.schedule_a_broker_matching import current_schedule_a_broker_rows
+    current = current_schedule_a_broker_rows(selected)
+    status.existing_count = len(current)
+    binding = {"identity": identity, "selected_record": selected}
+    status.current_snapshot_sha256 = hashlib.sha256(json.dumps(binding, sort_keys=True, default=str).encode()).hexdigest()
+    if status.mode == 'REPLACE' and not can_replace:
+        status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
+        status.reasons = ['Source or current FTWilliam broker information cannot safely be serialized for replacement.']
+    return status
