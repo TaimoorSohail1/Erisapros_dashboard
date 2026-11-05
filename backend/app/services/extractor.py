@@ -543,9 +543,12 @@ class ExtractionService:
                 and stage.get("stage") == "structured_provider_normalized" and stage.get("broker_rows")
                 for stage in roster_raw.get("extraction_stages", [])):
                 try:
-                    attest_source_broker_roster(final_result,
-                        extract_schedule_a_broker_rows_from_document(file_bytes, file_name),
-                        hashlib.sha256(file_bytes).hexdigest())
+                    coverage = {}
+                    independent_rows = extract_schedule_a_broker_rows_from_document(file_bytes, file_name,
+                        page_coverage=coverage)
+                    roster_raw['independent_source_page_coverage'] = coverage
+                    final_result.raw = roster_raw
+                    attest_source_broker_roster(final_result, independent_rows, hashlib.sha256(file_bytes).hexdigest())
                 except Exception as exc:
                     # Optional deletion permission must fail closed without
                     # preventing the ordinary extraction/review flow.
@@ -4645,8 +4648,16 @@ def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     return fields
 
 
-def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None) -> list[ScheduleABrokerRow]:
+def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None,
+    *, page_coverage: dict | None = None) -> list[ScheduleABrokerRow]:
     page_texts = extract_document_text_pages(file_bytes, file_name)
+    if page_coverage is not None:
+        from pypdf import PdfReader
+        page_coverage.clear()
+        page_coverage.update(source_sha256=hashlib.sha256(file_bytes).hexdigest(),
+            page_count=len(PdfReader(BytesIO(file_bytes)).pages),
+            pages=[{'page':page,'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
+                'readable':len(re.findall(r'\b\w+\b',text)) >= 40} for page,text in page_texts])
     for parser in (
         extract_transamerica_broker_rows,
         extract_combined_chubb_broker_rows,

@@ -11,6 +11,35 @@ import xml.etree.ElementTree as ET
 
 
 class BrokerRosterReplacementTests(unittest.TestCase):
+    def coverage(self,count=1):
+        return {'source_sha256':'a'*64,'page_count':count,
+            'pages':[{'page':i,'text_sha256':'b'*64,'readable':True} for i in range(1,count+1)]}
+
+    def test_legacy_proof_without_page_coverage_binding_is_not_deletion_permission(self):
+        result=self.verified()
+        for v in result.schedule_a_broker_rows[0].validation_results:
+            if v.validator=='complete_source_broker_roster': v.normalized_value=':'.join(v.normalized_value.split(':')[:2])
+        self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,'PRESERVE')
+
+    def test_document_page_coverage_records_unreadable_pages_without_losing_their_count(self):
+        from io import BytesIO
+        from pypdf import PdfWriter
+        from unittest.mock import patch
+        from app.services.extractor import extract_schedule_a_broker_rows_from_document
+        writer=PdfWriter();writer.add_blank_page(width=300,height=300);writer.add_blank_page(width=300,height=300)
+        stream=BytesIO();writer.write(stream);coverage={}
+        with patch('app.services.extractor.extract_document_text_pages',return_value=[(1,'readable '*40),(2,'')]):
+            extract_schedule_a_broker_rows_from_document(stream.getvalue(),'qa.pdf',page_coverage=coverage)
+        self.assertEqual(coverage['page_count'],2)
+        self.assertEqual([p['readable'] for p in coverage['pages']],[True,False])
+
+    def test_missing_continuation_page_cannot_authorize_roster_deletion(self):
+        result=self.verified()
+        result.raw['independent_source_page_coverage']={'source_sha256':'a'*64,'page_count':2,
+            'pages':[{'page':1,'text_sha256':'b'*64}]}
+        attest_source_broker_roster(result,[r.model_copy(deep=True) for r in result.schedule_a_broker_rows],'a'*64)
+        self.assertEqual(source_roster_review(result.schedule_a_broker_rows,result.schedule_a_broker_roster).mode,'PRESERVE')
+
     def test_completeness_holds_explain_missing_read_source_evidence_and_totals(self):
         for missing, expected in [('read','full-document'),('evidence','page evidence'),('totals','section totals')]:
             with self.subTest(missing=missing):
@@ -55,7 +84,8 @@ class BrokerRosterReplacementTests(unittest.TestCase):
         result=NormalizedExtractionResult(provider='source',fields=[
             NormalizedExtractionField(field_name='3b. Commissions',value=str(Decimal(commission)*count)),
             NormalizedExtractionField(field_name='3c. Fees',value=str(Decimal(fee)*count))],schedule_a_broker_rows=rows,
-            raw={'extraction_stages':[{'stage':'structured_provider_normalized','broker_rows':[r.model_dump(mode='json') for r in rows]}]})
+            raw={'independent_source_page_coverage':self.coverage(count),
+                'extraction_stages':[{'stage':'structured_provider_normalized','broker_rows':[r.model_dump(mode='json') for r in rows]}]})
         attest_source_broker_roster(result,[r.model_copy(deep=True) for r in rows],'a'*64)
         return result
 
@@ -158,6 +188,7 @@ class BrokerRosterReplacementTests(unittest.TestCase):
             NormalizedExtractionField(field_name="3b. Commissions", value="100"),
             NormalizedExtractionField(field_name="3c. Fees", value="0")], schedule_a_broker_rows=[row],
             raw={"extraction_stages":[{"stage":"structured_provider_normalized","broker_rows":[row.model_dump(mode="json")]}]})
+        result.raw['independent_source_page_coverage']=self.coverage()
         attest_source_broker_roster(result, [row.model_copy(deep=True)], "a"*64)
         records=[{"ftw_seq_no":"1","query_results":{},"query_subparts":{"Broker":[{
             "NameXX":row.name,"AddressLine1XX":"99 OLD ST","CityXX":"Dallas","StateXX":"TX","ZipCodeXX":"75001"}]}}]

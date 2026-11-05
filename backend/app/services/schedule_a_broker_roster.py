@@ -102,7 +102,7 @@ def broker_roster_is_complete(rows):
         return False
     fingerprint = _fingerprint(rows)
     proofs = [{v.normalized_value for v in row.validation_results if v.validator == VALIDATOR and v.status == "PASS"
-        and re.fullmatch(r"[a-f0-9]{64}:" + fingerprint, str(v.normalized_value or ""))} for row in rows]
+        and re.fullmatch(r"[a-f0-9]{64}:" + fingerprint + r":[a-f0-9]{64}", str(v.normalized_value or ""))} for row in rows]
     return bool(set.intersection(*proofs))
 
 
@@ -125,6 +125,13 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
     if len(result.schedule_a_worksheet_summaries) > 1:
         return note_incomplete_source_roster(result, 'Multiple Schedule A summaries require separate source-roster verification.')
     raw = result.raw if isinstance(result.raw, dict) else {}
+    coverage = raw.get('independent_source_page_coverage') or {}
+    pages = coverage.get('pages') or []
+    count = coverage.get('page_count')
+    if (coverage.get('source_sha256') != source_sha256 or type(count) is not int or count < 1
+            or len(pages) != count or {p.get('page') for p in pages} != set(range(1,count+1))
+            or any(p.get('readable') is not True or not re.fullmatch(r'[a-f0-9]{64}',str(p.get('text_sha256') or '')) for p in pages)):
+        return note_incomplete_source_roster(result, 'Independent full-document page coverage is incomplete or unreadable; existing brokers will be preserved.')
     if int(raw.get("semantic_resolution", {}).get("group_count") or 0) > 1:
         return note_incomplete_source_roster(result, 'Multiple source contracts require separate broker-roster verification.')
     provider = next((stage for stage in raw.get("extraction_stages", [])
@@ -157,7 +164,8 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
                   and field.decision != "REVIEW_REQUIRED" and (value := _money(field.value)) is not None}
         if len(totals) != 1 or sum((Decimal(_money(getattr(row, attribute))) for row in rows), Decimal(0)) not in totals:
             return note_incomplete_source_roster(result, 'Broker payments do not reconcile with verified commission and fee section totals.')
-    proof = source_sha256 + ":" + _fingerprint(rows)
+    coverage_sha256 = hashlib.sha256(json.dumps(coverage, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    proof = source_sha256 + ":" + _fingerprint(rows) + ':' + coverage_sha256
     for row in rows:
         row.validation_results.append(ExtractionValidationResult(validator=VALIDATOR, status="PASS",
             normalized_value=proof, reason="Independent full-document recipient/payment read agrees exactly with this source roster and both section totals."))

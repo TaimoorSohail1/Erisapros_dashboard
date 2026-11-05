@@ -77,6 +77,8 @@ class V1FeedbackSafetyTests(unittest.TestCase):
             NormalizedExtractionField(field_name="3c. Amount of Fees", value="0")], schedule_a_broker_rows=source_rows,
             raw={"extraction_stages": [{"stage": "structured_provider_normalized",
                 "broker_rows": [row.model_dump(mode="json") for row in source_rows]}]})
+        result.raw['independent_source_page_coverage']={'source_sha256':'a'*64,'page_count':1,
+            'pages':[{'page':1,'text_sha256':'b'*64,'readable':True}]}
         attest_source_broker_roster(result, [row.model_copy(deep=True) for row in source_rows], "a" * 64)
         self.assertTrue(broker_roster_is_complete(result.schedule_a_broker_rows))
         current = [{"ftw_seq_no": "1", "query_results": {"ScheduleDesc": "TEST"}, "query_subparts": {"Broker": [
@@ -113,6 +115,17 @@ Total Payments Made to Carrier: $39,000.12
             for item in result.raw.get("semantic_resolution", {}).get("ambiguities", [])))
         values = {field.field_name: field.value for field in result.fields}
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,000.12")
+
+    def test_approved_vsp_label_survives_joined_native_pdf_text_without_broadening_it(self):
+        from app.services.schedule_a_vsp_rules import approved_vsp_commission_label
+        source=('Schedule A Form (5500) Insurance Information'
+            'Insurance Carrier: Vision Service Plan'
+            'Commissions/FeesPaid for PolicyAgent or Broker or Contract Year'
+            'Example Advisory Inc $1,234.56')
+        self.assertTrue(approved_vsp_commission_label(source))
+        self.assertFalse(approved_vsp_commission_label(source.replace('Contract Year','Contract Yearly')))
+        self.assertFalse(approved_vsp_commission_label(source+' Other Commissions/Fees'))
+        self.assertFalse(approved_vsp_commission_label(source.replace('Vision Service Plan','Other Carrier')))
 
     def test_verified_worksheet_beginning_counts_update_without_conflict(self):
         service = FTWilliamsReviewService()
