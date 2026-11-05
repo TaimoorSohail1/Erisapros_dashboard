@@ -909,7 +909,7 @@ export function FilingReviewPage() {
       setToast({
         tone: "success",
         title: action === "edited" ? "Broker row updated" : "Broker row excluded",
-        message: "The FT Williams preview was rebuilt. Confirm the broker matches before sending.",
+        message: "The FT Williams preview was rebuilt. Review the source broker list and its verification status before sending.",
       });
       return true;
     } catch (error) {
@@ -3726,7 +3726,7 @@ function FTWilliamsSendConfirmationModal({
           {brokerRowCount > 0 ? (
             <label className="ftw-send-broker-selection">
               <input type="checkbox" checked={includeBrokerUpdates} disabled={busy} onChange={(event) => onToggleBrokers(event.target.checked)} />
-              Include prepared broker changes (their values and matches must be valid). Unchecked keeps current FTW broker rows unchanged.
+              Include the verified broker-list replacement. Unchecked keeps current FTW brokers unchanged.
             </label>
           ) : null}
 

@@ -11,6 +11,12 @@ import xml.etree.ElementTree as ET
 
 
 class BrokerRosterReplacementTests(unittest.TestCase):
+    def test_unclassified_empty_roster_cannot_be_reported_as_verified_noop(self):
+        from app.models import ScheduleABrokerRosterReview
+        review=FTWilliamsReview(filing_id='qa',current_query_success=True,current_query_complete=True,
+            schedule_a_broker_roster=ScheduleABrokerRosterReview(reasons=['Unclassified service disclosure']))
+        self.assertFalse(FTWilliamsReviewService()._can_finalize_reconciled_noop(review,had_active_failure=False))
+
     def test_same_identity_with_unknown_amount_remains_reviewable_without_sort_failure(self):
         rows=[ScheduleABrokerRow(name='Example',commission_total=value,fee_total='0') for value in ('100',None)]
         self.assertEqual(source_roster_review(rows).mode,'PRESERVE')

@@ -4436,7 +4436,8 @@ class FTWilliamsReviewService:
         )
         if has_outbound_payload or not review.current_query_success or review.current_query_complete is False:
             return False
-        if review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete:
+        if ((review.schedule_a_broker_roster and review.schedule_a_broker_roster.mode != "REPLACE")
+                or (review.schedule_a_broker_rows and not review.schedule_a_broker_match_complete)):
             return False
         if had_active_failure:
             return bool(
@@ -5122,7 +5123,7 @@ class FTWilliamsReviewService:
         for comparison in comparisons:
             if comparison.rule_key in broker_rules and not comparison.update_included:
                 comparison.update_exclusion_reason = (
-                    "Managed in the Schedule A broker rows section so each broker is matched and updated separately."
+                    "Managed as the verified source broker list that replaces the selected Schedule A roster."
                 )
                 comparison.validation_status = "VALID"
                 comparison.validation_message = comparison.update_exclusion_reason
@@ -6084,7 +6085,7 @@ class FTWilliamsReviewService:
                 review.schedule_a_records, identity.get("ftw_seq_no"), review.schedule_a_broker_matches,
                 create_new=bool((review.schedule_a_match or {}).get("create_new")))
             if not all(match.resolved for match in matches):
-                raise ValueError("Selected broker changes need matching. Complete their broker matches or deselect broker updates.")
+                raise ValueError("The complete source broker list needs verification. Resolve its source/payment issues or deselect broker updates.")
         review.update_xml_schedule_a = ""
         if schedule_fields or include_broker_updates:
             if not review.schedule_a_match:
