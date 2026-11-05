@@ -27,7 +27,8 @@ class V1FeedbackSafetyTests(unittest.TestCase):
             actual_subparts={"Broker": [{"NameXX": "Old broker", "CommPdAmtXX": "100"}]})
         self.assertTrue(any(row.get("tag") == "DOLSubPartData/Broker" for row in mismatch))
         self.assertEqual(service._compare_readback_document(FormType.SCHEDULE_A, expected,
-            {"ScheduleDesc": "TEST", "OverrideCommissionsAndFees": "1"}, actual_subparts={}), [])
+            {"ScheduleDesc": "TEST", "OverrideCommissionsAndFees": "1",
+             "InsBrokerCommTotAmt": "0", "InsBrokerFeesTotAmt": "0"}, actual_subparts={}), [])
 
     def test_confirmed_empty_roster_does_not_reuse_stale_vendor_payment_totals(self):
         records = [{"ftw_seq_no": "1", "query_results": {"ScheduleDesc": "TEST",
@@ -37,8 +38,8 @@ class V1FeedbackSafetyTests(unittest.TestCase):
             schedule_a_broker_rows=[], replace_broker_roster=True)
         document = ET.fromstring(xml).find(".//DOLScheduleAData")
         self.assertEqual(document.findtext("OverrideCommissionsAndFees"), "1")
-        self.assertIsNone(document.find("InsBrokerCommTotAmt"))
-        self.assertIsNone(document.find("InsBrokerFeesTotAmt"))
+        self.assertEqual(document.findtext("InsBrokerCommTotAmt"), "0")
+        self.assertEqual(document.findtext("InsBrokerFeesTotAmt"), "0")
         self.assertEqual(document.findtext("PlanYearBeginDate"), "01/01/2025")
         self.assertEqual(document.findall(".//Broker"), [])
 

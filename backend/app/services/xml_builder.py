@@ -415,11 +415,6 @@ def _schedule_a_record_document_xml(
     replace_broker_roster: bool = False,
 ) -> str:
     values = full_replace_values_for_schedule_a(fields, current_values, force_current_values=True)
-    if replace_broker_roster:
-        # These are vendor-calculated totals, not writable source amounts.
-        # Replacing the roster must not echo stale prior-recipient totals.
-        values.pop("InsBrokerCommTotAmt", None)
-        values.pop("InsBrokerFeesTotAmt", None)
     field_broker_overrides = {
         tag: value
         for tag, value in values.items()
@@ -454,6 +449,11 @@ def _schedule_a_record_document_xml(
             schedule_a_broker_rows,
         )
         broker_rows = _sort_schedule_a_broker_rows_by_payment(broker_rows)
+    if replace_broker_roster:
+        # Type-2 replacement clears omitted header totals; FTW does not
+        # reliably recalculate them from Broker subparts. Use the final wire
+        # roster, including explicit zero totals for a verified empty list.
+        values.update(_replacement_broker_totals(broker_rows))
     if derive_payment_indicator:
         values["OverrideCommissionsAndFees"] = _no_commissions_or_fees_indicator(
             values,
@@ -486,6 +486,16 @@ def _schedule_a_record_document_xml(
     return f"""    <DOLScheduleAData>
 {joined}
     </DOLScheduleAData>"""
+
+
+def _replacement_broker_totals(broker_rows: list[dict[str, str]]) -> dict[str, str]:
+    totals: dict[str, str] = {}
+    for header, leaf in (("InsBrokerCommTotAmt", "CommPdAmtXX"),
+                         ("InsBrokerFeesTotAmt", "FeesPdAmtXX")):
+        amount = sum((Decimal(normalize_ftw_update_value(
+            FormType.SCHEDULE_A, leaf, row.get(leaf, "0"))) for row in broker_rows), Decimal("0"))
+        totals[header] = normalize_ftw_update_value(FormType.SCHEDULE_A, header, format(amount, "f"))
+    return totals
 
 
 def _no_commissions_or_fees_indicator(
@@ -1106,6 +1116,11 @@ def schedule_a_replacement_data_gaps(
             expected_brokers = schedule_a_broker_multipart_rows({},
                 overrides=schedule_a_broker_update_values(schedule_a_broker_rows or []),
                 preserve_zero_compensation=True)
+            expected_brokers = _without_superseded_unpaid_broker_placeholders(
+                expected_brokers, schedule_a_broker_rows)
+            for tag, expected_total in _replacement_broker_totals(expected_brokers).items():
+                if actual_fields.get(tag) != expected_total:
+                    gaps.append(f"sequence {sequence} missing or incorrect replacement total {tag}")
         if (
             str(current_values.get("OverrideCommissionsAndFees") or "").strip() == "1"
             and str(actual_fields.get("OverrideCommissionsAndFees") or "").strip() == "1"
