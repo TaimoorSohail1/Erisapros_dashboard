@@ -116,6 +116,17 @@ Total Payments Made to Carrier: $39,000.12
         values = {field.field_name: field.value for field in result.fields}
         self.assertEqual(values["10a. Total premiums or subscription charges paid to carrier"], "39,000.12")
 
+    def test_approved_vsp_label_survives_joined_native_pdf_text_without_broadening_it(self):
+        from app.services.schedule_a_vsp_rules import approved_vsp_commission_label
+        source=('Schedule A Form (5500) Insurance Information'
+            'Insurance Carrier: Vision Service Plan'
+            'Commissions/FeesPaid for PolicyAgent or Broker or Contract Year'
+            'Example Advisory Inc $1,234.56')
+        self.assertTrue(approved_vsp_commission_label(source))
+        self.assertFalse(approved_vsp_commission_label(source.replace('Contract Year','Contract Yearly')))
+        self.assertFalse(approved_vsp_commission_label(source+' Other Commissions/Fees'))
+        self.assertFalse(approved_vsp_commission_label(source.replace('Vision Service Plan','Other Carrier')))
+
     def test_verified_worksheet_beginning_counts_update_without_conflict(self):
         service = FTWilliamsReviewService()
         for rule, tag in (("form_5500_part_ii_11_total_participants_at_beginning_of_year", "TotPartcpBoyCnt"),

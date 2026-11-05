@@ -3,7 +3,10 @@ import re
 
 
 def approved_vsp_commission_label(text: str) -> bool:
-    upper = str(text or "").upper()
+    # Native PDF runs can join adjacent cells ("FeesPaid", "PolicyAgent",
+    # "YearExample"). Restore their case boundaries before applying the same
+    # exact approved wording, carrier restriction and single-label check.
+    upper = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', str(text or "")).upper()
     if not ("SCHEDULE A" in upper and ("VISION SERVICE PLAN" in upper or "VSP VISION CARE" in upper)):
         return False
     combined = list(re.finditer(r"COMMISSIONS?\s*/\s*FEES?", upper))
