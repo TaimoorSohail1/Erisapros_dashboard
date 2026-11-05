@@ -67,6 +67,13 @@ class BrokerRosterReplacementTests(unittest.TestCase):
         result.schedule_a_broker_rows[0].commission_total='101'
         self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,'PRESERVE')
 
+    def test_final_organization_code_requires_source_agreement_even_if_money_matches(self):
+        result=self.verified()
+        independent=[r.model_copy(deep=True) for r in result.schedule_a_broker_rows]
+        result.schedule_a_broker_rows[0].organization_code='6'
+        attest_source_broker_roster(result,independent,'a'*64)
+        self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,'PRESERVE')
+
     def test_more_than_seven_recipients_need_zero_row_assignments(self):
         result=self.verified(count=9)
         records=[{'ftw_seq_no':'1','query_results':{'ScheduleDesc':'QA'}}]

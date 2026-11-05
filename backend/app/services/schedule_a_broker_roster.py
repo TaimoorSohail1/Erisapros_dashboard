@@ -131,6 +131,13 @@ def attest_source_broker_roster(result, independent_rows, source_sha256):
         return
     if Counter(_key(row) for row in rows) != Counter(_key(row) for row in independent_rows):
         return
+    # Provider recovery may legitimately correct its original code. The FINAL
+    # code must still agree with the independent source read (including the
+    # approved blank-to-3 default); matching names and amounts alone cannot
+    # approve a different recipient classification.
+    source_key = lambda row: (*_key(row), re.sub(r'^0+(?=\d)', '', str(row.organization_code or '3').strip()))
+    if Counter(source_key(row) for row in rows) != Counter(source_key(row) for row in independent_rows):
+        return
     for prefix, attribute in (("3b.", "commission_total"), ("3c.", "fee_total")):
         totals = {Decimal(value) for field in result.fields if field.field_name.lower().startswith(prefix)
                   and field.decision != "REVIEW_REQUIRED" and (value := _money(field.value)) is not None}
