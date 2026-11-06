@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
+const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8") + await readFile(new URL("../src/ui/BrokerRosterPanel.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
 
@@ -366,24 +366,14 @@ assert.match(
 );
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
-assert.match(source, /Save broker row/, "Reviewers must be able to edit a broker row before sending it to FT Williams.");
-assert.match(
-  source,
-  /const displayRow = editingIndex === index && draft \? draft : row;/,
-  "The broker summary row must preview the reviewer's draft values while editing.",
-);
-assert.match(source, /Unsaved changes/, "The broker editor must clearly identify draft values that are not saved yet.");
-assert.match(
-  source,
-  /editorRef\.current\?\.scrollIntoView/,
-  "Opening a broker editor must bring its controls into view.",
-);
+assert.match(source, /Save review/, "Reviewers can save the complete source-bound broker review.");
+assert.match(source, /heading\.current\?\.scrollIntoView/, "Opening a broker review brings its controls into view.");
 assert.match(
   styles,
   /\.broker-edit-toolbar\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
   "Broker Save and Cancel actions must remain visible inside the scrolling table.",
 );
-assert.match(source, /Exclude this broker row from the FT Williams update/, "Reviewers must be able to exclude a duplicate broker row.");
+assert.match(source, /Exclude from replacement/, "Reviewers must be able to exclude a duplicate broker row.");
 assert.match(api, /updateFTWilliamsScheduleABrokerRows[\s\S]*?\/ftw\/schedule-a-broker-rows/, "Broker row edits must be validated and saved through the review API.");
 assert.match(
   api,
@@ -400,11 +390,7 @@ assert.match(
   /FT Williams Plan URL[\s\S]*?Paste the exact FT Williams plan page URL/,
   "A one-time plan mapping must accept the exact FT Williams plan URL instead of requiring users to extract browser IDs manually.",
 );
-assert.match(
-  source,
-  /onSaveRows\(nextRows, "edited", editingIndex\)/,
-  "The broker editor must send the exact edited row index to the validation API.",
-);
+assert.match(source, /onSaveReview\(drafts\.map/, "Full-list saves include the edited roster and explicit review provenance.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
 assert.match(
   source,
@@ -413,7 +399,7 @@ assert.match(
 );
 assert.match(
   source,
-  /Organization code[\s\S]*?<select required value=\{draft\.organization_code \|\| ""\}/,
+  /Organization code[\s\S]*?<select required value=\{row\.organization_code/,
   "The broker editor must use a required organization-code dropdown instead of free text.",
 );
 assert.doesNotMatch(
@@ -888,7 +874,7 @@ assert.match(
 );
 assert.match(
   source,
-  /brokerRowValidationIssues\(draft, false\)[\s\S]*?setShowDraftValidation\(true\)/,
+  /drafts\.some\(d => purpose\(d\.row\) === \'Unclassified\'\)/,
   "Broker rows must be validated before save.",
 );
 assert.match(
@@ -898,7 +884,7 @@ assert.match(
 );
 assert.match(
   source,
-  /broker-row-validation-summary[\s\S]*?Broker row \{index \+ 1\} needs correction[\s\S]*?Fix issue/,
+  /Review &amp; edit[\s\S]*?role="alert"/,
   "Invalid broker rows must show a clear row-level error and direct fix action.",
 );
 assert.match(

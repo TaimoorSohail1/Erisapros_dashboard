@@ -240,6 +240,7 @@ class Repository:
     async def get_filing(self, filing_id: str) -> Filing | None: ...
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
+    async def save_broker_review(self, filing_id: str, expected_updated_at: datetime, values: dict) -> Filing | None: ...
     async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool: ...
     async def release_automation_lease(self, filing_id: str, lease_id: str) -> None: ...
     async def try_acquire_ftw_plan_lease(self, plan_key: str, lease_id: str, seconds: int) -> bool: ...
@@ -674,6 +675,16 @@ class MongoRepository(Repository):
             values.update(dashboard_identity_values(values))
         values["updated_at"] = datetime.utcnow()
         doc = await self.db.filings.find_one_and_update({"_id": ObjectId(filing_id)}, {"$set": values}, return_document=ReturnDocument.AFTER)
+        return from_mongo(doc, Filing) if doc else None
+
+    async def save_broker_review(self, filing_id: str, expected_updated_at: datetime, values: dict) -> Filing | None:
+        if not ObjectId.is_valid(filing_id):
+            return None
+        values = {key: _mongo_update_value(value) for key, value in values.items()}
+        values['updated_at'] = datetime.utcnow()
+        doc = await self.db.filings.find_one_and_update(
+            {'_id': ObjectId(filing_id), 'updated_at': _mongo_update_value(expected_updated_at)},
+            {'$set': values}, return_document=ReturnDocument.AFTER)
         return from_mongo(doc, Filing) if doc else None
 
     async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
@@ -1781,6 +1792,16 @@ class MemoryRepository(Repository):
 
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]:
         return [self.filings[filing_id] for filing_id in filing_ids if filing_id in self.filings]
+
+    async def save_broker_review(self, filing_id: str, expected_updated_at: datetime, values: dict) -> Filing | None:
+        filing = self.filings.get(filing_id)
+        if not filing or filing.updated_at != expected_updated_at:
+            return None
+        # No await between comparison and update in the in-memory implementation.
+        for key, value in values.items():
+            setattr(filing, key, value)
+        filing.updated_at = datetime.utcnow()
+        return filing
 
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         filing = self.filings.get(filing_id)

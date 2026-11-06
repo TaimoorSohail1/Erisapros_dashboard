@@ -45,6 +45,7 @@ from app.models import (
     ScheduleAContractType,
     ScheduleABrokerMatch,
     ScheduleABrokerRow,
+    ScheduleABrokerRosterReview,
     FTWilliamsScheduleAContractTypeRequest,
     FTWilliamsScheduleAMatchRequest,
     FTWilliamsSendUpdateRequest,
@@ -482,15 +483,17 @@ class FTWilliamsReviewService:
         if existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
+        broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records, identity,
+            self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, identity.get("ftw_seq_no"), filing.schedule_a_broker_roster),
+            source_context=self.source_context_sha256(filing))
         broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
             schedule_a_broker_rows,
             schedule_a_records,
             identity.get("ftw_seq_no"),
             existing_review.schedule_a_broker_matches if existing_review else [],
             create_new=create_new_schedule_a,
+            broker_roster=broker_roster,
         )
-        broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records, identity,
-            self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, identity.get("ftw_seq_no")))
         if not schedule_a_broker_rows and filing.schedule_a_broker_roster is None:
             broker_roster = None  # No broker replacement is proposed by a legacy field-only review.
         broker_match_complete = broker_roster is None or broker_roster.mode == "REPLACE"
@@ -558,7 +561,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
-                replace_broker_roster=self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, identity.get("ftw_seq_no")),
+                replace_broker_roster=broker_roster is not None and broker_roster.mode == 'REPLACE',
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1083,15 +1086,13 @@ class FTWilliamsReviewService:
             new_schedule_desc if payload.create_new else schedule_a_match.get("schedule_desc"),
             self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number"),
         )
-        broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
-            schedule_a_broker_rows,
-            schedule_a_records,
-            payload.ftw_seq_no,
-            previous_broker_matches,
-            create_new=payload.create_new,
-        )
         broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records,
-            update_identity | {"ftw_seq_no": payload.ftw_seq_no}, self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no))
+            update_identity | {"ftw_seq_no": payload.ftw_seq_no},
+            self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no, filing.schedule_a_broker_roster),
+            source_context=self.source_context_sha256(filing))
+        broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
+            schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no, previous_broker_matches,
+            create_new=payload.create_new, broker_roster=broker_roster)
         if not schedule_a_broker_rows and filing.schedule_a_broker_roster is None:
             broker_roster = None
         broker_match_complete = broker_roster is None or broker_roster.mode == "REPLACE"
@@ -1177,7 +1178,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 schedule_a_broker_rows=resolved_broker_rows,
                 form_5500_current_values=form_5500_current,
-                replace_broker_roster=self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no),
+                replace_broker_roster=broker_roster is not None and broker_roster.mode == 'REPLACE',
             )
         except FTWPayloadValidationError as exc:
             payload_validation_issues.extend(exc.issues)
@@ -1337,12 +1338,16 @@ class FTWilliamsReviewService:
         self,
         filing_id: str,
         payload: FTWilliamsScheduleABrokerRowsRequest,
+        *, actor: str = "",
     ) -> FTWilliamsReview:
         """Replace reviewer-visible broker rows after validating the exact FTW payload."""
         repo = get_repository()
         filing = await repo.get_filing(filing_id)
         if not filing:
             raise ValueError("Filing not found")
+
+        if payload.action == 'reviewed':
+            return await self._confirm_schedule_a_broker_review(filing_id, payload, actor=actor)
 
         rows = self._normalized_schedule_a_broker_rows(payload.rows)
         try:
@@ -1407,6 +1412,8 @@ class FTWilliamsReviewService:
         for row in rows:
             row.validation_results = [v for v in row.validation_results if v.validator != "complete_source_broker_roster"]
         invalidated_roster = source_roster_review(rows, getattr(filing, "schedule_a_broker_roster", None))
+        invalidated_roster.reviewer_confirmation = None
+        invalidated_roster = source_roster_review(rows, invalidated_roster)
         invalidated_roster.reasons.insert(0, "Broker edits invalidate source-list verification. Reprocess or review the complete source before replacement.")
         await repo.update_filing(filing_id, {"schedule_a_broker_rows": rows,
             "schedule_a_broker_roster": invalidated_roster.model_dump(mode="json"), "error_message": None})
@@ -1427,6 +1434,60 @@ class FTWilliamsReviewService:
             )
         )
         return updated_review
+
+    async def _confirm_schedule_a_broker_review(self, filing_id, payload, *, actor):
+        from app.services.broker_review_confirmation import confirm_broker_review
+        if not payload.review or not actor:
+            raise ValueError('Authenticated reviewer and complete broker review are required.')
+        repo = get_repository()
+        # Query through the existing read-only vendor path before accepting a review.
+        current = await self.prepare_review(filing_id, send_queries=True)
+        if (not current.current_query_success or current.current_query_complete is False
+                or current.ftw_editable is False
+                or not current.ftw_seq_no or not current.schedule_a_match
+                or current.schedule_a_match.get('create_new')
+                or not any(str(record.get('ftw_seq_no')) == str(current.ftw_seq_no) for record in current.schedule_a_records)):
+            raise ValueError('Select and refresh an existing editable FTWilliam Schedule A before confirming brokers.')
+        filing = await repo.get_filing(filing_id)
+        status = current.schedule_a_broker_roster
+        if not status:
+            raise ValueError('Broker source evidence is unavailable. Reprocess the source first.')
+        # Validate the current stored PDF, not just its filename or storage key.
+        from app.services.storage import StorageService
+        documents = [d for d in filing.package_documents if str(d.get('document_type')) == 'SCHEDULE_A']
+        if not documents:
+            documents = [{'s3_key': filing.s3_key, 's3_bucket': filing.s3_bucket,
+                'storage_path': filing.storage_path, 'source_sha256': status.source_sha256}]
+        if len(documents) != 1:
+            raise ValueError('A single source Schedule A PDF is required for this broker review.')
+        document = documents[0]
+        expected_source = document.get('source_sha256') or status.source_sha256
+        if not expected_source:
+            raise ValueError('The source PDF hash is unavailable. Reprocess the PDF before confirming brokers.')
+        source_bytes = await asyncio.to_thread(StorageService().load_pdf, document['s3_key'],
+            bucket=document.get('s3_bucket'), local_path=document.get('storage_path'))
+        if hashlib.sha256(source_bytes).hexdigest() != expected_source:
+            raise ValueError('Source PDF changed. Reprocess and review the current PDF.')
+        try:
+            rows, confirmed = confirm_broker_review(payload.rows, self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows), status, payload.review,
+                actor=actor, source_context=self.source_context_sha256(filing), snapshot=status.current_snapshot_sha256)
+        except FTWPayloadValidationError as exc:
+            raise ValueError(self._friendly_broker_validation_error(exc)) from exc
+        confirmed = source_roster_review(rows, confirmed)
+        if not self._can_replace_broker_roster(rows, current.schedule_a_records, current.ftw_seq_no, confirmed):
+            raise ValueError('Current FTWilliam broker fields cannot safely be replaced. Review the source and destination.')
+        saved = await repo.save_broker_review(filing_id, filing.updated_at, {
+            'schedule_a_broker_rows': rows, 'schedule_a_broker_roster': confirmed,
+            'error_message': None})
+        if not saved:
+            raise ValueError('Filing changed while saving the broker review. Refresh and review again.')
+        # Durable provenance is saved with the rows in the same conditional write.
+        await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_CONFIRMED',
+            message='Reviewer confirmed the complete broker list and classified payments.',
+            details=confirmed.reviewer_confirmation))
+        current.schedule_a_broker_matches = []
+        await repo.upsert_ftwilliams_review(current)
+        return await self.prepare_review(filing_id, send_queries=False)
 
     def _friendly_broker_validation_error(
         self,
@@ -4315,7 +4376,7 @@ class FTWilliamsReviewService:
         ]
         broker_issue = None
         if include_brokers and ((review.schedule_a_broker_roster and review.schedule_a_broker_roster.mode != "REPLACE")
-                                or (review.schedule_a_broker_rows and not broker_roster_is_complete(review.schedule_a_broker_rows))):
+                                or (review.schedule_a_broker_rows and not broker_roster_is_complete(review.schedule_a_broker_rows, review.schedule_a_broker_roster))):
             broker_issue = "The source broker roster needs completeness/payment review; existing FTWilliam brokers must be preserved"
         if include_brokers and review.schedule_a_broker_rows:
             try:
@@ -5152,6 +5213,7 @@ class FTWilliamsReviewService:
         previous_matches: list[ScheduleABrokerMatch],
         *,
         create_new: bool,
+        broker_roster=None,
     ) -> tuple[list[ScheduleABrokerMatch], list[ScheduleABrokerRow | None]]:
         extracted_rows = [
             row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
@@ -5168,7 +5230,7 @@ class FTWilliamsReviewService:
             None,
         )
         current_rows = [] if create_new else current_schedule_a_broker_rows(selected_record)
-        if self._can_replace_broker_roster(extracted_rows, records, sequence):
+        if self._can_replace_broker_roster(extracted_rows, records, sequence, broker_roster):
             # A complete source list replaces the roster. Old-row identity and
             # old match decisions cannot change or block the current recipients.
             return ([ScheduleABrokerMatch(extracted_index=i, status="VERIFIED_REPLACEMENT", resolved=True,
@@ -5189,7 +5251,7 @@ class FTWilliamsReviewService:
         matches = match_schedule_a_brokers(extracted_rows, current_rows, decisions=decisions)
         if not all(match.resolved for match in matches):
             return matches, []
-        replace_roster = self._can_replace_broker_roster(extracted_rows, records, sequence)
+        replace_roster = self._can_replace_broker_roster(extracted_rows, records, sequence, broker_roster)
         resolved = resolved_schedule_a_broker_rows(extracted_rows, current_rows, matches,
             source_roster_complete=replace_roster)
         if replace_roster:
@@ -5199,8 +5261,12 @@ class FTWilliamsReviewService:
         return matches, resolved
 
     @staticmethod
-    def _can_replace_broker_roster(rows, records, sequence) -> bool:
-        if not broker_roster_is_complete(rows):
+    def _can_replace_broker_roster(rows, records, sequence, broker_roster=None) -> bool:
+        if isinstance(broker_roster, dict):
+            broker_roster = ScheduleABrokerRosterReview.model_validate(broker_roster)
+        if broker_roster is not None and broker_roster.mode != 'REPLACE':
+            return False
+        if not broker_roster_is_complete(rows, broker_roster):
             return False
         try:
             schedule_a_broker_update_values([row for row in rows if broker_row_has_payment(row)], require_complete=True)
@@ -6083,7 +6149,7 @@ class FTWilliamsReviewService:
                 raise ValueError(broker_error)
             matches, resolved_brokers = self._resolve_schedule_a_brokers(review.schedule_a_broker_rows,
                 review.schedule_a_records, identity.get("ftw_seq_no"), review.schedule_a_broker_matches,
-                create_new=bool((review.schedule_a_match or {}).get("create_new")))
+                create_new=bool((review.schedule_a_match or {}).get("create_new")), broker_roster=review.schedule_a_broker_roster)
             if not all(match.resolved for match in matches):
                 raise ValueError("The complete source broker list needs verification. Resolve its source/payment issues or deselect broker updates.")
         review.update_xml_schedule_a = ""
@@ -6097,7 +6163,7 @@ class FTWilliamsReviewService:
                 schedule_a_broker_rows=resolved_brokers,
                 form_5500_current_values=review.form_5500_current_values,
                 replace_broker_roster=include_broker_updates and self._can_replace_broker_roster(
-                    review.schedule_a_broker_rows, review.schedule_a_records, identity.get("ftw_seq_no")))
+                    review.schedule_a_broker_rows, review.schedule_a_records, identity.get("ftw_seq_no"), review.schedule_a_broker_roster))
             if not review.update_xml_schedule_a:
                 raise ValueError("Current FT Williams Schedule A data is incomplete. Refresh it before sending the selected fields.")
 
@@ -6115,7 +6181,7 @@ class FTWilliamsReviewService:
             row if isinstance(row, ScheduleABrokerRow) else ScheduleABrokerRow.model_validate(row)
             for row in review.schedule_a_broker_rows or []
         ]
-        if self._can_replace_broker_roster(extracted_rows, review.schedule_a_records, review.ftw_seq_no):
+        if self._can_replace_broker_roster(extracted_rows, review.schedule_a_records, review.ftw_seq_no, review.schedule_a_broker_roster):
             selected = next((record for record in review.schedule_a_records
                 if str(record.get("ftw_seq_no")) == str(review.ftw_seq_no)), None)
             paid_rows = [row for row in extracted_rows if broker_row_has_payment(row)]
@@ -6837,6 +6903,7 @@ class FTWilliamsReviewService:
                 review.schedule_a_match.get("ftw_seq_no"),
                 review.schedule_a_broker_matches,
                 create_new=is_new_schedule,
+                broker_roster=review.schedule_a_broker_roster,
             )
         replacement_gaps = schedule_a_replacement_data_gaps(
             list(review.schedule_a_records or []),
@@ -6845,7 +6912,7 @@ class FTWilliamsReviewService:
             require_exact_payment_controls=True,
             schedule_a_broker_rows=resolved_broker_rows,
             replace_broker_roster=check_brokers and self._can_replace_broker_roster(
-                review.schedule_a_broker_rows, review.schedule_a_records, review.schedule_a_match.get("ftw_seq_no")),
+                review.schedule_a_broker_rows, review.schedule_a_records, review.schedule_a_match.get("ftw_seq_no"), review.schedule_a_broker_roster),
         )
         if replacement_gaps:
             details = "; ".join(replacement_gaps[:5])

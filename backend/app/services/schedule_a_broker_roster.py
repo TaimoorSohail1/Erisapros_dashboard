@@ -94,7 +94,10 @@ def broker_row_has_payment(row):
                for value in (_money(row.commission_total), _money(row.fee_total)))
 
 
-def broker_roster_is_complete(rows):
+def broker_roster_is_complete(rows, status=None):
+    from app.services.broker_review_confirmation import confirmation_matches
+    if confirmation_matches(rows, status):
+        return True
     if not rows or any(row.decision == "REVIEW_REQUIRED" or any(v.status == "ERROR" for v in row.validation_results)
                        for row in rows):
         return False
@@ -178,10 +181,11 @@ def source_roster_review(rows, previous=None):
     status.replacement_count = sum(broker_row_has_payment(row) for row in rows)
     status.roster_sha256 = _fingerprint(rows)
     status.evidence = list(status.evidence) + [e for row in rows for e in row.evidence if e not in status.evidence]
-    if broker_roster_is_complete(rows):
-        proof = next(v.normalized_value for v in rows[0].validation_results
-                     if v.validator == VALIDATOR and v.status == "PASS")
-        status.source_sha256 = proof.split(":")[0]
+    if broker_roster_is_complete(rows, status):
+        if not status.reviewer_confirmation:
+            proof = next(v.normalized_value for v in rows[0].validation_results
+                         if v.validator == VALIDATOR and v.status == "PASS")
+            status.source_sha256 = proof.split(":")[0]
         status.state = "VERIFIED" if status.replacement_count else "VERIFIED_EMPTY"
         status.mode = "REPLACE"
         status.reasons = []
@@ -192,7 +196,7 @@ def source_roster_review(rows, previous=None):
     return status
 
 
-def bind_roster_review(rows, previous, records, identity, can_replace):
+def bind_roster_review(rows, previous, records, identity, can_replace, source_context=None):
     """Bind the preview to the exact selected destination and its fresh roster."""
     status = source_roster_review(rows, previous)
     selected = next((r for r in records if str(r.get('ftw_seq_no') or '') == str(identity.get('ftw_seq_no') or '')), None)
@@ -201,6 +205,15 @@ def bind_roster_review(rows, previous, records, identity, can_replace):
     status.existing_count = len(current)
     binding = {"identity": identity, "selected_record": selected}
     status.current_snapshot_sha256 = hashlib.sha256(json.dumps(binding, sort_keys=True, default=str).encode()).hexdigest()
+    from app.services.broker_review_confirmation import disclosure_items, review_token
+    status.other_disclosures = disclosure_items(status)
+    confirmation = status.reviewer_confirmation
+    if confirmation and (confirmation.get('source_context_sha256') != source_context
+                         or confirmation.get('snapshot_sha256') != status.current_snapshot_sha256):
+        status.reviewer_confirmation = None
+        status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
+        status.reasons = ['Source or FTWilliam data changed after broker review. Review the current list again.']
+    status.review_context_sha256 = review_token(rows, status, source_context, status.current_snapshot_sha256)
     if status.mode == 'REPLACE' and not can_replace:
         status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
         status.reasons = ['Source or current FTWilliam broker information cannot safely be serialized for replacement.']

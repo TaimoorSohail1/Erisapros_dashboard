@@ -13084,3 +13084,10 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
   .approval-workspace-page .broker-edit-toolbar { flex-wrap: wrap; }
   .approval-workspace-page .broker-edit-actions { display: flex; margin-left: 0; flex-wrap: wrap; }
 }
+
+.broker-review-editor { margin-top: 1rem; padding: 1rem; border: 1px solid #cbd5e1; border-radius: .5rem; }
+.broker-review-editor pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; }
+.broker-review-confirmation, .broker-disclosure-treatment { display: block; margin: 1rem 0; }
+.broker-disclosure-treatment select, .broker-review-confirmation textarea { display: block; width: 100%; margin-top: .4rem; }
+.broker-review-editor fieldset { margin: 1rem 0; }
+.broker-review-editor [role="alert"] { color: #9a3412; }
