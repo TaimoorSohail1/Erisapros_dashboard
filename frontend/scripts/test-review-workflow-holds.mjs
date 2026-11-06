@@ -11,7 +11,7 @@ import ts from "typescript";
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("review.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["brokerRowValidationIssues", "AutomationWorkflowNotice", "PlanYearConflictPanel", "localAgentStatusLabel", "uniqueAutomationReasonLabels", "reviewBlockingFields"];
+const names = ["brokerRowValidationIssues", "AutomationWorkflowNotice", "PlanYearConflictPanel", "localAgentStatusLabel", "uniqueAutomationReasonLabels", "reviewBlockingFields", "groupForComparison", "reviewedStatusLabel", "ReviewDecisionTableRow"];
 const declarations = [];
 function collect(node) {
   if (ts.isFunctionDeclaration(node) && names.includes(node.name?.text)) declarations.push(node);
@@ -55,6 +55,27 @@ assert.match(panel, /Use worksheet dates/);
 assert.match(panel, /Keep FT Williams dates/);
 assert.match(panel, /every attached Schedule A/);
 assert.equal(actions.length, 0, "Displaying decisions must never select dates or send a filing.");
+
+const sourceHold = {
+  field_id: "qa-withheld-premium", label: "10a. Total premiums", form_type: "SCHEDULE_A",
+  extracted_value: "173,344.57", proposed_value: "", current_value: "",
+  extraction_status: "LOW_CONFIDENCE", decision: "BLOCKED", validation_status: "REVIEW_REQUIRED",
+  validation_blocking: true, update_included: false, changed: false,
+};
+assert.equal(api.groupForComparison(sourceHold), "NEEDS_DECISION");
+assert.equal(api.reviewedStatusLabel("NEEDS_DECISION", undefined, sourceHold), "Needs review");
+const heldRow = renderToStaticMarkup(React.createElement(api.ReviewDecisionTableRow, {
+  row: {fieldId: sourceHold.field_id, label: sourceHold.label, formLabel: "Schedule A", section: "Premiums",
+    extracted: sourceHold.extracted_value, proposed: "", currentFtw: "", group: "NEEDS_DECISION",
+    statusLabel: "Needs review", issue: "Confirm the premium classification before sending."},
+  selected: false, onAccept() { throw Error("Rendering must not confirm an extraction"); },
+  onInspect() {}, onKeepFtw() {},
+}));
+assert.match(heldRow, /173,344.57/);
+assert.match(heldRow, /Needs review/);
+assert.match(heldRow, /Confirm the premium classification/);
+assert.match(heldRow, /Keep Extracted/);
+assert.match(heldRow, /No proposed value/);
 
 // Exercise the actual controls and navigation using a local DOM, without API calls.
 const dom = new JSDOM("<div id='root'></div><section id='plan-year-conflict'></section><section id='schedule-a-broker-rows'></section><section id='filing-review-table'></section>");
