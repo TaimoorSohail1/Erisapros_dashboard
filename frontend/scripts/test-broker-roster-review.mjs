@@ -131,5 +131,20 @@ await render({rows:[{...row,commission_total:'100,901.12',fee_total:'(100,901.12
 assert.match(document.body.textContent,/COMMISSIONS AND FEES/);assert.doesNotMatch(document.body.textContent,/NaN/);
 await render({rows:[{...row,commission_total:'90071992547409.91',fee_total:'0'}],roster:{...sourceProps.roster,mode:'REPLACE'}});
 assert.match(document.body.textContent,/\$90,071,992,547,409\.91/,'Displaying a large amount must not round away cents');
+// A broker draft may be edited before selecting a target, but cannot be approved.
+let targetReviews=0;
+const destinationReason='The policy number may refer to existing Schedule A #7. Select it or explicitly confirm a separate new Schedule A.';
+await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason},onReviewDestination:()=>{targetReviews++;}});
+assert.match(document.body.textContent,/existing Schedule A #7/);
+assert.equal(button('Approve').disabled,true);
+await click('Review Schedule A');assert.equal(targetReviews,1);
+await click('Edit');assert.ok(document.querySelector('form'));await click('Cancel');
+// Destination readiness can change on refresh even if source/snapshot hashes did not.
+await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[row],schedule_a_broker_roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason}})});
+await click('Approve');assert.equal(saves.length,4);assert.match(document.body.textContent,/existing Schedule A #7/);
+assert.equal(button('Approve').disabled,true);
+// A genuinely new, verified target uses the same approval path without a sequence.
+await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:true},onSaveReview:async()=>true});
+await click('Approve');assert.equal(button('Approved').disabled,true);
 await act(async()=>root.unmount());
 console.log('Simple broker UI: Edit/Approve, no Add broker, drafts/cancel, exact classification, complete-list approval, exclusions/empty evidence, stale refresh, failed save, duplicate prevention and verified-list compatibility passed.');
