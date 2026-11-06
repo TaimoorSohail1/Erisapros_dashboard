@@ -43,6 +43,10 @@ assert.equal(document.querySelector('[aria-label="Commission for broker 1"]').va
 assert.equal(document.querySelector('[aria-label="Fees for broker 1"]').value,'');
 await click('Cancel');assert.equal(saves.length,0,'Opening/including/cancelling never saves');
 
+await act(async()=>root.render(React.createElement(Panel,{...props,rows:[{name:'Formatted source broker',commission_total:'100,901.12',fee_total:'(100,901.12)'}],roster:{...roster,mode:'REPLACE',replacement_count:1,other_disclosures:[]}})));
+assert.match(document.body.textContent,/\$100,901\.12/,'Formatted source amounts remain readable');
+assert.match(document.body.textContent,/COMMISSIONS AND FEES/,'Parenthesized negative fees remain non-zero');
+
 // A complete existing source row proves failed saves retain edits and confirmations.
 const row={name:'Source broker',address_line_1:'10 Main St',city:'Boston',state:'MA',zip_code:'02110',organization_code:'0',commission_total:'100',fee_total:'-100'};
 await act(async()=>root.render(React.createElement(Panel,{...props,rows:[row],roster:{...roster,other_disclosures:[]}})));

@@ -25,11 +25,16 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const returnFocus = useRef<HTMLElement | null>(null);
   const disclosures = roster?.other_disclosures ?? [];
   const ready = roster?.mode === 'REPLACE';
-  const formatMoney = (value?: string | null) => value == null || value === '' ? 'Unconfirmed' :
-    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value));
+  const numericMoney = (value?: string | null) => {
+    const text = String(value ?? '').replace(/[$,\s]/g, '');
+    if (!text) return NaN;
+    return Number(/^\(.*\)$/.test(text) ? '-' + text.slice(1, -1) : text);
+  };
+  const formatMoney = (value?: string | null) => !Number.isFinite(numericMoney(value)) ? 'Unconfirmed' :
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(numericMoney(value));
   const purpose = (row: ScheduleABrokerRow) => {
-    if ([row.commission_total, row.fee_total].some(v => v == null || v.trim() === '' || !Number.isFinite(Number(v)))) return 'Unclassified';
-    const commission = Number(row.commission_total) !== 0, fees = Number(row.fee_total) !== 0;
+    if ([row.commission_total, row.fee_total].some(v => !Number.isFinite(numericMoney(v)))) return 'Unclassified';
+    const commission = numericMoney(row.commission_total) !== 0, fees = numericMoney(row.fee_total) !== 0;
     return commission && fees ? 'COMMISSIONS AND FEES' : fees ? 'FEES' : commission ? 'COMMISSIONS' : 'COMMISSION';
   };
   const address = (row: ScheduleABrokerRow) => [row.address_line_1, row.address_line_2, row.city, row.state, row.zip_code].filter(Boolean).join(', ');
