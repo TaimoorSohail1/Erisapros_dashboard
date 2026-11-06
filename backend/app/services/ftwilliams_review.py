@@ -1489,6 +1489,63 @@ class FTWilliamsReviewService:
         await repo.upsert_ftwilliams_review(current)
         return await self.prepare_review(filing_id, send_queries=False)
 
+    async def _acknowledge_verified_broker_review(self, filing_id, sent, current, observations):
+        """Keep approval after our verified write, never after an external edit.
+
+        Called only after full verification succeeds. A second fresh snapshot
+        must still equal that literal read-back; source, roster and the durable
+        original confirmation must not have changed during the write.
+        """
+        from app.services.broker_review_confirmation import confirmation_matches
+        status = sent.schedule_a_broker_roster
+        confirmation = status.reviewer_confirmation if status else None
+        if (not confirmation or status.mode != 'REPLACE' or not sent.update_xml_schedule_a
+                or not current.current_query_success or current.current_query_complete is False
+                or not current.schedule_a_broker_roster):
+            return False
+        identity = lambda review: {**self._identity_from_review(review), 'ftw_seq_no': str(review.ftw_seq_no or '')}
+        if identity(sent) != identity(current):
+            return False
+        sequence = str(sent.ftw_seq_no or '')
+        selected = next((r for r in current.schedule_a_records if str(r.get('ftw_seq_no')) == sequence), None)
+        observed = [o for o in observations if o.get('form_type') == FormType.SCHEDULE_A.value
+            and str(o.get('expected_sequence')) == sequence and str(o.get('actual_sequence')) == sequence]
+        documents = [d for d in self._schedule_update_documents_with_sequences(sent) if str(d.get('__ftw_seq_no')) == sequence]
+        if (not selected or len(observed) != 1 or len(documents) != 1
+                or observed[0].get('values') != selected.get('query_results')
+                or observed[0].get('broker_rows') != selected.get('query_subparts')
+                or self._compare_readback_document(FormType.SCHEDULE_A, documents[0], selected['query_results'],
+                    actual_subparts=selected.get('query_subparts', {}))):
+            return False
+        repo = get_repository()
+        filing = await repo.get_filing(filing_id)
+        if not filing or not filing.schedule_a_broker_roster:
+            return False
+        source_context = self.source_context_sha256(filing)
+        rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
+        if (source_context != confirmation.get('source_context_sha256')
+                or filing.schedule_a_broker_roster.reviewer_confirmation != confirmation
+                or not confirmation_matches(rows, status)
+                or not confirmation_matches(sent.schedule_a_broker_rows, status)):
+            return False
+        updated = status.model_copy(deep=True)
+        updated.current_snapshot_sha256 = current.schedule_a_broker_roster.current_snapshot_sha256
+        if not updated.current_snapshot_sha256:
+            return False
+        updated.reviewer_confirmation = {**confirmation,
+            'snapshot_sha256': updated.current_snapshot_sha256,
+            'verified_update': {'at': datetime.utcnow().isoformat(),
+                'previous_snapshot_sha256': confirmation['snapshot_sha256'],
+                'verified_snapshot_sha256': updated.current_snapshot_sha256,
+                'destination': identity(sent)}}
+        saved = await repo.save_broker_review(filing_id, filing.updated_at, {'schedule_a_broker_roster': updated})
+        if not saved:
+            return False
+        await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_UPDATE_VERIFIED',
+            message='The reviewed roster was saved and verified on the same Schedule A.',
+            details=updated.reviewer_confirmation['verified_update']))
+        return True
+
     def _friendly_broker_validation_error(
         self,
         error: FTWPayloadValidationError,
@@ -3272,6 +3329,11 @@ class FTWilliamsReviewService:
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
+        if verification_success is True and await self._acknowledge_verified_broker_review(
+            filing_id, review, reconciled, verification_observations
+        ):
+            # Advance only to the snapshot proved by this successful write.
+            reconciled = await self.prepare_review(filing_id, send_queries=False)
         remaining_field_keys = self._remaining_attempted_keys(attempted_field_keys, reconciled)
         remaining_count = len(remaining_field_keys)
         confirmed_count = max(0, attempted_count - remaining_count)
