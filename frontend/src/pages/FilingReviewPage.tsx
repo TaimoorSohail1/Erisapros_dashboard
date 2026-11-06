@@ -756,7 +756,7 @@ export function FilingReviewPage() {
     setFtwBusy(true);
     setMessage("");
     try {
-      await selectFTWilliamsScheduleAMatch(id, payload);
+      await selectFTWilliamsScheduleAMatch(id, { ...payload, confirm_new_target: payload.create_new === true });
       setFiling(await getFiling(id));
     } catch (error) {
       setToast({

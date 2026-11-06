@@ -171,6 +171,13 @@ class NewScheduleBrokerReviewTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, 'already exists'):
             await self.save(await self.payload())
 
+    def test_legacy_automatic_new_label_is_not_explicit_target_confirmation(self):
+        selected = {'contract':'00001023386600000','carrier_ein':'35-0472300','source':'NEW_SCHEDULE_A'}
+        records = [{'ftw_seq_no':'7','query_results':{'InsCarrierEIN':'35-0472300','InsContractNum':'10233866'}}]
+        self.assertIn('existing Schedule A #7', self.service._padded_contract_review_error(selected,records))
+        selected['new_target_confirmed'] = True
+        self.assertIsNone(self.service._padded_contract_review_error(selected,records))
+
     async def test_missing_or_locked_destination_does_not_save(self):
         from unittest.mock import AsyncMock
         for changes in ({'current_query_complete':False}, {'current_year_exists':False},

@@ -399,6 +399,7 @@ export async function selectFTWilliamsScheduleAMatch(
     carrier_ein?: string;
     contract?: string;
     create_new?: boolean;
+    confirm_new_target?: boolean;
     schedule_desc?: string;
   },
 ): Promise<{ ftw_review: FTWilliamsReview }> {
