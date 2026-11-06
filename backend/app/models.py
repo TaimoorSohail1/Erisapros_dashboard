@@ -532,6 +532,8 @@ class ScheduleABrokerRosterReview(BaseModel):
     other_disclosures: list[dict] = Field(default_factory=list)
     review_context_sha256: str | None = None
     reviewer_confirmation: dict | None = None
+    destination_ready: bool | None = None
+    destination_reason: str | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):

@@ -288,6 +288,7 @@ def build_schedule_a_records_update_xml(
             ftw_plan_id=ftw_plan_id,
             schedule_a_broker_rows=schedule_a_broker_rows,
             derive_payment_indicator=True,
+            replace_broker_roster=replace_broker_roster,
         )
         if document_xml and len(update_values_for_form(add_new_fields, FormType.SCHEDULE_A)) > 0:
             documents.append(document_xml)

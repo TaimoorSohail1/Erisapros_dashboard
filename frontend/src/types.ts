@@ -157,6 +157,8 @@ export interface ScheduleABrokerRosterReview {
   evidence: Array<{ page?: number | null; source_text?: string | null }>;
   other_disclosures: Array<{ id?: string; name?: string; address?: string; page?: number; amount?: string | null; payment_category?: string; source_text?: string }>;
   review_context_sha256?: string | null;
+  destination_ready?: boolean | null;
+  destination_reason?: string | null;
   reviewer_confirmation?: { actor: string; at: string; reason: string; row_sources: string[];
     disclosure_decisions: Record<string, "INCLUDED" | "SUPPORTING_ONLY" | "UNRESOLVED"> } | null;
 }

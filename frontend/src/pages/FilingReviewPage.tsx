@@ -1378,6 +1378,7 @@ export function FilingReviewPage() {
                 onSaveRows={saveScheduleABrokerRows}
                 onSaveReview={saveBrokerRosterReview}
                 onRefreshReview={refreshBrokerRosterReview}
+                onReviewDestination={openFtwPlanMatch}
                 rows={scheduleABrokerRows}
               />
             ) : null}
@@ -4021,6 +4022,7 @@ function ScheduleABrokerRowsPanel(props: {
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
   onRefreshReview: () => Promise<FTWilliamsReview>;
+  onReviewDestination?: () => void;
   rows: ScheduleABrokerRow[];
 }) {
   return <BrokerRosterPanel {...props} />;

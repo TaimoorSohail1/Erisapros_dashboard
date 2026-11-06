@@ -483,7 +483,9 @@ class FTWilliamsReviewService:
         if existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
-        broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records, identity,
+        broker_binding = self._broker_review_binding_identity(identity, create_new_schedule_a,
+            new_schedule_desc, fields)
+        broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records, broker_binding,
             self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, identity.get("ftw_seq_no"), filing.schedule_a_broker_roster),
             source_context=self.source_context_sha256(filing))
         broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
@@ -768,6 +770,7 @@ class FTWilliamsReviewService:
             **identity,
         )
         review.source_context_sha256 = preservation_review.source_context_sha256
+        self._mark_broker_review_destination(review, fields)
         decision_counts = self._review_decision_count_updates(review)
         review = review.model_copy(update=decision_counts)
         review = await repo.upsert_ftwilliams_review(review)
@@ -1087,7 +1090,8 @@ class FTWilliamsReviewService:
             self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number"),
         )
         broker_roster = bind_roster_review(schedule_a_broker_rows, filing.schedule_a_broker_roster, schedule_a_records,
-            update_identity | {"ftw_seq_no": payload.ftw_seq_no},
+            self._broker_review_binding_identity(update_identity | {"ftw_seq_no": payload.ftw_seq_no},
+                payload.create_new, new_schedule_desc, fields),
             self._can_replace_broker_roster(schedule_a_broker_rows, schedule_a_records, payload.ftw_seq_no, filing.schedule_a_broker_roster),
             source_context=self.source_context_sha256(filing))
         broker_matches, resolved_broker_rows = self._resolve_schedule_a_brokers(
@@ -1229,6 +1233,7 @@ class FTWilliamsReviewService:
                 "ftw_seq_no": payload.ftw_seq_no,
             }
         )
+        self._mark_broker_review_destination(updated_review, fields)
         decision_counts = self._review_decision_count_updates(updated_review)
         updated_review = updated_review.model_copy(update=decision_counts)
         updated_review.id = review.id
@@ -1442,12 +1447,9 @@ class FTWilliamsReviewService:
         repo = get_repository()
         # Query through the existing read-only vendor path before accepting a review.
         current = await self.prepare_review(filing_id, send_queries=True)
-        if (not current.current_query_success or current.current_query_complete is False
-                or current.ftw_editable is False
-                or not current.ftw_seq_no or not current.schedule_a_match
-                or current.schedule_a_match.get('create_new')
-                or not any(str(record.get('ftw_seq_no')) == str(current.ftw_seq_no) for record in current.schedule_a_records)):
-            raise ValueError('Select and refresh an existing editable FTWilliam Schedule A before confirming brokers.')
+        error = self._broker_review_destination_error(current, await repo.list_fields(filing_id))
+        if error:
+            raise ValueError(error)
         filing = await repo.get_filing(filing_id)
         status = current.schedule_a_broker_roster
         if not status:
@@ -1489,6 +1491,85 @@ class FTWilliamsReviewService:
         await repo.upsert_ftwilliams_review(current)
         return await self.prepare_review(filing_id, send_queries=False)
 
+    def _broker_review_binding_identity(self, identity, create_new, description, fields):
+        if not create_new:
+            return identity
+        return {**identity, 'ftw_seq_no': None, 'new_schedule_a': {
+            'schedule_desc': description,
+            'contract': self._field_value_by_rule(fields, 'schedule_a_part_i_1d_contract_policy_number'),
+            'carrier_ein': self._field_value_by_rule(fields, 'schedule_a_part_i_1b_insurance_carrier_ein'),
+        }}
+
+    @staticmethod
+    def _possible_padded_contract_matches(selected, records):
+        """A zero suffix is a review hint, never permission to trim an ID."""
+        contract = FTWilliamsReviewService._contract_text(selected.get('contract')).lstrip('0')
+        ein = re.sub(r'\D', '', str(selected.get('carrier_ein') or ''))
+        if not contract.isdigit() or not ein:
+            return []
+        return [record for record in records if (
+            re.sub(r'\D', '', str((record.get('query_results') or {}).get('InsCarrierEIN') or '')) == ein
+            and (other := FTWilliamsReviewService._contract_text((record.get('query_results') or {}).get('InsContractNum')).lstrip('0')).isdigit()
+            and other != contract and other.rstrip('0') == contract.rstrip('0'))]
+
+    @staticmethod
+    def _padded_contract_review_error(selected, records):
+        possible = FTWilliamsReviewService._possible_padded_contract_matches(selected, records)
+        if possible and str(selected.get('source') or '').upper() != 'NEW_SCHEDULE_A':
+            sequences = ', '.join(str(r.get('ftw_seq_no')) for r in possible)
+            return f'The policy number may refer to existing Schedule A #{sequences}. Select it or explicitly confirm a separate new Schedule A.'
+        return None
+
+    def _new_broker_destination_error(self, review, fields=None):
+        selected = review.schedule_a_match or {}
+        if not selected.get('create_new'):
+            return None
+        if (review.current_query_complete is not True or not review.current_year_exists
+                or review.bring_forward_required or review.ftw_editable is not True
+                or not all((review.ftw_customer_id, review.ftw_plan_id, review.year))):
+            return 'Refresh the current editable FTWilliam plan and complete Schedule A list before approving new-record brokers.'
+        description = str(selected.get('schedule_desc') or '').strip()
+        contract = self._normalize_contract(selected.get('contract'))
+        ein = self._normalize_ein_digits(selected.get('carrier_ein'))
+        if not description or not contract or len(ein) != 9 or review.ftw_seq_no:
+            return 'Confirm the new Schedule A description, carrier EIN and policy number before approving brokers.'
+        candidate_seqs = {str(c.get('ftw_seq_no')) for c in review.schedule_a_candidates if c.get('ftw_seq_no')}
+        record_seqs = {str(r.get('ftw_seq_no')) for r in review.schedule_a_records if r.get('ftw_seq_no') and r.get('query_results')}
+        if candidate_seqs - record_seqs:
+            return 'Refresh every existing Schedule A before approving brokers for a new record.'
+        for record in review.schedule_a_records:
+            current = record.get('query_results') or {}
+            if normalize_compare_value(current.get('ScheduleDesc')) == normalize_compare_value(description):
+                return 'This new Schedule A description already exists. Refresh and select the existing record.'
+            if (self._normalize_ein_digits(current.get('InsCarrierEIN')) == ein
+                    and self._normalize_contract(current.get('InsContractNum')) == contract):
+                return 'This policy already exists in FTWilliam. Select the existing Schedule A instead of creating a duplicate.'
+        possible_error = self._padded_contract_review_error(selected, review.schedule_a_records)
+        if possible_error:
+            return possible_error
+        if fields is not None:
+            actual_contract = self._field_value_by_rule(fields, 'schedule_a_part_i_1d_contract_policy_number')
+            actual_ein = self._field_value_by_rule(fields, 'schedule_a_part_i_1b_insurance_carrier_ein')
+            if self._normalize_contract(actual_contract) != contract or self._normalize_ein_digits(actual_ein) != ein:
+                return 'The source policy identity changed. Review the new Schedule A destination again.'
+        return None
+
+    def _broker_review_destination_error(self, review, fields=None):
+        if not review.current_query_success or review.current_query_complete is False or review.ftw_editable is False:
+            return 'Refresh the current editable FTWilliam plan before approving brokers.'
+        if (review.schedule_a_match or {}).get('create_new'):
+            return self._new_broker_destination_error(review, fields)
+        if (not review.ftw_seq_no or not review.schedule_a_match
+                or not any(str(r.get('ftw_seq_no')) == str(review.ftw_seq_no) for r in review.schedule_a_records)):
+            return 'Select and refresh an existing Schedule A, or confirm a new Schedule A, before approving brokers.'
+        return None
+
+    def _mark_broker_review_destination(self, review, fields):
+        if review.schedule_a_broker_roster:
+            reason = self._broker_review_destination_error(review, fields)
+            review.schedule_a_broker_roster.destination_ready = reason is None
+            review.schedule_a_broker_roster.destination_reason = reason
+
     async def _acknowledge_verified_broker_review(self, filing_id, sent, current, observations):
         """Keep approval after our verified write, never after an external edit.
 
@@ -1504,13 +1585,19 @@ class FTWilliamsReviewService:
                 or not current.schedule_a_broker_roster):
             return False
         identity = lambda review: {**self._identity_from_review(review), 'ftw_seq_no': str(review.ftw_seq_no or '')}
-        if identity(sent) != identity(current):
+        created = bool((sent.schedule_a_match or {}).get('create_new') and not sent.ftw_seq_no)
+        if created:
+            if not self._verified_created_broker_destination(sent, current, observations):
+                return False
+        elif identity(sent) != identity(current):
             return False
-        sequence = str(sent.ftw_seq_no or '')
+        sequence = str(current.ftw_seq_no if created else sent.ftw_seq_no or '')
         selected = next((r for r in current.schedule_a_records if str(r.get('ftw_seq_no')) == sequence), None)
         observed = [o for o in observations if o.get('form_type') == FormType.SCHEDULE_A.value
-            and str(o.get('expected_sequence')) == sequence and str(o.get('actual_sequence')) == sequence]
-        documents = [d for d in self._schedule_update_documents_with_sequences(sent) if str(d.get('__ftw_seq_no')) == sequence]
+            and (not o.get('expected_sequence') if created else str(o.get('expected_sequence')) == sequence)
+            and str(o.get('actual_sequence')) == sequence]
+        documents = [d for d in self._schedule_update_documents_with_sequences(sent)
+            if (not d.get('__ftw_seq_no') if created else str(d.get('__ftw_seq_no')) == sequence)]
         if (not selected or len(observed) != 1 or len(documents) != 1
                 or observed[0].get('values') != selected.get('query_results')
                 or observed[0].get('broker_rows') != selected.get('query_subparts')
@@ -1537,13 +1624,49 @@ class FTWilliamsReviewService:
             'verified_update': {'at': datetime.utcnow().isoformat(),
                 'previous_snapshot_sha256': confirmation['snapshot_sha256'],
                 'verified_snapshot_sha256': updated.current_snapshot_sha256,
-                'destination': identity(sent)}}
+                'destination': identity(current)}}
         saved = await repo.save_broker_review(filing_id, filing.updated_at, {'schedule_a_broker_roster': updated})
         if not saved:
             return False
         await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_UPDATE_VERIFIED',
             message='The reviewed roster was saved and verified on the same Schedule A.',
             details=updated.reviewer_confirmation['verified_update']))
+        return True
+
+    def _verified_created_broker_destination(self, sent, current, observations):
+        """Advance a new-target approval only to our uniquely verified new record.
+
+        The vendor assigns the sequence. Verify the complete fresh replacement
+        set against the saved read-back, including every preserved sibling;
+        never infer creation from a new sequence or a carrier-name match alone.
+        """
+        if (self._identity_from_review(sent) != self._identity_from_review(current)
+                or current.current_query_complete is not True or not current.ftw_seq_no
+                or (current.schedule_a_match or {}).get('create_new')):
+            return False
+        sequence = str(current.ftw_seq_no)
+        if sequence in {str(r.get('ftw_seq_no')) for r in sent.schedule_a_records}:
+            return False
+        documents = self._schedule_update_documents_with_sequences(sent)
+        new_documents = [d for d in documents if not d.get('__ftw_seq_no')]
+        records = {str(r.get('ftw_seq_no')): r for r in current.schedule_a_records if r.get('ftw_seq_no')}
+        seen = [o for o in observations if o.get('form_type') == FormType.SCHEDULE_A.value]
+        if (len(new_documents) != 1 or len(documents) != len(records)
+                or len(records) != len(current.schedule_a_records) or len(seen) != len(records)
+                or normalize_compare_value(new_documents[0].get('ScheduleDesc')) !=
+                    normalize_compare_value((sent.schedule_a_match or {}).get('schedule_desc'))):
+            return False
+        for document in documents:
+            target = str(document.get('__ftw_seq_no') or sequence)
+            record = records.get(target)
+            observed = [o for o in seen if str(o.get('actual_sequence')) == target
+                and str(o.get('expected_sequence') or '') == str(document.get('__ftw_seq_no') or '')]
+            if (not record or len(observed) != 1
+                    or observed[0].get('values') != record.get('query_results')
+                    or observed[0].get('broker_rows') != record.get('query_subparts')
+                    or self._compare_readback_document(FormType.SCHEDULE_A, document,
+                        record.get('query_results', {}), actual_subparts=record.get('query_subparts', {}))):
+                return False
         return True
 
     def _friendly_broker_validation_error(
@@ -6896,6 +7019,7 @@ class FTWilliamsReviewService:
                 new_schedule_desc=new_schedule_desc,
                 transaction_type="2",
                 schedule_a_broker_rows=schedule_a_broker_rows,
+                replace_broker_roster=replace_broker_roster,
                 form_5500_current_values=form_5500_current_values,
                 **{key: value for key, value in identity.items() if key != "ftw_seq_no"},
             )
@@ -6936,6 +7060,10 @@ class FTWilliamsReviewService:
         if not review.schedule_a_match:
             return "A current FT Williams Schedule A must be matched before sending a replace-style Schedule A update."
         is_new_schedule = bool(review.schedule_a_match.get("create_new"))
+        if is_new_schedule:
+            possible_error = self._padded_contract_review_error(review.schedule_a_match, review.schedule_a_records)
+            if possible_error:
+                return possible_error
         if not is_new_schedule and not str(review.schedule_a_match.get("ftw_seq_no") or "").strip():
             return "A current FT Williams Schedule A sequence must be selected before sending a Schedule A update."
         candidate_seqs = {
@@ -7118,6 +7246,8 @@ class FTWilliamsReviewService:
         normalized_contract = self._normalize_contract(contract)
         normalized_ein = self._normalize_ein_digits(carrier_ein)
         if not normalized_contract or not normalized_ein:
+            return None
+        if self._possible_padded_contract_matches({'contract': contract, 'carrier_ein': carrier_ein}, records):
             return None
         for status in statuses:
             current = status.query_results or {}

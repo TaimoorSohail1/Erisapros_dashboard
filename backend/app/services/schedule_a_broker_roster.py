@@ -204,6 +204,10 @@ def bind_roster_review(rows, previous, records, identity, can_replace, source_co
     current = current_schedule_a_broker_rows(selected)
     status.existing_count = len(current)
     binding = {"identity": identity, "selected_record": selected}
+    if identity.get('new_schedule_a'):
+        # Creation replaces the complete set. A sibling added/edited since
+        # review must invalidate approval even though no selected row exists.
+        binding['current_records'] = sorted(records, key=lambda r: str(r.get('ftw_seq_no') or ''))
     status.current_snapshot_sha256 = hashlib.sha256(json.dumps(binding, sort_keys=True, default=str).encode()).hexdigest()
     from app.services.broker_review_confirmation import disclosure_items, review_token
     status.other_disclosures = disclosure_items(status)

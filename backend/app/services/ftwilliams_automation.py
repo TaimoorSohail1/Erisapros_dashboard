@@ -345,7 +345,7 @@ class FTWAutomationPolicy:
         if not selected:
             return "A Schedule A has not been safely matched or confirmed as new."
         if selected.get("create_new"):
-            return None
+            return FTWilliamsReviewService._padded_contract_review_error(selected, review.schedule_a_records)
         score = int(selected.get("score") or 0)
         strong_matches = int(selected.get("strong_matches") or 0)
         match_reasons = [str(reason or "") for reason in selected.get("match_reasons") or []]
@@ -947,6 +947,10 @@ class FTWAutomationService:
             (contract_field.proposed_value or contract_field.value) if contract_field else ""
         ).strip()
         carrier_ein_field = self._trusted_identity_field(fields, "InsCarrierEIN", threshold)
+        if FTWilliamsReviewService._possible_padded_contract_matches({
+            'contract': contract, 'carrier_ein': (carrier_ein_field.proposed_value or carrier_ein_field.value) if carrier_ein_field else None,
+        }, review.schedule_a_records):
+            return review
         selected = await self.review_service.select_schedule_a_match(
             filing_id,
             FTWilliamsScheduleAMatchRequest(

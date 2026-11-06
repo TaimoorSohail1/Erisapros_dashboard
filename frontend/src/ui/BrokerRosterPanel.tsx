@@ -56,10 +56,11 @@ function itemProblem(item: Item): string | null {
   return null;
 }
 
-export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview }: {
+export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview, onReviewDestination }: {
   busy: boolean; currentRows: Record<string, unknown>[]; roster?: ScheduleABrokerRosterReview | null; rows: ScheduleABrokerRow[];
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
   onRefreshReview?: () => Promise<FTWilliamsReview>;
+  onReviewDestination?: () => void;
 }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<{ index: number; item: Item | null; emptyEvidence: string } | null>(null);
@@ -72,9 +73,10 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const approvalInFlight = useRef(false);
   const view = draft ?? makeDraft(rows, roster);
   const stale = Boolean(draft && draft.context !== roster?.review_context_sha256);
-  const approved = !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
+  const destinationProblem = view.roster?.destination_ready === false ? view.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.' : null;
+  const approved = !destinationProblem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
   const problem = stale ? 'Source or FTWilliam data changed. Cancel edits and reopen Edit to refresh.' :
-    view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
+    destinationProblem ?? view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
   const disabled = busy || pending;
   useEffect(() => { if (editing) { heading.current?.focus(); heading.current?.scrollIntoView({ block: 'nearest' }); } }, [Boolean(editing)]);
   if (!rows.length && !roster && !currentRows.length) return null;
@@ -83,7 +85,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     const fresh = onRefreshReview ? await onRefreshReview() : null;
     const next = makeDraft(fresh?.schedule_a_broker_rows ?? rows, fresh?.schedule_a_broker_roster ?? roster);
     if (draft?.dirty && draft.context !== next.context) throw new Error('Source or FTWilliam data changed. Your edits are retained. Cancel edits, then reopen Edit to refresh.');
-    return draft?.dirty ? draft : next;
+    return draft?.dirty ? { ...draft, roster: next.roster } : next;
   }
   async function beginEdit(event: React.MouseEvent<HTMLButtonElement>, index: number) {
     returnFocus.current = event.currentTarget; setPending(true); setError(''); setMessage('');
@@ -113,6 +115,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     setPending(true); setError(''); setMessage('');
     try {
       const next = await refreshedDraft();
+      if (next.roster?.destination_ready === false) { setDraft(next); throw new Error(next.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.'); }
       if (next.context !== view.context || !next.context) { setDraft(next); throw new Error('Broker data refreshed. Check the displayed list before approving.'); }
       const issue = next.items.map(itemProblem).find(Boolean);
       if (issue) throw new Error(issue);
@@ -137,6 +140,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   return <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
     <div className="schedule-a-broker-panel-head"><h3>Schedule A brokers</h3><span>{view.items.length} item{view.items.length === 1 ? '' : 's'}</span></div>
     <p role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
+    {destinationProblem && onReviewDestination ? <button type="button" className="button secondary" disabled={disabled} onClick={onReviewDestination}>Review Schedule A</button> : null}
     <div className="schedule-a-broker-table-wrap" aria-label="Schedule A broker rows" role="region" tabIndex={0}>
       <table className="schedule-a-broker-table"><thead><tr><th>Broker / person</th><th>Address</th><th>Payment</th><th>Purpose / status</th><th>Action</th></tr></thead><tbody>
         {view.items.map((item, index) => <tr key={item.source}>
