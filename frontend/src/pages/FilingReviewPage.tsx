@@ -1378,7 +1378,7 @@ export function FilingReviewPage() {
                 onSaveRows={saveScheduleABrokerRows}
                 onSaveReview={saveBrokerRosterReview}
                 onRefreshReview={refreshBrokerRosterReview}
-                onReviewDestination={openFtwPlanMatch}
+                onReviewDestination={() => setActiveWorkflowStep("FTW_LOADED")}
                 rows={scheduleABrokerRows}
               />
             ) : null}
