@@ -431,6 +431,10 @@ export async function setFTWilliamsScheduleABrokerMatches(
   });
 }
 
+export async function loadFTWilliamsBrokerReviewContext(filingId: string): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request('/filings/' + filingId + '/ftw/broker-review-context', { method: 'POST' });
+}
+
 export async function updateFTWilliamsScheduleABrokerRows(
   filingId: string,
   rows: ScheduleABrokerRow[],

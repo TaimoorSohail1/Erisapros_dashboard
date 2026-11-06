@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { BrokerRosterReviewRequest, ScheduleABrokerRow, ScheduleABrokerRosterReview } from '../types';
+import type { BrokerRosterReviewRequest, ScheduleABrokerRow, ScheduleABrokerRosterReview, FTWilliamsReview } from '../types';
 
 type Draft = { row: ScheduleABrokerRow; source: string };
 type Treatment = 'INCLUDED' | 'SUPPORTING_ONLY' | 'UNRESOLVED';
 
-export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview }: {
+export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview }: {
   busy: boolean;
   currentRows: Record<string, unknown>[];
   roster?: ScheduleABrokerRosterReview | null;
   rows: ScheduleABrokerRow[];
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
+  onRefreshReview?: () => Promise<FTWilliamsReview>;
 }) {
   const [open, setOpen] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -38,15 +39,21 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   useEffect(() => { if (open) { heading.current?.focus(); heading.current?.scrollIntoView({ block: 'nearest' }); } }, [open]);
   if (!rows.length && !roster && !currentRows.length) return null;
 
-  function beginReview(event: React.MouseEvent<HTMLButtonElement>) {
+  async function beginReview(event: React.MouseEvent<HTMLButtonElement>) {
     returnFocus.current = event.currentTarget;
-    setDrafts(rows.map((row, index) => ({ row: { ...row },
-      source: roster?.reviewer_confirmation?.row_sources[index]?.startsWith('DISCLOSURE:')
-        ? roster.reviewer_confirmation.row_sources[index] : `SOURCE:${index}` })));
-    setTreatments(Object.fromEntries(disclosures.filter(d => d.id).map(d => [d.id!,
-      roster?.reviewer_confirmation?.disclosure_decisions[d.id!] ?? 'UNRESOLVED'])));
-    setReason(''); setComplete(false); setEmptyEvidence(''); setError('');
-    setContext(roster?.review_context_sha256 ?? ''); setOpen(true);
+    setError('');
+    try {
+      const fresh = onRefreshReview ? await onRefreshReview() : null;
+      const reviewRoster = fresh?.schedule_a_broker_roster ?? roster;
+      const reviewRows = fresh?.schedule_a_broker_rows ?? rows;
+      setDrafts(reviewRows.map((row, index) => ({ row: { ...row },
+        source: reviewRoster?.reviewer_confirmation?.row_sources[index]?.startsWith('DISCLOSURE:')
+          ? reviewRoster.reviewer_confirmation.row_sources[index] : `SOURCE:${index}` })));
+      setTreatments(Object.fromEntries((reviewRoster?.other_disclosures ?? []).filter(d => d.id).map(d => [d.id!,
+        reviewRoster?.reviewer_confirmation?.disclosure_decisions[d.id!] ?? 'UNRESOLVED'])));
+      setReason(''); setComplete(false); setEmptyEvidence('');
+      setContext(reviewRoster?.review_context_sha256 ?? ''); setOpen(true);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to refresh broker review. Try again.'); }
   }
 
   function closeReview() { setOpen(false); returnFocus.current?.focus(); }
@@ -114,6 +121,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
         </tr>)}</tbody></table>
     </div>
     {!rows.length && !supporting.length ? <button type="button" className="button secondary" disabled={busy} onClick={beginReview}>Review &amp; edit</button> : null}
+    {!open && error ? <p role="alert">{error}</p> : null}
     {open ? <section className="broker-review-editor" role="region" aria-labelledby="broker-review-heading">
       <div className="broker-edit-toolbar"><h4 id="broker-review-heading" tabIndex={-1} ref={heading}>Review broker replacement</h4>
         <button type="button" className="button secondary" disabled={busy} onClick={closeReview}>Cancel</button></div>

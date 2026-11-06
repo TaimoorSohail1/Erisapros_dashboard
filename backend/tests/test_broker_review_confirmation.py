@@ -94,6 +94,16 @@ class BrokerReviewConfirmationTests(unittest.TestCase):
 
 
 class BrokerReviewServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opening_review_refreshes_context_without_automatic_sending(self):
+        from unittest.mock import AsyncMock,patch
+        from app.models import FTWilliamsReview
+        from app.api.filings import load_ftwilliams_broker_review_context
+        service=AsyncMock();service.prepare_review.return_value=FTWilliamsReview(filing_id='qa')
+        with patch('app.api.filings.FTWilliamsReviewService',return_value=service),patch('app.api.filings.continue_ftw_automation',AsyncMock()) as automatic:
+            await load_ftwilliams_broker_review_context('qa')
+        service.prepare_review.assert_awaited_once_with('qa',send_queries=True)
+        automatic.assert_not_awaited()
+
     async def test_concurrent_filing_change_rejects_conditional_review_save(self):
         from datetime import datetime,timedelta
         from app.models import Filing

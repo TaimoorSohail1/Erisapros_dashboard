@@ -47,6 +47,7 @@ import {
   sendApprovedFTWilliamsUpdate,
   updateField,
   updateFTWilliamsScheduleABrokerRows,
+  loadFTWilliamsBrokerReviewContext,
 } from "../api";
 import type { BrokerRosterReviewRequest, ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { BrokerRosterPanel } from "../ui/BrokerRosterPanel";
@@ -926,6 +927,17 @@ export function FilingReviewPage() {
     }
   }
 
+  async function refreshBrokerRosterReview() {
+    if (!id) throw new Error('Filing not found');
+    setFtwBusy(true);
+    try {
+      const { ftw_review } = await loadFTWilliamsBrokerReviewContext(id);
+      const updated = await getFiling(id);
+      setFiling(updated); previousFilingRef.current = updated;
+      return ftw_review;
+    } finally { setFtwBusy(false); }
+  }
+
   async function saveBrokerRosterReview(rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest): Promise<boolean> {
     if (!id) return false;
     setFtwBusy(true); setToast(null);
@@ -1365,6 +1377,7 @@ export function FilingReviewPage() {
                 roster={brokerRoster}
                 onSaveRows={saveScheduleABrokerRows}
                 onSaveReview={saveBrokerRosterReview}
+                onRefreshReview={refreshBrokerRosterReview}
                 rows={scheduleABrokerRows}
               />
             ) : null}
@@ -4007,6 +4020,7 @@ function ScheduleABrokerRowsPanel(props: {
   roster?: ScheduleABrokerRosterReview | null;
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
+  onRefreshReview: () => Promise<FTWilliamsReview>;
   rows: ScheduleABrokerRow[];
 }) {
   return <BrokerRosterPanel {...props} />;

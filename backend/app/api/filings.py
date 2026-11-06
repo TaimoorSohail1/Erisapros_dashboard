@@ -748,6 +748,16 @@ async def set_ftwilliams_schedule_a_broker_matches(filing_id: str, payload: FTWi
     return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 
+@router.post("/{filing_id}/ftw/broker-review-context")
+async def load_ftwilliams_broker_review_context(filing_id: str):
+    """Opening/cancelling a broker review must never invoke automatic sending."""
+    try:
+        review = await FTWilliamsReviewService().prepare_review(filing_id, send_queries=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == 'Filing not found' else 400, detail=str(exc)) from exc
+    return {'ftw_review': review}
+
+
 @router.put("/{filing_id}/ftw/schedule-a-broker-rows")
 async def update_ftwilliams_schedule_a_broker_rows(
     filing_id: str,
