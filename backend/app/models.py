@@ -1222,6 +1222,7 @@ class FTWilliamsScheduleAMatchRequest(BaseModel):
     carrier_ein: str | None = None
     contract: str | None = None
     create_new: bool = False
+    confirm_new_target: bool = False
     schedule_desc: str | None = None
 
 

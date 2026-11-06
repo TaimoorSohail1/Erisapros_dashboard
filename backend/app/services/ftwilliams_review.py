@@ -1049,6 +1049,7 @@ class FTWilliamsReviewService:
                 "schedule_desc": new_schedule_desc,
                 "create_new": True,
                 "source": "NEW_SCHEDULE_A",
+                "new_target_confirmed": payload.confirm_new_target,
             }
             error_message = None if current_query_success else error_message
             # A new Schedule A has no row to query yet.  The query is still
@@ -1515,7 +1516,7 @@ class FTWilliamsReviewService:
     @staticmethod
     def _padded_contract_review_error(selected, records):
         possible = FTWilliamsReviewService._possible_padded_contract_matches(selected, records)
-        if possible and str(selected.get('source') or '').upper() != 'NEW_SCHEDULE_A':
+        if possible and selected.get('new_target_confirmed') is not True:
             sequences = ', '.join(str(r.get('ftw_seq_no')) for r in possible)
             return f'The policy number may refer to existing Schedule A #{sequences}. Select it or explicitly confirm a separate new Schedule A.'
         return None

@@ -73,9 +73,10 @@ class NewScheduleBrokerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         originals = deepcopy(self.vendor.schedules)
         review = await self.service.prepare_review(self.filing.id,send_queries=True)
         review = await self.service.select_schedule_a_match(self.filing.id,FTWilliamsScheduleAMatchRequest(
-            create_new=True,carrier='Example Insurance Company',carrier_ein='11-1111111',contract='NEW-333'))
+            create_new=True,confirm_new_target=True,carrier='Example Insurance Company',carrier_ein='11-1111111',contract='NEW-333'))
         self.assertTrue(review.schedule_a_match.get('create_new'),review.error_message)
         self.assertIsNone(review.ftw_seq_no)
+        self.assertTrue(review.schedule_a_match['new_target_confirmed'])
         self.assertTrue(review.schedule_a_broker_roster.destination_ready,review.schedule_a_broker_roster.destination_reason)
         review = await self.service.update_schedule_a_broker_rows(self.filing.id,
             FTWilliamsScheduleABrokerRowsRequest(rows=[self.row],action='reviewed',review=BrokerRosterReviewRequest(
