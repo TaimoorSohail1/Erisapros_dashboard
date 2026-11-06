@@ -366,7 +366,7 @@ assert.match(
 );
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
-assert.match(source, /Save review/, "Reviewers can save the complete source-bound broker review.");
+assert.match(source, /Approve confirms the complete displayed broker list/, "Approval explicitly confirms the complete source-bound broker list.");
 assert.match(source, /heading\.current\?\.scrollIntoView/, "Opening a broker review brings its controls into view.");
 assert.match(
   styles,
@@ -390,7 +390,7 @@ assert.match(
   /FT Williams Plan URL[\s\S]*?Paste the exact FT Williams plan page URL/,
   "A one-time plan mapping must accept the exact FT Williams plan URL instead of requiring users to extract browser IDs manually.",
 );
-assert.match(source, /onSaveReview\(drafts\.map/, "Full-list saves include the edited roster and explicit review provenance.");
+assert.match(source, /onSaveReview\(included\.map/, "Complete-list approval sends the included edited roster and explicit review provenance.");
 assert.match(source, /scheduleABrokersReady/, "Unconfirmed broker matches must lock FT Williams sending.");
 assert.match(
   source,
@@ -399,8 +399,8 @@ assert.match(
 );
 assert.match(
   source,
-  /Organization code[\s\S]*?<select required value=\{row\.organization_code/,
-  "The broker editor must use a required organization-code dropdown instead of free text.",
+  /Organization code[\s\S]*?<select aria-label="Organization code" value=\{editItem\.row\.organization_code/,
+  "The focused broker editor uses the labelled organization-code option list instead of free text.",
 );
 assert.doesNotMatch(
   source,
@@ -874,7 +874,7 @@ assert.match(
 );
 assert.match(
   source,
-  /drafts\.some\(d => purpose\(d\.row\) === \'Unclassified\'\)/,
+  /commission === null \|\| fees === null/,
   "Broker rows must be validated before save.",
 );
 assert.match(
@@ -884,7 +884,7 @@ assert.match(
 );
 assert.match(
   source,
-  /Review &amp; edit[\s\S]*?role="alert"/,
+  /onClick=\{event => beginEdit[\s\S]*?role="alert"/,
   "Invalid broker rows must show a clear row-level error and direct fix action.",
 );
 assert.match(

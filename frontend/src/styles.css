@@ -13091,3 +13091,16 @@ td { border-top: 1px solid #dce3ea; padding: 12px 16px; vertical-align: top; }
 .broker-disclosure-treatment select, .broker-review-confirmation textarea { display: block; width: 100%; margin-top: .4rem; }
 .broker-review-editor fieldset { margin: 1rem 0; }
 .broker-review-editor [role="alert"] { color: #9a3412; }
+.broker-simple-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.broker-simple-actions .button { min-height: 44px; }
+.broker-approval-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; margin-top: .75rem; }
+.broker-short-status { margin: .5rem 0 .75rem; }
+.broker-review-error { color: #9a3412; }
+.broker-payment-treatment { display: grid; gap: .5rem; margin-bottom: 1rem; border: 0; padding: 0; }
+.broker-payment-treatment label { display: flex; align-items: center; gap: .5rem; }
+.broker-payment-treatment input { width: auto; }
+.broker-address-details { grid-column: 1 / -1; }
+.broker-address-details label { margin-top: .75rem; }
+.broker-empty-evidence { display: grid; gap: .5rem; margin: 1rem 0; }
+.broker-empty-evidence textarea { width: 100%; min-height: 5rem; }
+.broker-review-editor form > details { margin: .75rem 0; }

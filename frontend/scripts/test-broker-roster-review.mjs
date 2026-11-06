@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
-import React, {act,useState,useRef,useEffect} from 'react';
-import {createRoot} from 'react-dom/client';
+import React,{act,useState,useRef,useEffect} from 'react';
 import {JSDOM} from 'jsdom';
 import ts from 'typescript';
 
@@ -10,68 +9,127 @@ const dom=new JSDOM('<div id="root"></div>',{url:'https://example.test'});
 globalThis.window=dom.window;globalThis.document=dom.window.document;
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
 dom.window.HTMLElement.prototype.scrollIntoView=()=>{};
+const {createRoot}=await import('react-dom/client');
 const source=await readFile(new URL('../src/ui/BrokerRosterPanel.tsx',import.meta.url),'utf8');
 const code=ts.transpileModule(source.replace(/^import .*$/gm,'').replace(/^export /gm,''),{
   compilerOptions:{module:ts.ModuleKind.None,jsx:ts.JsxEmit.React,target:ts.ScriptTarget.ES2022}}).outputText;
 const Panel=runInNewContext(code+'\nBrokerRosterPanel',{React,useState,useEffect,useRef,Intl,Number});
 const root=createRoot(document.getElementById('root'));
-let saves=[];
+let saves=[],key=0;
 const roster={state:'NEEDS_REVIEW',mode:'PRESERVE',existing_count:1,replacement_count:0,
   review_context_sha256:'a'.repeat(64),reasons:['Source coverage needs confirmation'],evidence:[],
   other_disclosures:[{id:'mercer-proof',name:'Mercer Health & Benefits LLC',address:'4565 PAYSPHERE CIRCLE CHICAGO IL 60674',amount:'240148.74',page:5,source_text:'Original Schedule C disclosure'}]};
 const props={busy:false,rows:[],roster,currentRows:[{NameXX:'Existing broker'}],
   onSaveReview:async(rows,review)=>{saves.push({rows,review});return false;}};
 const buttons=()=>[...document.querySelectorAll('button')];
-const click=async(text)=>{const b=buttons().find(b=>b.textContent===text);assert.ok(b,text);await act(async()=>b.click());};
-const set=async(element,value)=>{const key=element.tagName==='SELECT'?'HTMLSelectElement':element.tagName==='TEXTAREA'?'HTMLTextAreaElement':'HTMLInputElement';
-  await act(async()=>{Object.getOwnPropertyDescriptor(dom.window[key].prototype,'value').set.call(element,value);
-    element.dispatchEvent(new dom.window.Event('change',{bubbles:true}));element.dispatchEvent(new dom.window.Event('input',{bubbles:true}));});};
-await act(async()=>root.render(React.createElement(Panel,props)));
+const button=text=>{const element=buttons().find(b=>b.textContent===text);assert.ok(element,text);return element;};
+const click=async text=>{await act(async()=>button(text).click());};
+const render=async(overrides={},same=false)=>{if(!same)key++;await act(async()=>root.render(React.createElement(Panel,{...props,...overrides,key})));};
+const input=label=>{const e=document.querySelector(`[aria-label="${label}"]`);assert.ok(e,label);return e;};
+const set=async(element,value)=>{
+  const type=element.tagName==='SELECT'?'HTMLSelectElement':element.tagName==='TEXTAREA'?'HTMLTextAreaElement':'HTMLInputElement';
+  await act(async()=>{Object.getOwnPropertyDescriptor(dom.window[type].prototype,'value').set.call(element,value);
+    element.dispatchEvent(new dom.window.Event(element.tagName==='SELECT'?'change':'input',{bubbles:true}));});
+  // Other UI suites may have initialized ReactDOM against another JSDOM.
+  // In that case exercise this controlled input's public change callback.
+  const propsKey=Object.keys(element).find(key=>key.startsWith('__reactProps'));
+  if(element[propsKey]?.value!==value)await act(async()=>element[propsKey].onChange({target:{value}}));
+};
+const submit=async()=>{await act(async()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));};
+const choose=async value=>{const e=document.querySelector(`input[type="radio"][value="${value}"]`) ?? [...document.querySelectorAll('input[type="radio"]')][value==='INCLUDED'?0:1];await act(async()=>e.click());};
+const row={name:'Source broker',address_line_1:'10 Main St',city:'Boston',state:'MA',zip_code:'02110',organization_code:'0',commission_total:'100',fee_total:'-100'};
+const sourceProps={rows:[row],roster:{...roster,other_disclosures:[]}};
+
+// Visible information and the two requested actions, without a second large form.
+await render();
 assert.match(document.body.textContent,/Mercer Health & Benefits LLC/);
 assert.match(document.body.textContent,/\$240,148\.74/);
+assert.match(document.body.textContent,/Paused:/);
 assert.match(document.body.textContent,/Unclassified/);
-assert.equal(buttons().filter(b=>b.textContent==='Review & edit').length,1);
-assert.equal(document.querySelectorAll('details').length,0,'Technical details stay out of the main row');
-await click('Review & edit');
+assert.equal(buttons().filter(b=>b.textContent==='Edit').length,1);
+assert.equal(buttons().filter(b=>b.textContent==='Approve').length,1);
+assert.equal(button('Approve').disabled,true,'Unclassified payments cannot be approved');
+assert.equal(document.querySelectorAll('form,textarea,select,details').length,0,'Main view contains only the row and short status');
+await click('Edit');
 assert.equal(document.activeElement.id,'broker-review-heading');
 assert.match(document.body.textContent,/View evidence/);
 assert.match(document.body.textContent,/Current brokers \(1\)/);
-await click('Cancel');assert.equal(saves.length,0);
-await click('Review & edit');
-await set(document.querySelector('select'),'INCLUDED');
-assert.equal(document.querySelector('[aria-label="Commission for broker 1"]').value,'');
-assert.equal(document.querySelector('[aria-label="Fees for broker 1"]').value,'');
-await click('Cancel');assert.equal(saves.length,0,'Opening/including/cancelling never saves');
+assert.equal(buttons().some(b=>b.textContent==='Add broker'),false);
+assert.equal(document.querySelectorAll('textarea').length,0,'Unknown payments do not expose an empty-roster form');
+await choose('INCLUDED');
+assert.equal(input('Commission').value,'');assert.equal(input('Fees').value,'');
+await click('Cancel');assert.equal(saves.length,0,'Opening, choosing and cancelling never save or authorize an update');
+assert.match(document.body.textContent,/Unclassified/);
 
-await act(async()=>root.render(React.createElement(Panel,{...props,rows:[{name:'Formatted source broker',commission_total:'100,901.12',fee_total:'(100,901.12)'}],roster:{...roster,mode:'REPLACE',replacement_count:1,other_disclosures:[]}})));
-assert.match(document.body.textContent,/\$100,901\.12/,'Formatted source amounts remain readable');
-assert.match(document.body.textContent,/COMMISSIONS AND FEES/,'Parenthesized negative fees remain non-zero');
-
-// A complete existing source row proves failed saves retain edits and confirmations.
-const row={name:'Source broker',address_line_1:'10 Main St',city:'Boston',state:'MA',zip_code:'02110',organization_code:'0',commission_total:'100',fee_total:'-100'};
-await act(async()=>root.render(React.createElement(Panel,{...props,rows:[row],roster:{...roster,other_disclosures:[]}})));
-await click('Review & edit');
-assert.equal(document.querySelector('select').value,'0','Explicit zero organization code is preserved');
-assert.ok([...document.querySelectorAll('input')].some(e=>e.readOnly&&e.value==='COMMISSIONS AND FEES'));
-// Browser-native input handling is exercised by an actual submit with controlled fields.
-const textarea=document.querySelector('textarea');
-await set(textarea,'Client confirmed the complete source list');
-// React input tracker in this extracted-component harness may not receive text input;
-// use the props rendered by the real component to invoke the same event handlers.
-if (textarea.value) {
-  const propKey=Object.keys(textarea).find(k=>k.startsWith('__reactProps'));
-  await act(async()=>textarea[propKey].onChange({target:{value:'Client confirmed the complete source list'}}));
-}
-await act(async()=>document.querySelector('input[type="checkbox"]').click());
-await act(async()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));
-assert.equal(saves.length,1);
-assert.equal(saves[0].review.complete_list_confirmed,true);
+// Edit saves a local draft; Approve alone sends the complete, source-bound review.
+await render(sourceProps);
+assert.equal(button('Approve').disabled,false);
+await click('Edit');assert.equal(input('Organization code').value,'0');
+await set(input('Commission'),'200');await set(input('Fees'),'-200');
+assert.equal(input('Purpose').value,'COMMISSIONS AND FEES');
+await submit();assert.equal(saves.length,0,'Save changes is local only');
+assert.equal(document.querySelector('form'),null);
+assert.match(document.body.textContent,/\$200\.00/);
+await click('Approve');assert.equal(saves.length,1);
+assert.equal(saves[0].rows[0].commission_total,'200');
 assert.equal(saves[0].rows[0].purpose,'COMMISSIONS AND FEES');
-assert.ok(document.querySelector('form'),'Failed save keeps the review panel open');
-assert.match(document.body.textContent,/draft is retained/);
-await act(async()=>root.render(React.createElement(Panel,{...props,rows:[row],roster:{...roster,review_context_sha256:'b'.repeat(64),other_disclosures:[]}})));
-await act(async()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));
-assert.equal(saves.length,1,'Stale source/snapshot cannot submit a second review');
-assert.match(document.body.textContent,/data changed/);
+assert.equal(saves[0].review.complete_list_confirmed,true);
+assert.equal(saves[0].review.expected_context,roster.review_context_sha256);
+assert.match(saves[0].review.reason,/Reviewer approved the complete displayed/);
+assert.doesNotMatch(saves[0].review.reason,/Client confirmed/,'Approval provenance does not invent a client instruction');
+assert.match(document.body.textContent,/edits are retained/);
+await click('Edit');assert.equal(input('Commission').value,'200');await click('Cancel');
+await render({...sourceProps,roster:{...sourceProps.roster,review_context_sha256:'b'.repeat(64)}},true);
+assert.equal(button('Approve').disabled,true,'A changed source or vendor snapshot invalidates approval');
+assert.equal(saves.length,1);
+
+// Disclosure allocation must equal its original amount, using exact cents.
+await render();await click('Edit');await choose('INCLUDED');
+await set(input('Commission'),'0');await set(input('Fees'),'240148.73');
+for(const [label,value] of [['Street','4565 PAYSPHERE CIRCLE'],['City','CHICAGO'],['State','IL'],['ZIP','60674']])await set(input(label),value);
+await submit();assert.match(document.body.textContent,/must equal the original/);assert.ok(document.querySelector('form'));
+await set(input('Fees'),'240148.74');await submit();
+assert.equal(button('Approve').disabled,false);
+await click('Approve');assert.equal(saves.length,2);
+assert.equal(saves[1].review.disclosure_decisions[0].treatment,'INCLUDED');
+assert.equal(saves[1].review.row_sources[0],'DISCLOSURE:mercer-proof');
+assert.equal(saves[1].rows[0].purpose,'FEES');
+
+// Supporting-only does not silently authorize deletion of the current broker.
+await render();await click('Edit');await choose('SUPPORTING_ONLY');
+await submit();assert.equal(button('Approve').disabled,true);assert.equal(saves.length,2);
+await click('Edit');await set(document.querySelector('textarea'),'Confirmed instruction: no reportable Schedule A recipients'.padEnd(2000,'x'));
+await submit();await click('Approve');assert.equal(saves.length,3);
+assert.equal(saves[2].rows.length,0);assert.match(saves[2].review.empty_list_evidence,/no reportable/);
+assert.ok(saves[2].review.reason.length<=2000,'Approval provenance fits the existing backend reason limit');
+
+// An exclusion is explicit; all remaining source rows are shown and approved together.
+await render({rows:[row,{...row,name:'Excluded source broker'}],roster:{...roster,other_disclosures:[]}});
+assert.equal(buttons().filter(b=>b.textContent==='Approve').length,1);
+await act(async()=>buttons().filter(b=>b.textContent==='Edit')[1].click());
+await act(async()=>document.querySelector('input[type="checkbox"]').click());await submit();await click('Approve');
+assert.equal(saves.length,4);assert.equal(saves[3].rows.length,1);assert.equal(saves[3].review.excluded_source_indexes[0],1);
+
+// Refresh must never approve unseen source/destination changes or open another row by old index.
+const fresh={schedule_a_broker_rows:[{...row,name:'Refreshed broker'}],schedule_a_broker_roster:{...sourceProps.roster,review_context_sha256:'c'.repeat(64)}};
+await render({...sourceProps,onRefreshReview:async()=>fresh});await click('Approve');
+assert.equal(saves.length,4);assert.match(document.body.textContent,/Check the displayed list/);
+await render({...sourceProps,onRefreshReview:async()=>fresh});await click('Edit');
+assert.equal(document.querySelector('form'),null);assert.match(document.body.textContent,/Check the displayed rows/);
+
+// Successful approval and an already verified list introduce no extra broker decision.
+let resolveSave;const delayed=new Promise(resolve=>{resolveSave=resolve;});let attempts=0;
+await render({...sourceProps,onSaveReview:async()=>{attempts++;return delayed;}});
+await act(async()=>{button('Approve').click();button('Approve').click();});
+assert.equal(attempts,1,'Double-click cannot submit duplicate approvals');
+assert.equal(button('Please wait…').disabled,true);
+await act(async()=>resolveSave(true));assert.equal(button('Approved').disabled,true);
+assert.match(document.body.textContent,/other filing reviews are clear/);
+await render({...sourceProps,roster:{...sourceProps.roster,mode:'REPLACE',replacement_count:1}});
+assert.equal(button('Approved').disabled,true);
+await render({rows:[{...row,commission_total:'100,901.12',fee_total:'(100,901.12)'}],roster:{...sourceProps.roster,mode:'REPLACE'}});
+assert.match(document.body.textContent,/COMMISSIONS AND FEES/);assert.doesNotMatch(document.body.textContent,/NaN/);
+await render({rows:[{...row,commission_total:'90071992547409.91',fee_total:'0'}],roster:{...sourceProps.roster,mode:'REPLACE'}});
+assert.match(document.body.textContent,/\$90,071,992,547,409\.91/,'Displaying a large amount must not round away cents');
 await act(async()=>root.unmount());
-console.log('Broker review: visible disclosure, unknown payments, cancel, signed purpose, save failure, stale context passed.');
+console.log('Simple broker UI: Edit/Approve, no Add broker, drafts/cancel, exact classification, complete-list approval, exclusions/empty evidence, stale refresh, failed save, duplicate prevention and verified-list compatibility passed.');
