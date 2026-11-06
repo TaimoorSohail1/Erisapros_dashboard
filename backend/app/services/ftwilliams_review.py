@@ -5020,6 +5020,22 @@ class FTWilliamsReviewService:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason
                 validation_blocking = True
+            if (
+                field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                and not extracted_proposed_value.strip()
+                and not source_less_zero_default
+                and (str(field.value or "").strip() or str(field.source_text or "").strip())
+                and tag
+                and update_tag
+            ):
+                # Mapping withholds unsafe proposals but retains source values.
+                # An absent proposal is not an absent extraction: carry its hold
+                # into the review instead of silently skipping/preserving it.
+                validation_status = "REVIEW_REQUIRED"
+                validation_message = field.status_reason or (
+                    "Confirm the source value and its interpretation before sending to FT Williams."
+                )
+                validation_blocking = True
             if (field.form_type == FormType.FORM_5500
                     and field.source_document_type == DocumentType.PLAN_WORKSHEET
                     and field.status == ExtractedFieldStatus.LOW_CONFIDENCE

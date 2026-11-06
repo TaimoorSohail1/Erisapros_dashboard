@@ -13,7 +13,7 @@ import app.repositories as repositories
 from app.api.filings import update_field
 from app.config import get_settings
 from app.models import (
-    DocumentType, ExtractedField, FieldEditRequest, FieldPriority, Filing, FormType,
+    DocumentType, ExtractedField, ExtractedFieldStatus, FieldEditRequest, FieldPriority, Filing, FormType,
     FTWFieldDecision, FTWilliamsQueryResponse, FTWilliamsReviewStatus, FTWilliamsStatusItem,
 )
 from app.services.ftwilliams import FTWilliamsService
@@ -188,6 +188,41 @@ class UpdatePreservationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.update_readback_observations, result.update_readback_observations)
         refreshed_premium = next(item for item in refreshed.update_results if item['tag'] == 'WlfrTotChargesPaidAmt')
         self.assertEqual(refreshed_premium['returned_value'], '100')
+
+    async def test_withheld_source_values_require_explicit_review_before_saved_value_verification(self):
+        before_sibling = deepcopy(self.vendor.schedules['1'])
+        held_keys = (
+            'schedule_a_part_i_1e_persons_covered_end_of_policy_year',
+            'schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier',
+        )
+        for key in held_keys:
+            await self.repo.update_field(self.filing.id, self.fields[key].id, '',
+                status=ExtractedFieldStatus.LOW_CONFIDENCE,
+                status_reason='Confirm the source interpretation before sending.')
+        review = await self.service.prepare_review(self.filing.id, send_queries=True)
+        held_rows = [row for row in review.fields if row.rule_key in held_keys]
+        self.assertEqual(len(held_rows), 2)
+        self.assertTrue(all(row.decision == FTWFieldDecision.BLOCKED for row in held_rows))
+        self.assertTrue(all(not row.update_included for row in held_rows))
+        with self.assertRaisesRegex(ValueError, 'Confirm the source interpretation'):
+            await self.service.approve_and_update(self.filing.id, send_to_ftw=True)
+        self.assertEqual(self.vendor.sent, [])
+        # Only explicit reviewer commands authorize the known synthetic values.
+        for key in held_keys:
+            field = self.fields[key]
+            await update_field(self.filing.id, field.id, FieldEditRequest(proposed_value=field.value))
+        result = await self.service.approve_and_update(self.filing.id, send_to_ftw=True)
+        self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_SENT, result.error_message)
+        self.assertTrue(result.update_verification_success)
+        self.assertEqual(self.vendor.schedules['2']['InsPrsnCoveredEoyCnt'], '12')
+        self.assertEqual(self.vendor.schedules['2']['WlfrTotChargesPaidAmt'], '100')
+        saved = {item['tag']: item for item in result.update_results}
+        self.assertEqual(saved['InsPrsnCoveredEoyCnt']['returned_value'], '12')
+        self.assertEqual(saved['WlfrTotChargesPaidAmt']['returned_value'], '100')
+        self.assertEqual(self.vendor.schedules['1'], before_sibling)
+        for key in held_keys:
+            stored = next(f for f in await self.repo.list_fields(self.filing.id) if f.id == self.fields[key].id)
+            self.assertEqual(stored.value, self.fields[key].value)
 
     async def test_explicit_edit_replaces_a_previous_keep_current_decision(self):
         await self.service.prepare_review(self.filing.id, send_queries=True)

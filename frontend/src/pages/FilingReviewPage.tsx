@@ -4655,6 +4655,7 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
   if (comparison?.decision === "CONFLICT") return "Conflict";
+  if (comparison?.validation_status === "REVIEW_REQUIRED" && comparison.validation_blocking) return "Needs review";
   if (comparison?.decision === "BLOCKED") return "Blocked";
   if (comparison?.decision === "KEEP_CURRENT") return "Keep current";
   if (comparison?.decision === "SKIP_EMPTY") return "Skipped — both blank";
