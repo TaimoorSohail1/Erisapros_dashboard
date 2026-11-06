@@ -530,6 +530,8 @@ class ScheduleABrokerRosterReview(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     evidence: list[SourceEvidence] = Field(default_factory=list)
     other_disclosures: list[dict] = Field(default_factory=list)
+    review_context_sha256: str | None = None
+    reviewer_confirmation: dict | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):
@@ -1231,10 +1233,26 @@ class FTWilliamsBrokerMatchesRequest(BaseModel):
     decisions: list[FTWilliamsBrokerMatchDecision] = Field(default_factory=list)
 
 
+class BrokerDisclosureDecision(BaseModel):
+    disclosure_id: str
+    treatment: Literal["INCLUDED", "SUPPORTING_ONLY", "UNRESOLVED"]
+
+
+class BrokerRosterReviewRequest(BaseModel):
+    expected_context: str
+    complete_list_confirmed: bool = False
+    reason: str = Field(default="", max_length=2000)
+    empty_list_evidence: str = Field(default="", max_length=2000)
+    disclosure_decisions: list[BrokerDisclosureDecision] = Field(default_factory=list)
+    row_sources: list[str] = Field(default_factory=list)
+    excluded_source_indexes: list[int] = Field(default_factory=list)
+
+
 class FTWilliamsScheduleABrokerRowsRequest(BaseModel):
     rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     edited_index: int | None = None
-    action: Literal["edited", "excluded"] = "edited"
+    action: Literal["edited", "excluded", "reviewed"] = "edited"
+    review: BrokerRosterReviewRequest | None = None
 
 
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):

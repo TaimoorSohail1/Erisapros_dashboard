@@ -752,11 +752,14 @@ async def set_ftwilliams_schedule_a_broker_matches(filing_id: str, payload: FTWi
 async def update_ftwilliams_schedule_a_broker_rows(
     filing_id: str,
     payload: FTWilliamsScheduleABrokerRowsRequest,
+    request: Request,
 ):
     try:
-        review = await FTWilliamsReviewService().update_schedule_a_broker_rows(filing_id, payload)
+        claims = getattr(request.state, 'user', None) or {}
+        actor = str(claims.get('sub') or ("local-reviewer" if not get_settings().auth_enabled else ""))
+        review = await FTWilliamsReviewService().update_schedule_a_broker_rows(filing_id, payload, actor=actor)
     except ValueError as exc:
-        status_code = 404 if str(exc) == "Filing not found" else 400
+        status_code = 404 if str(exc) == "Filing not found" else 409 if 'changed' in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 

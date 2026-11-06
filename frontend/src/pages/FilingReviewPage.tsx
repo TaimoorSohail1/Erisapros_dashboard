@@ -48,7 +48,8 @@ import {
   updateField,
   updateFTWilliamsScheduleABrokerRows,
 } from "../api";
-import type { ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { BrokerRosterReviewRequest, ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import { BrokerRosterPanel } from "../ui/BrokerRosterPanel";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
 import { refreshFTWilliamsFailures } from "../ui/ftWilliamsNotificationStore";
@@ -925,6 +926,23 @@ export function FilingReviewPage() {
     }
   }
 
+  async function saveBrokerRosterReview(rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest): Promise<boolean> {
+    if (!id) return false;
+    setFtwBusy(true); setToast(null);
+    try {
+      await updateFTWilliamsScheduleABrokerRows(id, rows, undefined, "reviewed", review);
+      const updated = await getFiling(id);
+      setFiling(updated); previousFilingRef.current = updated;
+      setToast({ tone: "success", title: "Broker review saved",
+        message: "The complete list was saved. Normal automatic processing resumes only when all filing reviews pass." });
+      return true;
+    } catch (error) {
+      setToast({ tone: "error", title: "Broker review was not saved",
+        message: error instanceof Error ? error.message : "Review the values and try again." });
+      return false;
+    } finally { setFtwBusy(false); }
+  }
+
   async function sendFtwUpdate() {
     if (!id || ftwSendInFlightRef.current) return;
     ftwSendInFlightRef.current = true;
@@ -1226,17 +1244,6 @@ export function FilingReviewPage() {
               />
             ) : null}
 
-            {brokerActionRequiredCount > 0 ? (
-              <section className="review-issue-summary" role="status" aria-label="Broker review required">
-                <AlertTriangle size={18} aria-hidden="true" />
-                <div>
-                  <strong>Broker list needs review</strong>
-                  <span>{brokerRoster?.reasons[0] || brokerValidationIssues[0]?.message || "Verify the complete source broker list below."}</span>
-                </div>
-                <button className="button secondary" type="button" onClick={() => document.getElementById("schedule-a-broker-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review broker rows</button>
-              </section>
-            ) : null}
-
             {showReviewStatus ? (
               <ReviewStatusDrawer onClose={() => setShowReviewStatus(false)}>
             <FTWQueryStatusBanner
@@ -1357,6 +1364,7 @@ export function FilingReviewPage() {
                 currentRows={brokerCurrentRows(ftwReview)}
                 roster={brokerRoster}
                 onSaveRows={saveScheduleABrokerRows}
+                onSaveReview={saveBrokerRosterReview}
                 rows={scheduleABrokerRows}
               />
             ) : null}
@@ -3993,224 +4001,15 @@ function brokerRowValidationIssues(row: ScheduleABrokerRow, includeSourceReview 
   return issues;
 }
 
-function ScheduleABrokerRowsPanel({
-  busy,
-  currentRows,
-  roster,
-  onSaveRows,
-  rows,
-}: {
+function ScheduleABrokerRowsPanel(props: {
   busy: boolean;
   currentRows: Record<string, unknown>[];
   roster?: ScheduleABrokerRosterReview | null;
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
+  onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
   rows: ScheduleABrokerRow[];
 }) {
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [draft, setDraft] = useState<ScheduleABrokerRow | null>(null);
-  const [showDraftValidation, setShowDraftValidation] = useState(false);
-  const editorRef = useRef<HTMLTableRowElement | null>(null);
-
-  useEffect(() => {
-    if (editingIndex === null) return;
-    const frame = window.requestAnimationFrame(() => {
-      editorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [editingIndex]);
-
-  if (!rows.length && !roster && !currentRows.length) return null;
-  const currentValue = (row: Record<string, unknown>, name: string) => String(Object.entries(row).find(([tag]) => new RegExp(`^${name}(?:XX|\\d{1,2})$`).test(tag))?.[1] ?? "");
-
-  function beginEdit(row: ScheduleABrokerRow, index: number) {
-    setEditingIndex(index);
-    const blankCode = !String(row.organization_code ?? "").trim();
-    const nextDraft = { ...row, purpose: formatBrokerPurpose(row),
-      organization_code: blankCode ? "3" : row.organization_code,
-      organization_code_defaulted: blankCode || row.organization_code_defaulted };
-    setDraft(nextDraft);
-    setShowDraftValidation(brokerRowValidationIssues(nextDraft, false).length > 0);
-  }
-
-  function updateDraft(field: keyof ScheduleABrokerRow, value: string) {
-    setDraft((current) => {
-      if (!current) return current;
-      if (field === "organization_code") return { ...current,
-        organization_code: value.trim() || "3", organization_code_defaulted: !value.trim() };
-      return { ...current, [field]: value };
-    });
-  }
-
-  async function submitEdit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (editingIndex === null || !draft) return;
-    if (brokerRowValidationIssues(draft, false).length) {
-      setShowDraftValidation(true);
-      return;
-    }
-    const nextRows = rows.map((row, index) => index === editingIndex ? draft : row);
-    if (await onSaveRows(nextRows, "edited", editingIndex)) {
-      setEditingIndex(null);
-      setDraft(null);
-      setShowDraftValidation(false);
-    }
-  }
-
-  async function excludeRow(index: number) {
-    if (!window.confirm("Exclude this broker row from the FT Williams update?")) return;
-    if (await onSaveRows(rows.filter((_, rowIndex) => rowIndex !== index), "excluded")) {
-      setEditingIndex(null);
-      setDraft(null);
-    }
-  }
-
-  return (
-    <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
-      <div className="schedule-a-broker-panel-head">
-        <PanelHeading icon={<ListChecks size={16} />} title="Schedule A broker rows" />
-        <span>{rows.length} extracted</span>
-      </div>
-      <div className="broker-roster-summary" role="status">
-        <strong>{roster?.mode === "REPLACE" ? (roster.state === "VERIFIED_EMPTY" ? "Verified empty" : "Verified list") : "Needs review"}</strong>
-        <p>{roster?.mode === "REPLACE"
-          ? `Will replace ${roster.existing_count} existing brokers with ${roster.replacement_count} verified broker${roster.replacement_count === 1 ? "" : "s"}.`
-          : "Existing FTWilliam brokers will be preserved until the complete source list and payment categories are verified."}</p>
-        {roster?.reasons.map((reason) => <p key={reason}>{reason}</p>)}
-        <details><summary>Current FTWilliam brokers ({currentRows.length})</summary>
-          <ul>{currentRows.map((row, index) => <li key={index}>
-            {["Name", "AddressLine1", "AddressLine2", "City", "State", "ZipCode"].map((tag) => currentValue(row, tag)).filter(Boolean).join(", ")}
-            {` — Commissions: ${currentValue(row, "CommPdAmt") || "Blank"}; Fees: ${currentValue(row, "FeesPdAmt") || "Blank"}; Purpose: ${currentValue(row, "FeesPdText") || "Blank"}`}
-          </li>)}</ul>
-        </details>
-        {roster?.other_disclosures.map((item, index) => <details key={index}>
-          <summary>Unclassified service-provider disclosure: {item.name} — {item.amount ? `$${item.amount}` : "Amount unconfirmed"} (page {item.page})</summary>
-          <p>{item.address}</p><p>This separate disclosure is not a verified Schedule A commission or fee.</p><pre>{item.source_text}</pre>
-        </details>)}
-        {roster?.evidence.length ? <details><summary>Source evidence</summary>
-          {roster.evidence.map((item, index) => <p key={index}>Page {item.page}: {item.source_text}</p>)}
-        </details> : null}
-      </div>
-      <div
-        aria-label="Schedule A broker rows"
-        className="schedule-a-broker-table-wrap"
-        role="region"
-        tabIndex={0}
-      >
-        <table className="schedule-a-broker-table">
-          <thead>
-            <tr>
-              <th>Broker / person</th>
-              <th>Address</th>
-              <th>Org</th>
-              <th>Commissions</th>
-              <th>Fees</th>
-              <th>Purpose</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => {
-              const isEditing = editingIndex === index && Boolean(draft);
-              const displayRow = editingIndex === index && draft ? draft : row;
-              const rowIssues = brokerRowValidationIssues(row);
-              const draftIssues = isEditing && draft ? brokerRowValidationIssues(draft, false) : [];
-              return (
-              <Fragment key={`${row.name}-${row.zip_code || ""}-${index}`}>
-              <tr className={isEditing ? "broker-row-editing" : undefined}>
-                <td data-label="Broker / person">
-                  {displayRow.name}
-                  {isEditing ? <small className="broker-draft-badge">Unsaved changes</small> : null}
-                </td>
-                <td data-label="Address">{formatBrokerAddress(displayRow)}</td>
-                <td data-label="Org">
-                  <span className={!String(displayRow.organization_code || "").trim() ? "broker-value-invalid" : ""}>{organizationCodeLabel(displayRow.organization_code)}</span>
-                  {displayRow.organization_code_defaulted && displayRow.organization_code === "3" ?
-                    <small className="broker-draft-badge">Defaulted to 3 because organizational code was blank.</small> : null}
-                </td>
-                <td data-label="Commissions">{displayRow.commission_total ?? "Unconfirmed"}</td>
-                <td data-label="Fees">{displayRow.fee_total ?? "Unconfirmed"}</td>
-                <td data-label="Purpose">{formatBrokerPurpose(displayRow) || "-"}</td>
-                <td data-label="Actions">
-                  <div className="broker-row-actions">
-                    <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
-                      <Edit3 size={13} /> {rowIssues.length ? "Fix issue" : "Edit"}
-                    </button>
-                    <button className="button danger" type="button" disabled={busy} onClick={() => void excludeRow(index)}>
-                      <Ban size={13} /> Exclude
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              {rowIssues.length ? (
-                <tr className="broker-row-validation-summary">
-                  <td colSpan={7}>
-                    <div role="alert">
-                      <AlertTriangle size={15} />
-                      <div>
-                        <strong>Broker row {index + 1} needs correction</strong>
-                        {rowIssues.map((issue) => <span key={issue}>{issue}</span>)}
-                      </div>
-                      <button className="button secondary" type="button" disabled={busy} onClick={() => beginEdit(row, index)}>
-                        <Edit3 size={13} /> Fix issue
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
-              {isEditing && draft ? (
-                <tr className="broker-edit-row" ref={editorRef}>
-                  <td colSpan={7}>
-                    <form className="broker-edit-form" onSubmit={submitEdit}>
-                      <div className="broker-edit-toolbar">
-                        <div>
-                          <strong>Editing broker row {index + 1}</strong>
-                          <span>Changes preview above and are saved only when you confirm.</span>
-                        </div>
-                        <div className="broker-edit-actions">
-                          <button className="button secondary" type="button" disabled={busy} onClick={() => { setEditingIndex(null); setDraft(null); setShowDraftValidation(false); }}>Cancel</button>
-                          <button className="button primary" type="submit" disabled={busy}>{busy ? "Saving..." : "Save broker row"}</button>
-                        </div>
-                      </div>
-                      {showDraftValidation && draftIssues.length ? (
-                        <div className="broker-edit-validation" role="alert">
-                          <strong>Fix this broker row before saving</strong>
-                          {draftIssues.map((issue) => <span key={issue}>{issue}</span>)}
-                        </div>
-                      ) : null}
-                      <label>Broker / person<input required maxLength={35} value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
-                      <label>Address line 1<input maxLength={35} value={draft.address_line_1 || ""} onChange={(event) => updateDraft("address_line_1", event.target.value)} /></label>
-                      <label>Address line 2<input maxLength={35} value={draft.address_line_2 || ""} onChange={(event) => updateDraft("address_line_2", event.target.value)} /></label>
-                      <label>City<input maxLength={30} value={draft.city || ""} onChange={(event) => updateDraft("city", event.target.value)} /></label>
-                      <label>State<input maxLength={2} value={draft.state || ""} onChange={(event) => updateDraft("state", event.target.value.toUpperCase())} /></label>
-                      <label>ZIP code<input maxLength={10} value={draft.zip_code || ""} onChange={(event) => updateDraft("zip_code", event.target.value)} /></label>
-                      <label>
-                        Organization code
-                        <select required value={draft.organization_code || ""} onChange={(event) => updateDraft("organization_code", event.target.value)}>
-                          <option value="">Use default (3)</option>
-                          {FTW_ORGANIZATION_CODE_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>{option.value} — {option.label}</option>
-                          ))}
-                        </select>
-                        <small>Blank codes default to 3. Existing codes are preserved.</small>
-                      </label>
-                      <label>Commission<input inputMode="decimal" value={draft.commission_total || ""} onChange={(event) => updateDraft("commission_total", event.target.value)} /></label>
-                      <label>Fees<input inputMode="decimal" value={draft.fee_total || ""} onChange={(event) => updateDraft("fee_total", event.target.value)} /></label>
-                      <label className="broker-purpose-input">Proposed purpose<input readOnly value={formatBrokerPurpose(draft)} /><small>Derived from classified commission and fee totals. Printed wording stays in source evidence.</small></label>
-                    </form>
-                  </td>
-                </tr>
-              ) : null}
-              </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {rows.length > 1 ? (
-        <p>Verified paid recipients replace the selected Schedule A broker list. Confirmed unpaid recipients are excluded from that replacement.</p>
-      ) : null}
-    </section>
-  );
+  return <BrokerRosterPanel {...props} />;
 }
 
 function BrokerMatchDecision({

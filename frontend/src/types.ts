@@ -155,7 +155,20 @@ export interface ScheduleABrokerRosterReview {
   replacement_count: number;
   reasons: string[];
   evidence: Array<{ page?: number | null; source_text?: string | null }>;
-  other_disclosures: Array<{ name?: string; address?: string; page?: number; amount?: string | null; payment_category?: string; source_text?: string }>;
+  other_disclosures: Array<{ id?: string; name?: string; address?: string; page?: number; amount?: string | null; payment_category?: string; source_text?: string }>;
+  review_context_sha256?: string | null;
+  reviewer_confirmation?: { actor: string; at: string; reason: string; row_sources: string[];
+    disclosure_decisions: Record<string, "INCLUDED" | "SUPPORTING_ONLY" | "UNRESOLVED"> } | null;
+}
+
+export interface BrokerRosterReviewRequest {
+  expected_context: string;
+  complete_list_confirmed: boolean;
+  reason: string;
+  empty_list_evidence: string;
+  row_sources: string[];
+  excluded_source_indexes: number[];
+  disclosure_decisions: Array<{ disclosure_id: string; treatment: "INCLUDED" | "SUPPORTING_ONLY" | "UNRESOLVED" }>;
 }
 
 export interface ScheduleABrokerMatch {

@@ -20,6 +20,7 @@ import type {
   FTWilliamsReview,
   ClientFacingError,
   ScheduleABrokerRow,
+  BrokerRosterReviewRequest,
 } from "./types";
 import { getIdToken } from "./auth";
 
@@ -434,12 +435,13 @@ export async function updateFTWilliamsScheduleABrokerRows(
   filingId: string,
   rows: ScheduleABrokerRow[],
   editedIndex?: number,
-  action: "edited" | "excluded" = "edited",
+  action: "edited" | "excluded" | "reviewed" = "edited",
+  review?: BrokerRosterReviewRequest,
 ): Promise<{ ftw_review: FTWilliamsReview }> {
   return request("/filings/" + filingId + "/ftw/schedule-a-broker-rows", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rows, edited_index: editedIndex, action }),
+    body: JSON.stringify({ rows, edited_index: editedIndex, action, review }),
   });
 }
 
