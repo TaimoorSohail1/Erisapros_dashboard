@@ -56,6 +56,24 @@ function itemProblem(item: Item): string | null {
   return null;
 }
 
+function blockingSourceIssues(item: Item, sourceRows: ScheduleABrokerRow[]) {
+  if (!item.included || !item.source.startsWith('SOURCE:')) return [];
+  const original = sourceRows[Number(item.source.slice(7))];
+  // Whole-list confirmation resolves these four checks on the server. Other
+  // source errors survive a draft edit and must remain visible here too.
+  const reviewable = new Set(['complete_source_broker_roster', 'payment_classification_ambiguity',
+    'business_rule_confirmation', 'source_section_ambiguity']);
+  return (original?.validation_results ?? []).filter(issue => issue.status === 'ERROR' && !reviewable.has(issue.validator));
+}
+function sourceIssueMessage(issue: { validator: string; reason?: string }) {
+  if (issue.validator === 'recipient_identity_ambiguity') return 'Confirm whether these entries belong to one broker or separate recipients. Their addresses differ.';
+  return issue.reason || 'A source check needs correction before this broker can be approved.';
+}
+function sourceProblem(view: Draft) {
+  const issue = view.items.flatMap(item => blockingSourceIssues(item, view.sourceRows))[0];
+  return issue ? sourceIssueMessage(issue) : null;
+}
+
 export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview, onReviewDestination }: {
   busy: boolean; currentRows: Record<string, unknown>[]; roster?: ScheduleABrokerRosterReview | null; rows: ScheduleABrokerRow[];
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
@@ -74,9 +92,9 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const view = draft ?? makeDraft(rows, roster);
   const stale = Boolean(draft && draft.context !== roster?.review_context_sha256);
   const destinationProblem = view.roster?.destination_ready === false ? view.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.' : null;
-  const approved = !destinationProblem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
   const problem = stale ? 'Source or FTWilliam data changed. Cancel edits and reopen Edit to refresh.' :
-    destinationProblem ?? view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
+    destinationProblem ?? sourceProblem(view) ?? view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
+  const approved = !problem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
   const disabled = busy || pending;
   useEffect(() => { if (editing) { heading.current?.focus(); heading.current?.scrollIntoView({ block: 'nearest' }); } }, [Boolean(editing)]);
   if (!rows.length && !roster && !currentRows.length) return null;
@@ -85,7 +103,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     const fresh = onRefreshReview ? await onRefreshReview() : null;
     const next = makeDraft(fresh?.schedule_a_broker_rows ?? rows, fresh?.schedule_a_broker_roster ?? roster);
     if (draft?.dirty && draft.context !== next.context) throw new Error('Source or FTWilliam data changed. Your edits are retained. Cancel edits, then reopen Edit to refresh.');
-    return draft?.dirty ? { ...draft, roster: next.roster } : next;
+    return draft?.dirty ? { ...draft, roster: next.roster, sourceRows: next.sourceRows } : next;
   }
   async function beginEdit(event: React.MouseEvent<HTMLButtonElement>, index: number) {
     returnFocus.current = event.currentTarget; setPending(true); setError(''); setMessage('');
@@ -105,9 +123,10 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     if (!draft || !editing) return;
     const issue = editing.item && itemProblem(editing.item);
     if (issue) { setError(issue); return; }
-    setDraft({ ...draft, dirty: true, emptyEvidence: editing.emptyEvidence,
-      items: draft.items.map((item, index) => index === editing.index && editing.item ? editing.item : item) });
-    closeEdit(); setMessage('Changes ready. Click Approve to save the review and continue.');
+    const next = { ...draft, dirty: true, emptyEvidence: editing.emptyEvidence,
+      items: draft.items.map((item, index) => index === editing.index && editing.item ? editing.item : item) };
+    setDraft(next);
+    closeEdit(); setMessage(sourceProblem(next) ? 'Draft saved. The source check still needs resolution before approval.' : 'Changes ready. Click Approve to save the review and continue.');
   }
   async function approve() {
     if (disabled || approved || problem || editing || approvalInFlight.current) return;
@@ -117,6 +136,8 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
       const next = await refreshedDraft();
       if (next.roster?.destination_ready === false) { setDraft(next); throw new Error(next.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.'); }
       if (next.context !== view.context || !next.context) { setDraft(next); throw new Error('Broker data refreshed. Check the displayed list before approving.'); }
+      const sourceIssue = sourceProblem(next);
+      if (sourceIssue) { setDraft(next); throw new Error(sourceIssue); }
       const issue = next.items.map(itemProblem).find(Boolean);
       if (issue) throw new Error(issue);
       const included = next.items.filter(item => item.included);
@@ -132,14 +153,14 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Approval was not saved. Your edits are retained.'); }
     finally { approvalInFlight.current = false; setPending(false); }
   }
-  const approveButton = <button type="button" className="button primary" aria-describedby="broker-approval-scope"
+  const approveButton = <button type="button" className="button primary" aria-describedby="broker-approval-scope broker-source-status"
     disabled={disabled || approved || Boolean(problem) || Boolean(editing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
   const editItem = editing?.item;
   const editedItems = view.items.map((item,index) => index === editing?.index && editing.item ? editing.item : item);
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
   return <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
     <div className="schedule-a-broker-panel-head"><h3>Schedule A brokers</h3><span>{view.items.length} item{view.items.length === 1 ? '' : 's'}</span></div>
-    <p role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
+    <p id="broker-source-status" role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
     {destinationProblem && onReviewDestination ? <button type="button" className="button secondary" disabled={disabled} onClick={onReviewDestination}>Review Schedule A</button> : null}
     <div className="schedule-a-broker-table-wrap" aria-label="Schedule A broker rows" role="region" tabIndex={0}>
       <table className="schedule-a-broker-table"><thead><tr><th>Broker / person</th><th>Address</th><th>Payment</th><th>Purpose / status</th><th>Action</th></tr></thead><tbody>
@@ -147,7 +168,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
           <td data-label="Broker / person">{item.row.name}<small className="broker-draft-badge">{item.disclosure ? 'Separate service-provider disclosure' : 'Schedule A broker'}{item.row.source_page ? ` · Page ${item.row.source_page}` : ''}</small></td>
           <td data-label="Address">{address(item.row) || item.disclosure?.address}</td>
           <td data-label="Payment">{item.disclosure ? <strong>Original {formatMoney(item.disclosure.amount)}<br /></strong> : null}Commission: {formatMoney(item.row.commission_total)}<br />Fees: {formatMoney(item.row.fee_total)}</td>
-          <td data-label="Purpose / status">{item.treatment === 'SUPPORTING_ONLY' ? 'Supporting information only' : !item.included && !item.disclosure ? 'Excluded' : purpose(item.row)}</td>
+          <td data-label="Purpose / status">{item.treatment === 'SUPPORTING_ONLY' ? 'Supporting information only' : !item.included && !item.disclosure ? 'Excluded' : purpose(item.row)}{blockingSourceIssues(item, view.sourceRows).map((issue, index) => <p className="broker-review-error" key={index}>Needs review: {issue.validator === 'recipient_identity_ambiguity' ? 'Broker identity not confirmed.' : sourceIssueMessage(issue)}</p>)}</td>
           <td><div className="broker-simple-actions"><button type="button" className="button secondary" disabled={disabled} onClick={event => beginEdit(event,index)}>Edit</button>{view.items.length === 1 ? approveButton : null}</div></td>
         </tr>)}
         {!view.items.length ? <tr><td colSpan={5}>No verified broker list. Current brokers remain unchanged. <button type="button" className="button secondary" disabled={disabled} onClick={event => beginEdit(event,-1)}>Edit</button></td></tr> : null}
@@ -161,6 +182,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
       <div className="broker-edit-toolbar"><h4 id="broker-review-heading" tabIndex={-1} ref={heading}>Edit broker</h4><button type="button" className="button secondary" disabled={disabled} onClick={closeEdit}>Cancel</button></div>
       {editItem?.disclosure ? <p>{editItem.disclosure.name} · Original {formatMoney(editItem.disclosure.amount)} · Page {editItem.disclosure.page}</p> : null}
       <form onSubmit={saveChanges}>
+        {editItem ? blockingSourceIssues(editItem, view.sourceRows).map((issue, index) => <div className="broker-review-error" key={index}><strong>Source check needs review</strong><p>{issue.reason || sourceIssueMessage(issue)}</p><small>Changing payment amounts does not resolve this source check. Its confirmation or correction is required before approval.</small></div>) : null}
         {editItem?.disclosure ? <fieldset className="broker-payment-treatment" disabled={disabled}><legend>Does this payment belong on this Schedule A?</legend>
           {([['INCLUDED','Use on this Schedule A'],['SUPPORTING_ONLY','Supporting information only']] as const).map(([value,label]) => <label key={value}><input type="radio" name="broker-treatment" checked={editItem.treatment === value} onChange={() => setEditing(previous => previous?.item ? { ...previous, item: { ...previous.item, treatment: value, included: value === 'INCLUDED' } } : previous)} />{label}</label>)}
           <small>Only choose a commission or fee classification supported by the source or confirmed instructions.</small>
