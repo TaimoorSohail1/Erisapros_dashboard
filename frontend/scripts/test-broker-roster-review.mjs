@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 import React,{act,useState,useRef,useEffect} from 'react';
 import {JSDOM} from 'jsdom';
@@ -146,5 +146,42 @@ assert.equal(button('Approve').disabled,true);
 // A genuinely new, verified target uses the same approval path without a sequence.
 await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:true},onSaveReview:async()=>true});
 await click('Approve');assert.equal(button('Approved').disabled,true);
+// Reproduce the Lincoln UI: valid payments must not hide source identity holds.
+const identityHold={validator:'recipient_identity_ambiguity',status:'ERROR',reason:'Distinct printed addresses may be abbreviations of the same recipient. Preserve the physical rows and confirm aggregation before an update.'};
+const heldRows=[{...row,name:'Mercer',address_line_1:'4565 PAYSPHERE CIR',commission_total:'4035.74',fee_total:'0',validation_results:[identityHold]},
+  {...row,name:'Mercer',address_line_1:'4565 PAYSPHERE CIRCLE',commission_total:'0',fee_total:'1133.09',validation_results:[identityHold]}];
+let heldSaves=0;
+await render({...sourceProps,rows:heldRows,onSaveReview:async()=>{heldSaves++;return true;}});
+assert.match(document.body.textContent,/Paused:/);
+assert.match(document.body.textContent,/Confirm whether these entries belong to one broker or separate recipients/);
+assert.doesNotMatch(document.body.textContent,/Ready for approval/);
+assert.equal(button('Approve').disabled,true);
+await click('Approve');assert.equal(heldSaves,0,'Do not submit a review the server must reject');
+await act(async()=>buttons().filter(b=>b.textContent==='Edit')[0].click());
+assert.match(document.querySelector('form').textContent,/Distinct printed addresses/);
+await set(input('Commission'),'4035.75');await submit();
+assert.equal(button('Approve').disabled,true,'Editing payment values does not confirm recipient identity');
+assert.doesNotMatch(document.body.textContent,/Changes ready\. Click Approve/);
+await render({...sourceProps,rows:heldRows,roster:{...sourceProps.roster,mode:'REPLACE'}});
+assert.doesNotMatch(document.body.textContent,/Broker list approved/,'An old roster mode cannot hide current source errors');
+// Newly returned source holds must be visible before attempting a save.
+await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[heldRows[0]],schedule_a_broker_roster:sourceProps.roster}),onSaveReview:async()=>{heldSaves++;return true;}});
+await click('Approve');assert.equal(heldSaves,0);assert.equal(button('Approve').disabled,true);
+assert.match(document.body.textContent,/Confirm whether these entries belong to one broker or separate recipients/);
+// Unknown future blocking validators retain their actual explanation.
+await render({...sourceProps,rows:[{...row,validation_results:[{validator:'future_source_check',status:'ERROR',reason:'Source payment evidence is inconsistent.'}]}]});
+assert.match(document.body.textContent,/Source payment evidence is inconsistent/);assert.equal(button('Approve').disabled,true);
+// The four checks explicitly resolved by whole-list review must remain reviewable.
+await render({...sourceProps,rows:[{...row,validation_results:['complete_source_broker_roster','payment_classification_ambiguity','business_rule_confirmation','source_section_ambiguity'].map(validator=>({validator,status:'ERROR',reason:'Needs full-list review'}))}]});
+assert.equal(button('Approve').disabled,false);
+if(process.env.BROKER_UI_REPLAY_FILE){
+  const captured=JSON.parse(await readFile(process.env.BROKER_UI_REPLAY_FILE,'utf8'));
+  await render({...sourceProps,rows:captured.source_rows});
+  assert.match(document.body.textContent,/Paused: Confirm whether these entries belong to one broker or separate recipients/);
+  assert.doesNotMatch(document.body.textContent,/Ready for approval/);
+  assert.equal(button('Approve').disabled,true);
+  assert.equal(document.querySelectorAll('tbody tr').length,captured.source_rows.length);
+  if(process.env.BROKER_UI_EVIDENCE_FILE)await writeFile(process.env.BROKER_UI_EVIDENCE_FILE,document.documentElement.outerHTML,'utf8');
+}
 await act(async()=>root.unmount());
-console.log('Simple broker UI: Edit/Approve, no Add broker, drafts/cancel, exact classification, complete-list approval, exclusions/empty evidence, stale refresh, failed save, duplicate prevention and verified-list compatibility passed.');
+console.log('Simple broker UI: Edit/Approve, source-error visibility and approval gating, no Add broker, drafts/cancel, exact classification, complete-list approval, exclusions/empty evidence, stale refresh, failed save, duplicate prevention and verified-list compatibility passed.');
