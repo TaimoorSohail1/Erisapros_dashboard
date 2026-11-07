@@ -89,5 +89,31 @@ class VerifiedBrokerReviewUpdateTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.repo,'save_broker_review',AsyncMock(return_value=None)):
             self.assertFalse(await self.acknowledge())
 
+    async def test_preserved_old_brokers_cannot_verify_the_approved_replacement(self):
+        # Reproduce Lincoln's manual partial send: the approved list is correct,
+        # but the transmitted document and read-back still contain the old list.
+        self.sent.update_xml_schedule_a = self.service._build_schedule_a_update_xml([], self.before, '2',
+            self.service._identity_from_review(self.sent))
+        self.current.schedule_a_records = deepcopy(self.before)
+        self.current.schedule_a_broker_roster = self.sent.schedule_a_broker_roster.model_copy(deep=True)
+        observations = [{'form_type':'SCHEDULE_A','expected_sequence':'2','actual_sequence':'2',
+            'values':deepcopy(self.before[0]['query_results']), 'broker_rows':deepcopy(self.before[0]['query_subparts'])}]
+        self.assertFalse(await self.acknowledge(observations=observations))
+        stored = await self.repo.get_filing(self.filing.id)
+        self.assertNotIn('verified_update',stored.schedule_a_broker_roster.reviewer_confirmation)
+
+    async def test_old_success_receipt_still_exposes_unsent_brokers_on_read(self):
+        from app.api.filings import get_filing
+        self.sent.status='UPDATE_SENT'
+        await self.repo.upsert_ftwilliams_review(self.sent)
+        with patch('app.api.filings.get_repository',return_value=self.repo):
+            detail=await get_filing(self.filing.id)
+        self.assertTrue(detail.ftw_review.broker_updates_pending)
+
+    async def test_explicit_broker_opt_out_never_records_roster_verification(self):
+        with patch('app.services.ftwilliams_review.get_repository',return_value=self.repo):
+            self.assertFalse(await self.service._acknowledge_verified_broker_review(
+                self.filing.id,self.sent,self.current,self.observations,broker_updates_selected=False))
+
 
 if __name__ == '__main__': unittest.main()

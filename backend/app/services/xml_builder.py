@@ -885,6 +885,15 @@ def schedule_a_broker_update_values(
     return values
 
 
+def schedule_a_broker_replacement_expectation(rows: list) -> dict:
+    """The approved roster's wire values, independent of a send selection."""
+    brokers = schedule_a_broker_multipart_rows({},
+        overrides=schedule_a_broker_update_values(rows), preserve_zero_compensation=True)
+    brokers = _without_superseded_unpaid_broker_placeholders(brokers, rows)
+    brokers = _sort_schedule_a_broker_rows_by_payment(brokers)
+    return {**_replacement_broker_totals(brokers), '__subparts__': {'Broker': brokers}}
+
+
 def schedule_a_broker_multipart_rows(
     current_values: dict[str, str],
     *,

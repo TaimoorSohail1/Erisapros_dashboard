@@ -98,6 +98,7 @@ from app.services.xml_builder import (
     combine_ftw_update_xml,
     schedule_a_broker_multipart_rows,
     schedule_a_broker_update_values,
+    schedule_a_broker_replacement_expectation,
     schedule_a_replacement_data_gaps,
     update_values_for_form,
 )
@@ -1592,8 +1593,28 @@ class FTWilliamsReviewService:
             reason = self._broker_review_destination_error(review, fields)
             review.schedule_a_broker_roster.destination_ready = reason is None
             review.schedule_a_broker_roster.destination_reason = reason
+        self._mark_pending_broker_updates(review)
 
-    async def _acknowledge_verified_broker_review(self, filing_id, sent, current, observations):
+    def _mark_pending_broker_updates(self, review):
+        # Derive from the last actual vendor snapshot, never from a prior
+        # receipt or the fact that the user approved the proposed roster.
+        review.broker_updates_pending = bool(review.schedule_a_broker_roster
+            and (review.schedule_a_broker_roster.mode != 'REPLACE'
+                 or self._review_has_broker_updates(review)))
+        status = review.schedule_a_broker_roster
+        confirmation = status.reviewer_confirmation if status else None
+        proof = (status.verified_update if status else None) or (confirmation or {}).get('verified_update') or {}
+        review.broker_update_verified = bool(status and status.mode == 'REPLACE'
+            and not review.broker_updates_pending and proof.get('broker_values_verified') is True
+            and proof.get('approved_roster_sha256') == status.roster_sha256
+            and proof.get('source_context_sha256') == review.source_context_sha256
+            and proof.get('source_sha256') == status.source_sha256
+            and proof.get('verified_snapshot_sha256') == status.current_snapshot_sha256)
+        if (review.broker_update_verified and review.update_receipt
+                and review.update_attempted_count == 0):
+            review.status = FTWilliamsReviewStatus.UPDATE_SENT
+
+    async def _acknowledge_verified_broker_review(self, filing_id, sent, current, observations, *, broker_updates_selected=True):
         """Keep approval after our verified write, never after an external edit.
 
         Called only after full verification succeeds. A second fresh snapshot
@@ -1603,7 +1624,8 @@ class FTWilliamsReviewService:
         from app.services.broker_review_confirmation import confirmation_matches
         status = sent.schedule_a_broker_roster
         confirmation = status.reviewer_confirmation if status else None
-        if (not confirmation or status.mode != 'REPLACE' or not sent.update_xml_schedule_a
+        if (not broker_updates_selected or not status or status.mode != 'REPLACE' or not sent.update_xml_schedule_a
+                or not broker_roster_is_complete(sent.schedule_a_broker_rows, status)
                 or not current.current_query_success or current.current_query_complete is False
                 or not current.schedule_a_broker_roster):
             return False
@@ -1627,33 +1649,53 @@ class FTWilliamsReviewService:
                 or self._compare_readback_document(FormType.SCHEDULE_A, documents[0], selected['query_results'],
                     actual_subparts=selected.get('query_subparts', {}))):
             return False
+        # A partial send can preserve the old roster even while the review
+        # carries an approved replacement. Matching that payload to read-back
+        # proves preservation, not that the approved brokers were updated.
+        try:
+            approved = schedule_a_broker_replacement_expectation([
+                row for row in self._normalized_schedule_a_broker_rows(sent.schedule_a_broker_rows)
+                if broker_row_has_payment(row)])
+        except (ValueError, FTWPayloadValidationError):
+            return False
+        if ('Broker' not in (documents[0].get('__subparts__') or {})
+                or self._compare_readback_document(FormType.SCHEDULE_A, approved, documents[0],
+                    actual_subparts=documents[0].get('__subparts__', {}))
+                or self._compare_readback_document(FormType.SCHEDULE_A, approved, selected['query_results'],
+                    actual_subparts=selected.get('query_subparts', {}))):
+            return False
         repo = get_repository()
         filing = await repo.get_filing(filing_id)
         if not filing or not filing.schedule_a_broker_roster:
             return False
         source_context = self.source_context_sha256(filing)
         rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
-        if (source_context != confirmation.get('source_context_sha256')
+        from app.services.schedule_a_broker_roster import _fingerprint
+        if (source_context != (confirmation.get('source_context_sha256') if confirmation else sent.source_context_sha256)
                 or filing.schedule_a_broker_roster.reviewer_confirmation != confirmation
-                or not confirmation_matches(rows, status)
-                or not confirmation_matches(sent.schedule_a_broker_rows, status)):
+                or _fingerprint(rows) != _fingerprint(sent.schedule_a_broker_rows)
+                or not broker_roster_is_complete(rows, filing.schedule_a_broker_roster)):
+            return False
+        if confirmation and (source_context != confirmation.get('source_context_sha256')
+                or not confirmation_matches(rows, status)):
             return False
         updated = status.model_copy(deep=True)
         updated.current_snapshot_sha256 = current.schedule_a_broker_roster.current_snapshot_sha256
         if not updated.current_snapshot_sha256:
             return False
-        updated.reviewer_confirmation = {**confirmation,
-            'snapshot_sha256': updated.current_snapshot_sha256,
-            'verified_update': {'at': datetime.utcnow().isoformat(),
-                'previous_snapshot_sha256': confirmation['snapshot_sha256'],
-                'verified_snapshot_sha256': updated.current_snapshot_sha256,
-                'destination': identity(current)}}
+        proof = {'at': datetime.utcnow().isoformat(), 'broker_values_verified': True,
+            'approved_roster_sha256': _fingerprint(rows), 'source_context_sha256': source_context,
+            'source_sha256': status.source_sha256, 'previous_snapshot_sha256': status.current_snapshot_sha256,
+            'verified_snapshot_sha256': updated.current_snapshot_sha256, 'destination': identity(current)}
+        updated.verified_update = proof
+        if confirmation:
+            updated.reviewer_confirmation = {**confirmation,
+                'snapshot_sha256': updated.current_snapshot_sha256, 'verified_update': proof}
         saved = await repo.save_broker_review(filing_id, filing.updated_at, {'schedule_a_broker_roster': updated})
         if not saved:
             return False
         await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_UPDATE_VERIFIED',
-            message='The reviewed roster was saved and verified on the same Schedule A.',
-            details=updated.reviewer_confirmation['verified_update']))
+            message='The approved roster was saved and verified on the same Schedule A.', details=proof))
         return True
 
     def _verified_created_broker_destination(self, sent, current, observations):
@@ -3475,9 +3517,11 @@ class FTWilliamsReviewService:
 
         clear_ftw_current_snapshot_cache()
         reconciled = await self.prepare_review(filing_id, send_queries=True)
-        if verification_success is True and await self._acknowledge_verified_broker_review(
-            filing_id, review, reconciled, verification_observations
-        ):
+        broker_update_verified = verification_success is True and await self._acknowledge_verified_broker_review(
+            filing_id, review, reconciled, verification_observations,
+            broker_updates_selected=selected_field_ids is None or include_broker_updates,
+        )
+        if broker_update_verified:
             # Advance only to the snapshot proved by this successful write.
             reconciled = await self.prepare_review(filing_id, send_queries=False)
         remaining_field_keys = self._remaining_attempted_keys(attempted_field_keys, reconciled)
@@ -3557,7 +3601,7 @@ class FTWilliamsReviewService:
         review.update_diagnostics = self._operation_diagnostics([*responses, *recovery_responses])
         verified_update = bool(
             success
-            and attempted_count > 0
+            and (attempted_count > 0 or broker_update_verified)
             and remaining_count == 0
             and verification_attempted
             and verification_success is True
@@ -3744,6 +3788,7 @@ class FTWilliamsReviewService:
     @staticmethod
     def verified_outcome_summary(review: FTWilliamsReview) -> dict:
         valid = (review.status == FTWilliamsReviewStatus.UPDATE_SENT
+            and not review.broker_updates_pending
             and review.update_verification_attempted and review.update_verification_success is True
             and review.update_remaining_count == 0 and review.update_receipt is not None)
         receipt = review.update_receipt if valid else None
@@ -3888,7 +3933,13 @@ class FTWilliamsReviewService:
         current_query_success: bool,
     ) -> dict | None:
         """Keep the last per-field send result visible and refresh it from current FTW values."""
-        if not existing_review or not existing_review.update_results:
+        if not existing_review:
+            return None
+        if not existing_review.update_results:
+            if (existing_review.broker_update_verified and existing_review.update_receipt
+                    and existing_review.update_verification_success is True):
+                return {'attempted_count':0,'confirmed_count':0,'remaining_count':0,'results':[],
+                    'verification_attempted':True,'verification_success':True}
             return None
 
         results = [dict(result) for result in existing_review.update_results]
@@ -6365,7 +6416,8 @@ class FTWilliamsReviewService:
             transaction_type="1", current_values=review.form_5500_current_values, **identity) if form_fields else ""
         resolved_brokers = None
         if include_broker_updates:
-            if not review.schedule_a_broker_rows:
+            if not review.schedule_a_broker_rows and not self._can_replace_broker_roster(
+                    [], review.schedule_a_records, identity.get("ftw_seq_no"), review.schedule_a_broker_roster):
                 raise ValueError("No broker changes are available to send.")
             broker_error = self._review_validation_blocking_error(review, selected_field_ids=[], include_brokers=True,
                 action="sending the selected broker rows")

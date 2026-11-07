@@ -536,6 +536,7 @@ class ScheduleABrokerRosterReview(BaseModel):
     destination_reason: str | None = None
     identity_reviews: list[dict] = Field(default_factory=list)
     identity_groups: list[dict] = Field(default_factory=list)
+    verified_update: dict | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):
@@ -1107,6 +1108,8 @@ class FTWilliamsReview(BaseModel):
     schedule_a_broker_roster: ScheduleABrokerRosterReview | None = None
     schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
     schedule_a_broker_match_complete: bool = True
+    broker_updates_pending: bool = False
+    broker_update_verified: bool = False
     decision_required_count: int = 0
     blocked_field_count: int = 0
     will_update_count: int = 0

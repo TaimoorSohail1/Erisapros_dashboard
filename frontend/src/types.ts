@@ -456,6 +456,8 @@ export interface FTWilliamsUpdateReceipt {
 }
 
 export interface FTWilliamsReview {
+  broker_updates_pending?: boolean;
+  broker_update_verified?: boolean;
   id?: string | null;
   filing_id: string;
   status: string;
