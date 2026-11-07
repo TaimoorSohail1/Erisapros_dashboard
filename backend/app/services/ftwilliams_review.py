@@ -1603,10 +1603,12 @@ class FTWilliamsReviewService:
                  or self._review_has_broker_updates(review)))
         status = review.schedule_a_broker_roster
         confirmation = status.reviewer_confirmation if status else None
-        proof = (confirmation or {}).get('verified_update') or {}
+        proof = (status.verified_update if status else None) or (confirmation or {}).get('verified_update') or {}
         review.broker_update_verified = bool(status and status.mode == 'REPLACE'
             and not review.broker_updates_pending and proof.get('broker_values_verified') is True
             and proof.get('approved_roster_sha256') == status.roster_sha256
+            and proof.get('source_context_sha256') == review.source_context_sha256
+            and proof.get('source_sha256') == status.source_sha256
             and proof.get('verified_snapshot_sha256') == status.current_snapshot_sha256)
         if (review.broker_update_verified and review.update_receipt
                 and review.update_attempted_count == 0):
@@ -1622,7 +1624,8 @@ class FTWilliamsReviewService:
         from app.services.broker_review_confirmation import confirmation_matches
         status = sent.schedule_a_broker_roster
         confirmation = status.reviewer_confirmation if status else None
-        if (not broker_updates_selected or not confirmation or status.mode != 'REPLACE' or not sent.update_xml_schedule_a
+        if (not broker_updates_selected or not status or status.mode != 'REPLACE' or not sent.update_xml_schedule_a
+                or not broker_roster_is_complete(sent.schedule_a_broker_rows, status)
                 or not current.current_query_success or current.current_query_complete is False
                 or not current.schedule_a_broker_roster):
             return False
@@ -1667,29 +1670,32 @@ class FTWilliamsReviewService:
             return False
         source_context = self.source_context_sha256(filing)
         rows = self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
-        if (source_context != confirmation.get('source_context_sha256')
+        from app.services.schedule_a_broker_roster import _fingerprint
+        if (source_context != (confirmation.get('source_context_sha256') if confirmation else sent.source_context_sha256)
                 or filing.schedule_a_broker_roster.reviewer_confirmation != confirmation
-                or not confirmation_matches(rows, status)
-                or not confirmation_matches(sent.schedule_a_broker_rows, status)):
+                or _fingerprint(rows) != _fingerprint(sent.schedule_a_broker_rows)
+                or not broker_roster_is_complete(rows, filing.schedule_a_broker_roster)):
+            return False
+        if confirmation and (source_context != confirmation.get('source_context_sha256')
+                or not confirmation_matches(rows, status)):
             return False
         updated = status.model_copy(deep=True)
         updated.current_snapshot_sha256 = current.schedule_a_broker_roster.current_snapshot_sha256
         if not updated.current_snapshot_sha256:
             return False
-        updated.reviewer_confirmation = {**confirmation,
-            'snapshot_sha256': updated.current_snapshot_sha256,
-            'verified_update': {'at': datetime.utcnow().isoformat(),
-                'broker_values_verified': True,
-                'approved_roster_sha256': confirmation['roster_sha256'],
-                'previous_snapshot_sha256': confirmation['snapshot_sha256'],
-                'verified_snapshot_sha256': updated.current_snapshot_sha256,
-                'destination': identity(current)}}
+        proof = {'at': datetime.utcnow().isoformat(), 'broker_values_verified': True,
+            'approved_roster_sha256': _fingerprint(rows), 'source_context_sha256': source_context,
+            'source_sha256': status.source_sha256, 'previous_snapshot_sha256': status.current_snapshot_sha256,
+            'verified_snapshot_sha256': updated.current_snapshot_sha256, 'destination': identity(current)}
+        updated.verified_update = proof
+        if confirmation:
+            updated.reviewer_confirmation = {**confirmation,
+                'snapshot_sha256': updated.current_snapshot_sha256, 'verified_update': proof}
         saved = await repo.save_broker_review(filing_id, filing.updated_at, {'schedule_a_broker_roster': updated})
         if not saved:
             return False
         await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_UPDATE_VERIFIED',
-            message='The reviewed roster was saved and verified on the same Schedule A.',
-            details=updated.reviewer_confirmation['verified_update']))
+            message='The approved roster was saved and verified on the same Schedule A.', details=proof))
         return True
 
     def _verified_created_broker_destination(self, sent, current, observations):

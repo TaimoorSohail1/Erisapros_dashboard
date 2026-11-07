@@ -90,3 +90,28 @@ class BrokerSelectedSendIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.vendor.brokers['2'])
         self.assertEqual(self.vendor.schedules['2']['InsBrokerCommTotAmt'],'0')
         self.assertEqual(self.vendor.schedules['2']['InsBrokerFeesTotAmt'],'0')
+
+    async def test_automatically_verified_broker_only_send_needs_no_invented_reviewer(self):
+        import hashlib
+        from app.models import NormalizedExtractionResult,NormalizedExtractionField,SourceEvidence
+        from app.services.schedule_a_broker_roster import attest_source_broker_roster,source_roster_review
+        row=self.row.model_copy(update={'source_page':1,'confidence':.99,
+            'evidence':[SourceEvidence(page=1,source_text='Synthetic verified broker payment table')]})
+        sha=hashlib.sha256(self.source).hexdigest()
+        result=NormalizedExtractionResult(provider='isolated QA',fields=[
+            NormalizedExtractionField(field_name='3b. Commissions',value='4035.74'),
+            NormalizedExtractionField(field_name='3c. Fees',value='1133.09')],schedule_a_broker_rows=[row],raw={
+                'independent_source_page_coverage':{'source_sha256':sha,'page_count':1,
+                    'pages':[{'page':1,'text_sha256':'b'*64,'readable':True}]},
+                'extraction_stages':[{'stage':'structured_provider_normalized','broker_rows':[row.model_dump(mode='json')]}]})
+        attest_source_broker_roster(result,[row.model_copy(deep=True)],sha)
+        status=source_roster_review(result.schedule_a_broker_rows)
+        self.assertEqual(status.mode,'REPLACE')
+        await self.repo.update_filing(self.filing.id,{'schedule_a_broker_rows':result.schedule_a_broker_rows,
+            'schedule_a_broker_roster':status})
+        sent=await self.service.send_approved_update(self.filing.id,FTWilliamsSendUpdateRequest(
+            selected_field_ids=[],include_broker_updates=True))
+        self.assertTrue(sent.update_verification_success,sent.error_message)
+        self.assertIsNotNone(sent.update_receipt)
+        stored=await self.repo.get_filing(self.filing.id)
+        self.assertIsNone(stored.schedule_a_broker_roster.reviewer_confirmation)

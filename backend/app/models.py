@@ -536,6 +536,7 @@ class ScheduleABrokerRosterReview(BaseModel):
     destination_reason: str | None = None
     identity_reviews: list[dict] = Field(default_factory=list)
     identity_groups: list[dict] = Field(default_factory=list)
+    verified_update: dict | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):
