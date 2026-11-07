@@ -22,11 +22,17 @@ class BrokerIdentityIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await integration.NewScheduleBrokerIntegrationTests.asyncTearDown(self)
 
-    async def run_choice(self,choice):
+    async def run_choice(self,choice,*,existing=False):
         before=deepcopy(self.vendor.schedules);parent=deepcopy(self.vendor.parent)
+        if existing:
+            for key,value in [('schedule_a_part_i_1d_contract_policy_number','POLICY-02'),
+                              ('schedule_a_part_i_1b_insurance_carrier_ein','98-7654321')]:
+                self.fields[key].value=self.fields[key].proposed_value=value
+            await self.repo.replace_fields(self.filing.id,list(self.fields.values()))
         await self.service.prepare_review(self.filing.id,send_queries=True)
-        review=await self.service.select_schedule_a_match(self.filing.id,FTWilliamsScheduleAMatchRequest(
+        selection=(FTWilliamsScheduleAMatchRequest(ftw_seq_no='2') if existing else FTWilliamsScheduleAMatchRequest(
             create_new=True,confirm_new_target=True,carrier='Example Insurance Company',carrier_ein='11-1111111',contract='NEW-333'))
+        review=await self.service.select_schedule_a_match(self.filing.id,selection)
         group=review.schedule_a_broker_roster.identity_groups[0]
         payload=FTWilliamsScheduleABrokerRowsRequest(action='identity_reviewed',identity_review=BrokerIdentityReviewRequest(
             expected_context=review.schedule_a_broker_roster.review_context_sha256,group_id=group['id'],choice=choice,
@@ -50,7 +56,7 @@ class BrokerIdentityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.vendor.sent,[],'Broker review is separate from an explicit vendor dispatch in this test')
         result=await self.service.approve_and_update(self.filing.id,send_to_ftw=True,include_broker_updates=True)
         self.assertTrue(result.update_verification_success,result.error_message)
-        sequence=next(k for k in self.vendor.schedules if k not in before)
+        sequence='2' if existing else next(k for k in self.vendor.schedules if k not in before)
         brokers=self.vendor.brokers[sequence]['Broker']
         self.assertEqual(len(brokers),1 if choice=='SAME' else 2)
         self.assertEqual(self.vendor.schedules[sequence]['InsBrokerCommTotAmt'],'4036')
@@ -62,7 +68,8 @@ class BrokerIdentityIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({b['AddressLine1XX'] for b in brokers},{'4565 PAYSPHERE CIR','4565 PAYSPHERE CIRCLE'})
             self.assertEqual({b['FeesPdTextXX'] for b in brokers},{'COMMISSIONS','FEES'})
         self.assertEqual(self.vendor.parent,parent)
-        for seq in before:self.assertEqual(self.vendor.schedules[seq],before[seq])
+        for seq in before:
+            if not existing or seq!=sequence:self.assertEqual(self.vendor.schedules[seq],before[seq])
         refreshed=await self.service.prepare_review(self.filing.id,send_queries=True)
         self.assertEqual(refreshed.schedule_a_broker_roster.mode,'REPLACE')
         self.assertFalse(self.service._review_has_broker_updates(refreshed))
@@ -72,6 +79,8 @@ class BrokerIdentityIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_broker_save_reload_approve_and_saved_readback(self):await self.run_choice('SAME')
     async def test_separate_brokers_save_reload_approve_and_saved_readback(self):await self.run_choice('SEPARATE')
+    async def test_separate_brokers_replace_existing_schedule_with_explicit_blank_second_addresses(self):
+        await self.run_choice('SEPARATE',existing=True)
 
     async def test_identity_save_rejects_stale_source_unauthenticated_and_concurrent_saves(self):
         await self.service.prepare_review(self.filing.id,send_queries=True)

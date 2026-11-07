@@ -1144,7 +1144,6 @@ def schedule_a_replacement_data_gaps(
             {
                 child.tag: str(child.text or "").strip()
                 for child in list(broker)
-                if str(child.text or "").strip()
             }
             for broker in document.findall("./DOLSubPartData/Broker")
         ]
@@ -1167,7 +1166,13 @@ def schedule_a_replacement_data_gaps(
                 for tag in {tag for broker in actual_brokers for tag in broker}
             }
             for tag, expected_count in sorted(expected_field_counts.items()):
-                missing_count = expected_count - actual_field_counts.get(tag, 0)
+                # A reviewed blank address is an explicit clear, not a
+                # missing XML element. Still reject omitted clears and blank
+                # values where the approved roster requires nonempty data.
+                expected_nonempty = sum(bool(broker.get(tag)) for broker in expected_brokers)
+                actual_nonempty = sum(bool(broker.get(tag)) for broker in actual_brokers)
+                missing_count = max(expected_count - actual_field_counts.get(tag, 0),
+                    expected_nonempty - actual_nonempty)
                 if missing_count > 0:
                     gaps.append(
                         f"sequence {sequence} missing {missing_count} broker field value(s) for {tag}"
@@ -1175,8 +1180,9 @@ def schedule_a_replacement_data_gaps(
             continue
         for index, expected_broker in enumerate(expected_brokers):
             actual_broker = actual_brokers[index] if index < len(actual_brokers) else {}
-            for tag in sorted(set(expected_broker) - set(actual_broker)):
-                gaps.append(f"sequence {sequence} missing broker row {index + 1} field {tag}")
+            for tag in sorted(expected_broker):
+                if tag not in actual_broker or (expected_broker[tag] and not actual_broker[tag]):
+                    gaps.append(f"sequence {sequence} missing broker row {index + 1} field {tag}")
             if selected_sequence and sequence != selected_sequence:
                 for tag in sorted(set(expected_broker) & set(actual_broker)):
                     if actual_broker[tag] != str(expected_broker[tag] or "").strip():
