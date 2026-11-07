@@ -1107,6 +1107,8 @@ class FTWilliamsReview(BaseModel):
     schedule_a_broker_roster: ScheduleABrokerRosterReview | None = None
     schedule_a_broker_matches: list[ScheduleABrokerMatch] = Field(default_factory=list)
     schedule_a_broker_match_complete: bool = True
+    broker_updates_pending: bool = False
+    broker_update_verified: bool = False
     decision_required_count: int = 0
     blocked_field_count: int = 0
     will_update_count: int = 0

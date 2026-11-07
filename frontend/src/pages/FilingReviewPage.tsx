@@ -989,7 +989,7 @@ export function FilingReviewPage() {
       const sentReview = sendResult.ftw_review;
       const updatedFiling = await getFiling(id);
       setFiling(updatedFiling);
-      if (!sentReview || !isVerifiedFTWilliamsUpdate(sentReview)) {
+      if (!sentReview || !isVerifiedFTWilliamsSubmission(sentReview)) {
         const confirmed = sentReview?.update_confirmed_count || 0;
         const remaining = sentReview?.update_remaining_count || 0;
         const failure = sentReview?.active_failure_client_error || sentReview?.client_error;
@@ -1049,7 +1049,7 @@ export function FilingReviewPage() {
 
   function requestFtwSend() {
     setSelectedSendFieldIds(willUpdateRows.flatMap((row) => row.fieldId ? [row.fieldId] : []));
-    setIncludeSendBrokerUpdates(false);
+    setIncludeSendBrokerUpdates(Boolean(brokerRoster?.mode === "REPLACE" && brokerRoster.destination_ready !== false));
     setShowTechnicalDrawer(false);
     setShowFtwSendConfirm(true);
   }
@@ -1419,6 +1419,7 @@ export function FilingReviewPage() {
       {showFtwSendConfirm ? (
         <FTWilliamsSendConfirmationModal
           brokerRowCount={scheduleABrokerRows.length}
+          brokerReplacementAvailable={brokerRoster?.mode === "REPLACE"}
           busy={ftwSendBusy}
           changedRows={willUpdateRows}
           preservedScheduleARecordCount={preservedScheduleARecordCount}
@@ -1742,12 +1743,16 @@ function AutomationSimpleSummary({
 }
 
 function isVerifiedFTWilliamsUpdate(review: FTWilliamsReview | null | undefined) {
+  return !review?.broker_updates_pending && isVerifiedFTWilliamsSubmission(review);
+}
+
+function isVerifiedFTWilliamsSubmission(review: FTWilliamsReview | null | undefined) {
   return Boolean(
     review
     && review.status === "UPDATE_SENT"
     && review.update_verification_attempted
     && review.update_verification_success === true
-    && (review.update_attempted_count || 0) > 0
+    && ((review.update_attempted_count || 0) > 0 || review.broker_update_verified === true)
     && (review.update_remaining_count || 0) === 0
   );
 }
@@ -1785,7 +1790,9 @@ function FTWUpdateSuccessNotice({
         <span>Verified by FT Williams</span>
         <strong>{ftwReceiptActionLabel(receipt?.action)}</strong>
         <small>
-          FT Williams returned the saved values for {confirmed} field{confirmed === 1 ? "" : "s"}.
+          {confirmed === 0 && review.broker_update_verified
+            ? "FT Williams returned and verified the saved broker list."
+            : `FT Williams returned the saved values for ${confirmed} field${confirmed === 1 ? "" : "s"}.`}
           {reviewNoteCount ? ` ${reviewNoteCount} extraction note${reviewNoteCount === 1 ? " is" : "s are"} retained for audit; no action is required.` : " No further update action is required."}
         </small>
         {destination ? <small className="ftw-update-receipt-destination">{destination}</small> : null}
@@ -3693,6 +3700,7 @@ function BringForwardConfirmationModal({
 
 function FTWilliamsSendConfirmationModal({
   brokerRowCount,
+  brokerReplacementAvailable = false,
   busy,
   changedRows,
   onClose,
@@ -3709,6 +3717,7 @@ function FTWilliamsSendConfirmationModal({
   onToggleBrokers,
 }: {
   brokerRowCount: number;
+  brokerReplacementAvailable?: boolean;
   busy: boolean;
   changedRows: ReviewDecisionRow[];
   onClose: () => void;
@@ -3763,10 +3772,11 @@ function FTWilliamsSendConfirmationModal({
             <li><span>3</span><strong>Accepted</strong><small>FT Williams accepted the update is recorded separately.</small></li>
             <li><span>4</span><strong>Verify</strong><small>Complete appears only after every saved value is read back.</small></li>
           </ol>
-          {brokerRowCount > 0 ? (
+          {brokerRowCount > 0 || brokerReplacementAvailable ? (
             <label className="ftw-send-broker-selection">
               <input type="checkbox" checked={includeBrokerUpdates} disabled={busy} onChange={(event) => onToggleBrokers(event.target.checked)} />
               Include the verified broker-list replacement. Unchecked keeps current FTW brokers unchanged.
+              {brokerReplacementAvailable && brokerRowCount === 0 ? " This verified empty list removes all brokers on the selected Schedule A." : ""}
             </label>
           ) : null}
 

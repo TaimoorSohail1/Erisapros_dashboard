@@ -31,6 +31,26 @@ assert.equal(ready(null), true, "Field-only/Form 5500 flows propose no broker re
 assert.equal(ready({mode:"PRESERVE"}), false, "An empty but unverified new extraction still needs review.");
 assert.equal(ready(null, [{name:"Unverified broker"}]), false, "Legacy row matches cannot authorize a roster.");
 assert.equal(ready({mode:"REPLACE"}, [{name:"Verified broker"}]), true);
+// Exercise the actual final-send opener, including a broker-only update.
+const sendCode = source.slice(source.indexOf('  function requestFtwSend()'), source.indexOf('  async function viewFtwAuditPdf()'));
+function selectedBrokersAtOpen(brokerRoster) {
+  let selected;
+  runInNewContext(`${ts.transpileModule(sendCode, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText}\nrequestFtwSend()`, {
+    brokerRoster, willUpdateRows: [], setSelectedSendFieldIds:()=>{}, setIncludeSendBrokerUpdates:value=>{selected=value;},
+    setShowTechnicalDrawer:()=>{}, setShowFtwSendConfirm:()=>{},
+  });
+  return selected;
+}
+assert.equal(selectedBrokersAtOpen({mode:'REPLACE',destination_ready:true}),true,'An approved broker list must be selected even when no scalar fields remain');
+assert.equal(selectedBrokersAtOpen({mode:'PRESERVE'}),false,'Unverified brokers cannot be preselected');
+assert.equal(selectedBrokersAtOpen({mode:'REPLACE',destination_ready:false}),false,'An unresolved target cannot be preselected');
+assert.equal(selectedBrokersAtOpen(null),false);
+const receiptCode = source.slice(source.indexOf('function isVerifiedFTWilliamsUpdate('), source.indexOf('function FTWUpdateSuccessNotice('));
+const receiptVerified = runInNewContext(`${ts.transpileModule(receiptCode, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText}\nisVerifiedFTWilliamsUpdate`);
+const oldReceipt={status:'UPDATE_SENT',update_verification_attempted:true,update_verification_success:true,update_attempted_count:7,update_remaining_count:0};
+assert.equal(receiptVerified({...oldReceipt,broker_updates_pending:true}),false,'An old scalar receipt must not hide the pending broker Send action');
+assert.equal(receiptVerified({...oldReceipt,broker_updates_pending:false}),true);
+assert.equal(receiptVerified({...oldReceipt,update_attempted_count:0,broker_update_verified:true,broker_updates_pending:false}),true,'A freshly verified broker-only write needs no invented scalar count');
 const purposeCode = source.slice(source.indexOf("function formatBrokerPurpose("), source.indexOf("function FTWilliamsComparisonPanel("));
 const purpose = runInNewContext(`${ts.transpileModule(purposeCode, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\nformatBrokerPurpose`);
 for (const [commission, fees, expected] of [["100","0","COMMISSIONS"],["0","-557","FEES"],["100","-100","COMMISSIONS AND FEES"],["0","0","COMMISSION"],[null,"0","Unclassified"]]) {

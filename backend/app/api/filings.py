@@ -143,6 +143,7 @@ async def get_filing(filing_id: str):
             deep=True,
             update={"fields": [field for field in ftw_review.fields if not is_retired_field(field)]},
         )
+        FTWilliamsReviewService()._mark_pending_broker_updates(ftw_review)
     return FilingDetail(**filing.model_dump(), fields=fields, events=events, jobs=jobs, audit_logs=audit_logs, ftw_review=ftw_review)
 
 
