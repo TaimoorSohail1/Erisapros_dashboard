@@ -185,6 +185,7 @@ const identityProps={...sourceProps,rows:heldRows,roster:identityRoster,onSaveId
   identitySaves.push(request);return {schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,
     review_context_sha256:'d'.repeat(64),identity_groups:[{...identityGroup,choice:request.choice,address_source_index:request.address_source_index,confirmed_by:'reviewer'}]}};}};
 await render(identityProps);await click('Confirm identity');
+assert.ok(document.querySelector('#broker-identity-editor fieldset.broker-payment-treatment'),'Identity choices use the existing stacked accessible form layout');
 assert.equal(button('Save confirmation').disabled,true);
 await choose('SAME');
 await set(input('Address to use'),'1');
