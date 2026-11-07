@@ -1354,6 +1354,8 @@ class FTWilliamsReviewService:
 
         if payload.action == 'reviewed':
             return await self._confirm_schedule_a_broker_review(filing_id, payload, actor=actor)
+        if payload.action == 'identity_reviewed':
+            return await self._save_broker_identity_review(filing_id, payload, actor=actor)
 
         rows = self._normalized_schedule_a_broker_rows(payload.rows)
         try:
@@ -1445,6 +1447,45 @@ class FTWilliamsReviewService:
         from app.services.broker_review_confirmation import confirm_broker_review
         if not payload.review or not actor:
             raise ValueError('Authenticated reviewer and complete broker review are required.')
+        filing,current,status=await self._broker_review_confirmation_context(filing_id)
+        repo = get_repository()
+        try:
+            rows, confirmed = confirm_broker_review(payload.rows, self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows), status, payload.review,
+                actor=actor, source_context=self.source_context_sha256(filing), snapshot=status.current_snapshot_sha256)
+        except FTWPayloadValidationError as exc:
+            raise ValueError(self._friendly_broker_validation_error(exc)) from exc
+        confirmed = source_roster_review(rows, confirmed)
+        if not self._can_replace_broker_roster(rows, current.schedule_a_records, current.ftw_seq_no, confirmed):
+            raise ValueError('Current FTWilliam broker fields cannot safely be replaced. Review the source and destination.')
+        saved = await repo.save_broker_review(filing_id, filing.updated_at, {
+            'schedule_a_broker_rows': rows, 'schedule_a_broker_roster': confirmed,
+            'error_message': None})
+        if not saved:
+            raise ValueError('Filing changed while saving the broker review. Refresh and review again.')
+        await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_CONFIRMED',
+            message='Reviewer confirmed the complete broker list and classified payments.',
+            details=confirmed.reviewer_confirmation))
+        current.schedule_a_broker_matches = []
+        await repo.upsert_ftwilliams_review(current)
+        return await self.prepare_review(filing_id, send_queries=False)
+
+    async def _save_broker_identity_review(self,filing_id,payload,*,actor):
+        from app.services.broker_identity_review import save_identity_choice
+        if not payload.identity_review or not actor:
+            raise ValueError('Authenticated reviewer and recipient identity confirmation are required.')
+        filing,current,status=await self._broker_review_confirmation_context(filing_id)
+        rows=self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows)
+        updated=save_identity_choice(rows,status,payload.identity_review,actor=actor,
+            source_context=self.source_context_sha256(filing),snapshot=status.current_snapshot_sha256)
+        repo=get_repository()
+        saved=await repo.save_broker_review(filing_id,filing.updated_at,{'schedule_a_broker_roster':updated,'error_message':None})
+        if not saved:raise ValueError('Filing changed while saving identity confirmation. Refresh and review again.')
+        proof=next(p for p in updated.identity_reviews if p['group_id']==payload.identity_review.group_id)
+        await repo.add_audit(AuditLog(filing_id=filing_id,event='SCHEDULE_A_BROKER_IDENTITY_CONFIRMED',
+            message='Reviewer saved a source-bound recipient grouping decision. No FTWilliam update was sent.',details=proof))
+        return await self.prepare_review(filing_id,send_queries=False)
+
+    async def _broker_review_confirmation_context(self,filing_id):
         repo = get_repository()
         # Query through the existing read-only vendor path before accepting a review.
         current = await self.prepare_review(filing_id, send_queries=True)
@@ -1471,26 +1512,7 @@ class FTWilliamsReviewService:
             bucket=document.get('s3_bucket'), local_path=document.get('storage_path'))
         if hashlib.sha256(source_bytes).hexdigest() != expected_source:
             raise ValueError('Source PDF changed. Reprocess and review the current PDF.')
-        try:
-            rows, confirmed = confirm_broker_review(payload.rows, self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows), status, payload.review,
-                actor=actor, source_context=self.source_context_sha256(filing), snapshot=status.current_snapshot_sha256)
-        except FTWPayloadValidationError as exc:
-            raise ValueError(self._friendly_broker_validation_error(exc)) from exc
-        confirmed = source_roster_review(rows, confirmed)
-        if not self._can_replace_broker_roster(rows, current.schedule_a_records, current.ftw_seq_no, confirmed):
-            raise ValueError('Current FTWilliam broker fields cannot safely be replaced. Review the source and destination.')
-        saved = await repo.save_broker_review(filing_id, filing.updated_at, {
-            'schedule_a_broker_rows': rows, 'schedule_a_broker_roster': confirmed,
-            'error_message': None})
-        if not saved:
-            raise ValueError('Filing changed while saving the broker review. Refresh and review again.')
-        # Durable provenance is saved with the rows in the same conditional write.
-        await repo.add_audit(AuditLog(filing_id=filing_id, event='SCHEDULE_A_BROKER_REVIEW_CONFIRMED',
-            message='Reviewer confirmed the complete broker list and classified payments.',
-            details=confirmed.reviewer_confirmation))
-        current.schedule_a_broker_matches = []
-        await repo.upsert_ftwilliams_review(current)
-        return await self.prepare_review(filing_id, send_queries=False)
+        return filing,current,status
 
     def _broker_review_binding_identity(self, identity, create_new, description, fields):
         if not create_new:

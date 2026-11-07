@@ -48,8 +48,9 @@ import {
   updateField,
   updateFTWilliamsScheduleABrokerRows,
   loadFTWilliamsBrokerReviewContext,
+  saveFTWilliamsBrokerIdentityReview,
 } from "../api";
-import type { BrokerRosterReviewRequest, ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
+import type { BrokerIdentityReviewRequest, BrokerRosterReviewRequest, ClientFacingError, ClientRejectedField, ExtractedField, FilingDetail, FTWLocalAgentStatus, FTWilliamsComparisonField, FTWilliamsReview, FTWilliamsUpdateReceipt, ScheduleABrokerMatch, ScheduleABrokerRow, ScheduleABrokerRosterReview, ScheduleAContractType, ScheduleAWorksheetSummary } from "../types";
 import { BrokerRosterPanel } from "../ui/BrokerRosterPanel";
 import { InlineLoader, Skeleton } from "../ui/Loading";
 import { FTWilliamsDiagnostic } from "../ui/FTWilliamsDiagnostic";
@@ -955,6 +956,21 @@ export function FilingReviewPage() {
     } finally { setFtwBusy(false); }
   }
 
+  async function saveBrokerIdentityReview(request: BrokerIdentityReviewRequest): Promise<FTWilliamsReview | null> {
+    if (!id) return null;
+    setFtwBusy(true); setToast(null);
+    try {
+      const { ftw_review } = await saveFTWilliamsBrokerIdentityReview(id, request);
+      const updated = await getFiling(id);
+      setFiling(updated); previousFilingRef.current = updated;
+      setToast({ tone: 'success', title: 'Identity confirmation saved', message: 'Review the final broker list, then Approve. Saving this choice did not send an FTWilliam update.' });
+      return ftw_review;
+    } catch (error) {
+      setToast({ tone: 'error', title: 'Identity confirmation was not saved', message: error instanceof Error ? error.message : 'Review the identity choice and try again.' });
+      return null;
+    } finally { setFtwBusy(false); }
+  }
+
   async function sendFtwUpdate() {
     if (!id || ftwSendInFlightRef.current) return;
     ftwSendInFlightRef.current = true;
@@ -1377,6 +1393,7 @@ export function FilingReviewPage() {
                 roster={brokerRoster}
                 onSaveRows={saveScheduleABrokerRows}
                 onSaveReview={saveBrokerRosterReview}
+                onSaveIdentityReview={saveBrokerIdentityReview}
                 onRefreshReview={refreshBrokerRosterReview}
                 onReviewDestination={() => setActiveWorkflowStep("FTW_LOADED")}
                 rows={scheduleABrokerRows}
@@ -4022,6 +4039,7 @@ function ScheduleABrokerRowsPanel(props: {
   onSaveRows: (rows: ScheduleABrokerRow[], action: "edited" | "excluded", editedIndex?: number) => Promise<boolean>;
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
   onRefreshReview: () => Promise<FTWilliamsReview>;
+  onSaveIdentityReview?: (request: BrokerIdentityReviewRequest) => Promise<FTWilliamsReview | null>;
   onReviewDestination?: () => void;
   rows: ScheduleABrokerRow[];
 }) {

@@ -159,8 +159,31 @@ export interface ScheduleABrokerRosterReview {
   review_context_sha256?: string | null;
   destination_ready?: boolean | null;
   destination_reason?: string | null;
+  identity_groups?: BrokerIdentityGroup[];
   reviewer_confirmation?: { actor: string; at: string; reason: string; row_sources: string[];
     disclosure_decisions: Record<string, "INCLUDED" | "SUPPORTING_ONLY" | "UNRESOLVED"> } | null;
+}
+
+export interface BrokerIdentityGroup {
+  id: string;
+  name: string;
+  source_indexes: number[];
+  address_options: Array<{ source_index: number; address: string }>;
+  commission_total?: string | null;
+  fee_total?: string | null;
+  choice?: 'SAME' | 'SEPARATE' | null;
+  address_source_index?: number | null;
+  confirmed_by?: string | null;
+  confirmed_at?: string | null;
+}
+
+export interface BrokerIdentityReviewRequest {
+  expected_context: string;
+  group_id: string;
+  choice: 'SAME' | 'SEPARATE';
+  address_source_index?: number | null;
+  verified: boolean;
+  reason: string;
 }
 
 export interface BrokerRosterReviewRequest {

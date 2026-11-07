@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { BrokerRosterReviewRequest, ScheduleABrokerRow, ScheduleABrokerRosterReview, FTWilliamsReview } from '../types';
+import type { BrokerIdentityReviewRequest, BrokerRosterReviewRequest, ScheduleABrokerRow, ScheduleABrokerRosterReview, FTWilliamsReview } from '../types';
 
 type Disclosure = ScheduleABrokerRosterReview['other_disclosures'][number];
 type Item = { source: string; row: ScheduleABrokerRow; included: boolean; disclosure?: Disclosure;
@@ -56,29 +56,45 @@ function itemProblem(item: Item): string | null {
   return null;
 }
 
-function blockingSourceIssues(item: Item, sourceRows: ScheduleABrokerRow[]) {
+function identityChoiceApplies(item: Item, view: Draft) {
+  const index = Number(item.source.slice(7));
+  const group = view.roster?.identity_groups?.find(g => g.choice && g.confirmed_by && g.source_indexes.includes(index));
+  if (!group) return false;
+  return group.source_indexes.every(i => {
+    const member = i === index ? item : view.items.find(candidate => candidate.source === `SOURCE:${i}`);
+    if (!member?.included) return group.choice === 'SEPARATE';
+    const original = view.sourceRows[i];
+    return Boolean(original) && (['name','address_line_1','address_line_2','city','state','zip_code'] as const)
+      .every(key => String(member.row[key] ?? '').trim() === String(original[key] ?? '').trim())
+      && cents(member.row.commission_total) === cents(original.commission_total)
+      && cents(member.row.fee_total) === cents(original.fee_total);
+  });
+}
+function blockingSourceIssues(item: Item, view: Draft) {
   if (!item.included || !item.source.startsWith('SOURCE:')) return [];
-  const original = sourceRows[Number(item.source.slice(7))];
+  const original = view.sourceRows[Number(item.source.slice(7))];
   // Whole-list confirmation resolves these four checks on the server. Other
   // source errors survive a draft edit and must remain visible here too.
   const reviewable = new Set(['complete_source_broker_roster', 'payment_classification_ambiguity',
     'business_rule_confirmation', 'source_section_ambiguity']);
-  return (original?.validation_results ?? []).filter(issue => issue.status === 'ERROR' && !reviewable.has(issue.validator));
+  return (original?.validation_results ?? []).filter(issue => issue.status === 'ERROR' && !reviewable.has(issue.validator)
+    && !(issue.validator === 'recipient_identity_ambiguity' && identityChoiceApplies(item, view)));
 }
 function sourceIssueMessage(issue: { validator: string; reason?: string }) {
   if (issue.validator === 'recipient_identity_ambiguity') return 'Confirm whether these entries belong to one broker or separate recipients. Their addresses differ.';
   return issue.reason || 'A source check needs correction before this broker can be approved.';
 }
 function sourceProblem(view: Draft) {
-  const issue = view.items.flatMap(item => blockingSourceIssues(item, view.sourceRows))[0];
+  const issue = view.items.flatMap(item => blockingSourceIssues(item, view))[0];
   return issue ? sourceIssueMessage(issue) : null;
 }
 
-export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview, onReviewDestination }: {
+export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveReview, onRefreshReview, onReviewDestination, onSaveIdentityReview }: {
   busy: boolean; currentRows: Record<string, unknown>[]; roster?: ScheduleABrokerRosterReview | null; rows: ScheduleABrokerRow[];
   onSaveReview: (rows: ScheduleABrokerRow[], review: BrokerRosterReviewRequest) => Promise<boolean>;
   onRefreshReview?: () => Promise<FTWilliamsReview>;
   onReviewDestination?: () => void;
+  onSaveIdentityReview?: (request: BrokerIdentityReviewRequest) => Promise<FTWilliamsReview | null>;
 }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<{ index: number; item: Item | null; emptyEvidence: string } | null>(null);
@@ -86,9 +102,12 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [approvedContext, setApprovedContext] = useState('');
+  const [identityEditing, setIdentityEditing] = useState<{ groupId: string; choice: '' | 'SAME' | 'SEPARATE'; addressIndex: string; verified: boolean } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const approvalInFlight = useRef(false);
+  const identityInFlight = useRef(false);
+  const identityHeading = useRef<HTMLHeadingElement>(null);
   const view = draft ?? makeDraft(rows, roster);
   const stale = Boolean(draft && draft.context !== roster?.review_context_sha256);
   const destinationProblem = view.roster?.destination_ready === false ? view.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.' : null;
@@ -97,6 +116,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const approved = !problem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
   const disabled = busy || pending;
   useEffect(() => { if (editing) { heading.current?.focus(); heading.current?.scrollIntoView({ block: 'nearest' }); } }, [Boolean(editing)]);
+  useEffect(() => { if (identityEditing) { identityHeading.current?.focus(); identityHeading.current?.scrollIntoView({ block: 'nearest' }); } }, [Boolean(identityEditing)]);
   if (!rows.length && !roster && !currentRows.length) return null;
 
   async function refreshedDraft(): Promise<Draft> {
@@ -114,6 +134,38 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to load the broker. Try again.'); }
     finally { setPending(false); }
   }
+  async function beginIdentityReview(event: React.MouseEvent<HTMLButtonElement>, groupId: string) {
+    if (draft?.dirty) { setError('Cancel unsaved broker edits before confirming identity.'); return; }
+    returnFocus.current = event.currentTarget; setPending(true); setError(''); setMessage('');
+    try {
+      const next = await refreshedDraft(); setDraft(next);
+      const group = next.roster?.identity_groups?.find(g => g.id === groupId);
+      if (!group || next.context !== view.context) throw new Error('Broker data refreshed. Check the displayed identity group and try again.');
+      setIdentityEditing({ groupId, choice: group.choice || '', addressIndex: group.address_source_index == null ? '' : String(group.address_source_index), verified: false });
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to load the identity review.'); }
+    finally { setPending(false); }
+  }
+  async function saveIdentity(event: FormEvent) {
+    event.preventDefault();
+    if (!identityEditing?.choice || !identityEditing.verified || disabled || identityInFlight.current) return;
+    identityInFlight.current = true; setPending(true); setError(''); setMessage('');
+    try {
+      const next = await refreshedDraft();
+      if (next.context !== view.context || !next.context) throw new Error('Source or FTWilliam data changed. Cancel and reopen identity review.');
+      const group = next.roster?.identity_groups?.find(g => g.id === identityEditing.groupId);
+      if (!group || !onSaveIdentityReview) throw new Error('Identity review is unavailable. Refresh and try again.');
+      const addressIndex = identityEditing.choice === 'SAME' && identityEditing.addressIndex !== '' ? Number(identityEditing.addressIndex) : null;
+      if (identityEditing.choice === 'SAME' && !group.source_indexes.includes(addressIndex!)) throw new Error('Choose which source address to use.');
+      const saved = await onSaveIdentityReview({ expected_context: next.context, group_id: group.id,
+        choice: identityEditing.choice, address_source_index: addressIndex, verified: true,
+        reason: identityEditing.choice === 'SAME' ? 'Reviewer verified that these source entries represent the same broker and selected the source address to use.' : 'Reviewer verified that these source entries represent separate brokers.' });
+      const confirmed = saved?.schedule_a_broker_roster?.identity_groups?.find(g => g.id === group.id);
+      if (!confirmed?.confirmed_by || confirmed.choice !== identityEditing.choice || confirmed.address_source_index !== addressIndex) throw new Error('Identity confirmation was not saved. Your selection is retained; review the error and try again.');
+      setDraft(null); setIdentityEditing(null); setMessage('Identity confirmation saved. Review the complete list, then Approve. No FTWilliam update was sent.');
+      returnFocus.current?.focus();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Identity confirmation was not saved. Your selection is retained.'); }
+    finally { identityInFlight.current = false; setPending(false); }
+  }
   function closeEdit() { setEditing(null); setError(''); returnFocus.current?.focus(); }
   function editRow(field: keyof ScheduleABrokerRow, value: string) {
     setEditing(previous => previous?.item ? { ...previous, item: { ...previous.item, row: { ...previous.item.row, [field]: value } } } : previous);
@@ -129,7 +181,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     closeEdit(); setMessage(sourceProblem(next) ? 'Draft saved. The source check still needs resolution before approval.' : 'Changes ready. Click Approve to save the review and continue.');
   }
   async function approve() {
-    if (disabled || approved || problem || editing || approvalInFlight.current) return;
+    if (disabled || approved || problem || editing || identityEditing || approvalInFlight.current) return;
     approvalInFlight.current = true;
     setPending(true); setError(''); setMessage('');
     try {
@@ -154,22 +206,39 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     finally { approvalInFlight.current = false; setPending(false); }
   }
   const approveButton = <button type="button" className="button primary" aria-describedby="broker-approval-scope broker-source-status"
-    disabled={disabled || approved || Boolean(problem) || Boolean(editing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
+    disabled={disabled || approved || Boolean(problem) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
   const editItem = editing?.item;
   const editedItems = view.items.map((item,index) => index === editing?.index && editing.item ? editing.item : item);
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
+  const identityGroup = view.roster?.identity_groups?.find(g => g.id === identityEditing?.groupId);
   return <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
     <div className="schedule-a-broker-panel-head"><h3>Schedule A brokers</h3><span>{view.items.length} item{view.items.length === 1 ? '' : 's'}</span></div>
     <p id="broker-source-status" role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
     {destinationProblem && onReviewDestination ? <button type="button" className="button secondary" disabled={disabled} onClick={onReviewDestination}>Review Schedule A</button> : null}
+    {(view.roster?.identity_groups ?? []).map(group => <div className="broker-approval-bar" key={group.id}>
+      <span>{group.choice ? group.choice === 'SAME' ? `Identity confirmed: same broker. Approve will combine ${group.source_indexes.length} source entries into one broker.` : 'Identity confirmed: separate brokers. Each entry will keep its own address and payment.' : `${group.name}: confirm whether these source entries represent the same broker or separate brokers.`}</span>
+      <button type="button" className="button secondary" disabled={disabled || Boolean(editing) || Boolean(identityEditing) || Boolean(draft?.dirty)} onClick={event => beginIdentityReview(event,group.id)}>{group.choice ? 'Change identity choice' : 'Confirm identity'}</button>
+    </div>)}
+    {identityEditing && identityGroup ? <section id="broker-identity-editor" className="broker-review-editor" role="region" aria-labelledby="broker-identity-heading">
+      <div className="broker-edit-toolbar"><h4 id="broker-identity-heading" tabIndex={-1} ref={identityHeading}>Confirm broker identity</h4><button type="button" className="button secondary" disabled={disabled} onClick={() => {setIdentityEditing(null);setError('');returnFocus.current?.focus();}}>Cancel identity review</button></div>
+      <form onSubmit={saveIdentity}>
+        <fieldset disabled={disabled}><legend>{identityGroup.name}</legend>
+          {([['SAME','Same broker'],['SEPARATE','Separate brokers']] as const).map(([value,label]) => <label key={value}><input type="radio" name="recipient-identity" value={value} checked={identityEditing.choice === value} onChange={() => setIdentityEditing(previous => previous ? {...previous,choice:value,addressIndex:'',verified:false} : previous)} />{label}</label>)}
+          {identityEditing.choice === 'SAME' ? <><label>Address to use<select aria-label="Address to use" required value={identityEditing.addressIndex} onChange={event => setIdentityEditing(previous => previous ? {...previous,addressIndex:event.target.value,verified:false} : previous)}><option value="">Select a source address</option>{identityGroup.address_options.map(option => <option key={option.source_index} value={option.source_index}>{option.address}</option>)}</select></label><p>One broker: Commission {formatMoney(identityGroup.commission_total)}; Fees {formatMoney(identityGroup.fee_total)}; Purpose {purpose({name:identityGroup.name,commission_total:identityGroup.commission_total,fee_total:identityGroup.fee_total})}.</p></> : null}
+          {identityEditing.choice === 'SEPARATE' ? <p>Keep {identityGroup.source_indexes.length} separate entries with the addresses and payments shown below.</p> : null}
+          <label><input type="checkbox" checked={identityEditing.verified} onChange={event => setIdentityEditing(previous => previous ? {...previous,verified:event.target.checked} : previous)} />I verified this identity choice against the source or confirmed instructions.</label>
+        </fieldset>
+        <div className="broker-simple-actions"><button type="submit" className="button primary" disabled={disabled || !identityEditing.choice || !identityEditing.verified || (identityEditing.choice === 'SAME' && identityEditing.addressIndex === '')}>Save confirmation</button><small>Saves identity only. Review the final list and Approve afterward.</small></div>
+      </form>
+    </section> : null}
     <div className="schedule-a-broker-table-wrap" aria-label="Schedule A broker rows" role="region" tabIndex={0}>
       <table className="schedule-a-broker-table"><thead><tr><th>Broker / person</th><th>Address</th><th>Payment</th><th>Purpose / status</th><th>Action</th></tr></thead><tbody>
         {view.items.map((item, index) => <tr key={item.source}>
           <td data-label="Broker / person">{item.row.name}<small className="broker-draft-badge">{item.disclosure ? 'Separate service-provider disclosure' : 'Schedule A broker'}{item.row.source_page ? ` · Page ${item.row.source_page}` : ''}</small></td>
           <td data-label="Address">{address(item.row) || item.disclosure?.address}</td>
           <td data-label="Payment">{item.disclosure ? <strong>Original {formatMoney(item.disclosure.amount)}<br /></strong> : null}Commission: {formatMoney(item.row.commission_total)}<br />Fees: {formatMoney(item.row.fee_total)}</td>
-          <td data-label="Purpose / status">{item.treatment === 'SUPPORTING_ONLY' ? 'Supporting information only' : !item.included && !item.disclosure ? 'Excluded' : purpose(item.row)}{blockingSourceIssues(item, view.sourceRows).map((issue, index) => <p className="broker-review-error" key={index}>Needs review: {issue.validator === 'recipient_identity_ambiguity' ? 'Broker identity not confirmed.' : sourceIssueMessage(issue)}</p>)}</td>
-          <td><div className="broker-simple-actions"><button type="button" className="button secondary" disabled={disabled} onClick={event => beginEdit(event,index)}>Edit</button>{view.items.length === 1 ? approveButton : null}</div></td>
+          <td data-label="Purpose / status">{item.treatment === 'SUPPORTING_ONLY' ? 'Supporting information only' : !item.included && !item.disclosure ? 'Excluded' : purpose(item.row)}{blockingSourceIssues(item, view).map((issue, index) => <p className="broker-review-error" key={index}>Needs review: {issue.validator === 'recipient_identity_ambiguity' ? 'Broker identity not confirmed.' : sourceIssueMessage(issue)}</p>)}</td>
+          <td><div className="broker-simple-actions"><button type="button" className="button secondary" disabled={disabled || Boolean(identityEditing)} onClick={event => beginEdit(event,index)}>Edit</button>{view.items.length === 1 ? approveButton : null}</div></td>
         </tr>)}
         {!view.items.length ? <tr><td colSpan={5}>No verified broker list. Current brokers remain unchanged. <button type="button" className="button secondary" disabled={disabled} onClick={event => beginEdit(event,-1)}>Edit</button></td></tr> : null}
       </tbody></table>
@@ -182,7 +251,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
       <div className="broker-edit-toolbar"><h4 id="broker-review-heading" tabIndex={-1} ref={heading}>Edit broker</h4><button type="button" className="button secondary" disabled={disabled} onClick={closeEdit}>Cancel</button></div>
       {editItem?.disclosure ? <p>{editItem.disclosure.name} · Original {formatMoney(editItem.disclosure.amount)} · Page {editItem.disclosure.page}</p> : null}
       <form onSubmit={saveChanges}>
-        {editItem ? blockingSourceIssues(editItem, view.sourceRows).map((issue, index) => <div className="broker-review-error" key={index}><strong>Source check needs review</strong><p>{issue.reason || sourceIssueMessage(issue)}</p><small>Changing payment amounts does not resolve this source check. Its confirmation or correction is required before approval.</small></div>) : null}
+        {editItem ? blockingSourceIssues(editItem, view).map((issue, index) => <div className="broker-review-error" key={index}><strong>Source check needs review</strong><p>{issue.reason || sourceIssueMessage(issue)}</p><small>Changing payment amounts does not resolve this source check. Its confirmation or correction is required before approval.</small></div>) : null}
         {editItem?.disclosure ? <fieldset className="broker-payment-treatment" disabled={disabled}><legend>Does this payment belong on this Schedule A?</legend>
           {([['INCLUDED','Use on this Schedule A'],['SUPPORTING_ONLY','Supporting information only']] as const).map(([value,label]) => <label key={value}><input type="radio" name="broker-treatment" checked={editItem.treatment === value} onChange={() => setEditing(previous => previous?.item ? { ...previous, item: { ...previous.item, treatment: value, included: value === 'INCLUDED' } } : previous)} />{label}</label>)}
           <small>Only choose a commission or fee classification supported by the source or confirmed instructions.</small>
