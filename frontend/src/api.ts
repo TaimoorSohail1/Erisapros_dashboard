@@ -21,6 +21,7 @@ import type {
   ClientFacingError,
   ScheduleABrokerRow,
   BrokerRosterReviewRequest,
+  BrokerIdentityReviewRequest,
 } from "./types";
 import { getIdToken } from "./auth";
 
@@ -434,6 +435,13 @@ export async function setFTWilliamsScheduleABrokerMatches(
 
 export async function loadFTWilliamsBrokerReviewContext(filingId: string): Promise<{ ftw_review: FTWilliamsReview }> {
   return request('/filings/' + filingId + '/ftw/broker-review-context', { method: 'POST' });
+}
+
+export async function saveFTWilliamsBrokerIdentityReview(filingId: string, identityReview: BrokerIdentityReviewRequest): Promise<{ ftw_review: FTWilliamsReview }> {
+  return request('/filings/' + filingId + '/ftw/schedule-a-broker-rows', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'identity_reviewed', identity_review: identityReview }),
+  });
 }
 
 export async function updateFTWilliamsScheduleABrokerRows(

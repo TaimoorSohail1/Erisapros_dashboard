@@ -218,6 +218,8 @@ def bind_roster_review(rows, previous, records, identity, can_replace, source_co
         status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
         status.reasons = ['Source or FTWilliam data changed after broker review. Review the current list again.']
     status.review_context_sha256 = review_token(rows, status, source_context, status.current_snapshot_sha256)
+    from app.services.broker_identity_review import identity_groups
+    status.identity_groups = identity_groups(rows,status,source_context,status.current_snapshot_sha256)
     if status.mode == 'REPLACE' and not can_replace:
         status.state, status.mode = 'NEEDS_REVIEW', 'PRESERVE'
         status.reasons = ['Source or current FTWilliam broker information cannot safely be serialized for replacement.']

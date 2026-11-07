@@ -534,6 +534,8 @@ class ScheduleABrokerRosterReview(BaseModel):
     reviewer_confirmation: dict | None = None
     destination_ready: bool | None = None
     destination_reason: str | None = None
+    identity_reviews: list[dict] = Field(default_factory=list)
+    identity_groups: list[dict] = Field(default_factory=list)
 
 
 class ScheduleAWorksheetValue(BaseModel):
@@ -1251,11 +1253,21 @@ class BrokerRosterReviewRequest(BaseModel):
     excluded_source_indexes: list[int] = Field(default_factory=list)
 
 
+class BrokerIdentityReviewRequest(BaseModel):
+    expected_context: str
+    group_id: str
+    choice: Literal["SAME", "SEPARATE"]
+    address_source_index: int | None = None
+    verified: bool = False
+    reason: str = Field(default="", max_length=2000)
+
+
 class FTWilliamsScheduleABrokerRowsRequest(BaseModel):
     rows: list[ScheduleABrokerRow] = Field(default_factory=list)
     edited_index: int | None = None
-    action: Literal["edited", "excluded", "reviewed"] = "edited"
+    action: Literal["edited", "excluded", "reviewed", "identity_reviewed"] = "edited"
     review: BrokerRosterReviewRequest | None = None
+    identity_review: BrokerIdentityReviewRequest | None = None
 
 
 class FTWilliamsScheduleAContractTypeRequest(BaseModel):

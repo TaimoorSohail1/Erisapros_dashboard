@@ -771,6 +771,9 @@ async def update_ftwilliams_schedule_a_broker_rows(
     except ValueError as exc:
         status_code = 404 if str(exc) == "Filing not found" else 409 if 'changed' in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    if payload.action == 'identity_reviewed':
+        # Saving a grouping decision is not approval of the final roster.
+        return {"ftw_review": review}
     return {"ftw_review": await continue_ftw_automation(filing_id, review)}
 
 

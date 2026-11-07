@@ -174,6 +174,57 @@ assert.match(document.body.textContent,/Source payment evidence is inconsistent/
 // The four checks explicitly resolved by whole-list review must remain reviewable.
 await render({...sourceProps,rows:[{...row,validation_results:['complete_source_broker_roster','payment_classification_ambiguity','business_rule_confirmation','source_section_ambiguity'].map(validator=>({validator,status:'ERROR',reason:'Needs full-list review'}))}]});
 assert.equal(button('Approve').disabled,false);
+// Saving identity is a separate persisted action; it never approves the roster.
+const identityGroup={id:'identity-proof',name:'Mercer',source_indexes:[0,1],address_options:[
+  {source_index:0,address:'4565 PAYSPHERE CIR, CHICAGO, IL, 60674'},
+  {source_index:1,address:'4565 PAYSPHERE CIRCLE, CHICAGO, IL, 60674'}],
+  commission_total:'4035.74',fee_total:'1133.09',choice:null,address_source_index:null};
+const identityRoster={...sourceProps.roster,identity_groups:[identityGroup]};
+let identitySaves=[];
+const identityProps={...sourceProps,rows:heldRows,roster:identityRoster,onSaveIdentityReview:async request=>{
+  identitySaves.push(request);return {schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,
+    review_context_sha256:'d'.repeat(64),identity_groups:[{...identityGroup,choice:request.choice,address_source_index:request.address_source_index,confirmed_by:'reviewer'}]}};}};
+await render(identityProps);await click('Confirm identity');
+assert.ok(document.querySelector('#broker-identity-editor fieldset.broker-payment-treatment'),'Identity choices use the existing stacked accessible form layout');
+assert.equal(button('Save confirmation').disabled,true);
+await choose('SAME');
+await set(input('Address to use'),'1');
+assert.match(document.querySelector('#broker-identity-editor').textContent,/\$4,035\.74/);
+assert.match(document.querySelector('#broker-identity-editor').textContent,/\$1,133\.09/);
+assert.match(document.querySelector('#broker-identity-editor').textContent,/COMMISSIONS AND FEES/);
+await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
+await click('Save confirmation');assert.equal(identitySaves.length,1);
+assert.equal(identitySaves[0].choice,'SAME');assert.equal(identitySaves[0].address_source_index,1);
+assert.equal(identitySaves[0].verified,true);assert.equal(saves.length,4,'Saving identity does not approve the broker roster');
+const savedIdentity={...identityRoster,review_context_sha256:'d'.repeat(64),identity_groups:[{...identityGroup,choice:'SAME',address_source_index:1,confirmed_by:'reviewer'}]};
+await render({...identityProps,roster:savedIdentity},true);
+assert.equal(button('Approve').disabled,false);
+assert.match(document.body.textContent,/Identity confirmed: same broker/i);
+await render({...identityProps,roster:savedIdentity});
+assert.equal(button('Approve').disabled,false,'Saved identity remains usable after a reload');
+await act(async()=>buttons().filter(b=>b.textContent==='Edit')[0].click());
+await set(input('Commission'),'999');await submit();
+assert.equal(button('Approve').disabled,true,'Changed reviewed values require identity review again');
+await render({...identityProps,onSaveIdentityReview:async()=>null});
+await click('Confirm identity');await choose('SEPARATE');
+await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
+await click('Save confirmation');assert.ok(document.querySelector('#broker-identity-editor'));
+assert.match(document.body.textContent,/not saved/);assert.equal(button('Save confirmation').disabled,false);
+await click('Cancel identity review');assert.equal(identitySaves.length,1);
+await render(identityProps);await click('Confirm identity');await choose('SEPARATE');
+await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
+await click('Save confirmation');assert.equal(identitySaves.length,2);
+assert.equal(identitySaves[1].choice,'SEPARATE');assert.equal(identitySaves[1].address_source_index,null);
+const separateIdentity={...identityRoster,review_context_sha256:'d'.repeat(64),identity_groups:[{...identityGroup,choice:'SEPARATE',address_source_index:null,confirmed_by:'reviewer'}]};
+let separateApprovals=0;
+await render({...identityProps,roster:separateIdentity,onSaveReview:async()=>{separateApprovals++;return true;}},true);
+assert.equal(button('Approve').disabled,false);await click('Approve');assert.equal(separateApprovals,1);
+// A stale refresh cannot save an identity decision against a changed destination.
+let identityRefreshes=0;
+await render({...identityProps,onRefreshReview:async()=>({schedule_a_broker_rows:heldRows,schedule_a_broker_roster:++identityRefreshes===1?identityRoster:{...identityRoster,review_context_sha256:'e'.repeat(64)}})});
+await click('Confirm identity');await choose('SEPARATE');
+await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
+await click('Save confirmation');assert.equal(identitySaves.length,2);assert.match(document.body.textContent,/data changed/);
 if(process.env.BROKER_UI_REPLAY_FILE){
   const captured=JSON.parse(await readFile(process.env.BROKER_UI_REPLAY_FILE,'utf8'));
   await render({...sourceProps,rows:captured.source_rows});

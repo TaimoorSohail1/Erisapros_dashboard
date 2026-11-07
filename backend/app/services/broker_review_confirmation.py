@@ -28,6 +28,7 @@ def review_token(rows, status, source_context, snapshot):
     return digest({'source': source_context, 'rows': [r.model_dump(mode='json') for r in rows],
         'source_pdf_sha256': status.source_sha256 if status else None,
         'disclosures': disclosure_items(status), 'snapshot': snapshot,
+        'identity_reviews': status.identity_reviews if status else [],
         'confirmation': status.reviewer_confirmation if status else None})
 
 
@@ -65,6 +66,9 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     used_indexes = set()
     used_disclosures = set()
     verified = []
+    from app.services.broker_identity_review import confirmed_identity_decisions, apply_identity_decisions
+    identity_decisions=confirmed_identity_decisions(rows,original_rows,sources,status,source_context,snapshot)
+    identity_indexes={i for group in identity_decisions for i in group['source_indexes']}
     for draft, source in zip(rows, sources):
         row = draft.model_copy(deep=True)
         # The browser cannot supply proofs, confidence or evidence.
@@ -83,7 +87,7 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
             row.source_page = original.source_page
             # Full-list acknowledgement does not silently clear unrelated source errors.
             row.validation_results = [v.model_copy(deep=True) for v in original.validation_results
-                if v.status == 'ERROR' and v.validator not in {
+                if v.status == 'ERROR' and not (v.validator=='recipient_identity_ambiguity' and index in identity_indexes) and v.validator not in {
                     'complete_source_broker_roster', 'payment_classification_ambiguity',
                     'business_rule_confirmation', 'source_section_ambiguity'}]
             if row.validation_results: raise ValueError('Unresolved source issues require correction before roster confirmation.')
@@ -114,13 +118,15 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     excluded = request.excluded_source_indexes
     if len(set(excluded)) != len(excluded) or used_indexes & set(excluded) or used_indexes | set(excluded) != set(range(len(original_rows))):
         raise ValueError('Review or explicitly exclude every original broker row.')
+    verified,final_sources=apply_identity_decisions(verified,sources,identity_decisions)
     schedule_a_broker_update_values(verified, require_complete=True)
     reviewed = status.model_copy(deep=True)
     reviewed.reviewer_confirmation = {'actor': actor, 'at': datetime.now(timezone.utc).isoformat(),
         'reason': request.reason.strip(), 'complete_list_confirmed': True,
         'empty_list_evidence': request.empty_list_evidence.strip(), 'source_context_sha256': source_context,
         'snapshot_sha256': snapshot, 'roster_sha256': _fingerprint(verified),
-        'disclosure_decisions': decisions, 'row_sources': sources, 'excluded_source_indexes': excluded,
+        'disclosure_decisions': decisions, 'row_sources': final_sources, 'excluded_source_indexes': excluded,
+        'identity_decisions': identity_decisions,
         'original_rows': [r.model_dump(mode='json') for r in original_rows]}
     reviewed.reasons = []
     return verified, reviewed
