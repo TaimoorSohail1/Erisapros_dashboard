@@ -134,14 +134,14 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to load the broker. Try again.'); }
     finally { setPending(false); }
   }
-  async function beginIdentityReview(event: React.MouseEvent<HTMLButtonElement>, groupId: string) {
+  async function beginIdentityReview(event: React.MouseEvent<HTMLButtonElement>, groupId?: string) {
     if (draft?.dirty) { setError('Cancel unsaved broker edits before confirming identity.'); return; }
     returnFocus.current = event.currentTarget; setPending(true); setError(''); setMessage('');
     try {
       const next = await refreshedDraft(); setDraft(next);
-      const group = next.roster?.identity_groups?.find(g => g.id === groupId);
-      if (!group || next.context !== view.context) throw new Error('Broker data refreshed. Check the displayed identity group and try again.');
-      setIdentityEditing({ groupId, choice: group.choice || '', addressIndex: group.address_source_index == null ? '' : String(group.address_source_index), verified: false });
+      const group = groupId ? next.roster?.identity_groups?.find(g => g.id === groupId) : next.roster?.identity_groups?.[0];
+      if (!group || (groupId && next.context !== view.context)) throw new Error('Broker data refreshed. Check the displayed identity group and try again.');
+      setIdentityEditing({ groupId: group.id, choice: group.choice || '', addressIndex: group.address_source_index == null ? '' : String(group.address_source_index), verified: false });
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to load the identity review.'); }
     finally { setPending(false); }
   }
@@ -215,6 +215,8 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     <div className="schedule-a-broker-panel-head"><h3>Schedule A brokers</h3><span>{view.items.length} item{view.items.length === 1 ? '' : 's'}</span></div>
     <p id="broker-source-status" role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
     {destinationProblem && onReviewDestination ? <button type="button" className="button secondary" disabled={disabled} onClick={onReviewDestination}>Review Schedule A</button> : null}
+    {!view.roster?.identity_groups?.length && view.items.some(item => blockingSourceIssues(item,view).some(issue => issue.validator === 'recipient_identity_ambiguity')) ?
+      <button type="button" className="button secondary" disabled={disabled || Boolean(editing) || Boolean(identityEditing) || Boolean(draft?.dirty) || !onRefreshReview} onClick={event => beginIdentityReview(event)}>Confirm identity</button> : null}
     {(view.roster?.identity_groups ?? []).map(group => <div className="broker-approval-bar" key={group.id}>
       <span>{group.choice ? group.choice === 'SAME' ? `Identity confirmed: same broker. Approve will combine ${group.source_indexes.length} source entries into one broker.` : 'Identity confirmed: separate brokers. Each entry will keep its own address and payment.' : `${group.name}: confirm whether these source entries represent the same broker or separate brokers.`}</span>
       <button type="button" className="button secondary" disabled={disabled || Boolean(editing) || Boolean(identityEditing) || Boolean(draft?.dirty)} onClick={event => beginIdentityReview(event,group.id)}>{group.choice ? 'Change identity choice' : 'Confirm identity'}</button>
