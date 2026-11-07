@@ -11,6 +11,48 @@ import xml.etree.ElementTree as ET
 
 
 class BrokerRosterReplacementTests(unittest.TestCase):
+    def _confirmed_identity(self,row):
+        from app.models import ExtractionValidationResult
+        from app.services.schedule_a_broker_matching import broker_identity_review_key
+        row.validation_results.append(ExtractionValidationResult(validator='reviewer_broker_identity_confirmation',
+            status='PASS',normalized_value=broker_identity_review_key(row),reason='Disposable test: confirmed separate recipient'))
+        return row
+
+    def test_explicit_empty_second_address_line_is_a_present_replacement_field(self):
+        from app.services.xml_builder import schedule_a_replacement_data_gaps
+        records=[{'ftw_seq_no':'7','query_results':{'ScheduleDesc':'7-1'}}]
+        rows=[ScheduleABrokerRow(name='MERCER HEALTH & BENEFITS LLC',address_line_1=street,
+                address_line_2='',city='CHICAGO',state='IL',zip_code='60674',organization_code='3',
+                commission_total=commission,fee_total=fee)
+            for street,commission,fee in [('4565 PAYSPHERE CIR','4035.74','0'),
+                                         ('4565 PAYSPHERE CIRCLE','0','1133.09')]]
+        rows=[self._confirmed_identity(row) for row in rows]
+        xml=build_schedule_a_records_update_xml(records,'7',[],year='2025',
+            schedule_a_broker_rows=rows,replace_broker_roster=True)
+        self.assertEqual(len(ET.fromstring(xml).findall('.//Broker/AddressLine2XX')),2)
+        self.assertEqual(schedule_a_replacement_data_gaps(records,xml,matched_ftw_seq_no='7',
+            schedule_a_broker_rows=rows,replace_broker_roster=True),[])
+
+    def test_empty_address_clear_must_still_be_present_and_nonempty_values_cannot_be_blank(self):
+        from app.services.xml_builder import schedule_a_replacement_data_gaps
+        records=[{'ftw_seq_no':'7','query_results':{'ScheduleDesc':'7-1'}}]
+        rows=[ScheduleABrokerRow(name='Verified Broker',address_line_1='123 TEST STREET',
+            address_line_2='',city='BOSTON',state='MA',zip_code='02110',organization_code='3',
+            commission_total='100',fee_total='0')]
+        rows=[self._confirmed_identity(row) for row in rows]
+        xml=build_schedule_a_records_update_xml(records,'7',[],year='2025',
+            schedule_a_broker_rows=rows,replace_broker_roster=True)
+        for tag,remove in [('AddressLine2XX',True),('NameXX',False),('AddressLine1XX',False),
+                           ('CommPdAmtXX',False)]:
+            with self.subTest(tag=tag,remove=remove):
+                root=ET.fromstring(xml);broker=root.find('.//Broker');element=broker.find(tag)
+                self.assertIsNotNone(element)
+                if remove:broker.remove(element)
+                else:element.text=''
+                gaps=schedule_a_replacement_data_gaps(records,ET.tostring(root,encoding='unicode'),
+                    matched_ftw_seq_no='7',schedule_a_broker_rows=rows,replace_broker_roster=True)
+                self.assertTrue(any(tag in gap for gap in gaps),gaps)
+
     def test_replacement_sends_totals_from_final_roster_and_verifies_them(self):
         from app.services.xml_builder import schedule_a_replacement_data_gaps
         records=[{'ftw_seq_no':'1','query_results':{'ScheduleDesc':'QA',
