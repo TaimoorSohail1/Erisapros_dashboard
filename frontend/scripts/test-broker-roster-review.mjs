@@ -180,6 +180,11 @@ const identityGroup={id:'identity-proof',name:'Mercer',source_indexes:[0,1],addr
   {source_index:1,address:'4565 PAYSPHERE CIRCLE, CHICAGO, IL, 60674'}],
   commission_total:'4035.74',fee_total:'1133.09',choice:null,address_source_index:null};
 const identityRoster={...sourceProps.roster,identity_groups:[identityGroup]};
+// Older saved reviews have no grouping metadata. Refresh it through the read-only
+// review endpoint and open the current server-generated group without reuploading.
+await render({...sourceProps,rows:heldRows,onRefreshReview:async()=>({schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,review_context_sha256:'e'.repeat(64)}})});
+await click('Confirm identity');assert.ok(document.querySelector('#broker-identity-editor'));
+assert.equal(button('Approve').disabled,true);assert.equal(saves.length,4);
 let identitySaves=[];
 const identityProps={...sourceProps,rows:heldRows,roster:identityRoster,onSaveIdentityReview:async request=>{
   identitySaves.push(request);return {schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,
