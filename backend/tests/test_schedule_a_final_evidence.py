@@ -34,6 +34,23 @@ TAX ID: 131898173 NAIC: 64297
         get_settings.cache_clear()
 
 
+def test_final_evidence_binds_footnoted_paid_premium_after_carrier_adapter():
+    source = ("Total premiums* or subscription charges paid to carrier: $571,719.25\n"
+              "State continuation payments: $0.00")
+    result = NormalizedExtractionResult(provider="carrier summary", fields=[
+        NormalizedExtractionField(
+            field_name="10a. Total premiums or subscription charges paid to carrier",
+            value="571,719.25", page=2, source_text="Earlier header text without the amount.", confidence=.99,
+        ),
+    ])
+
+    attach_final_field_evidence(result, [(2, source)])
+    resolve_schedule_a_result(result)
+
+    assert result.fields[0].decision == "AUTOMATIC"
+    assert result.fields[0].source_text == source.splitlines()[0]
+
+
 def test_policy_period_evidence_does_not_use_a_correspondence_date():
     source='Letter date: 04/15/2024\nPolicy or Contract Year: 01/01/2024 - 12/31/2024'
     result=NormalizedExtractionResult(provider='External',fields=[

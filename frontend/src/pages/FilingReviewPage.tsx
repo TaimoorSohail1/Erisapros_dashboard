@@ -1946,6 +1946,7 @@ function resolvedFtwQueryState(review: FTWilliamsReview | null): NonNullable<FTW
   if (!review) return "NOT_QUERIED";
   if (review.query_state === "PLAN_MATCH_REQUIRED") return "PLAN_MATCH_REQUIRED";
   if (review.query_state === "QUERY_FAILED") return "QUERY_FAILED";
+  if (review.query_state === "FORM_5500_MISSING") return "FORM_5500_MISSING";
   if (review.query_state === "SCHEDULE_A_MISSING" || review.bring_forward_required) return "SCHEDULE_A_MISSING";
   if (review.query_state === "MATCHED" || review.current_query_success) return "MATCHED";
   if (!review.current_query_sent) return "NOT_QUERIED";
@@ -1965,13 +1966,25 @@ function ftwQueryStatusContent(review: FTWilliamsReview | null) {
     || review.error_message
     || undefined;
   if (state === "PLAN_MATCH_REQUIRED") {
+    const matchStatus = review.plan_lookup?.status;
+    const multipleMatches = matchStatus === "MULTIPLE_MATCHES";
+    let message = "Confirm the client and plan in FT Williams, then select the correct plan for this filing.";
+    if (multipleMatches) {
+      message = "Multiple possible plans were found. Select the correct plan to continue.";
+    } else if (matchStatus === "NOT_FOUND") {
+      message = "The lookup did not find a plan the current FT Williams connection could verify. Check access and the plan identifiers.";
+    } else if (matchStatus === "MISSING_IDENTIFIERS") {
+      message = "Check the sponsor EIN and plan number in the source documents.";
+    } else if (matchStatus === "FOUND_NO_FTW_IDS") {
+      message = "The lookup found a plan without the identifiers needed to load its filing. Ask the filing owner to verify the plan.";
+    }
     return {
       state,
       tone: "error" as const,
-      title: "Choose the correct FT Williams plan",
-      message: "Multiple possible plans were found. Select the correct plan to continue.",
+      title: multipleMatches ? "Choose the correct FT Williams plan" : "FT Williams plan needs confirmation",
+      message,
       reason,
-      nextAction: "This is a one-time selection for this filing.",
+      nextAction: "This selection applies to this filing.",
     };
   }
   if (state === "QUERY_FAILED") {
@@ -1984,12 +1997,13 @@ function ftwQueryStatusContent(review: FTWilliamsReview | null) {
       nextAction: clientError?.next_action || "Check the FT Williams connection and retry the query.",
     };
   }
-  if (state === "SCHEDULE_A_MISSING") {
+  if (state === "FORM_5500_MISSING" || state === "SCHEDULE_A_MISSING") {
+    const record = state === "FORM_5500_MISSING" ? "Form 5500" : "Schedule A";
     return {
       state,
       tone: "warning" as const,
-      title: "Current-year Schedule A is missing",
-      message: "The FT Williams plan was found, but its current-year Schedule A does not exist yet.",
+      title: `Current-year ${record} is missing`,
+      message: `The FT Williams plan was found. FT Williams reports no ${record} for the selected year.`,
       reason,
       nextAction: "Open FTW Bring Forward, complete it there, then return to refresh this filing.",
     };
@@ -2110,7 +2124,7 @@ function FTWQueryStatusBanner({
 }) {
   const content = ftwQueryStatusContent(review);
   if (!content) return null;
-  const bringForward = content.state === "SCHEDULE_A_MISSING";
+  const bringForward = content.state === "FORM_5500_MISSING" || content.state === "SCHEDULE_A_MISSING";
   const planMatchRequired = content.state === "PLAN_MATCH_REQUIRED";
   return (
     <section className={`filing-guidance guidance-${content.tone}`} role="alert" aria-label="FT Williams query status">

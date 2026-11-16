@@ -197,6 +197,36 @@ def test_mongo_local_agent_expiry_fields_are_stored_as_native_datetimes():
     assert isinstance(payload["created_at"], datetime)
 
 
+def test_bring_forward_status_requires_eligible_account_and_assigned_computer():
+    async def scenario():
+        repo = MemoryRepository()
+        service = FTWLocalAgentService(repo=repo, settings=Settings(ftw_local_agent_enabled=True))
+        now = datetime.utcnow()
+        for name, account, paused in (
+            ("Assigned computer", "Client A", True),
+            ("Another ready computer", "Client B", False),
+        ):
+            device = await repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+                name=name, expected_account=account, token_hash=name, token_prefix=name,
+                paired_by="admin@example.com", status=FTWLocalAgentDeviceStatus.CONNECTED,
+                browser_ready=True, pause_requested=paused, last_seen_at=now,
+            ))
+            if paused:
+                assigned_device = device
+        return (
+            await service.status(expected_account="Client A", device_id=str(assigned_device.id)),
+            await service.status(expected_account="Client B"),
+        )
+
+    assigned, other_account = run_async(scenario())
+
+    assert assigned.device_name == "Assigned computer"
+    assert assigned.pause_requested
+    assert not assigned.connected
+    assert other_account.device_name == "Another ready computer"
+    assert other_account.connected
+
+
 def test_status_prefers_a_ready_computer_over_a_more_recent_paused_device():
     repo = MemoryRepository()
     settings = Settings(

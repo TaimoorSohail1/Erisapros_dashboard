@@ -8,6 +8,14 @@ _HEADER = re.compile(
     r"(?:persons?\s+covered|group\s+covered|(?:employee\s+)?lives(?:\s+covered)?|"
     r"employee\s+count|subscribers?\s*/\s*members?)\s*:?", re.I)
 _COUNT = re.compile(r"(?:\d+|\d{1,3}(?:,\d{3})+)\Z")
+_WRAPPED_COVERED_HEADER = re.compile(r"\bpersons?\s+covered\s+at\s+(?:the\s+)?end\b", re.I)
+_POLICY_YEAR_HEADER = re.compile(r"\bpolicy\s+or\s+contract\s+year\b", re.I)
+_FROM_TO_HEADER = re.compile(r"\(f\)\s*from\s*:?.*\(g\)\s*to\b", re.I)
+_NUMERIC_DATE = r"[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}"
+_COVERAGE_ROW = re.compile(
+    rf"(?<!\S)(?P<count>[0-9,]+)\s{{2,}}{_NUMERIC_DATE}\s+{_NUMERIC_DATE}\s*$"
+)
+
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,8 @@ def lives_column_selections(pages: list[tuple[int, str]]) -> list[LivesColumnSel
     for page, text in pages:
         lines = text.splitlines()
         for index, header in enumerate(lines):
+            if wrapped := _wrapped_coverage_selection(page, lines, index):
+                selections.append(wrapped)
             cells = list(re.finditer(r"\S.*?(?=\s{2,}|$)", header))
             # Unaligned OCR/paragraphs do not establish a numeric column.
             if len(cells) < 2:
@@ -95,3 +105,30 @@ def lives_column_selections(pages: list[tuple[int, str]]) -> list[LivesColumnSel
                 selections.append(LivesColumnSelection(highest, page, selected_row, evidence,
                     tuple(counts), tuple(sorted(contracts)), incomplete or len(contracts) > 1))
     return selections
+
+
+def _wrapped_coverage_selection(
+    page: int, lines: list[str], index: int,
+) -> LivesColumnSelection | None:
+    """Read the count on a labelled coverage row preceding the From/To dates."""
+    covered = _WRAPPED_COVERED_HEADER.search(lines[index])
+    if covered is None or index + 2 >= len(lines):
+        return None
+    headers = lines[max(index - 1, 0):index + 2]
+    if not any(_POLICY_YEAR_HEADER.search(header) for header in headers):
+        return None
+    from_to = _FROM_TO_HEADER.search(lines[index + 1])
+    if from_to is None:
+        return None
+    row_index = index + 2
+    if not lines[row_index].strip() and row_index + 1 < len(lines):
+        row_index += 1
+    row = lines[row_index]
+    match = _COVERAGE_ROW.search(row)
+    if match is None or not _COUNT.fullmatch(match["count"]):
+        return None
+    if not covered.start() <= match.start("count") < match.end("count") <= from_to.start():
+        return None
+    count = match["count"].replace(",", "")
+    evidence = "\n".join([f"Counts in covered-lives column: {count}", *headers, row])
+    return LivesColumnSelection(count, page, row_index + 1, evidence, (count,), ())

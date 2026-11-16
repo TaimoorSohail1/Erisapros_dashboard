@@ -1,4 +1,4 @@
-"""Reject a structured name token only when a complete source row disproves it."""
+"""Distinguish organization codes from other values printed in recipient tables."""
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -90,3 +90,138 @@ def reconcile_source_name_tokens(result, source_rows, source_pages):
             'source_page': proof.page, 'source_text': proof.source_text,
             'reason': 'Complete matching recipient identity and payment columns place this token in the name; no organization-code column or label is present.',
         })
+
+
+_AGENT_TABLE = re.compile(
+    r"Annual\s+Policy\s+Information\s+Report.*?"
+    r"(?m:^[ \t]*Agent[ \t]+Name and Address of Each Recipient of[^\n]*\n"
+    r"[ \t]*Number[ \t]+Fees and/or Commissions[^\n]*Commissions Paid[^\n]*Fees Paid[^\n]*$)",
+    re.I | re.S,
+)
+_AGENT_PAYMENT_ROW = re.compile(
+    r"^[ \t]*(?P<number>[A-Z]+-\d+)[ \t]*(?P<name>[^$\n]+?)"
+    r"[ \t]+\$[ \t]*(?P<commission>[\d,.]+)[ \t]+\$[ \t]*(?P<fee>[\d,.]+)[^\n]*\n"
+    r"[ \t]*(?P<address>\d+[^\n]+)\n"
+    r"[ \t]*(?P<city>[A-Z .'-]+?),?[ \t]+(?P<state>[A-Z]{2})[ \t]+(?P<zip>\d{5}(?:-\d{4})?)[ \t]*$",
+    re.I | re.M,
+)
+
+
+def reconcile_source_agent_numbers(result, source_pages):
+    """Use a complete same-page recipient row to distinguish IDs from codes."""
+    rows = result.schedule_a_broker_rows
+    corrected_numbers = set()
+    for page, text in source_pages:
+        header = _AGENT_TABLE.search(text)
+        if not header or _CODE_LABEL.search(text):
+            continue
+        for match in _AGENT_PAYMENT_ROW.finditer(text, header.end()):
+            source_row = ScheduleABrokerRow(
+                name=match["name"], address_line_1=match["address"].strip(),
+                city=match["city"], state=match["state"], zip_code=match["zip"],
+            )
+            matches = [
+                row for row in rows
+                if _identity(row) == _identity(source_row)
+                and row.source_page in (None, page)
+                and str(row.organization_code or "").casefold() == match["number"].casefold()
+                and not any(_CODE_LABEL.search(e.source_text or "") for e in row.evidence)
+                and _money(row.commission_total) == _money(match["commission"])
+                and _money(row.fee_total) == _money(match["fee"])
+                and all(_money(match[key]) is not None for key in ("commission", "fee"))
+            ]
+            if len(matches) != 1:
+                continue
+            row = matches[0]
+            corrected_numbers.add(str(row.organization_code or "").casefold())
+            row.organization_code = None
+            row.organization_code_defaulted = False
+            row.evidence.append(SourceEvidence(
+                provider="Printed agent identifier, separate from the organization code",
+                page=page, source_text=match[0].strip(),
+            ))
+    if corrected_numbers and not any(
+        str(row.organization_code or "").casefold() in corrected_numbers for row in rows
+    ):
+        # The numeric destination default is applied to the verified recipient.
+        # Keep the printed identifier in the row evidence and original trace.
+        result.fields = [
+            field for field in result.fields
+            if not (field.field_name.startswith("3e.") and field.value.strip().casefold() in corrected_numbers
+                    and not any(_CODE_LABEL.search(e.source_text or "") for e in field.evidence))
+        ]
+
+
+_CONTRACT_PAYMENT_TABLE = re.compile(
+    r"^[ \t]*Contract or[ \t]+\(a\) Name and address of the agents or brokers"
+    r"[ \t]+\(b\) Amount of[^\n]*\n"
+    r"[ \t]*Identification[ \t]+to whom commissions or fees were paid\."
+    r"[ \t]+(?P<commission_header>commissions paid)[ \t]+(?P<fees_header>Amount)[^\n]*\n",
+    re.I | re.M,
+)
+_CONTRACT_PAYMENT_ROW = re.compile(
+    r"^[ \t]*(?P<contract>[A-Z0-9-]+)[ \t]{2,}(?P<name>[^$\n]+?)"
+    r"[ \t]{2,}\$[ \t]*(?P<commission>[\d,.]+)[ \t]*\n"
+    r"[ \t]+(?P<location>[^\n]+?),[ \t]+(?P<state>[A-Z]{2})[ \t]+"
+    r"(?P<zip>\d{5}(?:-\d{4})?)[ \t]*$",
+    re.I | re.M,
+)
+
+
+def reconcile_source_contract_numbers(result, source_pages):
+    """Clear a provider code when the printed recipient row identifies it as a contract."""
+    if not isinstance(result.raw, dict) or any(_CODE_LABEL.search(text) for _, text in source_pages):
+        return
+    proofs = []
+    for page, text in source_pages:
+        header = _CONTRACT_PAYMENT_TABLE.search(text)
+        if header:
+            following_rows = text[header.end():].lstrip("\n")
+            match = _CONTRACT_PAYMENT_ROW.match(following_rows)
+            label_line_start = text.rfind("\n", 0, header.start("commission_header")) + 1
+            if (match and header.start("commission_header") - label_line_start
+                    <= match.start("commission") < header.start("fees_header") - label_line_start):
+                proofs.append((page, match))
+
+    corrected_contracts = set()
+    rows = result.schedule_a_broker_rows
+    original_codes = [str(row.organization_code or "").strip().casefold() for row in rows]
+    for row, candidate in zip(rows, original_codes):
+        if (not candidate or candidate.isdecimal()
+                or original_codes.count(candidate) != 1
+                or any(_CODE_LABEL.search(e.source_text or "") for e in row.evidence)):
+            continue
+        name = (row.name or "").lower().split()
+        matches = [
+            (page, proof) for page, proof in proofs
+            if proof["contract"].casefold() == candidate
+            and row.source_page in (None, page)
+            and name and (proof["name"] + " " + proof["location"]).lower().split()[:len(name)] == name
+            and (row.state or "").casefold() == proof["state"].casefold()
+            and row.zip_code == proof["zip"]
+            and _money(proof["commission"]) is not None
+            and _money(row.commission_total) == _money(proof["commission"])
+            and _money(row.fee_total) == Decimal(0)
+        ]
+        if len(matches) != 1:
+            continue
+        page, proof = matches[0]
+        corrected_contracts.add(candidate)
+        result.raw.setdefault("source_organization_code_reconciliations", []).append({
+            "rejected_provider_candidate": row.organization_code,
+            "action": "REJECT_CONTRACT_NUMBER_THEN_APPLY_APPROVED_BLANK_CODE_DEFAULT",
+            "source_page": page,
+            "source_text": proof[0].strip(),
+        })
+        row.organization_code = None
+        row.organization_code_defaulted = False
+
+    if not corrected_contracts:
+        return
+    result.fields = [
+        field for field in result.fields
+        if not (field.field_name.startswith("3e.")
+                and field.value.strip().casefold() in corrected_contracts
+                and not _CODE_LABEL.search(field.source_text or "")
+                and not any(_CODE_LABEL.search(e.source_text or "") for e in field.evidence))
+    ]

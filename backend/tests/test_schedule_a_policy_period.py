@@ -55,6 +55,40 @@ class PolicyPeriodRegressionTests(unittest.TestCase):
                             if f.field_name.startswith(("1f.", "1g."))))
         self.assertTrue(all("01/2025" in f.source_text for f in dates))
 
+    def test_labelled_written_dates_clear_an_agreeing_month_only_hold(self):
+        document = SemanticDocument.from_page_texts([
+            (1, "Policy Period: March 01, 2025 through February 28, 2026"),
+            (3, "Contract Year from 03/2025 - 02/2026"),
+        ])
+        result = resolve_schedule_a_result(enrich_schedule_a_result(
+            NormalizedExtractionResult(provider="Recorded provider", fields=[]), document, rules=DEFAULT_FIELD_RULES,
+        ))
+        dates = [f for f in result.fields if f.field_name.startswith(("1f.", "1g."))]
+        self.assertEqual([f.value for f in dates], ["03/01/2025", "02/28/2026"])
+        self.assertTrue(all(f.decision == "AUTOMATIC" for f in dates))
+
+    def test_primary_schedule_a_date_for_period_supports_dash_dates(self):
+        primary = (
+            "INSURANCE DATA FOR SCHEDULE A (FORM 5500)\n"
+            "3. APPROXIMATE NUMBER OF PERSONS COVERED AT END OF POLICY YEAR: 166\n"
+            "4. DATE FOR PERIOD: FROM 02-01-2025 TO 02-01-2026"
+        )
+        supplemental = (
+            "SUPPLEMENTAL COMPENSATION DATA FOR SCHEDULE A (FORM 5500)\n"
+            "3. Date for period: from 2025-03-01 to 2026-03-01"
+        )
+        self.assertEqual(len(explicit_contract_periods(primary + "\n" + supplemental)), 1)
+        self.assertFalse(explicit_contract_periods(supplemental))
+        result = resolve_schedule_a_result(enrich_schedule_a_result(
+            NormalizedExtractionResult(provider="fixture", fields=[]),
+            SemanticDocument.from_page_texts([(2, supplemental), (3, primary)]),
+            rules=DEFAULT_FIELD_RULES,
+        ))
+        dates = [f for f in result.fields if f.field_name.startswith(("1f.", "1g."))]
+        self.assertEqual([f.value for f in dates], ["02/01/2025", "01/31/2026"])
+        self.assertTrue(all(f.decision == "AUTOMATIC" for f in dates))
+        self.assertIn("Original ending date 02/01/2026", dates[-1].source_text)
+
     def test_exact_contract_period_preserved(self):
         text = "Letter March 12, 2026\nContract Year from 02/17/2024 - 02/16/2025"
         fields = extract_rules_driven_schedule_a_fields([(2, text)], rules=DEFAULT_FIELD_RULES)

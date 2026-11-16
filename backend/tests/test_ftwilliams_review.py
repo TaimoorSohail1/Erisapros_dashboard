@@ -2362,6 +2362,29 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         clear_ftw_current_snapshot_cache()
         repositories._repository = None
 
+    def test_verified_saved_plan_mapping_does_not_replace_target_filing_year(self):
+        repo = repositories.get_repository()
+        run_async(repo.upsert_ftwilliams_plan_mapping(FTWilliamsPlanMapping(
+            company_employer_id="12-3456789", plan_number="501", year="2024",
+            customer_id="verified-customer", plan_id="verified-plan",
+            ftw_customer_id="98765", ftw_plan_id="12345",
+        )))
+        filing = sample_filing()
+        filing.package_documents = [{"filing_year": "2025"}]
+        fields = [
+            ExtractedField(
+                filing_id="test", source_field_name=label, normalized_field_name=label,
+                mapped_label=label, value=value, proposed_value=value, priority=FieldPriority.HIGH,
+            )
+            for label, value in (("Plan sponsor EIN", "12-3456789"), ("Plan number", "501"))
+        ]
+        service = FTWilliamsReviewService()
+        lookup = run_async(service._prepare_plan_lookup(filing, fields, send_queries=False, configured=True))
+
+        self.assertEqual(lookup.status, FTWilliamsPlanLookupStatus.MATCHED)
+        self.assertEqual(lookup.matched_identity["ftw_plan_id"], "12345")
+        self.assertEqual(lookup.year, "2025")
+
     def test_plan_lookup_reuses_one_verified_saved_mapping_when_document_identifiers_are_missing(self):
         class VerifiedMappingFTWilliamsService(FTWilliamsService):
             def __init__(self):
@@ -5233,9 +5256,16 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.fail_refresh = False
+                self.missing_schedule_a = False
                 self.send_count = 0
 
             async def run_query(self, payload):
+                if self.missing_schedule_a and payload.operation == "query_schedule_a":
+                    return FTWilliamsQueryResponse(
+                        operation=payload.operation, configured=True, sent=True,
+                        request_xml="<request />", raw_response="<response />", http_status=200, success=False,
+                        statuses=[FTWilliamsStatusItem(type="Schedule A", error_code="59")],
+                    )
                 if not self.fail_refresh or payload.operation == "query_plan":
                     return await super().run_query(payload)
                 request_xml = self.mask_key_id(self.build_request_xml(payload))
@@ -5355,6 +5385,21 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("last valid", refreshed.error_message or "")
         with self.assertRaisesRegex(ValueError, "last valid|queried successfully"):
             run_async(service.approve_and_update(filing.id, send_to_ftw=True, refresh_current_before_update=True))
+        self.assertEqual(fake_ftw.send_count, 0)
+
+        fake_ftw.fail_refresh = False
+        fake_ftw.missing_schedule_a = True
+        baseline.status = FTWilliamsReviewStatus.UPDATE_UNKNOWN
+        baseline.active_failure = True
+        run_async(repo.upsert_ftwilliams_review(baseline))
+
+        missing_after_update = run_async(service.prepare_review(filing.id, send_queries=True))
+
+        self.assertEqual(missing_after_update.query_state, FTWilliamsQueryState.QUERY_FAILED)
+        self.assertFalse(missing_after_update.bring_forward_required)
+        self.assertFalse(missing_after_update.current_query_success)
+        self.assertEqual(missing_after_update.schedule_a_records, baseline.schedule_a_records)
+        self.assertIn("recovery", missing_after_update.error_message or "")
         self.assertEqual(fake_ftw.send_count, 0)
 
     def test_partial_form_success_is_reported_without_automatic_write_retry(self):
@@ -6439,7 +6484,15 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("policy number", error.lower())
 
     def test_mixed_schedule_a_response_restores_complete_snapshot(self):
-        class MixedResponseFTWilliamsService:
+        self._exercise_schedule_a_recovery("mixed")
+
+    def test_empty_schedule_a_update_response_uses_readback_before_recovery(self):
+        for state in ("query_failed", "unchanged", "missing", "saved"):
+            with self.subTest(readback_state=state):
+                self._exercise_schedule_a_recovery(state)
+
+    def _exercise_schedule_a_recovery(self, state):
+        class ScheduleRecoveryFTWilliamsService:
             def __init__(self):
                 self.sent = []
 
@@ -6449,6 +6502,17 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
             async def send_xml(self, operation, request_xml):
                 self.sent.append((operation, request_xml))
+                if state != "mixed":
+                    return FTWilliamsQueryResponse(
+                        operation=operation,
+                        configured=True,
+                        sent=True,
+                        request_xml=request_xml,
+                        http_status=200,
+                        success=False,
+                        raw_response="",
+                        statuses=[FTWilliamsStatusItem(type="DOLScheduleAData", error_code="PARSE_ERROR")],
+                    )
                 if len(self.sent) == 1:
                     return FTWilliamsQueryResponse(
                         operation=operation,
@@ -6534,7 +6598,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         reconciled = review.model_copy(deep=True)
         run_async(repo.upsert_ftwilliams_review(review))
 
-        fake_ftw = MixedResponseFTWilliamsService()
+        fake_ftw = ScheduleRecoveryFTWilliamsService()
         service = FTWilliamsReviewService(fake_ftw)
         restored_verification = {
             "success": True,
@@ -6542,6 +6606,21 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "request_xml": "<restore-query />",
             "response_xml": "<restored />",
         }
+        mismatch = {
+            "query_failed": {"tag": "Schedule A query", "category": "QUERY", "reason": "FT Williams timed out."},
+            "unchanged": {"tag": "InsPrsnCoveredEoyCnt", "reason": "The original field value is still present."},
+            "missing": {"tag": "DOLScheduleAData", "category": "STRUCTURE", "reason": "The selected record is missing."},
+        }.get(state)
+        if mismatch:
+            checks = [{
+                "success": False,
+                "mismatches": [{**mismatch, "form": "DOLScheduleAData"}],
+                "request_xml": "<update-readback-query />",
+                "response_xml": "<update-readback />",
+            }]
+        else:
+            checks = []
+        verify = AsyncMock(side_effect=[*checks, restored_verification])
         settings = SimpleNamespace(
             ftwlink_schedule_a_updates_enabled=True,
             ftw_schema_validation_enabled=False,
@@ -6552,10 +6631,23 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         with (
             patch.object(service, "prepare_review", AsyncMock(side_effect=[review, reconciled])),
-            patch.object(service, "_verify_update_readback", AsyncMock(return_value=restored_verification)),
+            patch.object(service, "_verify_update_readback", verify),
             patch("app.services.ftwilliams_review.get_settings", return_value=settings),
         ):
             result = run_async(service.approve_and_update(filing.id, send_to_ftw=True))
+
+        if state in {"query_failed", "unchanged", "saved"}:
+            verify.assert_awaited_once()
+            self.assertEqual([operation for operation, _ in fake_ftw.sent], ["update_schedule_a"])
+            self.assertFalse(result.schedule_a_restore_attempted)
+            if state == "saved":
+                self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_SENT)
+                self.assertTrue(result.update_verification_success)
+                self.assertIsNone(result.error_message)
+            else:
+                self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_UNKNOWN)
+                self.assertEqual(result.update_verification_mismatches[0]["tag"], mismatch["tag"])
+            return
 
         self.assertEqual([operation for operation, _ in fake_ftw.sent], ["update_schedule_a", "update_schedule_a"])
         restore_xml = fake_ftw.sent[1][1]
@@ -6564,8 +6656,12 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("<InsPrsnCoveredEoyCnt>12</InsPrsnCoveredEoyCnt>", restore_xml)
         self.assertTrue(result.schedule_a_restore_attempted)
         self.assertTrue(result.schedule_a_restore_success)
-        self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_FAILED)
-        self.assertIn("partially accepted", (result.error_message or "").lower())
+        if state == "mixed":
+            self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_FAILED)
+            self.assertIn("partially accepted", (result.error_message or "").lower())
+        else:
+            self.assertEqual(result.status, FTWilliamsReviewStatus.UPDATE_UNKNOWN)
+            self.assertEqual(verify.await_count, 2)
         self.assertIn("restored", (result.error_message or "").lower())
 
     def test_live_updates_for_the_same_ft_plan_are_serialized(self):
@@ -8150,7 +8246,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertFalse(review.current_year_exists)
         self.assertTrue(review.bring_forward_required)
         self.assertEqual(review.status, FTWilliamsReviewStatus.BRING_FORWARD_REQUIRED)
-        self.assertEqual(review.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
+        self.assertEqual(review.query_state, FTWilliamsQueryState.FORM_5500_MISSING)
         self.assertIn("plan=900000001,900000002", review.ftw_plan_url)
         self.assertTrue(review.browser_mapping_confirmed)
         self.assertEqual(review.year, "2024")
@@ -8810,6 +8906,29 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(documents[0]["__ftw_seq_no"], "1")
         self.assertEqual(documents[1]["__ftw_seq_no"], "2")
+
+    def test_schedule_a_readback_distinguishes_failed_query_from_missing_records(self):
+        review = FTWilliamsReview(
+            filing_id="filing-1",
+            customer_id="customer",
+            plan_id="plan",
+            year="2025",
+            update_xml_schedule_a=(
+                "<ftwLink><DataBatch><DOLScheduleAData>"
+                "<InsCarrierName>Expected Carrier</InsCarrierName>"
+                "</DOLScheduleAData></DataBatch></ftwLink>"
+            ),
+        )
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        for error, expected in (("FT Williams query timed out.", False), (None, True)):
+            with self.subTest(query_error=error):
+                service._query_schedule_a_readback = AsyncMock(return_value=([], [], [], error))
+                verification = run_async(service._verify_update_readback_once(review))
+                self.assertTrue(verification["mismatches"])
+                self.assertEqual(
+                    service._schedule_a_verification_confirms_corruption(verification["mismatches"]),
+                    expected,
+                )
 
     def test_schedule_a_readback_scans_full_set_and_rejects_extra_records(self):
         review = FTWilliamsReview(

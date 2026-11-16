@@ -21,6 +21,7 @@ from app.models import (
     SourceEvidence,
 )
 from app.services.field_rules import normalize_name
+from app.services.schedule_a_classification import APPLIED_PREMIUM, WELFARE_CONTRACT_HEADER
 from app.services.schedule_a_lives_column import lives_column_selections
 from app.services.schedule_a_policy_period import explicit_contract_periods
 
@@ -509,8 +510,8 @@ def _reconcile_contract_period(result, document, corrections):
                  "reason": "Conflicting explicitly labelled contract periods; select the correct policy."}]
     if not matches:
         return []
-    page, period = matches[0]
-    month_precision = any(p.month_precision for _, p in matches)
+    page, period = min(matches, key=lambda match: match[1].month_precision)
+    month_precision = period.month_precision
     for prefix, label, value in (("1f.", "1f. Policy Year Beginning Date", period.beginning),
                                  ("1g.", "1g. Policy Year Ending Date", period.ending)):
         item = _field_by_prefix(result.fields, prefix)
@@ -890,6 +891,21 @@ def _premium_candidates(document: SemanticDocument) -> list[SemanticCandidate]:
                     reason="explicit_line_10a_premium",
                 )
             )
+            continue
+
+        applied_premium = APPLIED_PREMIUM.search(normalized)
+        if applied_premium:
+            header = WELFARE_CONTRACT_HEADER.search(page_text)
+            if header:
+                candidates.append(
+                    SemanticCandidate(
+                        value=applied_premium.group(1),
+                        page=line.page,
+                        row=line.row,
+                        source_text=f"{header.group(0)}\n{normalized}",
+                        reason="explicit_part_iii_applied_premium",
+                    )
+                )
             continue
 
         carrier_total = re.search(

@@ -262,9 +262,9 @@ def normalize_ftw_update_value(
         # Parse/validate structured values first. Only descriptive text may
         # follow the client's first-N-characters rule; never crop identifiers.
         if truncate_text and (tag in {"SDName", "PlanName", "InsCarrierName", "PlanSponsorName",
-                "SDCity"}
+                "ADMINName", "SDCity", "SDAddressLine1", "SDAddressLine2"}
                 or re.fullmatch(r"(?:Name|City|FeesPdText)(?:\d+|XX)", tag)):
-            return normalized_text[:max_length]
+            return normalized_text[:max_length].rstrip()
         _raise(tag, text, f"maximum length is {max_length} characters")
     return normalized_text
 

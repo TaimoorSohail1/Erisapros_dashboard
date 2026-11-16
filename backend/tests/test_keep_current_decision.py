@@ -89,9 +89,11 @@ class KeepCurrentDecisionTests(unittest.IsolatedAsyncioTestCase):
         edited = await self.repo.update_field(self.filing.id, self.field.id, 'NEW SOURCE VALUE')
         self.assertIsNone(edited.keep_current_context)
 
-    async def test_normal_edit_still_validates_invalid_long_new_value(self):
+    async def test_normal_edit_still_validates_unresolved_address(self):
         with self.assertRaises(HTTPException) as error:
-            await update_field(self.filing.id, self.field.id, FieldEditRequest(proposed_value='X'*200))
+            await update_field(self.filing.id, self.field.id, FieldEditRequest(
+                proposed_value="UNRESOLVED DELIVERY DETAILS, 625 WEST ADAMS STREET, CHICAGO, IL 60661",
+            ))
         self.assertEqual(error.exception.status_code, 422)
 
     async def test_rebuilt_send_validation_honors_no_write_keep(self):

@@ -342,6 +342,8 @@ class FTWLocalAgentService:
         *,
         paired_by: str | None = None,
         workspace_ids: set[str] | None = None,
+        expected_account: str | None = None,
+        device_id: str | None = None,
     ) -> FTWLocalAgentStatusResponse:
         if not self.settings.ftw_local_agent_enabled:
             return FTWLocalAgentStatusResponse(enabled=False, connected=False)
@@ -351,21 +353,19 @@ class FTWLocalAgentService:
             if not device.revoked_at and device.status != FTWLocalAgentDeviceStatus.REVOKED
             and (not paired_by or device.paired_by == paired_by)
             and (workspace_ids is None or device.workspace_id in workspace_ids)
+            and (device_id is None or str(device.id) == device_id)
+            and (expected_account is None or device.expected_account == expected_account)
         ]
         if not devices:
             return FTWLocalAgentStatusResponse(enabled=True, connected=False)
-        fresh_after = datetime.utcnow() - timedelta(
+        now = datetime.utcnow()
+        fresh_after = now - timedelta(
             seconds=max(15, self.settings.ftw_local_agent_heartbeat_ttl_seconds)
         )
 
         def status_priority(item: FTWLocalAgentDevice) -> tuple[bool, bool, bool, datetime]:
             fresh = bool(item.last_seen_at and item.last_seen_at >= fresh_after)
-            ready = bool(
-                fresh
-                and not item.pause_requested
-                and item.status == FTWLocalAgentDeviceStatus.CONNECTED
-                and item.browser_ready
-            )
+            ready = self._device_is_ready(item, now)
             active = bool(fresh and not item.pause_requested)
             return ready, active, fresh, item.last_seen_at or datetime.min
 
@@ -375,12 +375,7 @@ class FTWLocalAgentService:
         # the last device to report.
         devices.sort(key=status_priority, reverse=True)
         device = devices[0]
-        connected = bool(
-            device.last_seen_at
-            and device.last_seen_at >= fresh_after
-            and device.status == FTWLocalAgentDeviceStatus.CONNECTED
-            and device.browser_ready
-        )
+        connected = self._device_is_ready(device, now)
         state = device.status if device.last_seen_at and device.last_seen_at >= fresh_after else FTWLocalAgentDeviceStatus.OFFLINE
         return FTWLocalAgentStatusResponse(
             enabled=True,

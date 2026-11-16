@@ -483,7 +483,7 @@ class FilingsApiTests(unittest.TestCase):
                         mapped_label="1f. Plan Sponsor Address",
                         form_type=FormType.FORM_5500,
                         ftw_resolved_tag="SDAddressLine1",
-                        proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS",
+                        proposed_value="UNRESOLVED DELIVERY DETAILS, 625 WEST ADAMS STREET, CHICAGO, IL 60661",
                     ),
                 ]
             )
@@ -630,7 +630,7 @@ class FilingsApiTests(unittest.TestCase):
                 await update_field(
                     filing.id,
                     fields[0].id,
-                    FieldEditRequest(proposed_value="12345 EXTREMELY LONG UNDELIMITED BUSINESS CENTER ADDRESS"),
+                    FieldEditRequest(proposed_value="UNRESOLVED DELIVERY DETAILS, 625 WEST ADAMS STREET, CHICAGO, IL 60661"),
                 )
             except HTTPException as exc:
                 error = exc

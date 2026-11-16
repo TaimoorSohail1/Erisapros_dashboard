@@ -485,7 +485,11 @@ class ExtractionService:
         attach_schedule_a_source_observations(result, semantic_pages,
             source_sha256=hashlib.sha256(file_bytes).hexdigest(), source_file_name=file_name)
         supplement_unreadable_cost_source_observations(result, file_bytes, file_name)
-        from app.services.schedule_a_organization_source import reconcile_source_name_tokens
+        from app.services.schedule_a_organization_source import (
+            reconcile_source_agent_numbers, reconcile_source_contract_numbers, reconcile_source_name_tokens,
+        )
+        reconcile_source_agent_numbers(result, semantic_pages)
+        reconcile_source_contract_numbers(result, semantic_pages)
         bound_code_pages = completed_document_source_pages(result.raw, file_name)
         code_source_pages = [*semantic_pages, *bound_code_pages]
         # This letter parser discloses three payment columns and no code column.
@@ -5574,9 +5578,11 @@ def extract_litera_lincoln_schedule_a_broker_rows(
     parsed_rows: list[ScheduleABrokerRow] = []
     for page, page_text in page_texts:
         text = normalize_ocr_text(page_text or "")
-        if not (
-            re.search(r"Insurance\s+fees\s+and\s+commissions\s+paid", text, re.IGNORECASE)
-        ):
+        section = re.search(
+            r"Insurance\s+fees\s+and\s+(?:commissions\s+paid|[^\n]{1,24}?\s+paid to agents,?\s+brokers)",
+            text, re.IGNORECASE,
+        )
+        if section is None:
             continue
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         for index, line in enumerate(lines):
@@ -5594,12 +5600,39 @@ def extract_litera_lincoln_schedule_a_broker_rows(
                 lines[index + 2],
                 re.IGNORECASE,
             )
-            if not re.match(r"^\d{1,6}\s+", address) or not locality:
+            if not locality:
                 continue
+            box_pattern = r"P\.?\s*O\.?\s+BOX\s+"
+            valid_address = re.match(r"^\d{1,6}\s+", address) or re.fullmatch(
+                box_pattern + r"\d+[A-Z]?", address, re.IGNORECASE,
+            )
+            corroboration = ""
+            if not valid_address:
+                damaged_box = re.fullmatch(r"P\.?\s*O\.?\s+B[0C]X\s+(\d+[A-Z]?)", address, re.I)
+                if damaged_box is None:
+                    continue
+                box_number = re.escape(damaged_box[1])
+                city = re.escape(locality["city"].strip(" ,"))
+                state = re.escape(locality["state"])
+                zip_code = re.escape(locality["zip"])
+                for other_page, other_text in page_texts:
+                    if other_page == page:
+                        continue
+                    printed = re.search(
+                        rf"^[ \t]*({box_pattern}{box_number})[ \t]*\r?\n"
+                        rf"[ \t]*{city},?[ \t]+{state}[ \t]+{zip_code}[ \t]*$",
+                        other_text, re.I | re.M,
+                    )
+                    if printed:
+                        address = printed[1]
+                        corroboration = f"\nPage {other_page} address corroboration: {printed[0].strip()}"
+                        break
+                if not corroboration:
+                    continue
             amount = money_value(paid.group("amount"))
             purpose = clean_extracted_value(paid.group("purpose")) or None
             is_fee = purpose is not None and purpose.casefold() != "commissions"
-            source = "\n".join(lines[index : index + 3])
+            source = "\n".join(lines[index : index + 3]) + corroboration
             parsed_rows.append(
                 ScheduleABrokerRow(
                     name=clean_extracted_value(paid.group("name")),
@@ -5671,14 +5704,21 @@ def reconcile_lincoln_part_i_compensation(result, parsed_rows, page_texts) -> bo
     unmatched provider recipients for review instead of silently deleting them.
     """
     amount = r"([\d,]+(?:\.\d{2})?)"
-    subtotals = [(page, match) for page,text in page_texts for match in re.finditer(
-        r"(?im)^[ \t]*Totals?\s*:\s*\$\s*"+amount+r"[ \t]+\$\s*"+amount+r"[ \t]*$",text)]
+    subtotal_amount = r"([\d,]+(?:[ \t]*\.[ \t]*\d{2})?)"
+    subtotals = [
+        (page, match)
+        for page, text in page_texts
+        for match in re.finditer(
+            rf"(?im)^[ \t]*Totals?\s*:\s*\$\s*{subtotal_amount}[ \t]+\$\s*{subtotal_amount}[ \t]*$",
+            text,
+        )
+    ]
     header_totals = [(page,match) for page,text in page_texts for match in re.finditer(
         r"Total\s+amount\s+of\s+commissions\s+paid[^$\n]{0,80}?"
         r"Total\s+amount\s+of\s+fees\s+paid[^$\d]{0,160}\$\s*"+amount+
         r"\s+\$\s*"+amount,text,re.I)]
     def total(values):
-        return sum((Decimal(str(value or '0').replace(',','').replace('$','').strip()) for value in values),Decimal('0'))
+        return sum((Decimal(re.sub(r'[$,\s]', '', str(value or '0'))) for value in values), Decimal('0'))
     complete = bool(parsed_rows and subtotals)
     complete = complete and sum(len(row.evidence) for row in parsed_rows)==len(subtotals)
     if complete:
@@ -7521,12 +7561,14 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
     add("3d. Purpose", purpose)
     add("3e. Organizational Code", _cigna_printed_organization_code(text))
 
-    premium = regex_first(
-        text,
-        [r"Total\s+premiums?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrier\s*\$?\s*([\d,]+(?:\.\d{2})?)"],
-        flags=re.IGNORECASE,
+    premium = re.search(
+        r"Total\s+premiums?(?:\s*\*)?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrier"
+        r"\s*:?\s*\$?\s*([\d,]+(?:\.\d{2})?)",
+        text, re.IGNORECASE,
     )
-    add("10a. Total premiums or subscription charges paid to carrier", money_value(premium) if premium else None)
+    if premium:
+        add("10a. Total premiums or subscription charges paid to carrier",
+            money_value(premium.group(1)), source=premium.group(0))
     if re.search(r"information\s+not\s+provided.*Not\s+Applicable", text, flags=re.IGNORECASE | re.DOTALL):
         add("11. Did the insurance company fail to provide any information necessary to complete Schedule A?", "No")
     return fields

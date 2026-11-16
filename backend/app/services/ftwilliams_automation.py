@@ -13,6 +13,7 @@ from app.models import (
     FTWAutomationDecision,
     FTWAutomationStatus,
     FTWFieldDecision,
+    FTWLocalAgentJobStatus,
     FTWilliamsPlanLookupStatus,
     FTWilliamsQueryState,
     FTWilliamsReview,
@@ -137,7 +138,16 @@ class FTWAutomationPolicy:
                 "RETRY_AFTER_CURRENT_QUERY",
             )
 
-        if review.bring_forward_required or not review.current_year_exists:
+        if not review.current_year_exists and not review.bring_forward_required:
+            return self._action_needed(
+                "FT Williams did not confirm whether the current-year filing exists. Refresh the current data.",
+                "RETRY_AFTER_CURRENT_QUERY",
+            )
+
+        if review.bring_forward_required:
+            record_name = (
+                "Form 5500" if review.query_state == FTWilliamsQueryState.FORM_5500_MISSING else "Schedule A"
+            )
             from app.services.ftw_qa_guard import is_qa_scoped
             if is_qa_scoped(filing,self.settings):
                 return self._action_needed('This QA run authorizes existing disposable records only; Bring Forward is not permitted.', 'RESOLVE_ISSUES')
@@ -166,11 +176,11 @@ class FTWAutomationPolicy:
                 return self._decision(
                     FTWAutomationStatus.BRING_FORWARD_REQUIRED,
                     True,
-                    ["The current-year Schedule A is missing and must be brought forward."],
+                    [f"The current-year {record_name} is missing and must be brought forward."],
                     "AUTOMATE_BRING_FORWARD",
                 )
             return self._action_needed(
-                "The current-year Schedule A is missing and automatic Bring Forward is disabled.",
+                f"The current-year {record_name} is missing and automatic Bring Forward is disabled.",
                 "MANUAL_BRING_FORWARD",
             )
 
@@ -633,11 +643,16 @@ class FTWAutomationService:
                             before_record_ids=before_record_ids,
                         )
                         job_workspace_id = getattr(job, "workspace_id", None)
-                        agent_status = (
-                            await self.local_agent_service.status(workspace_ids={job_workspace_id})
-                            if job_workspace_id
-                            else await self.local_agent_service.status()
-                        )
+                        job_account = getattr(job, "expected_account", None)
+                        job_device_id = getattr(job, "assigned_device_id", None)
+                        status_scope = {}
+                        if job_workspace_id:
+                            status_scope["workspace_ids"] = {job_workspace_id}
+                        elif job_account:
+                            status_scope["expected_account"] = job_account
+                        if job_device_id:
+                            status_scope["device_id"] = job_device_id
+                        agent_status = await self.local_agent_service.status(**status_scope)
                     except Exception as exc:
                         return await self._stop_safely(
                             filing_id,
@@ -646,19 +661,35 @@ class FTWAutomationService:
                             next_action="MANUAL_BRING_FORWARD",
                             audit_event="FTW_LOCAL_AGENT_JOB_FAILED",
                         )
+                    job_status = getattr(job, "status", FTWLocalAgentJobStatus.QUEUED)
+                    if job_status == FTWLocalAgentJobStatus.VERIFIED or getattr(job, "result_state", None) == "NO_LONGER_REQUIRED":
+                        return await self._stop_safely(
+                            filing_id,
+                            run_id=run_id,
+                            reason="Bring Forward was already completed. Refresh FT Williams data to continue.",
+                            next_action="RETRY_AFTER_CURRENT_QUERY",
+                            audit_event="FTW_LOCAL_AGENT_ALREADY_COMPLETED",
+                        )
+                    if job_status == FTWLocalAgentJobStatus.SUBMITTED:
+                        reason = "Bring Forward was submitted. Waiting for FT Williams to confirm the current-year record."
+                        can_advance = True
+                    elif job_status == FTWLocalAgentJobStatus.CLAIMED:
+                        reason = "The assigned FT Williams agent claimed the Bring Forward job."
+                        can_advance = True
+                    elif agent_status.connected:
+                        reason = "Bring Forward is queued and waiting for the assigned FT Williams agent to start it."
+                        can_advance = True
+                    elif agent_status.pause_requested:
+                        reason = "The assigned FT Williams agent is paused. Resume it to process Bring Forward."
+                        can_advance = False
+                    else:
+                        reason = "Start or sign in to the assigned FT Williams agent; manual Bring Forward remains available."
+                        can_advance = False
                     waiting = FTWAutomationDecision(
-                        status=(
-                            FTWAutomationStatus.PROCESSING
-                            if agent_status.connected
-                            else FTWAutomationStatus.ACTION_NEEDED
-                        ),
-                        eligible=agent_status.connected,
-                        reasons=[
-                            "The local FT Williams agent is processing Bring Forward."
-                            if agent_status.connected
-                            else "Start or sign in to the local FT Williams agent; manual Bring Forward remains available."
-                        ],
-                        next_action=("WAIT_FOR_LOCAL_AGENT" if agent_status.connected else "START_LOCAL_AGENT"),
+                        status=FTWAutomationStatus.PROCESSING if can_advance else FTWAutomationStatus.ACTION_NEEDED,
+                        eligible=can_advance,
+                        reasons=[reason],
+                        next_action="WAIT_FOR_LOCAL_AGENT" if can_advance else "START_LOCAL_AGENT",
                         policy_version=self.settings.ftw_automation_policy_version,
                     )
                     await self._persist_decision(filing_id, waiting, run_id=run_id)

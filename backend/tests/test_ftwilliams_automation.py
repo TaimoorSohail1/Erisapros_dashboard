@@ -579,6 +579,21 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND)
         self.assertTrue(decision.eligible)
 
+    def test_query_failure_cannot_trigger_bring_forward(self):
+        filing, review, extracted, settings = self.safe_case()
+        review.current_year_exists = False
+        review.current_query_success = False
+        review.current_query_complete = False
+        review.query_state = FTWilliamsQueryState.QUERY_FAILED
+        settings.ftw_automation_bring_forward_enabled = True
+        settings.ftw_automation_auto_bring_forward_enabled = True
+
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, [extracted])
+
+        self.assertEqual(decision.status, FTWAutomationStatus.ACTION_NEEDED)
+        self.assertEqual(decision.next_action, "RETRY_AFTER_CURRENT_QUERY")
+        self.assertFalse(decision.eligible)
+
     def test_missing_current_year_requires_manual_action_when_browser_automation_is_off(self):
         filing, review, extracted, settings = self.safe_case()
         review.current_year_exists = False

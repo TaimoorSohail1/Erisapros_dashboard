@@ -185,3 +185,86 @@ Mineola NY 11501
         assert result.raw['source_organization_code_reconciliations'][0]['rejected_provider_candidate'] == 'LLC'
     else:
         assert not result.raw.get('source_organization_code_reconciliations')
+
+
+@pytest.mark.parametrize("header, fee, corrected", [
+    ("Agent", "0.00", True),
+    ("Org. Code", "0.00", False),
+    ("Agent", "20.00", False),
+])
+def test_printed_agent_number_is_only_defaulted_when_complete_source_row_matches(header, fee, corrected):
+    from app.models import NormalizedExtractionField
+    from app.services.schedule_a_customer_rules import apply_customer_defaults
+    from app.services.schedule_a_organization_source import reconcile_source_agent_numbers
+
+    source = f"""Annual Policy Information Report
+{header}  Name and Address of Each Recipient of  Amount of  Amount of  Purpose for
+Number   Fees and/or Commissions               Commissions Paid  Fees Paid  Which Paid
+ABC-010361Example Agency Inc                   $1,091.50   $ {fee}   Standard Commissions
+800 EXAMPLE DR
+ROCHESTER NY 14625"""
+    result = NormalizedExtractionResult(
+        provider="fixture",
+        fields=[NormalizedExtractionField(field_name="3e. Organizational Code", value="ABC-010361")],
+        schedule_a_broker_rows=[ScheduleABrokerRow(
+            name="Example Agency Inc", address_line_1="800 EXAMPLE DR", city="ROCHESTER",
+            state="NY", zip_code="14625", commission_total="1091.50", fee_total="0",
+            organization_code="ABC-010361", source_page=2,
+        )],
+    )
+
+    reconcile_source_agent_numbers(result, [(2, source)])
+    apply_customer_defaults(result)
+
+    assert result.schedule_a_broker_rows[0].organization_code == ("3" if corrected else "ABC-010361")
+    assert result.schedule_a_broker_rows[0].organization_code_defaulted is corrected
+    code = next(f for f in result.fields if f.field_name.startswith("3e."))
+    assert code.value == ("3" if corrected else "ABC-010361")
+
+
+@pytest.mark.parametrize("condition, corrected", [
+    ("exact", True),
+    ("printed code", False),
+    ("wrong payee", False),
+    ("different payment", False),
+    ("fee column", False),
+    ("multiple recipients", False),
+])
+def test_contract_column_correction_preserves_contract_and_broker_review(condition, corrected):
+    from app.models import NormalizedExtractionField
+    from app.services.schedule_a_customer_rules import apply_customer_defaults
+    from app.services.schedule_a_organization_source import reconcile_source_contract_numbers
+
+    contract = "1234567HNO"
+    source = (
+        "Contract or    (a) Name and address of the agents or brokers     (b) Amount of        (c) & (d) Fees Paid\n"
+        "Identification    to whom commissions or fees were paid.         commissions paid    Amount  Purpose\n\n"
+            + f"{contract}      EXAMPLE BENEFIT SERVICES".ljust(86 if condition == "fee column" else 69)
+        + "$26,615.60\n     FINANCE SCOTTSDALE, AZ 85260"
+    )
+    if condition == "printed code":
+        source += "\nOrganization Code: 1"
+    row = ScheduleABrokerRow(
+        name="OTHER ADVISORY FINANCE" if condition == "wrong payee" else "EXAMPLE BENEFIT SERVICES FINANCE",
+        state="AZ", zip_code="85260", commission_total="10" if condition == "different payment" else "26615.60",
+        fee_total="0", organization_code=contract, decision="REVIEW_REQUIRED",
+    )
+    result = NormalizedExtractionResult(
+        provider="fixture", raw={},
+        fields=[
+            NormalizedExtractionField(field_name="3e. Organizational Code", value=contract),
+            NormalizedExtractionField(field_name="1d. Contract/Policy Number", value=contract),
+        ],
+        schedule_a_broker_rows=[row, row.model_copy(deep=True)] if condition == "multiple recipients" else [row],
+    )
+
+    reconcile_source_contract_numbers(result, [(3, source)])
+    apply_customer_defaults(result)
+
+    assert result.fields[0].value == contract
+    assert result.schedule_a_broker_rows[0].organization_code == ("3" if corrected else contract)
+    code = next(f for f in result.fields if f.field_name.startswith("3e."))
+    assert code.value == ("3" if corrected else contract)
+    assert result.schedule_a_broker_rows[0].decision == "REVIEW_REQUIRED"
+    assert result.schedule_a_broker_rows[0].source_page is None
+    assert bool(result.raw.get("source_organization_code_reconciliations")) is corrected

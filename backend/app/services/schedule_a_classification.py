@@ -8,6 +8,20 @@ import re
 from app.models import ExtractedField, ExtractedFieldStatus, FieldRule, FieldRuleApplicability, FormType, ScheduleAContractType
 
 
+# A paid-premium total reported under Part III on carrier worksheets.
+# Keep the section and the labelled amount together to exclude cover letters.
+APPLIED_PREMIUM = re.compile(
+    r"\bpremium\s+applied\s+by\s+[^:$\n]+?\s+during\s+"
+    r"(?:your\s+)?plan(?:['\u2019]s)?\s+contract\s+year\s*:\s*"
+    r"\$\s*(-?\d[\d,]*(?:\.\d{1,2})?)\b",
+    re.IGNORECASE,
+)
+WELFARE_CONTRACT_HEADER = re.compile(
+    r"\bpart\s+iii\s*[:.-]?\s*welfare\s+benefit\s+contract\s+information\b",
+    re.IGNORECASE,
+)
+
+
 EXPERIENCE_PREMIUM_RULES = {
     "schedule_a_part_iii_9a_premiums_1_amount_received",
     "schedule_a_part_iii_9a_2_increase_decrease_in_amount_due_but_unpaid",
