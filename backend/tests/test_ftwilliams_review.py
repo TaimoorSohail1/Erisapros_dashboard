@@ -4533,6 +4533,50 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.ftw_seq_no, "4")
 
+    def test_schedule_match_uses_lincoln_reporting_unit_separator_from_source(self):
+        service = FTWilliamsReviewService()
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "The Lincoln National Life Insurance Company",
+        )
+        ein = self._schedule_identity_field(
+            "schedule_a_part_i_1b_insurance_carrier_ein",
+            "1b. Insurance Carrier EIN",
+            "35-0472300",
+        )
+        contract = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "00001025181900000",
+        )
+        contract.source_text = "(d) Contract or identification number: 000010251819 00000"
+        contract.page = 2
+        existing = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="3",
+            query_results={"InsCarrierEIN": "35-0472300", "InsContractNum": "10251819"},
+        )
+        fields = [carrier, ein, contract]
+
+        match = service._match_schedule_a_status(fields, [existing])
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "3")
+
+        full_contract = existing.model_copy(update={
+            "ftw_seq_no": "4",
+            "query_results": {"InsCarrierEIN": "35-0472300", "InsContractNum": contract.value},
+        })
+        self.assertEqual(service._match_schedule_a_status(fields, [existing, full_contract]).ftw_seq_no, "4")
+        different_ein = existing.model_copy(update={
+            "query_results": {"InsCarrierEIN": "99-9999999", "InsContractNum": "10251819"},
+        })
+        self.assertIsNone(service._match_schedule_a_status(fields, [different_ein]))
+
+        contract.source_text = "(d) Contract or identification number: 00001025181900000"
+        self.assertIsNone(service._match_schedule_a_status(fields, [existing]))
+
     def test_fresh_query_selects_the_schedule_with_matching_contract(self):
         service = FTWilliamsReviewService()
         fields = [

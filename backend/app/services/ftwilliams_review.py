@@ -464,6 +464,13 @@ class FTWilliamsReviewService:
                 fields,
                 filing.schedule_a_classification_signals,
             )
+        lincoln_contract = self._lincoln_reporting_unit_match(fields, schedule_a_current)
+        if lincoln_contract:
+            current_contract = schedule_a_current.get("InsContractNum") or schedule_a_current.get("INS_CONTRACT_NUM")
+            fields = [
+                field.model_copy(update={"proposed_value": current_contract}) if field is lincoln_contract else field
+                for field in fields
+            ]
         extracted_contract_classification = self._effective_schedule_a_classification(
             filing,
             computed_contract_classification,
@@ -6771,15 +6778,6 @@ class FTWilliamsReviewService:
         ]
         extracted_contract_value = extracted_by_tag.get("InsContractNum")
         current_contract_value = query_results.get("InsContractNum") or query_results.get("INS_CONTRACT_NUM")
-        contract_conflict = bool(
-            identity_pairs[0][0]
-            and identity_pairs[0][1]
-            and identity_pairs[0][0] != identity_pairs[0][1]
-            and not self._grouped_contract_matches_various(
-                extracted_contract_value,
-                current_contract_value,
-            )
-        )
         contract_matches = bool(
             identity_pairs[0][0]
             and identity_pairs[0][1]
@@ -6789,8 +6787,10 @@ class FTWilliamsReviewService:
                     extracted_contract_value,
                     current_contract_value,
                 )
+                or self._lincoln_reporting_unit_match(fields, query_results)
             )
         )
+        contract_conflict = bool(identity_pairs[0][0] and identity_pairs[0][1] and not contract_matches)
         ein_conflict = bool(
             identity_pairs[1][0]
             and identity_pairs[1][1]
@@ -6920,7 +6920,9 @@ class FTWilliamsReviewService:
             score += 12
             strong_matches += 1
             reasons.append("Exact contract")
-        elif extracted_contract and current_contract and extracted_contract == current_contract:
+        elif (
+            extracted_contract and current_contract and extracted_contract == current_contract
+        ) or self._lincoln_reporting_unit_match(fields, query_results):
             score += 8
             strong_matches += 1
             reasons.append("Contract")
@@ -6997,6 +6999,41 @@ class FTWilliamsReviewService:
             "filled": filled,
             "reasons": reasons,
         }
+
+    def _lincoln_reporting_unit_match(
+        self, fields: list[ExtractedField], current: dict[str, str]
+    ) -> ExtractedField | None:
+        """Use a separately printed zero reporting unit as match evidence without shortening ambiguous IDs."""
+        policy = current.get("InsContractNum") or current.get("INS_CONTRACT_NUM")
+        current_ein = self._normalize_ein_digits(current.get("InsCarrierEIN") or current.get("INS_CARRIER_EIN"))
+        if not policy or not current_ein:
+            return None
+        source_ein = self._field_value_by_rule(fields, "schedule_a_part_i_1b_insurance_carrier_ein")
+        carrier = self._field_value_by_rule(fields, "schedule_a_part_i_1a_name_of_insurance_company")
+        if current_ein != self._normalize_ein_digits(source_ein) or self._carrier_identity_key(carrier) not in {
+            "LINCOLNNATIONALLIFEINSURANCECOMPANY",
+            "THELINCOLNNATIONALLIFEINSURANCECOMPANY",
+        }:
+            return None
+        field = next((field for field in fields
+                      if field.mapped_rule_key == "schedule_a_part_i_1d_contract_policy_number"), None)
+        if (
+            field is None or field.source_document_type != DocumentType.SCHEDULE_A
+            or field.status != ExtractedFieldStatus.MATCHED or not field.page
+        ):
+            return None
+        match = re.fullmatch(
+            r"\s*\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number[ \t]*:[ \t]*"
+            r"([A-Za-z0-9]+)[ \t]+00000[ \t]*",
+            field.source_text or "",
+            re.IGNORECASE,
+        )
+        if match and (
+            self._identity_key(field.proposed_value or field.value) == match[1].upper() + "00000"
+            and self._normalize_contract(match[1]) == self._normalize_contract(policy)
+        ):
+            return field
+        return None
 
     def _normalize_contract(self, value: object) -> str:
         text = self._contract_text(value)
