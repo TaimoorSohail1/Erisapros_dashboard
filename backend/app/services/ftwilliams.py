@@ -12,6 +12,7 @@ import time
 import httpx
 
 from app.config import get_settings
+from app.ftw_credentials import replace_ftw_xml_key
 from app.models import FTWilliamsEditCheckIssue, FTWilliamsQueryRequest, FTWilliamsQueryResponse, FTWilliamsStatusItem
 
 _QA_WRITE_GUARD = ContextVar('ftw_qa_write_guard',default=None)
@@ -119,11 +120,12 @@ class FTWilliamsService:
                 configured=True,
                 sent=True,
                 request_xml=masked_request_xml,
-                error=str(exc),
+                error=self.mask_key_id(str(exc)),
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
 
-        parsed = self.parse_response(response.text)
+        diagnostic_response = self.mask_key_id(response.text)
+        parsed = self.parse_response(diagnostic_response)
         response_success = self.response_success(parsed)
         if payload.operation.strip().lower() == "edit_checks_5500":
             response_success = self.edit_checks_success(parsed)
@@ -135,8 +137,8 @@ class FTWilliamsService:
             http_status=response.status_code,
             success=response.is_success and response_success,
             statuses=parsed,
-            raw_response=response.text,
-            error=None if response.is_success else response.text[:500],
+            raw_response=diagnostic_response,
+            error=None if response.is_success else diagnostic_response[:500],
             response_headers=self._diagnostic_headers(response),
             elapsed_ms=round((time.perf_counter() - started_at) * 1000),
         )
@@ -426,10 +428,11 @@ class FTWilliamsService:
         return issues
 
     def mask_key_id(self, xml: str) -> str:
+        xml = replace_ftw_xml_key(xml)
         key_id = get_settings().ftwlink_key_id
         if not key_id:
             return xml
-        return xml.replace(key_id, self._masked_secret(key_id))
+        return xml.replace(escape(key_id), "***").replace(key_id, "***")
 
     async def send_xml(self, operation: str, request_xml: str) -> FTWilliamsQueryResponse:
         settings = get_settings()
@@ -446,18 +449,20 @@ class FTWilliamsService:
 
         started_at = time.perf_counter()
         try:
-            response = await self._post_xml(settings.ftwlink_endpoint_url, request_xml)
+            wire_xml = replace_ftw_xml_key(request_xml, settings.ftwlink_key_id)
+            response = await self._post_xml(settings.ftwlink_endpoint_url, wire_xml)
         except httpx.HTTPError as exc:
             return FTWilliamsQueryResponse(
                 operation=operation,
                 configured=True,
                 sent=True,
                 request_xml=masked_request_xml,
-                error=str(exc),
+                error=self.mask_key_id(str(exc)),
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
 
-        parsed = self.parse_response(response.text)
+        diagnostic_response = self.mask_key_id(response.text)
+        parsed = self.parse_response(diagnostic_response)
         return FTWilliamsQueryResponse(
             operation=operation,
             configured=True,
@@ -466,8 +471,8 @@ class FTWilliamsService:
             http_status=response.status_code,
             success=response.is_success and self.response_success(parsed),
             statuses=parsed,
-            raw_response=response.text,
-            error=None if response.is_success else response.text[:500],
+            raw_response=diagnostic_response,
+            error=None if response.is_success else diagnostic_response[:500],
             response_headers=self._diagnostic_headers(response),
             elapsed_ms=round((time.perf_counter() - started_at) * 1000),
         )
@@ -544,8 +549,7 @@ class FTWilliamsService:
             data = None
         return response, data
 
-    @staticmethod
-    def _diagnostic_headers(response: httpx.Response) -> dict[str, str]:
+    def _diagnostic_headers(self, response: httpx.Response) -> dict[str, str]:
         allowed = {
             "content-type",
             "content-length",
@@ -555,7 +559,7 @@ class FTWilliamsService:
             "cf-ray",
         }
         return {
-            key.lower(): value
+            key.lower(): self.mask_key_id(value)
             for key, value in response.headers.items()
             if key.lower() in allowed
         }
@@ -760,8 +764,3 @@ class FTWilliamsService:
         if not value:
             return []
         return [field.strip() for field in value.replace("\n", ",").split(",") if field.strip()]
-
-    def _masked_secret(self, value: str) -> str:
-        if len(value) <= 10:
-            return "***"
-        return f"{value[:4]}...{value[-4:]}"

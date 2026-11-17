@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
+
+from app.ftw_credentials import replace_ftw_xml_key
 
 
 class FilingStatus(str, Enum):
@@ -684,6 +686,11 @@ class Filing(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
+    @field_validator("proposed_xml")
+    @classmethod
+    def redact_legacy_proposed_xml(cls, value: str | None) -> str | None:
+        return replace_ftw_xml_key(value) if value else value
+
 
 class FilingDetail(Filing):
     fields: list[ExtractedField] = Field(default_factory=list)
@@ -1205,6 +1212,10 @@ class FTWilliamsReview(BaseModel):
         # Older reviews may contain an empty embedded document. Treat it as
         # "no friendly error" so those records remain readable in the queue.
         return None if value == {} else value
+
+    @field_serializer("update_xml_5500", "update_xml_schedule_a")
+    def redact_update_preview_key(self, value: str | None) -> str | None:
+        return replace_ftw_xml_key(value) if value else value
 
 
 class FTWilliamsPrepareReviewRequest(BaseModel):

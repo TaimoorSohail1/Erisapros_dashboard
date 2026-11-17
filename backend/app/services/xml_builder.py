@@ -4,6 +4,7 @@ from html import escape
 import re
 import xml.etree.ElementTree as ET
 from app.config import get_settings
+from app.ftw_credentials import replace_ftw_xml_key
 from app.models import ExtractedField, FieldPriority, FormType
 from app.services.ftwilliams_contract import (
     FTWFieldValidationIssue,
@@ -97,7 +98,7 @@ SCHEDULE_A_BROKER_FIELD_BASES = (
 
 
 def build_proposed_ftw_xml(fields: list[ExtractedField]) -> str:
-    return build_ftw_update_xml(fields)
+    return replace_ftw_xml_key(build_ftw_update_xml(fields))
 
 
 def build_ftw_update_xml(
@@ -314,8 +315,6 @@ def _merge_record_update_fields(
 
 
 def combine_ftw_update_xml(*documents: str | None) -> str:
-    settings = get_settings()
-    key_id = settings.ftwlink_key_id or "[FTWLINK_KEY_ID]"
     data_batches = [
         inner
         for document in documents
@@ -324,7 +323,7 @@ def combine_ftw_update_xml(*documents: str | None) -> str:
     joined = "\n".join(data_batches) or "    <!-- No approved FT Williams fields are available yet. -->"
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <ftwLink>
-  <KeyID>{escape(key_id)}</KeyID>
+  <KeyID>***</KeyID>
   <DataBatch>
 {joined}
   </DataBatch>
