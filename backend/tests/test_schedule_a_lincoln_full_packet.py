@@ -1,5 +1,6 @@
 """Recipient/payment reconciliation across image-only report pages."""
 import asyncio
+import hashlib
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +14,65 @@ from pypdf import PdfWriter
 
 from app.config import get_settings
 from app.services.extractor import ExtractionService
+
+
+@pytest.mark.parametrize("scenario", ["complete", "wrong_source", "missing_page", "conflicting_reads"])
+def test_independent_scan_roster_uses_complete_source_bound_labeled_ocr(scenario):
+    from app.services.extractor import extract_schedule_a_broker_rows_from_document
+
+    pdf = PdfWriter()
+    pdf.add_blank_page(width=612, height=792)
+    pdf.add_blank_page(width=612, height=792)
+    stream = BytesIO()
+    pdf.write(stream)
+    content = stream.getvalue()
+    digest = hashlib.sha256(content).hexdigest()
+    packet = {
+        1: "THE LINCOLN NATIONAL LIFE INSURANCE COMPANY\nSCHEDULE A REPORTING INFORMATION\n"
+           "This report covers the preceding policy year and provides the information used by "
+           "the plan administrator to complete the annual filing. Please keep these pages with "
+           "the plan records and contact the carrier for questions regarding policy compensation.",
+        2: """Part I - Information Concerning Insurance Contract Coverage, Fees, and Commissions
+2. Insurance fee and commission information.
+(a) Total amount of commissions paid (b) Total amount of fees paid
+$ 125.25 $ 0.00
+3. Insurance fees and commissions paid to agents, brokers, and other persons:
+Name and address to whom Amount of sales and Fees and other Org.
+payments were paid (a) base commissions (b) Amount (c) Purpose (d) Code (e)
+SYNTHETIC BENEFITS LLC $ 125.25 6
+77 INVENTED CIR
+BOSTON, MA 02110
+Totals: $ 125.25 $ 0.00
+Part III - Welfare Benefit Contract Information
+""",
+    }
+    reads = [
+        {"page": page, "text": text, "psm": mode, "source_sha256": digest}
+        for mode in (4, 6) for page, text in packet.items()
+    ]
+    if scenario == "wrong_source":
+        for row in reads:
+            row["source_sha256"] = "0" * 64
+    elif scenario == "missing_page":
+        reads = [row for row in reads if row["page"] == 2]
+    elif scenario == "conflicting_reads":
+        reads[-1]["text"] = reads[-1]["text"].replace("INVENTED CIR", "DIFFERENT RD")
+    coverage = {}
+
+    rows = extract_schedule_a_broker_rows_from_document(
+        content, "image-only.pdf", page_coverage=coverage, retained_ocr_source_reads=reads,
+    )
+
+    if scenario != "complete":
+        assert not rows
+        assert not any(page["readable"] for page in coverage["pages"])
+        return
+    assert coverage["source_sha256"] == digest
+    assert [page["page"] for page in coverage["pages"] if page["readable"]] == [1, 2]
+    assert len(rows) == 1
+    assert rows[0].source_page == 2
+    assert rows[0].commission_total == "125.25"
+    assert rows[0].fee_total == "0"
 
 
 def _extract_packet(monkeypatch, table_state, broker_name):

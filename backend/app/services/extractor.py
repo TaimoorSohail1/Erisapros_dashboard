@@ -555,7 +555,8 @@ class ExtractionService:
                 try:
                     coverage = {}
                     independent_rows = extract_schedule_a_broker_rows_from_document(file_bytes, file_name,
-                        page_coverage=coverage)
+                        page_coverage=coverage,
+                        retained_ocr_source_reads=roster_raw.get("local_ocr_source_reads"))
                     roster_raw['independent_source_page_coverage'] = coverage
                     final_result.raw = roster_raw
                     attest_source_broker_roster(final_result, independent_rows, hashlib.sha256(file_bytes).hexdigest())
@@ -4689,15 +4690,22 @@ def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
 
 
 def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None,
-    *, page_coverage: dict | None = None) -> list[ScheduleABrokerRow]:
+    *, page_coverage: dict | None = None, retained_ocr_source_reads: list[dict] | None = None,
+) -> list[ScheduleABrokerRow]:
     page_texts = extract_document_text_pages(file_bytes, file_name)
     if page_coverage is not None:
         from pypdf import PdfReader
+        source_sha256 = hashlib.sha256(file_bytes).hexdigest()
+        page_count = len(PdfReader(BytesIO(file_bytes)).pages)
         page_coverage.clear()
-        page_coverage.update(source_sha256=hashlib.sha256(file_bytes).hexdigest(),
-            page_count=len(PdfReader(BytesIO(file_bytes)).pages),
-            pages=[{'page':page,'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
-                'readable':len(re.findall(r'\b\w+\b',text)) >= 40} for page,text in page_texts])
+        page_coverage.update(source_sha256=source_sha256, page_count=page_count, pages=_broker_page_coverage(page_texts))
+        if retained_ocr_source_reads and not any(page["readable"] for page in page_coverage["pages"]):
+            scanned_pages, scanned_rows = _read_scanned_lincoln_broker_roster(
+                retained_ocr_source_reads, source_sha256, page_count,
+            )
+            if scanned_rows:
+                page_coverage["pages"] = _broker_page_coverage(scanned_pages)
+                return scanned_rows
     for parser in (
         extract_transamerica_broker_rows,
         extract_combined_chubb_broker_rows,
@@ -4743,6 +4751,45 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
             *extract_tabular_broker_rows(page_texts),
         ]
     )
+
+
+def _broker_page_coverage(pages: list[tuple[int, str]]) -> list[dict]:
+    return [
+        {"page": page, "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+         "readable": len(re.findall(r"\b\w+\b", text)) >= 40}
+        for page, text in pages
+    ]
+
+
+def _read_scanned_lincoln_broker_roster(
+    source_reads: list[dict], source_sha256: str, page_count: int,
+) -> tuple[list[tuple[int, str]], list[ScheduleABrokerRow]]:
+    """Use two complete document-bound OCR reads with identical, reconciled rosters."""
+    from app.services.schedule_a_broker_roster import _fingerprint
+
+    packets = []
+    fingerprints = set()
+    for mode in (4, 6):
+        reads = [
+            (item.get("page"), item.get("text"))
+            for item in source_reads
+            if isinstance(item, dict) and item.get("source_sha256") == source_sha256 and item.get("psm") == mode
+            and type(item.get("page")) is int and isinstance(item.get("text"), str)
+        ]
+        pages = sorted(reads)
+        if [page for page, _ in pages] != list(range(1, page_count + 1)):
+            return [], []
+        if not all(page["readable"] for page in _broker_page_coverage(pages)):
+            return [], []
+        if not any(re.search(r"THE\s*LINCOLN\s*NATIONAL\s*LIFE\s*INSURANCE\s*COMPANY", text, re.I) for _, text in pages):
+            return [], []
+        rows = extract_litera_lincoln_schedule_a_broker_rows(pages)
+        probe = NormalizedExtractionResult(provider="Independent local OCR", fields=[])
+        if not reconcile_lincoln_part_i_compensation(probe, rows, pages):
+            return [], []
+        packets.append((pages, rows))
+        fingerprints.add(_fingerprint(rows))
+    return packets[0] if len(fingerprints) == 1 else ([], [])
 
 
 # "Brokerage LLC, 500 Market Street, Boston MA 02110 7412.33 615 Standard Commissions"
