@@ -11063,11 +11063,11 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
                 confidence=0.98,
             )
 
+    fee_only_rows: dict[tuple[str, str], ScheduleABrokerRow] = {}
     if fee_section:
         fee_pattern = re.compile(
             contract_pattern + r"(?P<name>[^\n$]*)\$\s*(?P<amount>[0-9,]+\.\d{2})", re.IGNORECASE
         )
-        fee_only_rows: dict[tuple[str, str], ScheduleABrokerRow] = {}
         for match in fee_pattern.finditer(fee_section["section"]):
             code = match[1].upper()
             name = clean_extracted_value(match["name"])
@@ -11091,8 +11091,63 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
                 row.fee_rows.append(ScheduleABrokerMoneyRow(amount=amount, purpose="FEES"))
                 row.fee_total = _sum_money_rows(row.fee_rows)
                 row.fee_source_text = f"Schedule A fees: {match[0]}"
-        return [*commission_rows.values(), *fee_only_rows.values()]
-    return list(commission_rows.values())
+
+    recipients = {(code, _canonical_broker_name(row.name)): row for code, row in commission_rows.items()}
+    recipients.update(fee_only_rows)
+    _attach_guardian_broker_addresses(recipients, pages)
+    return list(recipients.values())
+
+
+def _attach_guardian_broker_addresses(
+    recipients: dict[tuple[str, str], ScheduleABrokerRow], pages: list[tuple[int, str]],
+) -> None:
+    """Use a recipient's printed address block only when its code and name agree."""
+    heading = re.compile(r"^(000[A-Z0-9]{4,5})\s*[-–]\s*([^$]+)$", re.IGNORECASE)
+    address = re.compile(
+        r"(?P<street>(?:\d+\s+.+?\b(?:STREET|ST|AVENUE|AVE|ROAD|RD|PARKWAY|PKWY|DRIVE|DR|"
+        r"BOULEVARD|BLVD|LANE|LN|WAY|COURT|CT|ROUTE\s+\d+)|P\.?\s*O\.?\s+BOX\s+\d+[A-Z]?))"
+        r"(?:[ ,]+(?P<unit>(?:SUITE|STE|UNIT|APT|FLOOR|FL|#)\s*[A-Z0-9-]+))?"
+        r"[ ,]+(?P<city>[A-Z][A-Z .'-]+?)\s*,?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)",
+        re.IGNORECASE,
+    )
+    candidates: dict[tuple[str, str], dict[tuple[str | None, ...], SourceEvidence]] = {}
+    for page, text in pages:
+        section = re.split(
+            r"(?im)^[ \t]*(?:one\s+time\s+reimbursement|indirect\s+compensation|"
+            r"the\s+following\s+figure\s+represents\s+indirect\s+compensation|schedule\s+c\b)",
+            text, maxsplit=1,
+        )
+        lines = [line.strip() for line in section[0].splitlines() if line.strip()]
+        for index, line in enumerate(lines[:-1]):
+            marker = heading.fullmatch(line)
+            if not marker:
+                continue
+            key = (marker[1].upper(), _canonical_broker_name(marker[2]))
+            if key not in recipients:
+                continue
+            for end in range(index + 2, min(index + 5, len(lines) + 1)):
+                parsed = address.fullmatch(" ".join(lines[index + 1:end]))
+                if not parsed:
+                    continue
+                fields = tuple(clean_extracted_value(part) if part else None for part in parsed.groups())
+                candidates.setdefault(key, {})[fields] = SourceEvidence(
+                    provider="Guardian recipient address block", page=page, source_text="\n".join(lines[index:end]),
+                )
+                break
+        if len(section) > 1:
+            break
+    for key, matches in candidates.items():
+        if len(matches) != 1:
+            continue
+        parts, proof = next(iter(matches.items()))
+        row = recipients[key]
+        row.address_line_1, row.address_line_2, row.city, row.state, row.zip_code = parts
+        row.state = (row.state or "").upper()
+        row.evidence.append(SourceEvidence(
+            provider="Guardian payment table", page=row.source_page,
+            source_text=row.commission_source_text or row.fee_source_text,
+        ))
+        row.evidence.append(proof)
 
 
 def _is_american_heritage_schedule_a(text: str) -> bool:
