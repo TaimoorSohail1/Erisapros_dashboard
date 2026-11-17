@@ -3179,12 +3179,15 @@ class FTWilliamsReviewService:
         selected_field_ids: list[str] | None = None,
         include_broker_updates: bool = False,
     ) -> FTWilliamsReview | None:
+        """Approve a filing, always refreshing FT Williams before a live send.
+
+        Accept the legacy refresh flag for caller compatibility.
+        """
         if not send_to_ftw:
             return await self._approve_and_update_unlocked(
                 filing_id,
                 reason=reason,
                 send_to_ftw=False,
-                refresh_current_before_update=refresh_current_before_update,
                 run_edit_checks=run_edit_checks,
                 override_blockers=override_blockers,
                 selected_field_ids=selected_field_ids,
@@ -3203,7 +3206,6 @@ class FTWilliamsReviewService:
                 filing_id,
                 reason=reason,
                 send_to_ftw=True,
-                refresh_current_before_update=refresh_current_before_update,
                 run_edit_checks=run_edit_checks,
                 override_blockers=override_blockers,
                 selected_field_ids=selected_field_ids,
@@ -3226,7 +3228,6 @@ class FTWilliamsReviewService:
         *,
         reason: str = "",
         send_to_ftw: bool = False,
-        refresh_current_before_update: bool = True,
         run_edit_checks: bool = False,
         override_blockers: bool = False,
         selected_field_ids: list[str] | None = None,
@@ -3327,7 +3328,7 @@ class FTWilliamsReviewService:
             if existing_review and existing_review.schedule_a_broker_roster else None)
         review = await self.prepare_review(
             filing_id,
-            send_queries=refresh_current_before_update,
+            send_queries=True,
             reuse_current_snapshot=can_reuse_current_snapshot,
         )
         if (reviewed_broker_snapshot and review.schedule_a_broker_roster

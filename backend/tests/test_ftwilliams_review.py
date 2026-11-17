@@ -6632,8 +6632,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             ),
             patch("app.services.ftwilliams_review.get_settings", return_value=settings),
         ):
-            result = run_async(service.approve_and_update(filing.id, send_to_ftw=True))
+            result = run_async(service.approve_and_update(
+                filing.id,
+                send_to_ftw=True,
+                refresh_current_before_update=False,
+            ))
 
+        self.assertTrue(prepare.await_args_list[0].kwargs["send_queries"])
         self.assertFalse(prepare.await_args_list[0].kwargs["reuse_current_snapshot"])
         self.assertEqual([operation for operation, _ in fake_ftw.sent], ["update_schedule_a", "update_schedule_a"])
         restore_xml = fake_ftw.sent[1][1]
