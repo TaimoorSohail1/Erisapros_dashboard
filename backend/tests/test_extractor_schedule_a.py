@@ -640,7 +640,7 @@ AD&D 592 | Base Commissions
         from app.services.schedule_a_extraction_pipeline import NormalizedExtractionResult, resolve_schedule_a_result
 
         pages = [
-            (1, 'The Guardian Life Insurance Company of America\nSchedule A\nPlan Number 00788651'),
+            (1, 'The Guardian Life Insurance Company of America\nSchedule A/5500\nEIN 13-5123390\nPlan Number 00788651'),
             (2, 'Approximate number of employees covered at the end of the plan year\n275'),
             (3, 'Total commissions for plan $23,063.28'),
             (4, 'Total Fees Paid $13,790.41\nGross premium paid'),
