@@ -13,6 +13,7 @@ from app.models import (DocumentType, ExtractedField, ExtractedFieldStatus, Extr
 from app.services.ftwilliams_contract import FTWPayloadValidationError, normalize_ftw_update_value
 from app.services.ftwilliams_tags import resolve_ftw_current_value, resolve_ftw_update_tag
 from app.services.groundx_checkpoints import EVENT as GROUNDX_CHECKPOINT_EVENT
+from app.services.schedule_a_classification import APPLIED_PREMIUM, WELFARE_CONTRACT_HEADER
 from app.services.storage import StorageService
 
 
@@ -32,6 +33,7 @@ _LEGACY_SOURCE_HOLDS = {
 }
 _NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
 _SECTION_10 = re.compile(r"(?im)^[ \t]*(?:(?:section|line)\s+)?10[.:\s-]+non[- ]?experience[- ]rated\s+contracts?\s*$")
+_WELFARE_SECTION = re.compile(rf"^[ \t]*{WELFARE_CONTRACT_HEADER.pattern}[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _NEXT_SECTION = re.compile(r"(?im)^[ \t]*(?:section\s+\d+|part\s+(?:[IVX]+)\b)")
 _PREMIUM = re.compile(
     rf"(?im)^[ \t]*(?:(?:\(a\)|10\s*\.?\s*a\.?|a\.)\s*)?"
@@ -79,6 +81,14 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
             for match in _PREMIUM.finditer(section):
                 span = (heading.end() + match.start(), heading.end() + match.end())
                 premium_lines[span] = (_number(match["amount"]), f"{heading[0].strip()}\n{match[0].strip()}")
+        for heading in _WELFARE_SECTION.finditer(text):
+            section = _NEXT_SECTION.split(text[heading.end():], maxsplit=1)[0]
+            for line in section.splitlines():
+                if match := APPLIED_PREMIUM.fullmatch(line.strip()):
+                    totals["10a"].append((_number(match[1]), SourceEvidence(
+                        provider="Printed Schedule A applied premium", page=page,
+                        source_text=f"{heading[0].strip()}\n{match[0]}",
+                    )))
         for amount, source in premium_lines.values():
             totals["10a"].append((amount, SourceEvidence(
                 provider="Printed Schedule A line 10a", page=page, source_text=source,
