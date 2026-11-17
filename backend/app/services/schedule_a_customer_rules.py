@@ -23,6 +23,10 @@ MISSING_FIELD_DEFAULTS = {
 }
 
 
+def has_broker_recipient_name(value: str | None) -> bool:
+    return str(value or "").strip().casefold() not in {"", "none", "n/a", "na", "not applicable", "-", "0"}
+
+
 def _missing_default_reason(prefix: str) -> str:
     label, value = MISSING_FIELD_DEFAULTS[prefix]
     return f"Customer-approved missing-value default: {label} = {value}. This is a configured default, not printed PDF data."
@@ -309,14 +313,13 @@ def apply_customer_defaults(result: NormalizedExtractionResult) -> None:
     apply_missing_schedule_a_field_defaults(result)
     # An organization code describes a recipient, not the Schedule A itself.
     # Do not invent a code for an empty roster or a printed placeholder slot.
-    missing_names = {"", "none", "n/a", "na", "not applicable", "-", "0"}
     first_broker = next(
-        (row for row in result.schedule_a_broker_rows if row.name.strip().casefold() not in missing_names),
+        (row for row in result.schedule_a_broker_rows if has_broker_recipient_name(row.name)),
         None,
     )
     has_scalar_broker = any(
         field.field_name.strip().lower().startswith("3a. name")
-        and str(field.value or "").strip().casefold() not in missing_names
+        and has_broker_recipient_name(field.value)
         for field in result.fields
     )
     if first_broker is not None or has_scalar_broker:

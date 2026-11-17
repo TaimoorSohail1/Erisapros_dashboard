@@ -47,6 +47,7 @@ from app.services.ftwilliams_tags import (
     resolve_ftw_update_tag,
     values_meaningfully_different,
 )
+from app.services.schedule_a_customer_rules import DEFAULT_CODE_REASON
 from app.services.xml_builder import build_proposed_ftw_xml, build_single_document_update_xml
 
 
@@ -1545,6 +1546,51 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(comparison.decision, "KEEP_CURRENT")
         self.assertEqual(comparison.proposed_value, "HL-099")
         self.assertFalse(comparison.update_included)
+
+    def test_legacy_organization_default_requires_a_source_recipient(self):
+        code = ExtractedField(
+            filing_id="filing",
+            source_field_name="3e. Organizational Code",
+            normalized_field_name="organizational_code",
+            mapped_rule_key="schedule_a_part_i_3e_organizational_code",
+            form_type=FormType.SCHEDULE_A,
+            value="3",
+            proposed_value="3",
+            source_text=DEFAULT_CODE_REASON,
+            status=ExtractedFieldStatus.MATCHED,
+        )
+        name = ExtractedField(
+            filing_id="filing",
+            source_field_name="3a. Name of agent, broker or other person",
+            normalized_field_name="broker_name",
+            mapped_rule_key="schedule_a_part_i_3a_name_of_agent_broker_person",
+            form_type=FormType.SCHEDULE_A,
+            value="ACME BROKER",
+            proposed_value="ACME BROKER",
+        )
+        service = FTWilliamsReviewService()
+
+        cases = (
+            ([code], {}, "SKIP_EMPTY", "", False),
+            ([code], {"Name01": "CURRENT BROKER", "Code01": "2"}, "KEEP_CURRENT", "2", False),
+            ([code, name], {}, "WILL_UPDATE", "3", True),
+            ([code, name.model_copy(update={"value": "None", "proposed_value": "None"})], {}, "SKIP_EMPTY", "", False),
+            ([code.model_copy(update={"source_text": "Printed organization code: 3"})], {}, "BLOCKED", "3", False),
+            ([code.model_copy(update={"status": ExtractedFieldStatus.EDITED})], {}, "BLOCKED", "3", False),
+        )
+        for fields, current, decision, proposed, included in cases:
+            with self.subTest(decision=decision, current=current):
+                updates = service._safe_update_fields(fields, FormType.SCHEDULE_A, current)
+                comparison = next(
+                    row for row in service._comparison_fields(fields, {}, current, update_fields=updates)
+                    if row.ftw_tag == "Code01"
+                )
+                self.assertEqual(comparison.decision, decision)
+                self.assertEqual(comparison.proposed_value, proposed)
+                self.assertEqual(comparison.update_included, included)
+                self.assertEqual(fields[0] in updates, included)
+                if decision in {"SKIP_EMPTY", "KEEP_CURRENT"}:
+                    self.assertEqual(comparison.extracted_value, "")
 
     def test_comparison_skips_source_less_zero_default_when_ftw_is_blank(self):
         field = ExtractedField(
