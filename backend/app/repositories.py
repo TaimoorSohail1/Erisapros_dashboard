@@ -47,6 +47,12 @@ def _saved_extraction_stages(raw: object) -> list[dict]:
     return [stage for stage in stages if isinstance(stage, dict)] if isinstance(stages, list) else []
 
 
+def _saved_schedule_a_ocr_reads(raw: object) -> list[dict]:
+    nested = raw.get("raw") if isinstance(raw, dict) else None
+    reads = nested.get("local_ocr_source_reads") if isinstance(nested, dict) else None
+    return [read for read in reads if isinstance(read, dict)] if isinstance(reads, list) else []
+
+
 FTWILLIAMS_FAILURE_LIST_PROJECTION = {
     "filing_id": 1,
     "status": 1,
@@ -269,6 +275,7 @@ class Repository:
         expected_status_reason: str | None = None,
         verified_evidence: SourceEvidence | None = None,
     ) -> ExtractedField | None: ...
+    async def correct_extracted_value(self, field: ExtractedField, value: str, evidence: SourceEvidence, reason: str) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
     async def add_audit(self, audit: AuditLog) -> None: ...
@@ -307,6 +314,7 @@ class Repository:
     async def list_extraction_jobs(self, filing_id: str) -> list[ExtractionJob]: ...
     async def add_raw_extraction(self, raw: RawExtraction) -> RawExtraction: ...
     async def schedule_a_extraction_stages(self, filing_id: str, job_id: str, file_name: str) -> list[dict]: ...
+    async def schedule_a_ocr_reads(self, filing_id: str, job_id: str, file_name: str) -> list[dict]: ...
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None: ...
     async def upsert_sharefile_token(self, token: ShareFileOAuthToken) -> ShareFileOAuthToken: ...
     async def get_filing_by_sharefile_item_id(self, item_id: str) -> Filing | None: ...
@@ -823,6 +831,18 @@ class MongoRepository(Repository):
         )
         return from_mongo(doc, ExtractedField) if doc else None
 
+    async def correct_extracted_value(self, field: ExtractedField, value: str, evidence: SourceEvidence, reason: str) -> ExtractedField | None:
+        if not ObjectId.is_valid(field.id):
+            return None
+        doc = await self.db.extracted_fields.find_one_and_update(
+            {"_id": ObjectId(field.id), "filing_id": field.filing_id, "updated_at": field.updated_at,
+             "value": field.value, "proposed_value": field.proposed_value, "status": field.status},
+            {"$set": {"value": value, "proposed_value": value, "page": evidence.page,
+                      "source_text": evidence.source_text, "status_reason": reason, "updated_at": datetime.utcnow()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return from_mongo(doc, ExtractedField) if doc else None
+
     async def add_event(self, event: ReviewEvent) -> ReviewEvent:
         result = await self.db.review_events.insert_one(to_mongo(event))
         event.id = str(result.inserted_id)
@@ -1191,6 +1211,13 @@ class MongoRepository(Repository):
             {"raw.raw.extraction_stages": 1}, sort=[("created_at", -1)],
         )
         return _saved_extraction_stages(doc.get("raw")) if doc else []
+
+    async def schedule_a_ocr_reads(self, filing_id: str, job_id: str, file_name: str) -> list[dict]:
+        doc = await self.db.raw_extractions.find_one(
+            {"filing_id": filing_id, "job_id": job_id, "raw.file_name": file_name, "raw.document_type": "SCHEDULE_A"},
+            {"raw.raw.local_ocr_source_reads": 1}, sort=[("created_at", -1)],
+        )
+        return _saved_schedule_a_ocr_reads(doc.get("raw")) if doc else []
 
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None:
         doc = await self.db.sharefile_tokens.find_one({"provider": "sharefile"})
@@ -1926,6 +1953,17 @@ class MemoryRepository(Repository):
         field.updated_at = datetime.utcnow()
         return field
 
+    async def correct_extracted_value(self, field: ExtractedField, value: str, evidence: SourceEvidence, reason: str) -> ExtractedField | None:
+        stored = self.fields.get(field.id)
+        if not stored or (stored.filing_id, stored.updated_at, stored.value, stored.proposed_value, stored.status) != (
+            field.filing_id, field.updated_at, field.value, field.proposed_value, field.status,
+        ):
+            return None
+        updated = stored.model_copy(update={"value": value, "proposed_value": value, "page": evidence.page,
+            "source_text": evidence.source_text, "status_reason": reason, "updated_at": datetime.utcnow()})
+        self.fields[field.id] = updated
+        return updated
+
     async def add_event(self, event: ReviewEvent) -> ReviewEvent:
         event.id = str(uuid4())
         self.events.append(event)
@@ -2141,6 +2179,13 @@ class MemoryRepository(Repository):
             and item.raw.get("file_name") == file_name and item.raw.get("document_type") == "SCHEDULE_A"),
             key=lambda item: item.created_at, default=None)
         return _saved_extraction_stages(record.raw) if record else []
+
+    async def schedule_a_ocr_reads(self, filing_id: str, job_id: str, file_name: str) -> list[dict]:
+        record = max((item for item in self.raw_extractions.values() if item.filing_id == filing_id
+            and item.job_id == job_id and isinstance(item.raw, dict)
+            and item.raw.get("file_name") == file_name and item.raw.get("document_type") == "SCHEDULE_A"),
+            key=lambda item: item.created_at, default=None)
+        return _saved_schedule_a_ocr_reads(record.raw) if record else []
 
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None:
         return getattr(self, "sharefile_token", None)

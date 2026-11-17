@@ -294,6 +294,13 @@ class FTWilliamsReviewService:
         )
         active_failure = bool(existing_review and (existing_review.active_failure or legacy_active_failure))
 
+        if apply_automatic_derivations and not active_failure:
+            from app.services.schedule_a_retained_period import refresh_retained_policy_end
+
+            fields = await refresh_retained_policy_end(repo, filing, fields)
+            original_fields = list(fields)
+            automatic_field_state = self._automatic_field_state(fields)
+
         if not send_queries and existing_review:
             query_request_xmls.extend([existing_review.query_request_xml] if existing_review.query_request_xml else [])
             query_response_xmls.extend([existing_review.query_response_xml] if existing_review.query_response_xml else [])
