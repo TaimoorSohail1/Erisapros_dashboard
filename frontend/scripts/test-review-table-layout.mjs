@@ -490,8 +490,8 @@ assert.match(
 );
 assert.match(
   source,
-  /const needsDecisionRows = reviewRows\.filter\(\(row\) => row\.group === "NEEDS_DECISION" && isActionRequiredRow\(row\)\);/,
-  "Approval summaries must not count reviewer-confirmed decisions as unresolved.",
+  /function isDecisionTabRow\(row: ReviewDecisionRow\) \{\s*return !row\.staged && isActionRequiredRow\(row\);/,
+  "Decisions Needed excludes staged rows and retains the action-required check.",
 );
 assert.match(
   source,

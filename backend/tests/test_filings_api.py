@@ -27,11 +27,13 @@ from app.models import (
     Filing,
     FilingStatus,
     FormType,
+    FTWFieldDecision,
     FTWLocalAgentDevice,
     FTWLocalAgentDeviceStatus,
     FTWLocalAgentJob,
     FTWLocalAgentJobStatus,
     FTWilliamsReview,
+    FTWilliamsComparisonField,
 )
 
 
@@ -738,6 +740,36 @@ class FilingsApiTests(unittest.TestCase):
 
         self.assertEqual(detail.file_name, "Concurrent.pdf")
         self.assertEqual(max_active_reads, 5)
+
+    def test_filing_detail_stages_numeric_schedule_a_values_without_making_them_sendable(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(
+                Filing(file_name="Staged.pdf", content_type="application/pdf", file_size=1, s3_key="staged")
+            )
+            held = {
+                "form_type": FormType.SCHEDULE_A,
+                "decision": FTWFieldDecision.BLOCKED,
+                "validation_status": "REVIEW_REQUIRED",
+                "validation_blocking": True,
+            }
+            rows = [
+                FTWilliamsComparisonField(label="Premium", ftw_tag="WlfrTotChargesPaidAmt", extracted_value="42,031.50", **held),
+                FTWilliamsComparisonField(label="Persons covered", ftw_tag="InsPrsnCoveredEoyCnt", extracted_value="358", **held),
+                FTWilliamsComparisonField(label="FTW already populated", ftw_tag="InsPrsnCoveredEoyCnt", extracted_value="402", current_value="403", **held),
+                FTWilliamsComparisonField(label="Invalid headcount", ftw_tag="InsPrsnCoveredEoyCnt", extracted_value="4.02", **held),
+                FTWilliamsComparisonField(label="Blank premium", ftw_tag="WlfrTotChargesPaidAmt", **held),
+                FTWilliamsComparisonField(label="Another field", ftw_tag="InsCarrierEIN", extracted_value="12-3456789", **held),
+            ]
+            await repo.upsert_ftwilliams_review(FTWilliamsReview(filing_id=filing.id, fields=rows))
+            detail = await get_filing(filing.id)
+            stored = await repo.get_ftwilliams_review(filing.id)
+            return detail.ftw_review.fields, stored.fields
+
+        rows, stored = run_async(scenario())
+        self.assertEqual([row.staged_value for row in rows], ["42,031.50", "358", None, None, None, None])
+        self.assertTrue(all(row.validation_blocking and not row.update_included and row.proposed_value == "" for row in rows))
+        self.assertTrue(all(row.staged_value is None for row in stored))
 
     def test_field_decision_reuses_one_loaded_field_snapshot(self):
         class CountingRepository(repositories.MemoryRepository):

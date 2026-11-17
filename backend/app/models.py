@@ -1006,6 +1006,8 @@ class FTWilliamsComparisonField(BaseModel):
     current_value: str = ""
     extracted_value: str = ""
     proposed_value: str = ""
+    # Display-only value. A pending source review still prevents transmission.
+    staged_value: str | None = None
     confidence: float = 0
     priority: FieldPriority = FieldPriority.LOW
     extraction_status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED

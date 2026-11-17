@@ -163,6 +163,7 @@ interface ReviewDecisionRow {
   ftwFailureReason?: string;
   validationStatus?: string;
   validationBlocking?: boolean;
+  staged?: boolean;
   validationExpectedFormat?: string;
   decision?: FTWilliamsComparisonField["decision"];
 }
@@ -349,8 +350,10 @@ export function FilingReviewPage() {
     [allReviewRows, reviewRows, showExcludedFields],
   );
   const sectionOptions = useMemo(() => [...new Set(visibleReviewRows.map((row) => row.section))].sort(), [visibleReviewRows]);
-  const needsDecisionRows = reviewRows.filter((row) => row.group === "NEEDS_DECISION" && isActionRequiredRow(row));
+  const needsDecisionRows = reviewRows.filter(isDecisionTabRow);
   const willUpdateRows = reviewRows.filter((row) => row.group === "WILL_UPDATE");
+  const sendableUpdateRows = willUpdateRows.filter((row) => !row.staged);
+  const stagedRowCount = willUpdateRows.length - sendableUpdateRows.length;
   const sameRows = reviewRows.filter((row) => row.group === "SAME");
   const missingRows = reviewRows.filter((row) => row.group === "MISSING");
   const lowConfidenceRows = reviewRows.filter((row) => row.group === "LOW_CONFIDENCE");
@@ -396,7 +399,7 @@ export function FilingReviewPage() {
       ].join(" ").toLowerCase();
       return (
         (!needle || haystack.includes(needle)) &&
-        (activeTab === "ALL" || (activeTab === "NEEDS_DECISION" ? isActionRequiredRow(row) : row.group === activeTab)) &&
+        (activeTab === "ALL" || (activeTab === "NEEDS_DECISION" ? isDecisionTabRow(row) : row.group === activeTab)) &&
         (statusFilter === "ALL" || row.group === statusFilter) &&
         (priorityFilter === "ALL" || row.priority === priorityFilter) &&
         (sectionFilter === "ALL" || row.section === sectionFilter) &&
@@ -597,7 +600,7 @@ export function FilingReviewPage() {
   }
 
   function reviewBlockingFields() {
-    setActiveTab("NEEDS_DECISION");
+    setActiveTab(!needsDecisionRows.length && !planYearConflictRequired && !brokerActionRequiredCount && stagedRowCount ? "WILL_UPDATE" : "NEEDS_DECISION");
     setStatusFilter("ALL");
     setPriorityFilter("ALL");
     setSectionFilter("ALL");
@@ -1048,7 +1051,7 @@ export function FilingReviewPage() {
   }
 
   function requestFtwSend() {
-    setSelectedSendFieldIds(willUpdateRows.flatMap((row) => row.fieldId ? [row.fieldId] : []));
+    setSelectedSendFieldIds(sendableUpdateRows.flatMap((row) => row.fieldId ? [row.fieldId] : []));
     setIncludeSendBrokerUpdates(Boolean(brokerRoster?.mode === "REPLACE" && brokerRoster.destination_ready !== false));
     setShowTechnicalDrawer(false);
     setShowFtwSendConfirm(true);
@@ -1192,7 +1195,7 @@ export function FilingReviewPage() {
             filing={filing}
             foundCount={foundCount}
             totalFields={totalFields}
-            willUpdateCount={willUpdateRows.length}
+            willUpdateCount={sendableUpdateRows.length}
             onOpenAdvancedReview={() => setShowAdvancedReview(true)}
           />
         ) : (
@@ -1247,7 +1250,7 @@ export function FilingReviewPage() {
             </div>
 
             <div className="approval-count-tabs">
-              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Decisions Needed"} count={actionRequiredCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
+              <ReviewCountTab active={activeTab === "NEEDS_DECISION"} icon={<AlertTriangle size={15} />} label={verifiedUpdateComplete ? "Review Notes" : "Decisions Needed"} count={actionRequiredCount - stagedRowCount} onClick={() => setActiveTab("NEEDS_DECISION")} />
               <ReviewCountTab active={activeTab === "WILL_UPDATE"} label="Will Update FTW" count={willUpdateRows.length} onClick={() => setActiveTab("WILL_UPDATE")} />
               <ReviewCountTab active={activeTab === "ALL"} icon={<ListChecks size={15} />} label="All Fields" count={reviewRows.length || totalFields} onClick={() => setActiveTab("ALL")} />
             </div>
@@ -1259,6 +1262,7 @@ export function FilingReviewPage() {
                   <strong>{queryStatus?.title || (planYearConflictRequired ? "Confirm the correct plan-year dates" : ftwReview?.ftw_editable === false ? "FT Williams filing is not editable" : `${validationIssueCount} value${validationIssueCount === 1 ? " needs" : "s need"} correction`)}</strong>
                   <span>{planYearConflictRequired ? "The worksheet and FT Williams have different plan-year dates. Choose the correct period below."
                     : validationIssueCount ? "Review the affected fields and broker rows before continuing." : "Selected changes require a valid, editable FT Williams target."}</span>
+                  {stagedRowCount ? <span>{stagedRowCount} staged {stagedRowCount === 1 ? "value needs" : "values need"} source review in Will Update FTW before sending.</span> : null}
                 </div>
                 <button className="button secondary" type="button" onClick={() => setShowReviewStatus(true)}>Review status details</button>
               </section>
@@ -1421,7 +1425,7 @@ export function FilingReviewPage() {
           brokerRowCount={scheduleABrokerRows.length}
           brokerReplacementAvailable={brokerRoster?.mode === "REPLACE"}
           busy={ftwSendBusy}
-          changedRows={willUpdateRows}
+          changedRows={sendableUpdateRows}
           preservedScheduleARecordCount={preservedScheduleARecordCount}
           scheduleARecordCount={scheduleARecordCount}
           scheduleAUpdateIncluded={scheduleAUpdateIncluded}
@@ -1478,7 +1482,7 @@ export function FilingReviewPage() {
           scheduleCandidates={scheduleCandidates}
           step={activeWorkflowStep}
           totalFields={totalFields}
-          willUpdateCount={willUpdateRows.length}
+          willUpdateCount={sendableUpdateRows.length}
         />
       ) : null}
 
@@ -3305,7 +3309,7 @@ function ReviewDecisionTableRow({
   selected: boolean;
 }) {
   const canEdit = Boolean(row.fieldId);
-  const issueClass = row.failedByFtw ? "issue-ftw-rejected" : `issue-${row.group.toLowerCase()}`;
+  const issueClass = row.failedByFtw ? "issue-ftw-rejected" : row.staged ? "issue-needs_decision" : `issue-${row.group.toLowerCase()}`;
   return (
     <tr data-field-id={row.fieldId || undefined} className={`${selected ? "selected" : ""} review-row-${row.group.toLowerCase()} ${row.failedByFtw ? "review-row-ftw-rejected" : ""}`}>
       <td data-label="Field">
@@ -3326,7 +3330,7 @@ function ReviewDecisionTableRow({
             <>
               {row.extracted ? (
                 <button
-                  className={row.proposed === row.extracted ? "active" : ""}
+                  className={!row.staged && row.proposed === row.extracted ? "active" : ""}
                   type="button"
                   disabled={disabled || !canEdit}
                   onClick={onAccept}
@@ -3429,7 +3433,7 @@ function FullFieldReviewDrawer({
   willUpdateRows: ReviewDecisionRow[];
 }) {
   const drawerRef = useRef<HTMLElement | null>(null);
-  const actionRequiredCount = reviewRows.filter(isActionRequiredRow).length;
+  const actionRequiredCount = reviewRows.filter(isDecisionTabRow).length;
   useDialogFocus(true, drawerRef, onClose);
   return (
     <div className="field-drawer-backdrop" role="presentation">
@@ -4606,7 +4610,7 @@ function rowFromComparison(
     sourceLabel: sourceLabelForComparison(comparison, field),
     currentFtw: comparison.current_value || "",
     extracted: comparison.extracted_value || field?.value || "",
-    proposed: comparison.proposed_value || field?.proposed_value || "",
+    proposed: comparison.proposed_value || comparison.staged_value || field?.proposed_value || "",
     issue: rejectedField?.reason || issueForComparison(comparison, field, group),
     statusLabel: rejectedField ? "Rejected by FTW" : reviewedStatusLabel(group, field, comparison),
     group,
@@ -4617,6 +4621,7 @@ function rowFromComparison(
     ftwFailureReason: rejectedField ? rejectedFieldDescription(rejectedField) : undefined,
     validationStatus: comparison.validation_status,
     validationBlocking: Boolean(comparison.validation_blocking),
+    staged: Boolean(comparison.staged_value && !rejectedField),
     validationExpectedFormat: comparison.validation_expected_format || undefined,
     decision: comparison.decision,
   };
@@ -4645,6 +4650,7 @@ function rowFromExtractedField(field: ExtractedField): ReviewDecisionRow {
 
 function groupForComparison(comparison: FTWilliamsComparisonField, field?: ExtractedField): ReviewRowGroup {
   if (comparison.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "SAME";
+  if (comparison.staged_value) return "WILL_UPDATE";
   if (comparison.decision === "CONFLICT" || comparison.decision === "BLOCKED") return "NEEDS_DECISION";
   if (comparison.decision === "WILL_UPDATE") return "WILL_UPDATE";
   if (comparison.decision === "SKIP_EMPTY") return "MISSING";
@@ -4698,6 +4704,7 @@ function statusLabelForGroup(group: ReviewRowGroup) {
 
 function reviewedStatusLabel(group: ReviewRowGroup, field?: ExtractedField, comparison?: FTWilliamsComparisonField) {
   if (comparison?.update_exclusion_reason?.startsWith("Managed in the Schedule A broker rows")) return "Managed in broker rows";
+  if (comparison?.staged_value) return "Staged · review before sending";
   if (comparison?.decision === "CONFLICT") return "Conflict";
   if (comparison?.validation_status === "REVIEW_REQUIRED" && comparison.validation_blocking) return "Needs review";
   if (comparison?.decision === "BLOCKED") return "Blocked";
@@ -4733,6 +4740,10 @@ function isActionRequiredRow(row: ReviewDecisionRow) {
     row.group === "LOW_CONFIDENCE" ||
     (row.group === "MISSING" && row.priority === "HIGH")
   );
+}
+
+function isDecisionTabRow(row: ReviewDecisionRow) {
+  return !row.staged && isActionRequiredRow(row);
 }
 
 function rejectedFieldForComparison(comparison: FTWilliamsComparisonField, review: FTWilliamsReview | null): ClientRejectedField | undefined {

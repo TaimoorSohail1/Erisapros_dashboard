@@ -36,7 +36,7 @@ const sendCode = source.slice(source.indexOf('  function requestFtwSend()'), sou
 function selectedBrokersAtOpen(brokerRoster) {
   let selected;
   runInNewContext(`${ts.transpileModule(sendCode, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText}\nrequestFtwSend()`, {
-    brokerRoster, willUpdateRows: [], setSelectedSendFieldIds:()=>{}, setIncludeSendBrokerUpdates:value=>{selected=value;},
+    brokerRoster, sendableUpdateRows: [], setSelectedSendFieldIds:()=>{}, setIncludeSendBrokerUpdates:value=>{selected=value;},
     setShowTechnicalDrawer:()=>{}, setShowFtwSendConfirm:()=>{},
   });
   return selected;
