@@ -5432,9 +5432,10 @@ def extract_litera_lincoln_schedule_a_fields(
     ein = re.search(r"(?:\((?:b|bo)\)\s*)?EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
     naic = re.search(r"(?:\(c\)\s*)?NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
     contract = re.search(
-        r"\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
+        r"\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number[ \t]*:[ \t]*"
+        r"([A-Z]*[0-9][A-Z0-9]*(?:[ \t]+[0-9]{5})?)[ \t]*$",
         text,
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
     benefit_section = re.search(
         r"\(\s*Part\s+III\s*,?\s*#?\s*8\s*\).*?\n(?P<body>.*?)\n\s*2\.\s*Insurance\s+fee",
@@ -5503,7 +5504,7 @@ def extract_litera_lincoln_schedule_a_fields(
         (
             "1d. Contract/Policy Number",
             re.sub(r"\s+", "", contract.group(1)) if contract else None,
-            source,
+            contract.group(0) if contract else source,
         ),
         ("1e. Persons Covered (End of Policy Year)", highest[1] if highest else None, source),
         ("1f. Policy Year Beginning Date", _normalize_position_date(highest[2]) if highest else None, source),

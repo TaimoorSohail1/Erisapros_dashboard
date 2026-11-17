@@ -6241,6 +6241,40 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         self.assertIsNone(match)
 
+    def test_corrected_contract_invalidates_only_an_unsent_automatic_new_target(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein", "1b. Insurance Carrier EIN", "35-1234567",
+            ),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "00001D03924100000",
+            ),
+        ]
+        review = FTWilliamsReview(filing_id="lincoln", schedule_a_match={
+            "create_new": True, "source": "AUTO_NEW_SCHEDULE_A",
+            "carrier_ein": "35-1234567", "contract": "00001",
+        })
+        refresh = service._discard_unsubmitted_auto_new_target_after_source_change
+        self.assertIsNone(refresh(review, fields).schedule_a_match)
+        self.assertIs(refresh(review.model_copy(update={"update_attempted_count": 1}), fields).schedule_a_match,
+                      review.schedule_a_match)
+        confirmed = review.model_copy(update={"schedule_a_match": {**review.schedule_a_match, "new_target_confirmed": True}})
+        self.assertIs(refresh(confirmed, fields), confirmed)
+
+    def test_alphanumeric_padded_existing_contract_requires_review_before_create(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        fields = [
+            self._schedule_identity_field(
+                "schedule_a_part_i_1b_insurance_carrier_ein", "1b. Insurance Carrier EIN", "35-1234567",
+            ).model_copy(update={"confidence": 0.99, "status": ExtractedFieldStatus.MATCHED}),
+            self._schedule_identity_field(
+                "schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "00001D03924100000",
+            ).model_copy(update={"confidence": 0.99, "status": ExtractedFieldStatus.MATCHED}),
+        ]
+        existing = {"ftw_seq_no": "2", "query_results": {"InsCarrierEIN": "35-1234567", "InsContractNum": "1D039241"}}
+        self.assertIsNone(service._automatic_new_schedule_a_match(fields, [], [existing]))
+
     def test_schedule_match_accepts_unique_exact_carrier_with_policy_dates_when_ids_are_blank(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         fields = [

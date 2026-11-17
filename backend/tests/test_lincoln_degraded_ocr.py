@@ -109,6 +109,19 @@ def test_bound_read_with_spaced_field_numbers_and_omitted_title_retains_layout_i
     assert next(f.value for f in extractor.extract_litera_lincoln_schedule_a_fields([(2,spaced)]) if f.field_name.startswith('1e.'))=='17'
 
 
+@pytest.mark.parametrize("printed,expected", [
+    ("00001D039241 00000", "00001D03924100000"),
+    ("00001D039242 00000", "00001D03924200000"),
+    ("000012345678\n2025", "000012345678"),
+])
+def test_lincoln_contract_uses_the_complete_printed_identifier_on_its_own_line(printed, expected):
+    page = SOURCE.replace("000012345678 00000", printed)
+    fields = extractor.extract_litera_lincoln_schedule_a_fields([(2, page)])
+    contract = next(field for field in fields if field.field_name.startswith("1d."))
+    assert contract.value == expected
+    assert contract.candidate_values == [expected]
+
+
 @pytest.mark.parametrize('mismatch',['document','amount','contract','readable_premium'])
 def test_alternate_source_cannot_override_a_different_document_or_readable_conflict(mismatch):
     raw=bound(SOURCE)

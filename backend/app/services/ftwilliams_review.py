@@ -226,6 +226,9 @@ class FTWilliamsReviewService:
             if not filing or filing.id != filing_id:
                 raise ValueError("Filing not found")
 
+        existing_review = self._discard_unsubmitted_auto_new_target_after_source_change(
+            existing_review, fields,
+        )
         original_fields = list(fields)
         automatic_field_state = self._automatic_field_state(fields)
 
@@ -1549,13 +1552,46 @@ class FTWilliamsReviewService:
     def _possible_padded_contract_matches(selected, records):
         """A zero suffix is a review hint, never permission to trim an ID."""
         contract = FTWilliamsReviewService._contract_text(selected.get('contract')).lstrip('0')
+        contract_core = contract.rstrip('0')
         ein = re.sub(r'\D', '', str(selected.get('carrier_ein') or ''))
-        if not contract.isdigit() or not ein:
+        if not re.search(r'[0-9]', contract_core) or not ein:
             return []
-        return [record for record in records if (
-            re.sub(r'\D', '', str((record.get('query_results') or {}).get('InsCarrierEIN') or '')) == ein
-            and (other := FTWilliamsReviewService._contract_text((record.get('query_results') or {}).get('InsContractNum')).lstrip('0')).isdigit()
-            and other != contract and other.rstrip('0') == contract.rstrip('0'))]
+        possible_matches = []
+        for record in records:
+            values = record.get("query_results") or {}
+            record_ein = re.sub(r"\D", "", str(values.get("InsCarrierEIN") or ""))
+            other = FTWilliamsReviewService._contract_text(values.get("InsContractNum")).lstrip("0")
+            if record_ein == ein and other != contract and other.rstrip("0") == contract_core:
+                possible_matches.append(record)
+        return possible_matches
+
+    def _discard_unsubmitted_auto_new_target_after_source_change(
+        self, review: FTWilliamsReview | None, fields: list[ExtractedField],
+    ) -> FTWilliamsReview | None:
+        match = review.schedule_a_match if review else None
+        if (
+            not match
+            or not match.get("create_new")
+            or match.get("source") != "AUTO_NEW_SCHEDULE_A"
+            or match.get("new_target_confirmed")
+            or review.update_attempted_count
+            or review.update_response_xml
+            or review.active_failure
+            or review.status in {
+                FTWilliamsReviewStatus.UPDATE_SENT,
+                FTWilliamsReviewStatus.UPDATE_FAILED,
+                FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+            }
+        ):
+            return review
+        contract = self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number")
+        ein = self._field_value_by_rule(fields, "schedule_a_part_i_1b_insurance_carrier_ein")
+        if (
+            self._normalize_contract(contract) != self._normalize_contract(match.get("contract"))
+            or self._normalize_ein_digits(ein) != self._normalize_ein_digits(match.get("carrier_ein"))
+        ):
+            return review.model_copy(update={"schedule_a_match": None})
+        return review
 
     @staticmethod
     def _padded_contract_review_error(selected, records):
