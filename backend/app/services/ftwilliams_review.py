@@ -5910,19 +5910,27 @@ class FTWilliamsReviewService:
             comparison = comparison_by_rule.get(rule_key)
             if not comparison:
                 continue
-            if (
-                rule_key == "schedule_a_part_i_1d_contract_policy_number"
-                and carrier_ein_comparison
-                and any(
-                    same_value(comparison.current_value, policy)
-                    for policy in re.split(r"[/,;]", worksheet_value)
-                )
-                and self._lincoln_reporting_unit_match(fields, {
-                    "InsContractNum": comparison.current_value,
-                    "InsCarrierEIN": carrier_ein_comparison.current_value,
-                })
-            ):
-                continue
+            if rule_key == "schedule_a_part_i_1d_contract_policy_number" and carrier_ein_comparison:
+                policies = re.split(r"[/,;]", worksheet_value)
+                reference_policies = []
+                reference_ein = carrier_ein_comparison.current_value
+                if any(same_value(comparison.current_value, policy) for policy in policies):
+                    reference_policies = [comparison.current_value]
+                elif (
+                    not comparison.current_value
+                    and self._carrier_identity_key(self._summary_attr(summary, "carrier_name")).removeprefix("THE")
+                    == "LINCOLNNATIONALLIFEINSURANCECOMPANY"
+                ):
+                    # A new Schedule A has no current policy to corroborate the
+                    # printed base. Use the matching worksheet carrier and its
+                    # individual policy entries while retaining the full PDF ID.
+                    reference_policies = policies
+                    reference_ein = self._summary_attr(summary, "ein") or carrier_ein_comparison.extracted_value
+                if any(self._lincoln_reporting_unit_match(fields, {
+                    "InsContractNum": policy,
+                    "InsCarrierEIN": reference_ein,
+                }) for policy in reference_policies):
+                    continue
             reason = (
                 f"The Plan Worksheet {label} ({worksheet_value}) differs from "
                 f"the Schedule A value ({extracted_value})."

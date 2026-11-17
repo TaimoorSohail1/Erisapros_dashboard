@@ -4641,6 +4641,55 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 contract.source_text = ambiguous_excerpt
                 self.assertIsNone(service._match_schedule_a_status(fields, [existing]))
 
+    def test_new_lincoln_schedule_keeps_policy_when_worksheet_lists_proven_base(self):
+        service = FTWilliamsReviewService()
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "The Lincoln National Life Insurance Company",
+        )
+        ein = self._schedule_identity_field(
+            "schedule_a_part_i_1b_insurance_carrier_ein",
+            "1b. Insurance Carrier EIN",
+            "35-0472300",
+        )
+        contract = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number",
+            "1d. Contract/Policy Number",
+            "00001025181800000",
+        )
+        contract.page = 2
+        contract.source_text = "(d) Contract or identification number: 000010251818 00000"
+        worksheet = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name=carrier.value,
+            account_number="MASADAHMS; 1609824; 10251818; 10251819",
+        )
+
+        def policy_comparison(source_contract, worksheet_row):
+            source_fields = [carrier, ein, source_contract]
+            comparisons = service._comparison_fields(
+                source_fields, {}, {}, update_fields=source_fields,
+            )
+            service._mark_plan_worksheet_conflicts(comparisons, source_fields, [worksheet_row])
+            return next(field for field in comparisons if field.ftw_tag == "InsContractNum")
+
+        policy = policy_comparison(contract, worksheet)
+        self.assertEqual(policy.decision, FTWFieldDecision.WILL_UPDATE)
+        self.assertEqual(policy.proposed_value, contract.value)
+
+        for worksheet_row in (
+            worksheet.model_copy(update={"account_number": "MASADAHMS; 1609824; 10251819"}),
+            worksheet.model_copy(update={"ein": "99-9999999"}),
+        ):
+            policy = policy_comparison(contract, worksheet_row)
+            self.assertEqual(policy.decision, FTWFieldDecision.CONFLICT)
+
+        ambiguous = contract.model_copy(update={
+            "source_text": "(d) Contract or identification number: 00001025181800000",
+        })
+        self.assertEqual(policy_comparison(ambiguous, worksheet).decision, FTWFieldDecision.CONFLICT)
+
     def test_fresh_query_selects_the_schedule_with_matching_contract(self):
         service = FTWilliamsReviewService()
         fields = [
