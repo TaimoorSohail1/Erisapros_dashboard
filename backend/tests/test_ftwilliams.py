@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import unittest
+from html import escape
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx
 
-from app.models import FTWilliamsQueryRequest
+from app.models import Filing, FTWilliamsQueryRequest, FTWilliamsReview
 from app.services.ftwilliams import FTWilliamsService
+from app.services.xml_builder import build_proposed_ftw_xml, combine_ftw_update_xml
 
 
 def run_async(coro):
@@ -22,6 +24,68 @@ def run_async(coro):
 class FTWilliamsServiceTests(unittest.TestCase):
     def setUp(self):
         self.service = FTWilliamsService()
+
+    def test_diagnostic_responses_never_retain_the_configured_key(self):
+        key = "operation-test&key"
+        settings = SimpleNamespace(ftwlink_key_id=key, ftwlink_endpoint_url="https://example.test/ftw")
+        source = (
+            "<ftwLinkResponse><Status><Type>DOL5500</Type><ErrorCode>59</ErrorCode>"
+            f"<ErrorDesc>Missing Form 5500 ({escape(key)}, account, plan, 2025)</ErrorDesc>"
+            "</Status></ftwLinkResponse>"
+        )
+        query = FTWilliamsQueryRequest(
+            operation="query_5500", ftw_customer_id="test-customer",
+            ftw_plan_id="test-plan", year="2025", send=True,
+        )
+        request = "<ftwLink><KeyID>***</KeyID></ftwLink>"
+        errors = (200, 502, "transport")
+        for operation in ("query", "send"):
+            for outcome in errors:
+                with self.subTest(operation=operation, outcome=outcome):
+                    async def post_xml(_endpoint, xml):
+                        self.assertIn(escape(key), xml)
+                        if outcome == "transport":
+                            raise httpx.ReadError(f"FT Williams error for {key}")
+                        return httpx.Response(
+                            outcome, text=source, headers={"x-request-id": f"trace-{key}"},
+                        )
+
+                    with patch("app.services.ftwilliams.get_settings", return_value=settings), patch.object(
+                        self.service, "_post_xml", side_effect=post_xml,
+                    ):
+                        result = run_async(
+                            self.service.run_query(query) if operation == "query"
+                            else self.service.send_xml("test_update", request)
+                        )
+                    diagnostic = result.model_dump_json()
+                    self.assertNotIn(key, diagnostic)
+                    self.assertNotIn(escape(key), diagnostic)
+                    self.assertIn("***", result.request_xml)
+                    if outcome == "transport":
+                        self.assertEqual(result.error, "FT Williams error for ***")
+                    else:
+                        self.assertFalse(result.success)
+                        self.assertEqual(result.statuses[0].error_code, "59")
+                        self.assertEqual(result.statuses[0].error_desc, "Missing Form 5500 (***, account, plan, 2025)")
+                        self.assertEqual(result.response_headers["x-request-id"], "trace-***")
+
+    def test_preview_and_legacy_models_hide_keys_without_hiding_field_values(self):
+        former_key = "older-configured-key"
+        body = "<DOLScheduleAData><InsContractNum>POL123</InsContractNum></DOLScheduleAData>"
+        xml = f"<ftwLink><KeyID>{former_key}</KeyID><DataBatch>{body}</DataBatch></ftwLink>"
+        settings = SimpleNamespace(ftwlink_key_id="current-configured-key")
+        with patch("app.services.xml_builder.get_settings", return_value=settings):
+            self.assertNotIn(settings.ftwlink_key_id, build_proposed_ftw_xml([]))
+            self.assertNotIn(settings.ftwlink_key_id, combine_ftw_update_xml(xml))
+            self.assertIn(body, combine_ftw_update_xml(xml))
+
+        filing = Filing(file_name="test.pdf", content_type="application/pdf", file_size=1,
+                        s3_key="test.pdf", proposed_xml=xml)
+        self.assertNotIn(former_key, filing.proposed_xml)
+        self.assertIn("POL123", filing.proposed_xml)
+        review = FTWilliamsReview(filing_id="preview-test", update_xml_schedule_a=xml)
+        self.assertNotIn(former_key, review.model_dump_json())
+        self.assertIn("POL123", review.model_dump(mode="json")["update_xml_schedule_a"])
 
     def test_builds_schedule_a_query_xml(self):
         xml = self.service.build_request_xml(
