@@ -101,19 +101,49 @@ class SponsorAddressParsingTests(unittest.TestCase):
                     expected["SDAddressLine2"] = line2
                 self.assertEqual(actual, expected)
 
-    def test_overlength_or_ambiguous_prefix_stays_blocked_without_truncation(self):
-        for source in (
-            "AN EXCESSIVELY LONG COWORKING OFFICE 20-110, 625 WEST ADAMS STREET, CHICAGO,IL 60661",
-            "WEWORK OFFICE 20-110, 625 VERY VERY VERY LONG WEST ADAMS STREET, CHICAGO,IL 60661",
-            "UNKNOWN DELIVERY DETAILS, 625 WEST ADAMS STREET, CHICAGO,IL 60661",
-        ):
-            with self.subTest(source=source):
-                field = self.field(source)
-                with self.assertRaises(FTWPayloadValidationError):
-                    FTWilliamsReviewService._validated_field_value(field)
-                with self.assertRaises(FTWPayloadValidationError):
-                    self.payload(field)
-                self.assertEqual(field.proposed_value, source)
+    def test_worksheet_address_with_suite_and_comma_before_state(self):
+        source = "180 Via Verde Suite 100 San Dimas, CA 91773"
+        field = self.field(source)
+        self.assertEqual(FTWilliamsReviewService._validated_field_value(field), source)
+        actual, _ = self.payload(field)
+        self.assertEqual(actual, {
+            "SDAddressLine1": "180 VIA VERDE", "SDAddressLine2": "SUITE 100",
+            "SDCity": "SAN DIMAS", "SDState": "CA", "SDZipCode": "91773",
+        })
+
+    def test_period_separates_suite_from_city_before_validation(self):
+        source = "1800 N HIGHLAND AVE, SUITE 300. LOS ANGELES CA 90028"
+        field = self.field(source)
+        self.assertEqual(FTWilliamsReviewService._validated_field_value(field), source)
+        actual, _ = self.payload(field)
+        self.assertEqual(actual, {
+            "SDAddressLine1": "1800 N HIGHLAND AVE", "SDAddressLine2": "SUITE 300",
+            "SDCity": "LOS ANGELES", "SDState": "CA", "SDZipCode": "90028",
+        })
+
+    def test_source_zip_is_not_replaced_by_current_zip_when_city_matches(self):
+        actual, _ = self.payload(self.field("625 WEST ADAMS STREET, CHICAGO, IL 60661"), {
+            "SDAddressLine1": "625 WEST ADAMS STREET", "SDCity": "CHICAGO",
+            "SDState": "IL", "SDZipCode": "60660",
+        })
+        self.assertEqual(actual, {"SDZipCode": "60661"})
+
+    def test_structured_overlength_address_is_fitted_before_validation(self):
+        source = "WEWORK OFFICE 20-110, 625 VERY VERY VERY LONG WEST ADAMS STREET, CHICAGO,IL 60661"
+        field = self.field(source)
+        self.assertEqual(FTWilliamsReviewService._validated_field_value(field), source)
+        actual, _ = self.payload(field)
+        self.assertEqual(actual, {
+            "SDAddressLine1": "625 VERY VERY VERY LONG WEST ADAMS",
+            "SDAddressLine2": "WEWORK OFFICE 20-110",
+            "SDCity": "CHICAGO", "SDState": "IL", "SDZipCode": "60661",
+        })
+        self.assertEqual(field.value, source)
+
+    def test_unstructured_overlength_address_stays_blocked(self):
+        source = "UNKNOWN DELIVERY DETAILS, 625 WEST ADAMS STREET, CHICAGO,IL 60661"
+        with self.assertRaises(FTWPayloadValidationError):
+            self.payload(self.field(source))
 
 
 if __name__ == "__main__":

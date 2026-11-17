@@ -63,7 +63,7 @@ assert.match(filingReview, /function FTWQueryStatusBanner/, "An attempted FT Wil
 assert.match(filingReview, /query_state === "PLAN_MATCH_REQUIRED"/, "The filing page must identify a plan-match problem explicitly.");
 assert.match(
   filingReview,
-  /title: "Choose the correct FT Williams plan"[\s\S]*?message: "Multiple possible plans were found\. Select the correct plan to continue\."/,
+  /if \(multipleMatches\) \{[\s\S]*?Multiple possible plans were found[\s\S]*?matchStatus === "NOT_FOUND"[\s\S]*?current FT Williams connection could verify/,
   "A plan-match problem must use concise client-facing copy instead of dumping lookup diagnostics.",
 );
 assert.match(

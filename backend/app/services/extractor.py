@@ -485,7 +485,11 @@ class ExtractionService:
         attach_schedule_a_source_observations(result, semantic_pages,
             source_sha256=hashlib.sha256(file_bytes).hexdigest(), source_file_name=file_name)
         supplement_unreadable_cost_source_observations(result, file_bytes, file_name)
-        from app.services.schedule_a_organization_source import reconcile_source_name_tokens
+        from app.services.schedule_a_organization_source import (
+            reconcile_source_agent_numbers, reconcile_source_contract_numbers, reconcile_source_name_tokens,
+        )
+        reconcile_source_agent_numbers(result, semantic_pages)
+        reconcile_source_contract_numbers(result, semantic_pages)
         bound_code_pages = completed_document_source_pages(result.raw, file_name)
         code_source_pages = [*semantic_pages, *bound_code_pages]
         # This letter parser discloses three payment columns and no code column.
@@ -4782,6 +4786,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     ]
     selected = select_best_schedule_a_fields(fields)
     selected = prefer_authoritative_anthem_fields(selected, plain_pages)
+    selected = prefer_authoritative_anthem_fields(selected, layout_pages)
     selected = prefer_authoritative_aig_fields(selected, plain_pages)
     selected = prefer_authoritative_aflac_fields(selected, plain_pages)
     selected = prefer_authoritative_colonial_fields(selected, plain_pages)
@@ -5427,9 +5432,10 @@ def extract_litera_lincoln_schedule_a_fields(
     ein = re.search(r"(?:\((?:b|bo)\)\s*)?EIN\s*:\s*(\d{2}-\d{7})", text, re.IGNORECASE)
     naic = re.search(r"(?:\(c\)\s*)?NAIC\s+code\s*:\s*(\d{5})", text, re.IGNORECASE)
     contract = re.search(
-        r"\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number\s*:\s*([0-9]+(?:\s+[0-9]+)?)",
+        r"\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number[ \t]*:[ \t]*"
+        r"([A-Z]*[0-9][A-Z0-9]*(?:[ \t]+[0-9]{5})?)[ \t]*$",
         text,
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
     benefit_section = re.search(
         r"\(\s*Part\s+III\s*,?\s*#?\s*8\s*\).*?\n(?P<body>.*?)\n\s*2\.\s*Insurance\s+fee",
@@ -5498,7 +5504,7 @@ def extract_litera_lincoln_schedule_a_fields(
         (
             "1d. Contract/Policy Number",
             re.sub(r"\s+", "", contract.group(1)) if contract else None,
-            source,
+            contract.group(0) if contract else source,
         ),
         ("1e. Persons Covered (End of Policy Year)", highest[1] if highest else None, source),
         ("1f. Policy Year Beginning Date", _normalize_position_date(highest[2]) if highest else None, source),
@@ -5574,9 +5580,11 @@ def extract_litera_lincoln_schedule_a_broker_rows(
     parsed_rows: list[ScheduleABrokerRow] = []
     for page, page_text in page_texts:
         text = normalize_ocr_text(page_text or "")
-        if not (
-            re.search(r"Insurance\s+fees\s+and\s+commissions\s+paid", text, re.IGNORECASE)
-        ):
+        section = re.search(
+            r"Insurance\s+fees\s+and\s+(?:commissions\s+paid|[^\n]{1,24}?\s+paid to agents,?\s+brokers)",
+            text, re.IGNORECASE,
+        )
+        if section is None:
             continue
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         for index, line in enumerate(lines):
@@ -5594,12 +5602,39 @@ def extract_litera_lincoln_schedule_a_broker_rows(
                 lines[index + 2],
                 re.IGNORECASE,
             )
-            if not re.match(r"^\d{1,6}\s+", address) or not locality:
+            if not locality:
                 continue
+            box_pattern = r"P\.?\s*O\.?\s+BOX\s+"
+            valid_address = re.match(r"^\d{1,6}\s+", address) or re.fullmatch(
+                box_pattern + r"\d+[A-Z]?", address, re.IGNORECASE,
+            )
+            corroboration = ""
+            if not valid_address:
+                damaged_box = re.fullmatch(r"P\.?\s*O\.?\s+B[0C]X\s+(\d+[A-Z]?)", address, re.I)
+                if damaged_box is None:
+                    continue
+                box_number = re.escape(damaged_box[1])
+                city = re.escape(locality["city"].strip(" ,"))
+                state = re.escape(locality["state"])
+                zip_code = re.escape(locality["zip"])
+                for other_page, other_text in page_texts:
+                    if other_page == page:
+                        continue
+                    printed = re.search(
+                        rf"^[ \t]*({box_pattern}{box_number})[ \t]*\r?\n"
+                        rf"[ \t]*{city},?[ \t]+{state}[ \t]+{zip_code}[ \t]*$",
+                        other_text, re.I | re.M,
+                    )
+                    if printed:
+                        address = printed[1]
+                        corroboration = f"\nPage {other_page} address corroboration: {printed[0].strip()}"
+                        break
+                if not corroboration:
+                    continue
             amount = money_value(paid.group("amount"))
             purpose = clean_extracted_value(paid.group("purpose")) or None
             is_fee = purpose is not None and purpose.casefold() != "commissions"
-            source = "\n".join(lines[index : index + 3])
+            source = "\n".join(lines[index : index + 3]) + corroboration
             parsed_rows.append(
                 ScheduleABrokerRow(
                     name=clean_extracted_value(paid.group("name")),
@@ -5671,14 +5706,21 @@ def reconcile_lincoln_part_i_compensation(result, parsed_rows, page_texts) -> bo
     unmatched provider recipients for review instead of silently deleting them.
     """
     amount = r"([\d,]+(?:\.\d{2})?)"
-    subtotals = [(page, match) for page,text in page_texts for match in re.finditer(
-        r"(?im)^[ \t]*Totals?\s*:\s*\$\s*"+amount+r"[ \t]+\$\s*"+amount+r"[ \t]*$",text)]
+    subtotal_amount = r"([\d,]+(?:[ \t]*\.[ \t]*\d{2})?)"
+    subtotals = [
+        (page, match)
+        for page, text in page_texts
+        for match in re.finditer(
+            rf"(?im)^[ \t]*Totals?\s*:\s*\$\s*{subtotal_amount}[ \t]+\$\s*{subtotal_amount}[ \t]*$",
+            text,
+        )
+    ]
     header_totals = [(page,match) for page,text in page_texts for match in re.finditer(
         r"Total\s+amount\s+of\s+commissions\s+paid[^$\n]{0,80}?"
         r"Total\s+amount\s+of\s+fees\s+paid[^$\d]{0,160}\$\s*"+amount+
         r"\s+\$\s*"+amount,text,re.I)]
     def total(values):
-        return sum((Decimal(str(value or '0').replace(',','').replace('$','').strip()) for value in values),Decimal('0'))
+        return sum((Decimal(re.sub(r'[$,\s]', '', str(value or '0'))) for value in values), Decimal('0'))
     complete = bool(parsed_rows and subtotals)
     complete = complete and sum(len(row.evidence) for row in parsed_rows)==len(subtotals)
     if complete:
@@ -7521,12 +7563,14 @@ def extract_cigna_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[N
     add("3d. Purpose", purpose)
     add("3e. Organizational Code", _cigna_printed_organization_code(text))
 
-    premium = regex_first(
-        text,
-        [r"Total\s+premiums?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrier\s*\$?\s*([\d,]+(?:\.\d{2})?)"],
-        flags=re.IGNORECASE,
+    premium = re.search(
+        r"Total\s+premiums?(?:\s*\*)?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrier"
+        r"\s*:?\s*\$?\s*([\d,]+(?:\.\d{2})?)",
+        text, re.IGNORECASE,
     )
-    add("10a. Total premiums or subscription charges paid to carrier", money_value(premium) if premium else None)
+    if premium:
+        add("10a. Total premiums or subscription charges paid to carrier",
+            money_value(premium.group(1)), source=premium.group(0))
     if re.search(r"information\s+not\s+provided.*Not\s+Applicable", text, flags=re.IGNORECASE | re.DOTALL):
         add("11. Did the insurance company fail to provide any information necessary to complete Schedule A?", "No")
     return fields
@@ -9302,10 +9346,13 @@ def extract_colonial_life_broker_rows(
     return rows
 
 
+_ANTHEM_SCHEDULE_A_HEADING = "INFORMATION FOR COMPLETION OF ERISA 5500 SCHEDULE A"
+
+
 def _is_anthem_schedule_a_report(text: str) -> bool:
     upper = str(text or "").upper()
     return (
-        "INFORMATION FOR COMPLETION OF ERISA 5500 SCHEDULE A" in upper
+        _ANTHEM_SCHEDULE_A_HEADING in upper
         and "ANTHEM BLUE CROSS" in upper
         and "CUSTOMER ID" in upper
     )
@@ -9320,15 +9367,31 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
         r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
         re.DOTALL,
     )
+    line_pattern = re.compile(
+        r"^(?P<name>[A-Z][A-Z0-9 &.,'()-]+)[ \t]*\n"
+        r"(?P<street>(?:\d{1,6}\s+|P\.?\s*O\.?\s+BOX\s+)[^\n]+)\n"
+        r"(?P<city>[A-Z .'-]+),[ \t]*(?P<state>[A-Z]{2})[ \t]+"
+        r"(?P<zip>\d{5}(?:-\d{4})?)\s+"
+        r"\$\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
+        re.MULTILINE,
+    )
+    pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
+    if not _is_anthem_schedule_a_report("\n\n".join(text for _, text in pages)):
+        return []
     rows: list[ScheduleABrokerRow] = []
-    for page, text in page_texts:
-        normalized = normalize_ocr_text(text)
-        if not _is_anthem_schedule_a_report(normalized):
+    for page, normalized in pages:
+        if _ANTHEM_SCHEDULE_A_HEADING not in normalized.upper():
             continue
+        columns = re.search(r"^\s*Commission\s+Paid\b[^\n]*\n", normalized, flags=re.MULTILINE | re.IGNORECASE)
+        native_matches = []
+        if columns:
+            table = re.split(r"^\s*(?:\*\s*Fees\b|2\.\s+and\s+3\.\s*Insurance\s+Fee)",
+                             normalized[columns.end():], maxsplit=1, flags=re.MULTILINE | re.IGNORECASE)[0]
+            native_matches = list(line_pattern.finditer(table))
         broker_section = re.split(r"2\s+and\s+3\.\s*Insurance\s+Fee", normalized, maxsplit=1, flags=re.IGNORECASE)
-        search_text = broker_section[-1]
-        search_text = re.split(r"\*Fees\s+may\s+include", search_text, maxsplit=1, flags=re.IGNORECASE)[0]
-        for match in pattern.finditer(search_text):
+        search_text = re.split(r"\*Fees\s+may\s+include", broker_section[-1], maxsplit=1, flags=re.IGNORECASE)[0]
+        for match in native_matches or pattern.finditer(search_text):
             name = clean_extracted_value(match.group("name")).upper()
             name = re.sub(r"^(?:AND\s+)?COMMISSION\s+PAID\s+FEES\s+PAID\*\s*", "", name)
             name = re.sub(r"^(?:HEALTH\s+)?(?:PPO|HMO|INDEMNITY)\s+", "", name)
@@ -9336,7 +9399,7 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
                 continue
             commission = money_value(match.group("commission")) or "0"
             fee = money_value(match.group("fee")) or "0"
-            source_text = "Anthem Schedule A fee and commission table"
+            source_text = clean_extracted_value(match.group(0))
             rows.append(
                 ScheduleABrokerRow(
                     name=name,
@@ -9366,21 +9429,27 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
 
 
 def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
-    full_text = "\n\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
+    full_text = "\n\n".join(text for _, text in pages)
     if not _is_anthem_schedule_a_report(full_text):
         return []
-    source_page, source_text = next(
-        (page, normalize_ocr_text(text))
-        for page, text in page_texts
-        if _is_anthem_schedule_a_report(normalize_ocr_text(text))
+    report_page = next(
+        ((page, text) for page, text in pages if _ANTHEM_SCHEDULE_A_HEADING in text.upper()),
+        None,
     )
-    carrier = regex_first(
+    if report_page is None:
+        return []
+    source_page, source_text = report_page
+    carrier_row = regex_first(
         source_text,
-        [r"(Anthem\s+Blue\s+Cross(?:\s+Life\s+and\s+Health\s+Insurance\s+Company)?)\s*\(G\d+\)"],
+        [
+            r"(Anthem\s+Blue\s+Cross(?:\s+Life\s+and\s+Health\s+Insurance\s+Company)?)\s*\(G\d+\)(?:\s+(\d{2}-\d{7})(?:[ \t]+(\d{5})\b)?)?",
+            r"(Blue\s+Cross\s+of\s+California)\s*\(G\d+\)\s+(\d{2}-\d{7})(?:[ \t]+(\d{5})\b)?",
+        ],
         flags=re.IGNORECASE,
+        groups=True,
     )
-    ein = regex_first(source_text, [r"\(G\d+\)\s+(\d{2}-\d{7})"], flags=re.IGNORECASE)
-    naic = regex_first(source_text, [r"\(G\d+\)\s+\d{2}-\d{7}\s+(\d{5})"], flags=re.IGNORECASE)
+    carrier, ein, naic = carrier_row if carrier_row else (None, None, None)
     contract = regex_first(source_text, [r"Customer\s+ID\s*:\s*([A-Za-z0-9-]+)"], flags=re.IGNORECASE)
     period = regex_first(
         source_text,
@@ -9392,23 +9461,30 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         groups=True,
     )
     rows = extract_anthem_broker_rows(page_texts)
-    part_three = full_text.split("Part III Welfare Benefit Contract Information", 1)[-1]
-    premiums = re.findall(
-        r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*([0-9,]+(?:\.\d{2})?)",
-        part_three,
-        flags=re.IGNORECASE,
+    benefit_heading = "Part III Welfare Benefit Contract Information"
+    benefit_page = next(
+        (index for index, (_, text) in enumerate(pages) if benefit_heading in text), None,
     )
-    total_premium = sum_money_values(*premiums) if premiums else None
-    enrollment_rows = re.findall(
-        r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*[0-9,]+(?:\.\d{2})?\s+"
-        r"\d[\d,]*\s*/\s*(\d[\d,]*)",
-        part_three,
-        flags=re.IGNORECASE,
-    )
-    persons_covered = max_numeric_string(enrollment_rows)
+    benefit_pages = pages if benefit_page is None else pages[benefit_page:]
+    premium_rows = []
+    enrollment_rows = []
+    for page, text in benefit_pages:
+        text = text.split(benefit_heading, 1)[-1]
+        premium_rows.extend((page, value) for value in re.findall(
+            r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*([0-9,]+(?:\.\d{2})?)",
+            text, flags=re.IGNORECASE,
+        ))
+        enrollment_rows.extend((page, value) for value in re.findall(
+            r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*[0-9,]+(?:\.\d{2})?\s+"
+            r"\d[\d,]*\s*/\s*(\d[\d,]*)",
+            text, flags=re.IGNORECASE,
+        ))
+    total_premium = sum_money_values(*(value for _, value in premium_rows)) if premium_rows else None
+    persons_covered = max_numeric_string([value for _, value in enrollment_rows])
+    enrollment_page = next((page for page, value in enrollment_rows if value == persons_covered), source_page)
     fields: list[NormalizedExtractionField] = []
 
-    def add(field_name: str, value: str | None) -> None:
+    def add(field_name: str, value: str | None, page: int = source_page) -> None:
         clean = clean_extracted_value(str(value or ""))
         if clean and not is_blank_extraction_value(clean):
             fields.append(
@@ -9416,8 +9492,12 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
                     field_name=field_name,
                     value=clean,
                     confidence=0.995,
-                    page=source_page,
-                    source_text="Anthem combined Schedule A report",
+                    page=page,
+                    source_text=next(
+                        (line.strip() for current_page, text in pages if current_page == page
+                         for line in text.splitlines() if clean.casefold() in line.casefold()),
+                        None,
+                    ),
                 )
             )
 
@@ -9425,7 +9505,7 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
     add("1b. Insurance Carrier EIN", ein)
     add("1c. NAIC Code", naic)
     add("1d. Contract/Policy Number", contract)
-    add("1e. Persons Covered (End of Policy Year)", persons_covered)
+    add("1e. Persons Covered (End of Policy Year)", persons_covered, enrollment_page)
     if isinstance(period, tuple) and len(period) == 2:
         add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
         add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
@@ -9435,7 +9515,8 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         add("3c. Amount of Fees", sum_money_values(*(row.fee_total for row in rows)))
         add("3d. Purpose", "COMMISSIONS & FEES")
         add("3e. Organizational Code", "3")
-    add("10a. Total premiums or subscription charges paid to carrier", total_premium)
+    if premium_rows:
+        add("10a. Total premiums or subscription charges paid to carrier", total_premium, premium_rows[0][0])
     return fields
 
 

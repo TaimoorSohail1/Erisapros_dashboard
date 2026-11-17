@@ -46,7 +46,9 @@ class V1FeedbackSafetyTests(unittest.TestCase):
     def test_all_supported_free_text_limits_are_applied_only_at_send_boundary(self):
         for form, tag, size in ((FormType.FORM_5500, "SDName", 70),
                 (FormType.FORM_5500, "SDCity", 30), (FormType.SCHEDULE_A, "FeesPdText1", 70),
-                (FormType.SCHEDULE_A, "Name1", 35), (FormType.SCHEDULE_A, "City1", 30)):
+                (FormType.SCHEDULE_A, "Name1", 35), (FormType.SCHEDULE_A, "City1", 30),
+                (FormType.SCHEDULE_A, "AddressLine11", 35),
+                (FormType.SCHEDULE_A, "AddressLine2XX", 35)):
             with self.subTest(tag=tag):
                 source = "X" * (size + 10)
                 self.assertEqual(normalize_ftw_update_value(form, tag, source), source[:size])
@@ -55,8 +57,6 @@ class V1FeedbackSafetyTests(unittest.TestCase):
                     normalize_ftw_update_value(form, tag, source, truncate_text=False)
         with self.assertRaises(FTWPayloadValidationError):
             normalize_ftw_update_value(FormType.SCHEDULE_A, "InsContractNum", "1" * 41)
-        with self.assertRaises(FTWPayloadValidationError):
-            normalize_ftw_update_value(FormType.SCHEDULE_A, "AddressLine11", "X" * 40)
 
     def test_payment_purpose_change_is_an_actual_broker_update(self):
         review = FTWilliamsReview(filing_id="qa", schedule_a_broker_rows=[ScheduleABrokerRow(

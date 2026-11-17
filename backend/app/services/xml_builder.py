@@ -627,6 +627,13 @@ def _form_5500_sponsor_address_values(
         "SDState": parsed.get("state", ""),
         "SDZipCode": parsed.get("zip", ""),
     }
+    # The splitter leaves unresolved comma-delimited delivery details on line 1.
+    # Fit only a street we could separate from those details with confidence.
+    can_fit_street = "," not in candidates["SDAddressLine1"]
+    if can_fit_street:
+        candidates["SDAddressLine1"], candidates["SDAddressLine2"] = _fit_ftw_address_lines(
+            candidates["SDAddressLine1"], candidates["SDAddressLine2"],
+        )
     current_by_tag = {
         "SDAddressLine1": current.get("SDAddressLine1", ""),
         "SDAddressLine2": current.get("SDAddressLine2", ""),
@@ -643,6 +650,7 @@ def _form_5500_sponsor_address_values(
             tag,
             raw_value,
             uppercase_text=True,
+            truncate_text=tag != "SDAddressLine1" or can_fit_street,
         )
         if current_values is not None and not values_meaningfully_different(
             current_by_tag.get(tag, ""),
@@ -663,9 +671,55 @@ def _split_form_5500_sponsor_address(
     current_zip = str(current_values.get("SDZipCode") or "").strip()
     current_line_2 = str(current_values.get("SDAddressLine2") or "").strip()
 
+    locality_match = re.fullmatch(
+        r"(?P<street>.+),\s*(?P<city>[A-Za-z][A-Za-z .'-]*?)(?:\s*,\s*|\s+)(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
+        proposed,
+    )
+    if locality_match:
+        street, line_2 = _split_form_5500_street_and_line_2(
+            locality_match.group("street").strip(" ,")
+        )
+        return {
+            "street": street,
+            "line2": line_2,
+            "city": locality_match.group("city").strip(" ,"),
+            "state": locality_match.group("state"),
+            "zip": locality_match.group("zip"),
+        }
+
+    suffix_match = re.fullmatch(
+        r"(?P<body>.+?)(?:\s*,\s*|\s+)(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
+        proposed,
+    )
+    if suffix_match:
+        secondary = (
+            r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
+            r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
+            r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
+            r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
+        )
+        unit_city_separator = r"(?:[.,]\s*|\s+)"
+        street_city_match = re.fullmatch(
+            rf"(?P<street>\d[^,]*?)\s+(?P<line2>{secondary}){unit_city_separator}(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            suffix_match.group("body"),
+            flags=re.IGNORECASE,
+        ) or re.fullmatch(
+            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|SQ|SQUARE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary}){unit_city_separator})?(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            suffix_match.group("body"),
+            flags=re.IGNORECASE,
+        )
+        if street_city_match:
+            return {
+                "street": street_city_match.group("street").strip(" ,"),
+                "line2": str(street_city_match.group("line2") or "").strip(" ,"),
+                "city": street_city_match.group("city").strip(" ,"),
+                "state": suffix_match.group("state"),
+                "zip": suffix_match.group("zip"),
+            }
+
     if current_city:
         city_matches = list(re.finditer(rf"\b{re.escape(current_city)}\b", proposed, flags=re.IGNORECASE))
-        if city_matches:
+        if city_matches and not proposed[city_matches[-1].end():].strip(" ,"):
             city_match = city_matches[-1]
             street = proposed[: city_match.start()].strip(" ,")
             line_2 = ""
@@ -690,47 +744,6 @@ def _split_form_5500_sponsor_address(
                     "zip": current_zip,
                 }
 
-    locality_match = re.fullmatch(
-        r"(?P<street>.+),\s*(?P<city>[A-Za-z][A-Za-z .'-]*?)(?:\s*,\s*|\s+)(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
-        proposed,
-    )
-    if locality_match:
-        street, line_2 = _split_form_5500_street_and_line_2(
-            locality_match.group("street").strip(" ,")
-        )
-        return {
-            "street": street,
-            "line2": line_2,
-            "city": locality_match.group("city").strip(" ,"),
-            "state": locality_match.group("state"),
-            "zip": locality_match.group("zip"),
-        }
-
-    suffix_match = re.fullmatch(
-        r"(?P<body>.+?)\s+(?P<state>[A-Za-z]{2})\s+(?P<zip>\d{5}(?:[- ]?\d{4})?)",
-        proposed,
-    )
-    if suffix_match:
-        secondary = (
-            r"(?:\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FL)"
-            r"|(?:FLOOR|FL)\s+\d+[A-Za-z]?"
-            r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
-            r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
-        )
-        street_city_match = re.fullmatch(
-            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|SQ|SQUARE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
-            suffix_match.group("body"),
-            flags=re.IGNORECASE,
-        )
-        if street_city_match:
-            return {
-                "street": street_city_match.group("street").strip(" ,"),
-                "line2": str(street_city_match.group("line2") or "").strip(" ,"),
-                "city": street_city_match.group("city").strip(" ,"),
-                "state": suffix_match.group("state"),
-                "zip": suffix_match.group("zip"),
-            }
-
     # With no trustworthy separator, only the street field can be changed.
     # Locality fields are deliberately omitted and therefore preserved by FTW.
     return {"street": proposed}
@@ -738,8 +751,7 @@ def _split_form_5500_sponsor_address(
 
 def _split_form_5500_street_and_line_2(value: str) -> tuple[str, str]:
     # A labelled office/unit can precede the numbered street. Move the entire
-    # comma-delimited prefix, preserving its name and identifier; normal FTW
-    # validation still rejects either line if it exceeds the contract limit.
+    # comma-delimited prefix so the street and office use their own FTW limits.
     prefix_match = re.fullmatch(
         r"(?P<line2>[^,]*\b(?:OFFICE|SUITE|STE|UNIT|ROOM|RM|DEPT|BLDG|BUILDING)"
         r"\s+(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]+),\s*"
@@ -1284,7 +1296,7 @@ def _schedule_a_broker_row_update_values(
             reason="recipient requires review before an automatic update payload can be generated",
         )])
     name = _ftw_broker_name(_broker_row_attr(row, "name"))
-    address_line_1, address_line_2 = _ftw_broker_address_lines(
+    address_line_1, address_line_2 = _fit_ftw_address_lines(
         _broker_row_attr(row, "address_line_1"),
         _broker_row_attr(row, "address_line_2"),
     )
@@ -1357,8 +1369,8 @@ def _ftw_broker_name(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
-    """Fit a structured broker address into FT Williams' two 35-character lines."""
+def _fit_ftw_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
+    """Fit a structured address into FT Williams' two 35-character lines."""
     first = re.sub(r"\s+", " ", str(address_line_1 or "")).strip(" ,")
     second = re.sub(r"\s+", " ", str(address_line_2 or "")).strip(" ,")
     if len(first) <= 35 and len(second) <= 35:
@@ -1386,9 +1398,11 @@ def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple
             components[1] if len(components) == 2 else "",
         )
 
-    # Do not truncate an address. Returning the cleaned original values lets the
-    # FTW contract validator fail locally before any external request is sent.
-    return first, second
+    # Keep an explicitly provided second line. Otherwise use it for overflow
+    # before applying the field limits to the outgoing values.
+    if second:
+        return first, second
+    return components[0], ", ".join(components[1:])
 
 
 def _broker_row_attr(row: object, key: str) -> str:

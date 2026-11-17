@@ -16,7 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=builder /opt/python /opt/python
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr \
+    && apt-get install -y --no-install-recommends libatomic1 poppler-utils tesseract-ocr \
     && rm -rf /var/lib/apt/lists/* \
     && PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 python -m playwright install --with-deps chromium \
     && useradd --create-home --uid 10001 app \

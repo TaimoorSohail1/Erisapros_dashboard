@@ -30,6 +30,15 @@ const filing = {
     plan_lookup: { status: "FOUND", matches: [], error_message: scenario === "failed" ? "Synthetic connection error. Retry the query." : "" },
   },
 };
+if (scenario === "form5500-missing" || scenario === "plan-not-found") {
+  const missingForm = scenario === "form5500-missing";
+  Object.assign(filing.ftw_review, {
+    configured: true, current_query_sent: true, current_query_success: false, current_query_complete: false,
+    current_year_exists: false, bring_forward_required: missingForm,
+    query_state: missingForm ? "FORM_5500_MISSING" : "PLAN_MATCH_REQUIRED",
+    plan_lookup: { status: missingForm ? "MATCHED" : "NOT_FOUND", matches: [], error_message: "" },
+  });
+}
 if (scenario === "customer-defaults") {
   Object.assign(filing.schedule_a_broker_rows[0], { organization_code: "3", organization_code_defaulted: true });
   Object.assign(filing.schedule_a_broker_rows[1], { organization_code: "6", organization_code_defaulted: false });

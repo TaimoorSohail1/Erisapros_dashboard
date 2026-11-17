@@ -23,7 +23,12 @@ from app.models import (
     SourceEvidence,
 )
 from app.services.field_rules import rules_for_form_type
-from app.services.schedule_a_classification import classify_schedule_a_values, classification_signals_from_text
+from app.services.schedule_a_classification import (
+    APPLIED_PREMIUM,
+    WELFARE_CONTRACT_HEADER,
+    classification_signals_from_text,
+    classify_schedule_a_values,
+)
 from app.services.schedule_a_broker_validation import (
     SOURCE_REVIEW_VALIDATORS, broker_address_semantic_issue, hold_invalid_source_zip_codes,
     hold_possible_recipient_aliases, hold_invalid_source_organization_codes,
@@ -565,8 +570,12 @@ def _validate_financial_section_context(
             or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)
             or re.search(r"\btotal\s+premium\s+received\b", normalized)
             or re.search(
-                r"\btotal\s+premiums?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrie[rl]",
+                r"\btotal\s+premiums?\s*\*?\s+or\s+subscriptions?\s+charges\s+paid\s+to\s+carrie[rl]",
                 normalized,
+            )
+            or (
+                WELFARE_CONTRACT_HEADER.search(normalized)
+                and APPLIED_PREMIUM.search(normalized)
             )
             or (
                 re.search(r"\bgross\s+premium\s+paid\b", normalized)

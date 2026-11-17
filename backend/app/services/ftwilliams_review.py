@@ -157,7 +157,6 @@ def _source_reports_no_broker_compensation(fields: list[ExtractedField]) -> bool
 
 
 class FTWilliamsReviewService:
-    _SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN = 4
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
         self.ftwilliams = ftwilliams or FTWilliamsService()
 
@@ -227,6 +226,9 @@ class FTWilliamsReviewService:
             if not filing or filing.id != filing_id:
                 raise ValueError("Filing not found")
 
+        existing_review = self._discard_unsubmitted_auto_new_target_after_source_change(
+            existing_review, fields,
+        )
         original_fields = list(fields)
         automatic_field_state = self._automatic_field_state(fields)
 
@@ -268,6 +270,7 @@ class FTWilliamsReviewService:
         current_query_failed = False
         current_year_exists = False
         bring_forward_required = False
+        form_5500_missing = False
         comparison_year: str | None = None
         comparison_year_source: str | None = None
         create_new_schedule_a = bool((existing_review.schedule_a_match or {}).get("create_new")) if existing_review else False
@@ -301,6 +304,7 @@ class FTWilliamsReviewService:
             current_query_complete = existing_review.current_query_complete
             current_year_exists = existing_review.current_year_exists
             bring_forward_required = existing_review.bring_forward_required
+            form_5500_missing = existing_review.query_state == FTWilliamsQueryState.FORM_5500_MISSING
             comparison_year = existing_review.comparison_year
             comparison_year_source = existing_review.comparison_year_source
 
@@ -342,9 +346,21 @@ class FTWilliamsReviewService:
                 current_query_failed = query_result["current_query_failed"]
                 current_year_exists = query_result["current_year_exists"]
                 bring_forward_required = query_result["bring_forward_required"]
+                form_5500_missing = query_result["form_5500_missing"]
                 comparison_year = query_result["comparison_year"]
                 comparison_year_source = query_result["comparison_year_source"]
-                if query_result["current_query_failed"] and existing_review and self._review_has_valid_current_snapshot(existing_review):
+                recovery_required = bool(
+                    active_failure
+                    and bring_forward_required
+                    and existing_review
+                    and existing_review.schedule_a_records
+                    and self._matches_snapshot_target(existing_review, current_query_payload_base)
+                )
+                if (
+                    (current_query_failed or recovery_required)
+                    and existing_review
+                    and self._review_has_valid_current_snapshot(existing_review)
+                ):
                     form_5500_current = dict(existing_review.form_5500_current_values)
                     schedule_a_current = dict(existing_review.schedule_a_current_values)
                     schedule_a_candidates = list(existing_review.schedule_a_candidates or [])
@@ -355,8 +371,15 @@ class FTWilliamsReviewService:
                     bring_forward_required = False
                     comparison_year = existing_review.comparison_year
                     comparison_year_source = existing_review.comparison_year_source
-                    preservation_note = "FT Williams current data could not be refreshed; the last valid snapshot was preserved for safety."
-                    error_message = "; ".join(filter(None, [preservation_note, error_message]))
+                    if recovery_required:
+                        current_query_failed = True
+                        error_message = (
+                            "FT Williams no longer returns the previously loaded current-year Schedule A records. "
+                            "The pre-update snapshot is preserved. Contact support for recovery before continuing."
+                        )
+                    else:
+                        preservation_note = "FT Williams current data could not be refreshed; the last valid snapshot was preserved for safety."
+                        error_message = "; ".join(filter(None, [preservation_note, error_message]))
 
         selected_schedule_desc = None
         if matched_schedule_a:
@@ -600,6 +623,7 @@ class FTWilliamsReviewService:
             attempted=send_queries or bool(existing_review and existing_review.current_query_sent),
             success=current_query_success,
             bring_forward_required=bring_forward_required,
+            form_5500_missing=form_5500_missing,
             plan_lookup=plan_lookup,
         )
 
@@ -1528,13 +1552,46 @@ class FTWilliamsReviewService:
     def _possible_padded_contract_matches(selected, records):
         """A zero suffix is a review hint, never permission to trim an ID."""
         contract = FTWilliamsReviewService._contract_text(selected.get('contract')).lstrip('0')
+        contract_core = contract.rstrip('0')
         ein = re.sub(r'\D', '', str(selected.get('carrier_ein') or ''))
-        if not contract.isdigit() or not ein:
+        if not re.search(r'[0-9]', contract_core) or not ein:
             return []
-        return [record for record in records if (
-            re.sub(r'\D', '', str((record.get('query_results') or {}).get('InsCarrierEIN') or '')) == ein
-            and (other := FTWilliamsReviewService._contract_text((record.get('query_results') or {}).get('InsContractNum')).lstrip('0')).isdigit()
-            and other != contract and other.rstrip('0') == contract.rstrip('0'))]
+        possible_matches = []
+        for record in records:
+            values = record.get("query_results") or {}
+            record_ein = re.sub(r"\D", "", str(values.get("InsCarrierEIN") or ""))
+            other = FTWilliamsReviewService._contract_text(values.get("InsContractNum")).lstrip("0")
+            if record_ein == ein and other != contract and other.rstrip("0") == contract_core:
+                possible_matches.append(record)
+        return possible_matches
+
+    def _discard_unsubmitted_auto_new_target_after_source_change(
+        self, review: FTWilliamsReview | None, fields: list[ExtractedField],
+    ) -> FTWilliamsReview | None:
+        match = review.schedule_a_match if review else None
+        if (
+            not match
+            or not match.get("create_new")
+            or match.get("source") != "AUTO_NEW_SCHEDULE_A"
+            or match.get("new_target_confirmed")
+            or review.update_attempted_count
+            or review.update_response_xml
+            or review.active_failure
+            or review.status in {
+                FTWilliamsReviewStatus.UPDATE_SENT,
+                FTWilliamsReviewStatus.UPDATE_FAILED,
+                FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+            }
+        ):
+            return review
+        contract = self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number")
+        ein = self._field_value_by_rule(fields, "schedule_a_part_i_1b_insurance_carrier_ein")
+        if (
+            self._normalize_contract(contract) != self._normalize_contract(match.get("contract"))
+            or self._normalize_ein_digits(ein) != self._normalize_ein_digits(match.get("carrier_ein"))
+        ):
+            return review.model_copy(update={"schedule_a_match": None})
+        return review
 
     @staticmethod
     def _padded_contract_review_error(selected, records):
@@ -2055,7 +2112,7 @@ class FTWilliamsReviewService:
                 recovered_mapping = saved_matches[0]
                 lookup.company_employer_id = recovered_mapping.company_employer_id
                 lookup.plan_number = recovered_mapping.plan_number
-                lookup.year = recovered_mapping.year or lookup.year
+                lookup.year = lookup.year or recovered_mapping.year
                 lookup.plan_name = lookup.plan_name or recovered_mapping.plan_name
                 lookup.sponsor_name = lookup.sponsor_name or recovered_mapping.sponsor_name
             else:
@@ -2076,7 +2133,7 @@ class FTWilliamsReviewService:
             self._plan_name_key(lookup.plan_name),
         )
         if stored_mapping:
-            lookup.year = stored_mapping.year or lookup.year
+            lookup.year = lookup.year or stored_mapping.year
             mapping_identity = self._identity_from_mapping(stored_mapping)
             lookup.matches = [self._mapping_match(stored_mapping)]
             lookup.matched_identity = {**derived_identity, **mapping_identity}
@@ -2287,9 +2344,13 @@ class FTWilliamsReviewService:
         settings = get_settings()
         key = (
             str(settings.ftwlink_endpoint_url or ""),
+            str(getattr(filing, "workspace_id", None) or ""),
             str(identifiers.get("company_employer_id") or ""),
             str(identifiers.get("plan_number") or ""),
             str(identifiers.get("year") or ""),
+            str(identifiers.get("plan_name") or ""),
+            str(identifiers.get("company_state") or ""),
+            *tuple(identifiers.get("company_name_candidates") or ()),
         )
         now = time.monotonic()
         ttl = max(0, settings.ftw_snapshot_ttl_seconds)
@@ -2521,6 +2582,26 @@ class FTWilliamsReviewService:
             lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
             return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
 
+        lookup_ein = self._normalize_ein_digits(lookup.company_employer_id)
+        lookup_number = self._normalize_plan_number(lookup.plan_number)
+        if len(lookup_ein) == 9 and lookup_number:
+            identity_matches = [
+                record for record in records
+                if self._normalize_ein_digits(record.get("CompanyEmployerID")) == lookup_ein
+                and self._normalize_plan_number(record.get("PlanNumber")) == lookup_number
+            ]
+            if any(self._plan_names_differ_by_dba(
+                lookup.plan_name, record.get("PlanLine1") or record.get("PlanName"),
+            ) for record in identity_matches):
+                if len(identity_matches) == 1:
+                    match = identity_matches[0]
+                    self._append_plan_ids_batch_summary(lookup, len(records), match)
+                    return await self._accept_plan_ids_batch_match(lookup, repo, match)
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.matches = identity_matches
+                lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+                return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
+
         probe_limit = max(1, min(50, get_settings().ftw_plan_lookup_probe_limit))
         ranked_candidates = sorted(
             (
@@ -2621,8 +2702,13 @@ class FTWilliamsReviewService:
             lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
             return "PlanIDs_Batch returned multiple possible plan matches."
         if len(records) == 1:
-            self._append_plan_ids_batch_summary(lookup, len(records), records[0])
-            return await self._accept_plan_ids_batch_match(lookup, repo, records[0])
+            record = records[0]
+            if (record.get("PlanLine1") or record.get("PlanName")) and self._plan_lookup_score(record, lookup) < 0:
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
+                return "PlanIDs_Batch did not verify the extracted plan. Select the FT Williams plan manually."
+            self._append_plan_ids_batch_summary(lookup, len(records), record)
+            return await self._accept_plan_ids_batch_match(lookup, repo, record)
         self._append_plan_ids_batch_summary(lookup, len(records))
         lookup.matches = probe_records
         lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
@@ -2758,13 +2844,34 @@ class FTWilliamsReviewService:
         result["current_year_exists"] = current_year_exists
         result["bring_forward_required"] = missing_required_record
         if missing_required_record:
+            record_name = "Form 5500" if result["form_5500_missing"] else "Schedule A"
             note = (
-                f"The required current-year {target_year} FT Williams record is missing. "
+                f"The required current-year {target_year} FT Williams {record_name} is missing. "
                 "Use FT Williams' native Bring Forward action, then refresh FTW data. "
                 "No prior-year values were loaded into this comparison."
             )
             result["error_message"] = "; ".join(filter(None, [note, result["error_message"]]))
         return result
+
+    async def confirm_prior_year_form_5500(self, review: FTWilliamsReview) -> bool:
+        """Verify the source Form 5500 before creating a current-year filing."""
+        year = self._normalize_year(review.year)
+        lookup = review.plan_lookup
+        if not year or not lookup or not review.ftw_customer_id or not review.ftw_plan_id:
+            return False
+        response = await self.ftwilliams.run_query(FTWilliamsQueryRequest(
+            operation="query_5500", send=True, year=str(int(year) - 1),
+            ftw_customer_id=review.ftw_customer_id, ftw_plan_id=review.ftw_plan_id,
+        ))
+        if not response.success or len(response.statuses) != 1:
+            return False
+        current = {k.casefold(): v for k, v in response.statuses[0].query_results.items()}
+        ein = self._normalize_ein_digits(current.get("sdein") or current.get("spons_dfe_ein"))
+        number = self._normalize_plan_number(
+            current.get("sponsdfeplannum") or current.get("spons_dfe_pn"),
+        )
+        return bool(ein and number and ein == self._normalize_ein_digits(lookup.company_employer_id)
+                    and number == self._normalize_plan_number(lookup.plan_number))
 
     async def _run_current_queries_for_year(
         self,
@@ -2791,6 +2898,7 @@ class FTWilliamsReviewService:
         schedule_a_error = snapshot["schedule_a_error"]
         existing_match = existing_review.schedule_a_match if existing_review else None
         existing_create_new = bool((existing_match or {}).get("create_new"))
+        tied_schedule_a = False
         if schedule_statuses:
             schedule_a_candidates = self._schedule_candidate_payloads(schedule_statuses, fields)
             schedule_a_records = self._schedule_record_payloads(schedule_statuses)
@@ -2839,12 +2947,11 @@ class FTWilliamsReviewService:
                     None,
                 )
             elif not existing_create_new:
-                matched_schedule_a = self._match_schedule_a_status(
-                    fields,
-                    schedule_statuses,
-                    preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
-                )
-                if not matched_schedule_a:
+                top_matches = self._top_schedule_a_matches(fields, schedule_statuses)
+                tied_schedule_a = len(top_matches) > 1
+                if len(top_matches) == 1:
+                    matched_schedule_a = top_matches[0]
+                elif not tied_schedule_a:
                     automatic_schedule_a_match = self._automatic_new_schedule_a_match(
                         fields,
                         schedule_statuses,
@@ -2853,7 +2960,9 @@ class FTWilliamsReviewService:
                     if automatic_schedule_a_match:
                         existing_create_new = True
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
-            if not matched_schedule_a and not existing_create_new:
+            if tied_schedule_a:
+                schedule_a_error = "Multiple eligible FT Williams Schedule A records share the highest match score. Select the correct record to continue."
+            elif not matched_schedule_a and not existing_create_new:
                 schedule_a_error = (
                     "FT Williams Schedule A records were found, but none safely matched the extracted "
                     "carrier, EIN, NAIC, or contract. Select the correct existing record or create a new Schedule A."
@@ -2871,7 +2980,8 @@ class FTWilliamsReviewService:
             not expects_schedule_a or bool(schedule_a_current) or has_preserved_schedule_set
         )
         current_query_failed = bool(
-            (expects_form_5500 and snapshot["form_5500_query_failed"])
+            ((expects_form_5500 or (expects_schedule_a and not schedule_a_candidates))
+             and snapshot["form_5500_query_failed"])
             or (expects_schedule_a and snapshot["schedule_a_query_failed"])
         )
 
@@ -2888,6 +2998,7 @@ class FTWilliamsReviewService:
             "current_query_success": has_any_current and not current_query_failed,
             "current_query_complete": has_required_current and not current_query_failed,
             "current_query_failed": current_query_failed,
+            "form_5500_missing": bool(snapshot.get("form_5500_missing")),
         }
 
     async def _current_data_snapshot(self, query_payload_base: dict, *, reuse: bool) -> dict:
@@ -2947,6 +3058,7 @@ class FTWilliamsReviewService:
             "form_5500_current": form_5500_current,
             "form_5500_error": form_5500_error,
             "form_5500_query_failed": form_5500_query_failed,
+            "form_5500_missing": self._response_explicitly_reports_missing(query_5500),
             "schedule_statuses": schedule_statuses,
             "schedule_a_error": schedule_a_error,
             "schedule_a_query_failed": bool(schedule_a_error),
@@ -2962,6 +3074,15 @@ class FTWilliamsReviewService:
             str(query_payload_base.get("plan_id") or ""),
             str(query_payload_base.get("year") or ""),
         )
+
+    def _matches_snapshot_target(self, review: FTWilliamsReview, current: dict) -> bool:
+        previous = self._current_query_identity_from_review(review)
+        if not previous.get("year") or previous["year"] != current.get("year"):
+            return False
+        ids = ("ftw_customer_id", "ftw_plan_id")
+        if not all(previous.get(key) and current.get(key) for key in ids):
+            ids = ("customer_id", "plan_id")
+        return all(previous.get(key) and previous[key] == current.get(key) for key in ids)
 
     @staticmethod
     def _review_has_valid_current_snapshot(review: FTWilliamsReview) -> bool:
@@ -3429,25 +3550,33 @@ class FTWilliamsReviewService:
             filter(None, [response.error or self._status_error(response.statuses) for response in responses])
         )
 
+        verification = None
         if any(self._update_response_is_ambiguous(response) for response in responses):
-            ambiguous_schedule_response = any(
-                response.operation == "update_schedule_a" and self._update_response_is_ambiguous(response)
-                for response in responses
-            )
-            if ambiguous_schedule_response and schedule_a_snapshot_xml:
-                schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
-                recovery_responses.extend(schedule_a_restore.get("responses") or [])
-            return await self._record_ambiguous_update(
-                repo,
-                filing_id,
-                review,
-                attempted_fields,
-                attempted_field_keys,
-                responses,
-                schedule_a_restore=schedule_a_restore,
-                recovery_responses=recovery_responses,
-                manual_selection=selected_field_ids is not None,
-            )
+            # A malformed Schedule A response does not say whether FT Williams
+            # saved the replacement, preserved the original, or lost records.
+            if any(response.operation == "update_schedule_a" for response in responses):
+                clear_ftw_current_snapshot_cache()
+                verification = await self._verify_update_readback(review)
+            if not verification or not verification["success"]:
+                if (
+                    verification
+                    and schedule_a_snapshot_xml
+                    and self._schedule_a_verification_confirms_corruption(verification["mismatches"])
+                ):
+                    schedule_a_restore = await self._restore_schedule_a_snapshot(review, schedule_a_snapshot_xml)
+                    recovery_responses.extend(schedule_a_restore.get("responses") or [])
+                return await self._record_ambiguous_update(
+                    repo,
+                    filing_id,
+                    review,
+                    attempted_fields,
+                    attempted_field_keys,
+                    responses,
+                    verification=verification,
+                    schedule_a_restore=schedule_a_restore,
+                    recovery_responses=recovery_responses,
+                    manual_selection=selected_field_ids is not None,
+                )
 
         mixed_schedule_response = next(
             (
@@ -3458,7 +3587,7 @@ class FTWilliamsReviewService:
             ),
             None,
         )
-        if mixed_schedule_response is not None:
+        if mixed_schedule_response is not None and verification is None:
             vendor_error = self._status_error(mixed_schedule_response.statuses)
             error_message = "FT Williams partially accepted the Schedule A replacement set" + (
                 f": {vendor_error}" if vendor_error else "."
@@ -3475,9 +3604,10 @@ class FTWilliamsReviewService:
             else:
                 error_message += " No complete pre-update snapshot was available; manual FT Williams recovery is required."
 
-        if ftw_accepted:
-            clear_ftw_current_snapshot_cache()
-            verification = await self._verify_update_readback(review)
+        if ftw_accepted or verification:
+            if verification is None:
+                clear_ftw_current_snapshot_cache()
+                verification = await self._verify_update_readback(review)
             verification_attempted = True
             verification_success = bool(verification["success"])
             verification_mismatches = verification["mismatches"]
@@ -3486,6 +3616,7 @@ class FTWilliamsReviewService:
             verification_observations = deepcopy(verification.get("observations") or [])
             if verification_success:
                 success = True
+                error_message = None
             else:
                 mismatch_fields = ", ".join(
                     str(item.get("tag") or item.get("form") or "field")
@@ -3546,7 +3677,7 @@ class FTWilliamsReviewService:
         review.query_access_verified = bool(
             review.current_query_success and review.current_query_complete is not False
         )
-        review.update_access_status = "GRANTED" if ftw_accepted else "DENIED"
+        review.update_access_status = "GRANTED" if ftw_accepted or verification_success else "DENIED"
         review.edit_check_baseline_request_xml = preserved_baseline["request"]
         review.edit_check_baseline_response_xml = preserved_baseline["response"]
         review.edit_check_baseline_success = preserved_baseline["success"]
@@ -3830,7 +3961,7 @@ class FTWilliamsReviewService:
         response = await self.ftwilliams.send_xml("update_schedule_a", restore_xml)
         result["responses"] = [response]
         result["response_xml"] = response.raw_response or response.error
-        if not response.success or self._update_response_is_ambiguous(response):
+        if not response.success and not self._update_response_is_ambiguous(response):
             result["verification_mismatches"] = [
                 {
                     "form": "DOLScheduleAData",
@@ -4100,6 +4231,19 @@ class FTWilliamsReviewService:
             )
             request_xmls.extend(schedule_requests)
             response_xmls.extend(schedule_responses)
+            if schedule_error:
+                mismatches.append({
+                    "form": "DOLScheduleAData",
+                    "tag": "Schedule A query",
+                    "category": "QUERY",
+                    "reason": schedule_error,
+                })
+                return {
+                    "mismatches": mismatches,
+                    "request_xmls": request_xmls,
+                    "response_xmls": response_xmls,
+                    "observations": observations,
+                }
             unused_statuses = list(statuses)
             for document in schedule_documents:
                 matched = self._match_readback_schedule_status(document, unused_statuses)
@@ -4860,6 +5004,7 @@ class FTWilliamsReviewService:
         attempted_field_keys: set[str],
         responses: list,
         *,
+        verification: dict | None = None,
         schedule_a_restore: dict | None = None,
         recovery_responses: list | None = None,
         manual_selection: bool = False,
@@ -4901,9 +5046,11 @@ class FTWilliamsReviewService:
                 [response.raw_response or response.error or self._status_error(response.statuses) for response in responses],
             )
         ) or None
-        review.update_verification_attempted = False
-        review.update_verification_success = None
-        review.update_verification_mismatches = []
+        review.update_verification_attempted = verification is not None
+        review.update_verification_success = False if verification is not None else None
+        review.update_verification_mismatches = list((verification or {}).get("mismatches") or [])
+        review.update_verification_request_xml = (verification or {}).get("request_xml")
+        review.update_verification_response_xml = (verification or {}).get("response_xml")
         review.schedule_a_restore_attempted = bool(schedule_a_restore["attempted"])
         review.schedule_a_restore_success = schedule_a_restore["success"]
         review.schedule_a_restore_response_xml = schedule_a_restore["response_xml"]
@@ -4949,8 +5096,8 @@ class FTWilliamsReviewService:
                     "update_confirmed_count": 0,
                     "update_remaining_count": len(attempted_field_keys),
                     "update_retry_count": 0,
-                    "verification_attempted": False,
-                    "verification_success": None,
+                    "verification_attempted": review.update_verification_attempted,
+                    "verification_success": review.update_verification_success,
                     "schedule_a_restore_attempted": review.schedule_a_restore_attempted,
                     "schedule_a_restore_success": review.schedule_a_restore_success,
                     "error_code": review.active_failure_client_error.code if review.active_failure_client_error else None,
@@ -5217,8 +5364,21 @@ class FTWilliamsReviewService:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason
                 validation_blocking = True
+            retains_matching_current = (
+                field.form_type == FormType.SCHEDULE_A
+                and field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                and not extracted_proposed_value.strip()
+                and current_value.strip()
+                and str(field.value or "").strip()
+                and field.status_reason == (
+                    "Extraction requires review; automatic proposal withheld. "
+                    "Automatic extraction requires a source page and source text that supports the extracted value."
+                )
+                and not values_meaningfully_different(current_value, field.value, tag=tag)
+            )
             if (
                 field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                and not retains_matching_current
                 and not extracted_proposed_value.strip()
                 and not source_less_zero_default
                 and (str(field.value or "").strip() or str(field.source_text or "").strip())
@@ -5275,6 +5435,9 @@ class FTWilliamsReviewService:
             elif not contract_type_allowed:
                 decision = FTWFieldDecision.NO_CHANGE
                 decision_reason = "The field does not apply to the selected Schedule A contract type."
+            elif retains_matching_current:
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = "The extracted value matches FT Williams and no update is required."
             elif not extracted_proposed_value.strip():
                 if current_value.strip():
                     decision = FTWFieldDecision.KEEP_CURRENT
@@ -6558,65 +6721,31 @@ class FTWilliamsReviewService:
         self,
         fields: list[ExtractedField],
         statuses: list[FTWilliamsStatusItem],
-        preferred_ftw_seq_no: str | None = None,
     ) -> FTWilliamsStatusItem | None:
-        candidates = [status for status in statuses if status.query_results]
-        if not candidates:
-            return statuses[0] if statuses else None
-        scored = sorted(
-            ((self._schedule_match_details(fields, status), status) for status in candidates),
-            key=lambda item: (item[0]["score"], item[0]["strong_matches"], item[0]["filled"]),
-            reverse=True,
-        )
-        top_match, top_status = scored[0]
-        if preferred_ftw_seq_no:
-            preferred_item = next(
-                (
-                    (details, status)
-                    for details, status in scored
-                    if str(status.ftw_seq_no or "") == str(preferred_ftw_seq_no)
-                ),
-                None,
+        winners = self._top_schedule_a_matches(fields, statuses)
+        return winners[0] if len(winners) == 1 else None
+
+    def _top_schedule_a_matches(
+        self,
+        fields: list[ExtractedField],
+        statuses: list[FTWilliamsStatusItem],
+    ) -> list[FTWilliamsStatusItem]:
+        eligible: list[tuple[int, FTWilliamsStatusItem]] = []
+        for status in statuses:
+            if not status.query_results or self._schedule_identity_conflicts(fields, status):
+                continue
+            details = self._schedule_match_details(fields, status)
+            has_identity_evidence = details["strong_matches"] > 0 or (
+                "Carrier name" in details["reasons"]
+                and details["reasons"].count("Policy date") >= 2
             )
-            if preferred_item:
-                preferred_match, preferred_status = preferred_item
-                preferred_is_current_best = (
-                    preferred_match["score"] >= top_match["score"]
-                    and preferred_match["strong_matches"] >= top_match["strong_matches"]
-                    and not self._schedule_identity_conflicts(fields, preferred_status)
-                )
-                if preferred_is_current_best:
-                    return preferred_status
-        safe_identity_match = top_match["strong_matches"] > 0 or (
-            "Carrier name" in top_match["reasons"]
-            and top_match["reasons"].count("Policy date") >= 2
-        )
-        if (
-            top_match["score"] <= 0
-            or not safe_identity_match
-            or self._schedule_identity_conflicts(fields, top_status)
-        ):
-            return None
-        if (
-            len(scored) > 1
-            and scored[1][0]["score"] == top_match["score"]
-            and scored[1][0]["strong_matches"] == top_match["strong_matches"]
-        ):
-            return None
-        if len(scored) > 1:
-            runner_up = scored[1][0]
-            exact_contract_breaks_normalization_tie = bool(
-                "Exact contract" in top_match["reasons"]
-                and "Contract" in runner_up["reasons"]
-                and top_match["strong_matches"] >= runner_up["strong_matches"]
-            )
-            if (
-                top_match["score"] - runner_up["score"]
-                < self._SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN
-                and not exact_contract_breaks_normalization_tie
-            ):
-                return None
-        return top_status
+            if has_identity_evidence:
+                eligible.append((details["score"], status))
+
+        if not eligible:
+            return []
+        top_score = max(score for score, _ in eligible)
+        return [status for score, status in eligible if score == top_score]
 
     def _schedule_identity_conflicts(
         self,
@@ -7892,14 +8021,6 @@ class FTWilliamsReviewService:
         for tag, label in indicators:
             values[tag] = "1" if label.casefold() in selected else "0"
 
-    def _preferred_schedule_a_sequence(self, review: FTWilliamsReview | None) -> str | None:
-        if not review or not review.schedule_a_match:
-            return None
-        if str(review.schedule_a_match.get("source") or "").upper() != "MANUAL":
-            return None
-        value = review.schedule_a_match.get("ftw_seq_no")
-        return str(value) if value else None
-
     def _plan_lookup_matches(self, matches: list[dict[str, str]], lookup: FTWilliamsPlanLookup) -> list[dict[str, str]]:
         if not matches:
             return []
@@ -7972,6 +8093,21 @@ class FTWilliamsReviewService:
                 score += 2
                 break
         return score
+
+    @staticmethod
+    def _plan_names_differ_by_dba(first: str | None, second: str | None) -> bool:
+        names = (normalize_compare_value(first), normalize_compare_value(second))
+        for alias_name, legal_name in (names, names[::-1]):
+            parts = re.split(r"\s+(?:dba|d b a|d/b/a|doing business as)\s+", alias_name)
+            if len(parts) != 2:
+                continue
+            prefix, trade_and_plan = parts
+            if len(prefix.split()) < 2 or not legal_name.startswith(prefix + " "):
+                continue
+            plan = legal_name[len(prefix) + 1:]
+            if len(plan.split()) >= 2 and plan.endswith(" plan") and trade_and_plan.endswith(" " + plan):
+                return True
+        return False
 
     def _plan_ids_probe_score(self, match: dict[str, str], lookup: FTWilliamsPlanLookup) -> int:
         """Rank batch identifiers using only metadata available before a plan query."""
@@ -8081,8 +8217,11 @@ class FTWilliamsReviewService:
         success: bool,
         bring_forward_required: bool,
         plan_lookup: FTWilliamsPlanLookup,
+        form_5500_missing: bool = False,
     ) -> FTWilliamsQueryState:
         if bring_forward_required:
+            if form_5500_missing:
+                return FTWilliamsQueryState.FORM_5500_MISSING
             return FTWilliamsQueryState.SCHEDULE_A_MISSING
         if success:
             return FTWilliamsQueryState.MATCHED

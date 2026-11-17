@@ -5,10 +5,24 @@ from datetime import datetime, timedelta
 import re
 
 
+_MONTH_NAME = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+_PERIOD_DATE = (
+    rf"(?:[0-9]{{4}}-[0-9]{{1,2}}-[0-9]{{1,2}}|[0-9]{{1,2}}-[0-9]{{1,2}}-[0-9]{{4}}"
+    rf"|[0-9]{{1,2}}(?:/[0-9]{{1,2}})?/[0-9]{{4}}|{_MONTH_NAME}\s+[0-9]{{1,2}},?\s+[0-9]{{4}})"
+)
 _PERIOD = re.compile(
-    r"\b(?:(?:Contract/Policy|Contract|Policy)\s+Year\s+from|Date\s+Range\s+for\s+Period)\s*:?\s*"
-    r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})\s*(?:[-–—]|to|through)\s*"
-    r"([0-9]{1,2}(?:/[0-9]{1,2})?/[0-9]{4})\b", re.IGNORECASE)
+    r"\b(?:(?:Contract/Policy|Contract|Policy)\s+Year\s+from|Date\s+Range\s+for\s+Period"
+    r"|(?P<report_period>Date\s+for\s+Period\s*:\s*from)|(?:Policy|Contract)\s+Period\s*:)"
+    rf"\s*:?\s*(?P<start>{_PERIOD_DATE})\s*(?:[-\u2013\u2014]|to|through)\s*(?P<end>{_PERIOD_DATE})\b",
+    re.IGNORECASE,
+)
+_REPORT_HEADER = re.compile(
+    r"\b(insurance|supplemental\s+compensation)\s+data\s+for\s+schedule\s+a\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -32,11 +46,26 @@ def _maximum_inclusive_period_end(beginning: datetime) -> datetime:
 
 
 def explicit_contract_periods(text: str) -> list[ContractPeriod]:
+    text = str(text or "")
     periods = []
-    for match in _PERIOD.finditer(str(text or "")):
+    for match in _PERIOD.finditer(text):
+        if match["report_period"]:
+            headers = list(_REPORT_HEADER.finditer(text, 0, match.start()))
+            if not headers or headers[-1][1].casefold() != "insurance":
+                continue
+        tokens = (match["start"], match["end"])
         try:
             dates = []
-            for index, token in enumerate(match.groups()):
+            for index, token in enumerate(tokens):
+                if "-" in token:
+                    date_format = "%Y-%m-%d" if len(token.split("-")[0]) == 4 else "%m-%d-%Y"
+                    dates.append(datetime.strptime(token, date_format))
+                    continue
+                if "/" not in token:
+                    token = re.sub(r"\s+", " ", token.replace(",", "")).strip()
+                    date_format = "%b %d %Y" if len(token.split()[0]) == 3 else "%B %d %Y"
+                    dates.append(datetime.strptime(token, date_format))
+                    continue
                 parts = [int(part) for part in token.split("/")]
                 if len(parts) == 2:
                     month, year = parts
@@ -56,7 +85,7 @@ def explicit_contract_periods(text: str) -> list[ContractPeriod]:
             dates[0].strftime("%m/%d/%Y"),
             ending.strftime("%m/%d/%Y"),
             match.group(0),
-            any(token.count("/") == 1 for token in match.groups()),
+            any(token.count("/") == 1 for token in tokens),
             original_ending=original_ending.strftime("%m/%d/%Y") if adjusted else None,
             adjusted_to_twelve_months=adjusted,
         ))

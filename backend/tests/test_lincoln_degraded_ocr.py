@@ -39,6 +39,43 @@ def bound(text):
                     'chunks':[{'pageNumbers':[2],'text':text}]}]}
 
 
+@pytest.mark.parametrize("address", ["PO BOX 12345", "P.O. BOX 12345"])
+def test_lincoln_compensation_accepts_complete_post_office_box_address(address):
+    source = SOURCE.replace("42 RESEARCH RD", address)
+    pages = [(2, source)]
+    rows = extractor.extract_litera_lincoln_schedule_a_broker_rows(pages)
+    result = NormalizedExtractionResult(provider="fixture", fields=[])
+    assert extractor.reconcile_lincoln_part_i_compensation(result, rows, pages)
+    assert len(result.schedule_a_broker_rows) == 1
+    broker = result.schedule_a_broker_rows[0]
+    assert broker.address_line_1 == address
+    assert broker.commission_total == "77.44"
+    assert broker.fee_total == "12.34"
+
+
+def test_lincoln_ocr_compensation_uses_surviving_broker_header_and_spaced_subtotal():
+    source = (SOURCE.replace("Insurance fees and commissions paid to agents",
+                             "Insurance fees and corrmxssions paid to agents")
+              .replace("Totals: $77.44 $0.00", "Totals : $77 . 44 $0.00")
+              .replace("42 RESEARCH RD", "PO BOX 12345"))
+    pages = [(2, source)]
+    rows = extractor.extract_litera_lincoln_schedule_a_broker_rows(pages)
+    assert extractor.reconcile_lincoln_part_i_compensation(
+        NormalizedExtractionResult(provider="fixture", fields=[]), rows, pages
+    )
+
+
+def test_lincoln_ocr_po_box_needs_identical_box_number_and_locality():
+    source = SOURCE.replace("42 RESEARCH RD", "PO BCX 12345")
+    same_box = [(1, "PO BOX 12345\nBOSTON MA 02110"), (2, source)]
+    rows = extractor.extract_litera_lincoln_schedule_a_broker_rows(same_box)
+    assert len(rows) == 1
+    assert rows[0].address_line_1 == "PO BOX 12345"
+    assert extractor.extract_litera_lincoln_schedule_a_broker_rows([
+        (1, "PO BOX 54321\nBOSTON MA 02110"), (2, source),
+    ]) == []
+
+
 def test_fragmented_premium_and_partial_compensation_are_not_authoritative():
     fields=extractor.extract_litera_lincoln_schedule_a_fields([(2,DAMAGED)])
     assert not any(f.field_name.startswith('10a.') for f in fields)
@@ -70,6 +107,19 @@ def test_bound_read_with_spaced_field_numbers_and_omitted_title_retains_layout_i
     raw=bound(spaced)
     assert extractor.recover_lincoln_source_pages([(2,DAMAGED)],raw,'source.pdf')==[(2,spaced)]
     assert next(f.value for f in extractor.extract_litera_lincoln_schedule_a_fields([(2,spaced)]) if f.field_name.startswith('1e.'))=='17'
+
+
+@pytest.mark.parametrize("printed,expected", [
+    ("00001D039241 00000", "00001D03924100000"),
+    ("00001D039242 00000", "00001D03924200000"),
+    ("000012345678\n2025", "000012345678"),
+])
+def test_lincoln_contract_uses_the_complete_printed_identifier_on_its_own_line(printed, expected):
+    page = SOURCE.replace("000012345678 00000", printed)
+    fields = extractor.extract_litera_lincoln_schedule_a_fields([(2, page)])
+    contract = next(field for field in fields if field.field_name.startswith("1d."))
+    assert contract.value == expected
+    assert contract.candidate_values == [expected]
 
 
 @pytest.mark.parametrize('mismatch',['document','amount','contract','readable_premium'])

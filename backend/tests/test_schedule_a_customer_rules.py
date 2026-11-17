@@ -21,6 +21,25 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
         self.assertEqual(len(result.schedule_a_broker_rows), 1)
         self.assertEqual(result.schedule_a_broker_rows[0].decision, 'REVIEW_REQUIRED')
 
+    def test_empty_or_placeholder_broker_does_not_propose_organization_code(self):
+        for name in ("", "None", "N/A"):
+            with self.subTest(name=name):
+                source = NormalizedExtractionResult(provider="fixture", fields=[
+                    NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value=name),
+                    NormalizedExtractionField(field_name="3e. Organizational Code"),
+                ])
+                apply_customer_defaults(source)
+                self.assertFalse(any(
+                    field.field_name.startswith("3e.") and field.value for field in source.fields
+                ))
+
+    def test_named_broker_still_gets_default_organization_code(self):
+        source = NormalizedExtractionResult(provider="fixture", fields=[
+            NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value="Example Brokerage")
+        ])
+        apply_customer_defaults(source)
+        self.assertEqual(next(f.value for f in source.fields if f.field_name.startswith("3e.")), "3")
+
     def test_missing_naic_uses_approved_default_with_rule_not_ocr_provenance(self):
         result = NormalizedExtractionResult(provider="EyeLevel", fields=[
             NormalizedExtractionField(field_name="1a. Name of Insurance Company", value="Example Vision Plan", confidence=.99),
@@ -124,7 +143,9 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
 
     def test_scalar_code_default_records_rule_provenance_not_ocr_evidence(self):
         result = resolve_schedule_a_result(NormalizedExtractionResult(provider="EyeLevel", fields=[
-            NormalizedExtractionField(field_name="3e. Organizational Code", value=" ", confidence=0)]))
+            NormalizedExtractionField(field_name="3e. Organizational Code", value=" ", confidence=0),
+            NormalizedExtractionField(field_name="3a. Name of Agent/Broker/Person", value="Example Brokerage"),
+        ]))
         self.assertEqual(result.fields[0].value, "3")
         self.assertEqual(result.fields[0].evidence[0].provider, "Customer configured default")
         self.assertIn("Defaulted", result.fields[0].source_text)

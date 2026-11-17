@@ -47,7 +47,7 @@ class OxfordReleaseSmoke(unittest.TestCase):
     def test_missing_code_does_not_invent_a_broker(self):
         result = NormalizedExtractionResult(provider="QA", fields=[])
         apply_customer_defaults(result)
-        self.assertEqual(result.fields[0].value, "3")
+        self.assertFalse(any(field.field_name.startswith("3e.") for field in result.fields))
         self.assertFalse(result.schedule_a_broker_rows)
 
     def check_guard(self, code, prior=False):

@@ -235,6 +235,28 @@ a/k    Health PPO    $3,170,109          175/205
         self.assertEqual(enriched.fields[0].value, "205")
         self.assertEqual(enriched.fields[0].page, 3)
 
+    def test_wrapped_coverage_header_maps_count_from_same_row_as_policy_dates(self):
+        from app.services.field_rules import DEFAULT_FIELD_RULES
+
+        header = (
+            "Contract Number        (e) Approximate Number of          Policy or contract Year\n"
+            "or Identification:         persons covered at the end\n"
+            "K1234                      of policy or contract year:    (f) From:     (g) To:\n\n"
+        )
+        for count, expected in (("83", "83"), ("", None)):
+            with self.subTest(count=count):
+                row = f"NAIC: See Listing             {count:>10}                  03/01/2025    02/28/2026"
+                document = SemanticDocument.from_page_texts([(3, header + row)])
+                enriched = enrich_schedule_a_result(
+                    NormalizedExtractionResult(provider="fixture", fields=[]),
+                    document, rules=DEFAULT_FIELD_RULES,
+                )
+                resolved = resolve_schedule_a_result(enriched, rules=DEFAULT_FIELD_RULES)
+                field = next((item for item in resolved.fields if item.field_name.startswith("1e.")), None)
+                self.assertEqual(field.value if field else None, expected)
+                if field:
+                    self.assertEqual(field.decision, "AUTOMATIC")
+
     def test_carrier_payment_total_adds_line_10a_with_section_evidence(self):
         document = SemanticDocument.from_page_texts(
             [
@@ -269,6 +291,34 @@ a/k    Health PPO    $3,170,109          175/205
         self.assertIn("Payments Received by carrier", field.source_text)
         resolved = resolve_schedule_a_result(enriched, rules=[rule])
         self.assertEqual(resolved.fields[0].decision, "AUTOMATIC")
+
+    def test_explicit_footnoted_or_part_iii_paid_premium_releases_proposal(self):
+        from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+        from app.services.field_rules import DEFAULT_FIELD_RULES
+
+        samples = (
+            ("Total premiums* or subscription charges paid to carrier: $571,719.25", "571,719.25"),
+            ("Part III: Welfare Benefit Contract Information\n"
+             "Premium applied by Example Health Plan during your plan’s contract year: $3,036,452.89",
+             "3,036,452.89"),
+        )
+        for text, amount in samples:
+            with self.subTest(amount=amount):
+                provider = NormalizedExtractionResult(provider="Recorded provider", fields=[
+                    NormalizedExtractionField(
+                        field_name="10a. Total premiums or subscription charges paid to carrier",
+                        value=amount, confidence=0.92,
+                    ),
+                ])
+                doc = SemanticDocument.from_page_texts([(2, text)])
+                result = resolve_schedule_a_result(
+                    enrich_schedule_a_result(provider, doc, rules=DEFAULT_FIELD_RULES),
+                    rules=DEFAULT_FIELD_RULES,
+                )
+                premium = next(f for f in result.fields if f.field_name.startswith("10a."))
+                self.assertEqual(premium.page, 2)
+                self.assertEqual(premium.decision, "AUTOMATIC")
+                self.assertTrue(all(check.status != "ERROR" for check in premium.validation_results))
 
     def test_benefit_table_adds_single_nonexperience_premium(self):
         document = SemanticDocument.from_page_texts(

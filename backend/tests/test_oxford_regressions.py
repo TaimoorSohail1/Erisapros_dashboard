@@ -89,12 +89,11 @@ def test_eyemed_separated_ein_and_naic_columns_are_not_mistaken_for_lives():
     assert next(f.value for f in fixed.fields if f.field_name.startswith("1e.")) == "335"
 
 
-def test_absent_organizational_code_defaults_without_inventing_broker_identity():
+def test_empty_roster_has_no_organization_code():
     result = NormalizedExtractionResult(provider="EyeLevel", fields=[])
     apply_customer_defaults(result)
-    assert result.fields[0].value == "3"
+    assert not any(field.field_name.startswith("3e.") for field in result.fields)
     assert result.schedule_a_broker_rows == []
-    assert result.fields[0].evidence[0].provider == "Customer configured default"
 
 
 def test_absent_scalar_code_does_not_override_an_explicit_recipient_code():

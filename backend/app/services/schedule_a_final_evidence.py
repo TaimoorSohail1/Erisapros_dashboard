@@ -27,7 +27,7 @@ _CARRIER_CARD=re.compile(r'(?m)^(?P<carrier>[A-Za-z][A-Za-z &.-]+?)[ \t]+'
 _DATE=r'\d{1,2}[/-]\d{1,2}[/-]\d{4}'
 _PERIOD=re.compile(r'(?:Policy\s+or\s+Contract\s+Year|Plan/Policy\s+Year|DATE\s+FOR\s+PERIOD\s*:\s*FROM)'
     r'\s*[: -]*('+_DATE+r')\s*(?:TO|[-\u2013])\s*('+_DATE+r')',re.I)
-_PREMIUM=re.compile(r'(?:Total\s+Premiums?(?:\s+or\s+Subscriptions?\s+Charges)?\s+Paid\s+to\s+Carrier|'
+_PREMIUM=re.compile(r'(?:Total\s+Premiums?(?:\s*\*)?(?:\s+or\s+Subscriptions?\s+Charges)?\s+Paid\s+to\s+Carrier|'
     r'Total\s+Payments\s+Made\s+to\s+Carrier)[\s.:]*\$?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)',re.I)
 
 
