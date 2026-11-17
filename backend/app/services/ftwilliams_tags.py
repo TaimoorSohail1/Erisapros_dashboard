@@ -442,9 +442,20 @@ def values_meaningfully_different(
     return normalize_compare_value(current) != normalize_compare_value(proposed)
 
 
+def canonical_carrier_legal_name(value: str) -> str:
+    """Strip a labeled carrier trade name or affiliates phrase."""
+    return re.sub(
+        r"\s+(?:(?:and\s+)?affiliates?|d/?b/?a|a/?k/?a|formerly)\b.*$",
+        "",
+        str(value or "").strip(),
+        flags=re.IGNORECASE,
+    ).strip(" ,;-()[]{}\t\r\n")
+
+
 def _normalize_carrier_name_compare(value: str) -> str:
-    """Ignore punctuation and terminal legal suffixes in carrier comparisons."""
-    words = [word for word in re.findall(r"[a-z0-9]+", value.casefold()) if word != "and"]
+    """Compare carrier legal names using the same alias cleanup as updates."""
+    name = canonical_carrier_legal_name(value).casefold()
+    words = [word for word in re.findall(r"[a-z0-9]+", name) if word != "and"]
     if words and words[0] == "the":
         words.pop(0)
     legal_suffixes = {

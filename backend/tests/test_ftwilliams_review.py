@@ -1222,6 +1222,32 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 self.assertEqual(updated[0].value, extracted)
                 self.assertEqual(updated[0].proposed_value, expected)
 
+    def test_compare_retains_current_carrier_when_only_the_affiliates_tail_differs(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company",
+            "1a. Name of Insurance Company",
+            "Cigna Health and Life Insurance Company and affiliates (“Cigna”)",
+        )
+        fields = service._fields_with_canonical_carrier_legal_name([carrier])
+        comparison = service._comparison_fields(
+            fields,
+            {},
+            {"InsCarrierName": "CIGNA HEALTH AND LIFE INSURANCE COMPANY AND AFFILIATES"},
+            update_fields=fields,
+        )[0]
+
+        self.assertEqual(comparison.decision, FTWFieldDecision.NO_CHANGE)
+        self.assertFalse(comparison.changed)
+        self.assertFalse(comparison.validation_blocking)
+        self.assertTrue(
+            values_meaningfully_different(
+                "CONNECTICUT GENERAL LIFE INSURANCE COMPANY AND AFFILIATES",
+                "Cigna Health and Life Insurance Company",
+                tag="InsCarrierName",
+            )
+        )
+
     def test_plan_worksheet_identity_does_not_restore_dba_alias_to_outbound_carrier(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(
