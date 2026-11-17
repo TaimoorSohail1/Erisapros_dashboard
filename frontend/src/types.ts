@@ -336,6 +336,7 @@ export interface FTWilliamsComparisonField {
   current_value: string;
   extracted_value: string;
   proposed_value: string;
+  staged_value?: string | null;
   confidence: number;
   priority: FieldPriority;
   extraction_status: string;

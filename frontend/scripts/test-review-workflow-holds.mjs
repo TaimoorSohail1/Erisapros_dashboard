@@ -11,7 +11,7 @@ import ts from "typescript";
 
 const source = await readFile(new URL("../src/pages/FilingReviewPage.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("review.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["brokerRowValidationIssues", "AutomationWorkflowNotice", "PlanYearConflictPanel", "localAgentStatusLabel", "uniqueAutomationReasonLabels", "reviewBlockingFields", "groupForComparison", "reviewedStatusLabel", "ReviewDecisionTableRow"];
+const names = ["brokerRowValidationIssues", "AutomationWorkflowNotice", "PlanYearConflictPanel", "localAgentStatusLabel", "uniqueAutomationReasonLabels", "reviewBlockingFields", "groupForComparison", "reviewedStatusLabel", "isActionRequiredRow", "isDecisionTabRow", "ReviewDecisionTableRow"];
 const declarations = [];
 function collect(node) {
   if (ts.isFunctionDeclaration(node) && names.includes(node.name?.text)) declarations.push(node);
@@ -23,6 +23,7 @@ const runtime = ts.transpileModule(declarations.map((s) => s.getText(ast)).join(
 }).outputText;
 const context = {
   React, ...icons, planYearConflictRequired: true, actionRequiredRows: [], brokerActionRequiredCount: 1,
+  needsDecisionRows: [], stagedRowCount: 0,
   setActiveTab() {}, setStatusFilter() {}, setPriorityFilter() {}, setSectionFilter() {},
   setFormFilter() {}, setContractTypeFilter() {},
 };
@@ -76,6 +77,11 @@ assert.match(heldRow, /Needs review/);
 assert.match(heldRow, /Confirm the premium classification/);
 assert.match(heldRow, /Keep Extracted/);
 assert.match(heldRow, /No proposed value/);
+const staged = {...sourceHold, staged_value: sourceHold.extracted_value};
+assert.equal(api.groupForComparison(staged), "WILL_UPDATE");
+assert.equal(api.reviewedStatusLabel("WILL_UPDATE", undefined, staged), "Staged · review before sending");
+assert.equal(api.isDecisionTabRow({staged: true, decision: "BLOCKED"}), false);
+assert.equal(api.isActionRequiredRow({staged: true, decision: "BLOCKED", validationBlocking: true}), true);
 
 // Exercise the actual controls and navigation using a local DOM, without API calls.
 const dom = new JSDOM("<div id='root'></div><section id='plan-year-conflict'></section><section id='schedule-a-broker-rows'></section><section id='filing-review-table'></section>");

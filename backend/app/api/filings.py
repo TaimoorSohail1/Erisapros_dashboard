@@ -16,6 +16,9 @@ from app.models import (
     Filing,
     FilingDetail,
     FilingStatus,
+    FormType,
+    FTWFieldDecision,
+    FTWilliamsComparisonField,
     FTWilliamsManualMatchRequest,
     FTWilliamsBringForwardReconcileRequest,
     FTWilliamsBrokerMatchesRequest,
@@ -124,6 +127,26 @@ def filing_package_key(filing: Filing) -> str | None:
     return None
 
 
+def _stage_schedule_a_update(field: FTWilliamsComparisonField) -> FTWilliamsComparisonField:
+    if (
+        field.form_type != FormType.SCHEDULE_A
+        or field.ftw_tag not in {"WlfrTotChargesPaidAmt", "InsPrsnCoveredEoyCnt"}
+        or field.decision != FTWFieldDecision.BLOCKED
+        or field.validation_status != "REVIEW_REQUIRED"
+        or not field.validation_blocking
+        or field.current_value.strip()
+        or field.proposed_value.strip()
+    ):
+        return field
+    value = field.extracted_value.strip()
+    try:
+        if normalize_ftw_update_value(FormType.SCHEDULE_A, field.ftw_tag, value):
+            return field.model_copy(update={"staged_value": value})
+    except FTWPayloadValidationError:
+        pass
+    return field
+
+
 @router.get("/{filing_id}", response_model=FilingDetail)
 async def get_filing(filing_id: str):
     repo = get_repository()
@@ -141,7 +164,7 @@ async def get_filing(filing_id: str):
     if ftw_review:
         ftw_review = ftw_review.model_copy(
             deep=True,
-            update={"fields": [field for field in ftw_review.fields if not is_retired_field(field)]},
+            update={"fields": [_stage_schedule_a_update(field) for field in ftw_review.fields if not is_retired_field(field)]},
         )
         FTWilliamsReviewService()._mark_pending_broker_updates(ftw_review)
     return FilingDetail(**filing.model_dump(), fields=fields, events=events, jobs=jobs, audit_logs=audit_logs, ftw_review=ftw_review)
