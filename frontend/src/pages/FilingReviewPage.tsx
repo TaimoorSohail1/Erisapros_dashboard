@@ -1310,6 +1310,30 @@ export function FilingReviewPage() {
                 }}
               />
             ) : null}
+            {hardValidationBlockerCount > 1 ? (
+              <section aria-label="Fields and broker rows needing correction">
+                <ul className="review-status-issue-list">
+                  {fieldValidationBlockerRows.map((row) => (
+                    <li key={row.fieldId}>
+                      <button className="button secondary" type="button" onClick={() => {
+                        setShowReviewStatus(false);
+                        focusValidationIssue(row.fieldId, row.label);
+                      }}>{row.label}</button>
+                      {row.issue ? <p>{row.issue}</p> : null}
+                    </li>
+                  ))}
+                  {brokerValidationIssues.map(({ index, message }) => (
+                    <li key={`${index}-${message}`}>
+                      <button className="button secondary" type="button" onClick={() => {
+                        setShowReviewStatus(false);
+                        focusValidationIssue();
+                      }}>{scheduleABrokerRows[index]?.name || `Broker row ${index + 1}`}</button>
+                      <p>{message}</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
               </ReviewStatusDrawer>
             ) : null}
 

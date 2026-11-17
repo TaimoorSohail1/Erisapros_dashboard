@@ -4324,6 +4324,25 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("NAIC", service._schedule_match_details(fields, matched)["reasons"])
         self.assertIsNone(service._match_schedule_a_status(fields[:1], [matched]))
 
+    def test_review_does_not_ask_for_a_decision_when_ftw_already_has_the_shortened_text(self):
+        service = FTWilliamsReviewService()
+        source_name = "Sample Insurance Company for Employee Benefits in the Western Region of the United States"
+        field = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", source_name,
+        )
+        saved_name = source_name[:70].rstrip()
+
+        matching, = service._comparison_fields([field], {}, {"InsCarrierName": saved_name})
+        blank, = service._comparison_fields([field], {}, {})
+        conflict, = service._comparison_fields([field], {}, {"InsCarrierName": "Different Insurer"})
+
+        self.assertEqual(matching.extracted_value, source_name)
+        self.assertEqual(matching.decision, "NO_CHANGE")
+        self.assertFalse(matching.changed)
+        self.assertEqual(blank.decision, "WILL_UPDATE")
+        self.assertEqual(blank.validation_normalized_value, saved_name)
+        self.assertEqual(conflict.decision, "CONFLICT")
+
     def test_schedule_match_treats_multiple_eyemed_contracts_as_ftw_various(self):
         service = FTWilliamsReviewService()
         fields = [

@@ -803,6 +803,11 @@ assert.match(
   "The blocking-issue banner must identify and open the affected field.",
 );
 assert.match(
+  source,
+  /Fields and broker rows needing correction[\s\S]*?fieldValidationBlockerRows\.map[\s\S]*?focusValidationIssue\(row\.fieldId, row\.label\)[\s\S]*?brokerValidationIssues\.map/,
+  "Review status must list every locally identified blocker and link to its field or broker table.",
+);
+assert.match(
   styles,
   /\.ftw-validation-blocker-banner\s*\{[\s\S]*?grid-template-columns:[^;]+;/,
   "The send-blocker banner must use a structured responsive layout.",
