@@ -627,10 +627,13 @@ def _form_5500_sponsor_address_values(
         "SDState": parsed.get("state", ""),
         "SDZipCode": parsed.get("zip", ""),
     }
-    street = candidates["SDAddressLine1"]
-    # A comma remaining in the first line can indicate an unresolved unit or
-    # delivery instruction. Preserve it for review instead of cropping it.
-    can_shorten_street = "," not in street
+    # The splitter leaves unresolved comma-delimited delivery details on line 1.
+    # Fit only a street we could separate from those details with confidence.
+    can_fit_street = "," not in candidates["SDAddressLine1"]
+    if can_fit_street:
+        candidates["SDAddressLine1"], candidates["SDAddressLine2"] = _fit_ftw_address_lines(
+            candidates["SDAddressLine1"], candidates["SDAddressLine2"],
+        )
     current_by_tag = {
         "SDAddressLine1": current.get("SDAddressLine1", ""),
         "SDAddressLine2": current.get("SDAddressLine2", ""),
@@ -647,7 +650,7 @@ def _form_5500_sponsor_address_values(
             tag,
             raw_value,
             uppercase_text=True,
-            truncate_text=tag != "SDAddressLine1" or can_shorten_street,
+            truncate_text=tag != "SDAddressLine1" or can_fit_street,
         )
         if current_values is not None and not values_meaningfully_different(
             current_by_tag.get(tag, ""),
@@ -1293,7 +1296,7 @@ def _schedule_a_broker_row_update_values(
             reason="recipient requires review before an automatic update payload can be generated",
         )])
     name = _ftw_broker_name(_broker_row_attr(row, "name"))
-    address_line_1, address_line_2 = _ftw_broker_address_lines(
+    address_line_1, address_line_2 = _fit_ftw_address_lines(
         _broker_row_attr(row, "address_line_1"),
         _broker_row_attr(row, "address_line_2"),
     )
@@ -1366,8 +1369,8 @@ def _ftw_broker_name(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
-    """Fit a structured broker address into FT Williams' two 35-character lines."""
+def _fit_ftw_address_lines(address_line_1: str, address_line_2: str) -> tuple[str, str]:
+    """Fit a structured address into FT Williams' two 35-character lines."""
     first = re.sub(r"\s+", " ", str(address_line_1 or "")).strip(" ,")
     second = re.sub(r"\s+", " ", str(address_line_2 or "")).strip(" ,")
     if len(first) <= 35 and len(second) <= 35:
@@ -1395,9 +1398,11 @@ def _ftw_broker_address_lines(address_line_1: str, address_line_2: str) -> tuple
             components[1] if len(components) == 2 else "",
         )
 
-    # Do not truncate an address. Returning the cleaned original values lets the
-    # FTW contract validator fail locally before any external request is sent.
-    return first, second
+    # Keep an explicitly provided second line. Otherwise use it for overflow
+    # before applying the field limits to the outgoing values.
+    if second:
+        return first, second
+    return components[0], ", ".join(components[1:])
 
 
 def _broker_row_attr(row: object, key: str) -> str:

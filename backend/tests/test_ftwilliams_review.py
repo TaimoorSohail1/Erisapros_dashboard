@@ -4507,7 +4507,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.ftw_seq_no, "4")
 
-    def test_fresh_query_replaces_stale_preferred_schedule_a_with_stronger_identity_match(self):
+    def test_fresh_query_selects_the_schedule_with_matching_contract(self):
         service = FTWilliamsReviewService()
         fields = [
             ExtractedField(
@@ -4550,7 +4550,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             ),
         ]
 
-        match = service._match_schedule_a_status(fields, statuses, preferred_ftw_seq_no="4")
+        match = service._match_schedule_a_status(fields, statuses)
 
         self.assertIsNotNone(match)
         self.assertEqual(match.ftw_seq_no, "7")
@@ -5562,6 +5562,39 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertEqual(error.rejected_fields[0].label, "1d. Plan Sponsor Name")
 
+    def test_matching_current_ein_does_not_need_source_evidence_for_a_no_op(self):
+        source_hold = (
+            "Extraction requires review; automatic proposal withheld. "
+            "Automatic extraction requires a source page and source text that supports the extracted value."
+        )
+        field = ExtractedField(
+            filing_id="filing-1",
+            source_field_name="Carrier EIN",
+            normalized_field_name="carrier_ein",
+            mapped_rule_key="schedule_a_part_i_1b_insurance_carrier_ein",
+            form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A,
+            value="95-3760980",
+            proposed_value="",
+            status=ExtractedFieldStatus.LOW_CONFIDENCE,
+            status_reason=source_hold,
+        )
+        service = FTWilliamsReviewService()
+        current = {"InsCarrierEIN": "95-3760980"}
+        matched, = service._comparison_fields([field], {}, current)
+        self.assertEqual(matched.decision, FTWFieldDecision.NO_CHANGE)
+        self.assertFalse(matched.update_included)
+        for flagged, vendor in (
+            (field, {}),
+            (field, {"InsCarrierEIN": "95-3760981"}),
+            (field.model_copy(update={"status_reason": source_hold +
+                " Multiple source candidates disagree for this field."}), current),
+        ):
+            with self.subTest(vendor=vendor, reason=flagged.status_reason):
+                held, = service._comparison_fields([flagged], {}, vendor)
+                self.assertEqual(held.decision, FTWFieldDecision.BLOCKED)
+                self.assertFalse(held.update_included)
+
     def test_schedule_match_stays_pending_when_identifier_match_is_ambiguous(self):
         service = FTWilliamsReviewService()
         fields = [
@@ -5601,13 +5634,17 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 type="ScheduleA",
                 error_code="0",
                 ftw_seq_no="7",
-                query_results={"InsCarrierEIN": "36-2739571", "InsCarrierNAICCode": "79413"},
+                query_results={
+                    "InsCarrierEIN": "36-2739571",
+                    "InsCarrierNAICCode": "79413",
+                    "ScheduleDesc": "MEDICAL",
+                },
             ),
         ]
 
         self.assertIsNone(service._match_schedule_a_status(fields, statuses))
 
-    def test_schedule_match_stays_pending_when_best_score_margin_is_too_small(self):
+    def test_schedule_match_selects_unique_eligible_high_score_even_when_margin_is_one(self):
         service = FTWilliamsReviewService()
         fields = [
             ExtractedField(
@@ -5678,7 +5715,9 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             ),
         ]
 
-        self.assertIsNone(service._match_schedule_a_status(fields, statuses))
+        match = service._match_schedule_a_status(fields, statuses)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.ftw_seq_no, "1")
 
     def test_schedule_match_stays_pending_for_carrier_name_only(self):
         service = FTWilliamsReviewService()

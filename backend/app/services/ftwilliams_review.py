@@ -157,7 +157,6 @@ def _source_reports_no_broker_compensation(fields: list[ExtractedField]) -> bool
 
 
 class FTWilliamsReviewService:
-    _SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN = 4
     def __init__(self, ftwilliams: FTWilliamsService | None = None):
         self.ftwilliams = ftwilliams or FTWilliamsService()
 
@@ -2863,6 +2862,7 @@ class FTWilliamsReviewService:
         schedule_a_error = snapshot["schedule_a_error"]
         existing_match = existing_review.schedule_a_match if existing_review else None
         existing_create_new = bool((existing_match or {}).get("create_new"))
+        tied_schedule_a = False
         if schedule_statuses:
             schedule_a_candidates = self._schedule_candidate_payloads(schedule_statuses, fields)
             schedule_a_records = self._schedule_record_payloads(schedule_statuses)
@@ -2911,12 +2911,11 @@ class FTWilliamsReviewService:
                     None,
                 )
             elif not existing_create_new:
-                matched_schedule_a = self._match_schedule_a_status(
-                    fields,
-                    schedule_statuses,
-                    preferred_ftw_seq_no=self._preferred_schedule_a_sequence(existing_review),
-                )
-                if not matched_schedule_a:
+                top_matches = self._top_schedule_a_matches(fields, schedule_statuses)
+                tied_schedule_a = len(top_matches) > 1
+                if len(top_matches) == 1:
+                    matched_schedule_a = top_matches[0]
+                elif not tied_schedule_a:
                     automatic_schedule_a_match = self._automatic_new_schedule_a_match(
                         fields,
                         schedule_statuses,
@@ -2925,7 +2924,9 @@ class FTWilliamsReviewService:
                     if automatic_schedule_a_match:
                         existing_create_new = True
             schedule_a_current = matched_schedule_a.query_results if matched_schedule_a else {}
-            if not matched_schedule_a and not existing_create_new:
+            if tied_schedule_a:
+                schedule_a_error = "Multiple eligible FT Williams Schedule A records share the highest match score. Select the correct record to continue."
+            elif not matched_schedule_a and not existing_create_new:
                 schedule_a_error = (
                     "FT Williams Schedule A records were found, but none safely matched the extracted "
                     "carrier, EIN, NAIC, or contract. Select the correct existing record or create a new Schedule A."
@@ -5327,8 +5328,21 @@ class FTWilliamsReviewService:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason
                 validation_blocking = True
+            retains_matching_current = (
+                field.form_type == FormType.SCHEDULE_A
+                and field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                and not extracted_proposed_value.strip()
+                and current_value.strip()
+                and str(field.value or "").strip()
+                and field.status_reason == (
+                    "Extraction requires review; automatic proposal withheld. "
+                    "Automatic extraction requires a source page and source text that supports the extracted value."
+                )
+                and not values_meaningfully_different(current_value, field.value, tag=tag)
+            )
             if (
                 field.status == ExtractedFieldStatus.LOW_CONFIDENCE
+                and not retains_matching_current
                 and not extracted_proposed_value.strip()
                 and not source_less_zero_default
                 and (str(field.value or "").strip() or str(field.source_text or "").strip())
@@ -5385,6 +5399,9 @@ class FTWilliamsReviewService:
             elif not contract_type_allowed:
                 decision = FTWFieldDecision.NO_CHANGE
                 decision_reason = "The field does not apply to the selected Schedule A contract type."
+            elif retains_matching_current:
+                decision = FTWFieldDecision.NO_CHANGE
+                decision_reason = "The extracted value matches FT Williams and no update is required."
             elif not extracted_proposed_value.strip():
                 if current_value.strip():
                     decision = FTWFieldDecision.KEEP_CURRENT
@@ -6668,65 +6685,31 @@ class FTWilliamsReviewService:
         self,
         fields: list[ExtractedField],
         statuses: list[FTWilliamsStatusItem],
-        preferred_ftw_seq_no: str | None = None,
     ) -> FTWilliamsStatusItem | None:
-        candidates = [status for status in statuses if status.query_results]
-        if not candidates:
-            return statuses[0] if statuses else None
-        scored = sorted(
-            ((self._schedule_match_details(fields, status), status) for status in candidates),
-            key=lambda item: (item[0]["score"], item[0]["strong_matches"], item[0]["filled"]),
-            reverse=True,
-        )
-        top_match, top_status = scored[0]
-        if preferred_ftw_seq_no:
-            preferred_item = next(
-                (
-                    (details, status)
-                    for details, status in scored
-                    if str(status.ftw_seq_no or "") == str(preferred_ftw_seq_no)
-                ),
-                None,
+        winners = self._top_schedule_a_matches(fields, statuses)
+        return winners[0] if len(winners) == 1 else None
+
+    def _top_schedule_a_matches(
+        self,
+        fields: list[ExtractedField],
+        statuses: list[FTWilliamsStatusItem],
+    ) -> list[FTWilliamsStatusItem]:
+        eligible: list[tuple[int, FTWilliamsStatusItem]] = []
+        for status in statuses:
+            if not status.query_results or self._schedule_identity_conflicts(fields, status):
+                continue
+            details = self._schedule_match_details(fields, status)
+            has_identity_evidence = details["strong_matches"] > 0 or (
+                "Carrier name" in details["reasons"]
+                and details["reasons"].count("Policy date") >= 2
             )
-            if preferred_item:
-                preferred_match, preferred_status = preferred_item
-                preferred_is_current_best = (
-                    preferred_match["score"] >= top_match["score"]
-                    and preferred_match["strong_matches"] >= top_match["strong_matches"]
-                    and not self._schedule_identity_conflicts(fields, preferred_status)
-                )
-                if preferred_is_current_best:
-                    return preferred_status
-        safe_identity_match = top_match["strong_matches"] > 0 or (
-            "Carrier name" in top_match["reasons"]
-            and top_match["reasons"].count("Policy date") >= 2
-        )
-        if (
-            top_match["score"] <= 0
-            or not safe_identity_match
-            or self._schedule_identity_conflicts(fields, top_status)
-        ):
-            return None
-        if (
-            len(scored) > 1
-            and scored[1][0]["score"] == top_match["score"]
-            and scored[1][0]["strong_matches"] == top_match["strong_matches"]
-        ):
-            return None
-        if len(scored) > 1:
-            runner_up = scored[1][0]
-            exact_contract_breaks_normalization_tie = bool(
-                "Exact contract" in top_match["reasons"]
-                and "Contract" in runner_up["reasons"]
-                and top_match["strong_matches"] >= runner_up["strong_matches"]
-            )
-            if (
-                top_match["score"] - runner_up["score"]
-                < self._SCHEDULE_A_AUTO_MATCH_MIN_SCORE_MARGIN
-                and not exact_contract_breaks_normalization_tie
-            ):
-                return None
-        return top_status
+            if has_identity_evidence:
+                eligible.append((details["score"], status))
+
+        if not eligible:
+            return []
+        top_score = max(score for score, _ in eligible)
+        return [status for score, status in eligible if score == top_score]
 
     def _schedule_identity_conflicts(
         self,
@@ -8001,14 +7984,6 @@ class FTWilliamsReviewService:
     ) -> None:
         for tag, label in indicators:
             values[tag] = "1" if label.casefold() in selected else "0"
-
-    def _preferred_schedule_a_sequence(self, review: FTWilliamsReview | None) -> str | None:
-        if not review or not review.schedule_a_match:
-            return None
-        if str(review.schedule_a_match.get("source") or "").upper() != "MANUAL":
-            return None
-        value = review.schedule_a_match.get("ftw_seq_no")
-        return str(value) if value else None
 
     def _plan_lookup_matches(self, matches: list[dict[str, str]], lookup: FTWilliamsPlanLookup) -> list[dict[str, str]]:
         if not matches:
