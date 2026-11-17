@@ -12,7 +12,13 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from app.config import get_settings
-from app.services.schedule_a_customer_rules import default_blank_organization_codes, default_blank_broker_values, normalize_broker_payment_purposes
+from app.services.schedule_a_customer_rules import (
+    DEFAULT_CODE_REASON,
+    default_blank_organization_codes,
+    default_blank_broker_values,
+    has_broker_recipient_name,
+    normalize_broker_payment_purposes,
+)
 from app.services.schedule_a_broker_validation import SOURCE_REVIEW_VALIDATORS
 from app.services.schedule_a_broker_roster import broker_roster_is_complete, broker_row_has_payment, bind_roster_review, source_roster_review
 from app.services.schedule_a_broker_matching import BROKER_IDENTITY_ATTRIBUTES, broker_identity_review_key, broker_identity_is_confirmed
@@ -5325,15 +5331,17 @@ class FTWilliamsReviewService:
             current_values = form_5500_current if field.form_type == FormType.FORM_5500 else schedule_a_current
             current_value = resolve_ftw_current_value(field, current_values)
             invalid_current_value = self._invalid_current_ftw_value(tag, current_value)
+            orphaned_code_default = self._orphaned_organization_code_default(field, fields)
             source_less_zero_default = _is_source_less_zero_default(field)
-            extracted_proposed_value = "" if source_less_zero_default else str(field.proposed_value or "")
+            skip_extracted_default = source_less_zero_default or orphaned_code_default
+            extracted_proposed_value = "" if skip_extracted_default else str(field.proposed_value or "")
             # A blank extraction must never visually suggest that an existing FTW
             # value will be erased. Show the retained current value in the review
             # column while still excluding blank extraction fields from updates.
             proposed_value = extracted_proposed_value if extracted_proposed_value.strip() else current_value
             update_allowed = update_field_ids is None or id(field) in update_field_ids
             update_exclusion_reason = None
-            if not update_allowed:
+            if not update_allowed and not orphaned_code_default:
                 if field.form_type == FormType.FORM_5500:
                     update_exclusion_reason = self._unsafe_form_5500_field_reason(field, current_values)
                 elif field.form_type == FormType.SCHEDULE_A:
@@ -5509,7 +5517,7 @@ class FTWilliamsReviewService:
                     source_document_type=field.source_document_type,
                     ftw_tag=tag,
                     current_value=current_value,
-                    extracted_value="" if source_less_zero_default else field.value,
+                    extracted_value="" if skip_extracted_default else field.value,
                     proposed_value=proposed_value,
                     confidence=field.confidence,
                     priority=field.priority,
@@ -5553,6 +5561,8 @@ class FTWilliamsReviewService:
                 safe_fields.append(field)
                 continue
             if schedule_update_blocked:
+                continue
+            if self._orphaned_organization_code_default(field, fields):
                 continue
             if (
                 has_structured_schedule_a_brokers
@@ -6413,6 +6423,20 @@ class FTWilliamsReviewService:
         if worksheet_end and current_end and not self._same_date(worksheet_end, current_end):
             return "Form 5500 updates blocked: FTW Form 5500 plan year does not match the Plan Worksheet year."
         return None
+
+    def _orphaned_organization_code_default(self, field: ExtractedField, fields: list[ExtractedField]) -> bool:
+        """Ignore a stored scalar default when its source recipient is absent."""
+        return (
+            field.form_type == FormType.SCHEDULE_A
+            and field.mapped_rule_key == "schedule_a_part_i_3e_organizational_code"
+            and field.status == ExtractedFieldStatus.MATCHED
+            and field.source_text == DEFAULT_CODE_REASON
+            and field.value.strip() == "3"
+            and field.proposed_value.strip() in {"", "3"}
+            and not has_broker_recipient_name(
+                self._field_value_by_rule(fields, "schedule_a_part_i_3a_name_of_agent_broker_person")
+            )
+        )
 
     def _unsafe_schedule_a_field_reason(
         self,
