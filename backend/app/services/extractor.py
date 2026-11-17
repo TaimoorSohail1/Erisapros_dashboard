@@ -500,6 +500,8 @@ class ExtractionService:
         from app.services.schedule_a_broker_validation import attach_labelled_broker_payment_columns
         attach_labelled_broker_payment_columns(result.schedule_a_broker_rows, semantic_pages)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
+        from app.services.schedule_a_printed_totals import attach_printed_total_evidence
+        attach_printed_total_evidence(result.fields, semantic_pages)
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,
         ))
