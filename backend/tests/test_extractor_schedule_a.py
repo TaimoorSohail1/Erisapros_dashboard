@@ -716,6 +716,44 @@ AD&D 592 | Base Commissions
         self.assertIn("fees", brokers[-1].fee_source_text.lower())
         self.assertFalse(brokers[-1].commission_rows)
 
+    def test_guardian_address_details_follow_the_printed_recipient_id(self):
+        pages = [
+            (1, "Guardian Schedule A/5500 Information\nEIN 13-5123390"),
+            (2, """
+                000AB123 FIRST BROKER $1,213.18
+                000AB124 SECOND BROKER $2,123.61
+                Total commissions for plan $3,336.79
+            """),
+            (3, """
+                000AB123-FIRST BROKER
+                140 STATE ROUTE 35 STE 123 BELMAR NJ 07719
+                Group insurance coverages Commissions paid
+                000AB124-SECOND BROKER
+                98 INVENTED AVE, SUITE 300 RIVERSIDE CA 92501
+                Group insurance coverages Commissions paid
+                The following figure represents fees that are to be reported on Schedule A, Line 3, Element (c):
+            """),
+            (4, """
+                000AB125 SECOND BROKER $1,438.43
+                Total Fees Paid $1,438.43
+                Indirect compensation - Schedule C
+                000AB125-SECOND BROKER
+                99 OTHER AVE RIVERSIDE CA 92501
+            """),
+        ]
+        brokers = extract_guardian_broker_rows(pages)
+
+        self.assertEqual(
+            [(row.address_line_1, row.address_line_2, row.city, row.state, row.zip_code) for row in brokers],
+            [
+                ("140 STATE ROUTE 35", "STE 123", "BELMAR", "NJ", "07719"),
+                ("98 INVENTED AVE", "SUITE 300", "RIVERSIDE", "CA", "92501"),
+                (None, None, None, None, None),
+            ],
+        )
+        self.assertEqual([e.page for e in brokers[1].evidence], [2, 3])
+        self.assertEqual(brokers[2].fee_total, "1,438.43")
+
     def test_pomerene_guardian_letter_uses_plan_number_not_broker_code(self):
         pages = [(1, """
             Guardian Life Insurance Company of America
