@@ -5378,9 +5378,10 @@ class FTWilliamsReviewService:
                 and not extracted_proposed_value.strip()
                 and current_value.strip()
                 and str(field.value or "").strip()
-                and field.status_reason == (
+                and field.status_reason in (
+                    "Extraction requires review; automatic proposal withheld.",
                     "Extraction requires review; automatic proposal withheld. "
-                    "Automatic extraction requires a source page and source text that supports the extracted value."
+                    "Automatic extraction requires a source page and source text that supports the extracted value.",
                 )
                 and not values_meaningfully_different(current_value, field.value, tag=tag)
             )

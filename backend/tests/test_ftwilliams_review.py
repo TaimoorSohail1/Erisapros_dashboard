@@ -5715,12 +5715,18 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
         service = FTWilliamsReviewService()
         current = {"InsCarrierEIN": "95-3760980"}
-        matched, = service._comparison_fields([field], {}, current)
-        self.assertEqual(matched.decision, FTWFieldDecision.NO_CHANGE)
-        self.assertFalse(matched.update_included)
+        legacy_hold = field.model_copy(update={"status_reason": "Extraction requires review; automatic proposal withheld."})
+        for candidate in (field, legacy_hold):
+            with self.subTest(reason=candidate.status_reason):
+                matched, = service._comparison_fields([candidate], {}, current)
+                self.assertEqual(matched.decision, FTWFieldDecision.NO_CHANGE)
+                self.assertEqual(matched.proposed_value, current["InsCarrierEIN"])
+                self.assertFalse(matched.update_included)
         for flagged, vendor in (
             (field, {}),
             (field, {"InsCarrierEIN": "95-3760981"}),
+            (legacy_hold, {}),
+            (legacy_hold, {"InsCarrierEIN": "95-3760981"}),
             (field.model_copy(update={"status_reason": source_hold +
                 " Multiple source candidates disagree for this field."}), current),
         ):
