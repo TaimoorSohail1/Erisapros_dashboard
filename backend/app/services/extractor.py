@@ -318,6 +318,8 @@ class ExtractionService:
                 rules=self.field_rules,
             )
             capture_extraction_stage(result, "after_semantic_resolution")
+            from app.services.schedule_a_benefit_table import reconcile_labeled_benefit_table
+            result.fields = reconcile_labeled_benefit_table(result.fields, semantic_pages)
             result = restore_principal_short_form_fields(result, authoritative_pages)
             result.fields = prefer_authoritative_anthem_fields(result.fields, authoritative_pages)
             result.fields = prefer_authoritative_aig_fields(result.fields, authoritative_pages)
@@ -495,6 +497,8 @@ class ExtractionService:
         # This letter parser discloses three payment columns and no code column.
         # Bind recovery to the current document; bucket-wide text cannot clear a hold.
         reconcile_source_name_tokens(result, extract_first_unum_broker_rows(bound_code_pages), code_source_pages)
+        from app.services.schedule_a_broker_validation import attach_labelled_broker_payment_columns
+        attach_labelled_broker_payment_columns(result.schedule_a_broker_rows, semantic_pages)
         attach_final_field_evidence(result, [*semantic_pages, *provider_source_pages(result.raw)])
         benefit_pages = tuple(page for page,text in semantic_pages if re.search(
             r'Welfare\s+Benefit\s+Contract\s+Information|BENEFIT\s+TYPE\s*:|(?m:^\s*\d+[.)]\s*COVERAGE\s*[-:])', text, re.I,
@@ -2778,7 +2782,8 @@ def extract_schedule_a_acroform(
     except ImportError:
         return [], []
     try:
-        raw_fields = PdfReader(BytesIO(file_bytes)).get_fields() or {}
+        reader = PdfReader(BytesIO(file_bytes))
+        raw_fields = reader.get_fields() or {}
     except Exception:
         return [], []
     values: dict[str, str] = {}
@@ -2791,7 +2796,21 @@ def extract_schedule_a_acroform(
         clean = str(value).strip()
         if clean and not clean.startswith("/"):
             values[str(name)] = clean
-    return extract_schedule_a_acroform_data(values)
+    fields, brokers = extract_schedule_a_acroform_data(values)
+    if not fields:
+        return fields, brokers
+    wanted = {field.source_text.removeprefix("AcroForm ").split("=", 1)[0]: field for field in fields}
+    for page_number, page in enumerate(reader.pages, start=1):
+        for reference in page.get("/Annots", []):
+            annotation = reference.get_object()
+            if annotation.get("/Subtype") != "/Widget":
+                continue
+            parent = annotation.get("/Parent")
+            name = annotation.get("/T") or (parent.get_object().get("/T") if parent else None)
+            if field := wanted.pop(name, None):
+                field.page = page_number
+                field.evidence[0].page = page_number
+    return fields, brokers
 
 
 def extract_schedule_a_acroform_data(
@@ -2931,12 +2950,21 @@ def _acroform_broker_address(value: str | None) -> tuple[str | None, str | None,
         return None, None, None, None, None
     city = state = zip_code = None
     street_lines = list(lines)
-    match = re.fullmatch(r"(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)", lines[-1], flags=re.IGNORECASE)
+    match = re.fullmatch(r"(.+?)\s+([A-Z]{2})\s+(\d{5}(?:[- ]\d{4})?)", lines[-1], flags=re.IGNORECASE)
     if match:
-        city = clean_extracted_value(match.group(1))
+        locality = match.group(1).strip()
+        if len(lines) == 1:
+            # A comma can separate the street and locality in a single widget.
+            street, separator, city = locality.rpartition(",")
+            if not separator or not street.strip() or not city.strip():
+                return lines[0], None, None, None, None
+            street_lines = [street.strip()]
+        else:
+            city = locality.rstrip(",")
+            street_lines = lines[:-1]
+        city = clean_extracted_value(city)
         state = match.group(2).upper()
-        zip_code = match.group(3)
-        street_lines = lines[:-1]
+        zip_code = match.group(3).replace(" ", "-")
     return (
         street_lines[0] if street_lines else None,
         " ".join(street_lines[1:]) if len(street_lines) > 1 else None,
@@ -4128,8 +4156,13 @@ def prefer_authoritative_anthem_fields(
     if not authoritative_fields:
         return fields
     authoritative = {field.field_name: field for field in authoritative_fields}
-    restored = [field for field in fields if field.field_name not in authoritative]
+    # The shared benefit-table pass retains disagreements unrelated to the
+    # printed components and binds accepted proposals to the actual rows.
+    table_codes = {field.field_name for field in fields if field.field_name.startswith(("1e.", "10a."))}
+    restored = [field for field in fields if field.field_name not in authoritative or field.field_name in table_codes]
     for field in authoritative_fields:
+        if field.field_name in table_codes:
+            continue
         authoritative_field = field.model_copy(deep=True)
         authoritative_field.candidate_values = [authoritative_field.value]
         restored.append(authoritative_field)

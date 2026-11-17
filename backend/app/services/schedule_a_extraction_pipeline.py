@@ -369,6 +369,9 @@ def _validate_source_evidence(
         for text in source_texts
         if str(text or "").strip()
     )
+    if not supports_value and field.field_name.strip().lower().startswith("10a."):
+        from app.services.schedule_a_benefit_table import matches_benefit_table_premium
+        supports_value = matches_benefit_table_premium(field)
     if not supports_value and field.field_name.strip().lower().startswith(("3b.", "3c.")):
         target = parse_decimal(field.value)
         for text in source_texts:
@@ -564,7 +567,9 @@ def _validate_financial_section_context(
         expected = "Part II/experience-rated/line 9"
     else:
         valid = bool(
-            re.search(r"\bnon[- ]?experience[- ]rated\b", normalized)
+            any(e.provider == "AcroForm widget parser" and e.page and e.table_cell is not None
+                and e.source_text == f"wlfrTotChargesPaidAmt={field.value}" for e in field.evidence)
+            or re.search(r"\bnon[- ]?experience[- ]rated\b", normalized)
             or re.search(r"\b(?:part\s+iii\s+)?line\s+10[a-z]?\b", normalized)
             or re.search(r"\b10[a-z]\s*[.(]", normalized)
             or re.search(r"\btotal\s+premium\s+paid\s+to\b", normalized)

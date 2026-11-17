@@ -116,6 +116,8 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const canOpenReconciliation = !stale && !destinationProblem && reconciliationIndex >= 0;
   const canSubmitReconciliation = canOpenReconciliation && view.dirty
     && !view.items.some(item => itemProblem(item) || blockingSourceIssues(item, view).some(issue => !needsReconciliation(issue)));
+  const rowProblemIndex = view.items.findIndex(item => itemProblem(item) || blockingSourceIssues(item, view)
+    .some(issue => !needsReconciliation(issue) || !canSubmitReconciliation));
   const problem = stale ? 'Source or FTWilliam data changed. Cancel edits and reopen Edit to refresh.' :
     destinationProblem ?? sourceProblem(view) ?? view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
   const approved = !problem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
@@ -192,11 +194,17 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   }
   async function approve(event: React.MouseEvent<HTMLButtonElement>) {
     if (disabled || approved || editing || identityEditing || approvalInFlight.current) return;
-    if (canOpenReconciliation && !canSubmitReconciliation) {
-      await beginEdit(event, reconciliationIndex);
+    if (stale) { setError(problem || 'Cancel edits and refresh the broker review.'); return; }
+    if (destinationProblem) { onReviewDestination?.(); return; }
+    if (rowProblemIndex >= 0) {
+      const item = view.items[rowProblemIndex];
+      const identity = blockingSourceIssues(item, view).some(issue => issue.validator === 'recipient_identity_ambiguity');
+      const group = identity ? view.roster?.identity_groups?.find(candidate => candidate.source_indexes.includes(Number(item.source.slice(7)))) : null;
+      if (group) await beginIdentityReview(event, group.id);
+      else await beginEdit(event, rowProblemIndex);
       return;
     }
-    if (problem && !canSubmitReconciliation) return;
+    if (problem && !canSubmitReconciliation) { await beginEdit(event, view.items.length ? 0 : -1); return; }
     approvalInFlight.current = true;
     setPending(true); setError(''); setMessage('');
     try {
@@ -222,7 +230,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     finally { approvalInFlight.current = false; setPending(false); }
   }
   const approveButton = <button type="button" className="button primary" aria-describedby="broker-approval-scope broker-source-status"
-    disabled={disabled || approved || (Boolean(problem) && !canOpenReconciliation) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
+    disabled={disabled || approved || stale || Boolean(destinationProblem && !onReviewDestination) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
   const editItem = editing?.item;
   const editedItems = view.items.map((item,index) => index === editing?.index && editing.item ? editing.item : item);
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
@@ -251,7 +259,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     </section> : null}
     <div className="schedule-a-broker-table-wrap" aria-label="Schedule A broker rows" role="region" tabIndex={0}>
       <table className="schedule-a-broker-table"><thead><tr><th>Broker / person</th><th>Address</th><th>Payment</th><th>Purpose / status</th><th>Action</th></tr></thead><tbody>
-        {view.items.map((item, index) => <tr key={item.source}>
+        {view.items.map((item, index) => <tr key={item.source === 'NEW' ? `NEW:${index}` : item.source}>
           <td data-label="Broker / person">{item.row.name}<small className="broker-draft-badge">{item.disclosure ? 'Separate service-provider disclosure' : 'Schedule A broker'}{item.row.source_page ? ` · Page ${item.row.source_page}` : ''}</small></td>
           <td data-label="Address">{address(item.row) || item.disclosure?.address}</td>
           <td data-label="Payment">{item.disclosure ? <strong>Original {formatMoney(item.disclosure.amount)}<br /></strong> : null}Commission: {formatMoney(item.row.commission_total)}<br />Fees: {formatMoney(item.row.fee_total)}</td>
