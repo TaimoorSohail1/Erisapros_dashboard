@@ -405,6 +405,15 @@ class FTWilliamsReviewService:
         # ``DBA``/affiliate suffix can block creation of the correct new record.
         fields = self._fields_with_canonical_carrier_legal_name(fields)
         if apply_automatic_derivations:
+            if (current_query_success and current_query_complete and schedule_a_current
+                    and not bring_forward_required and not active_failure):
+                from app.services.schedule_a_printed_totals import refresh_verified_totals
+                before_refresh = self._automatic_field_state(fields)
+                fields = await refresh_verified_totals(repo, filing, fields, schedule_a_current)
+                automatic_field_state.update({
+                    field_id: state for field_id, state in self._automatic_field_state(fields).items()
+                    if state != before_refresh.get(field_id)
+                })
             fields = self._fields_with_schedule_a_summary_override(fields, schedule_a_worksheet_summaries, selected_schedule_desc)
             fields = self._fields_with_plan_worksheet_identity(fields, schedule_a_worksheet_summaries)
             fields = self._fields_with_confirmed_various_bundle(

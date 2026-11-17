@@ -258,6 +258,7 @@ class Repository:
         status_reason: str | None = None,
         confidence: float | None = None,
         keep_current_context: str | None = None,
+        expected_unproposed_value: str | None = None,
     ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
@@ -782,6 +783,7 @@ class MongoRepository(Repository):
         status_reason: str | None = None,
         confidence: float | None = None,
         keep_current_context: str | None = None,
+        expected_unproposed_value: str | None = None,
     ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
@@ -795,8 +797,11 @@ class MongoRepository(Repository):
             updates["status_reason"] = status_reason
         if confidence is not None:
             updates["confidence"] = confidence
+        query = {"_id": ObjectId(field_id), "filing_id": filing_id}
+        if expected_unproposed_value is not None:
+            query.update(value=expected_unproposed_value, proposed_value="", status=ExtractedFieldStatus.LOW_CONFIDENCE.value)
         doc = await self.db.extracted_fields.find_one_and_update(
-            {"_id": ObjectId(field_id), "filing_id": filing_id},
+            query,
             {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
@@ -1873,9 +1878,14 @@ class MemoryRepository(Repository):
         status_reason: str | None = None,
         confidence: float | None = None,
         keep_current_context: str | None = None,
+        expected_unproposed_value: str | None = None,
     ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
+            return None
+        if expected_unproposed_value is not None and (
+            field.value != expected_unproposed_value or field.proposed_value or field.status != ExtractedFieldStatus.LOW_CONFIDENCE
+        ):
             return None
         field.proposed_value = proposed_value
         field.keep_current_context = keep_current_context
