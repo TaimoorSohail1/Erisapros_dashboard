@@ -7171,8 +7171,10 @@ class FTWilliamsReviewService:
 
     @staticmethod
     def _normalize_naic_identity(value: object) -> str:
-        # The all-zero missing-code default provides no carrier identity.
-        return re.sub(r"\D", "", str(value or "")).lstrip("0")
+        # Only complete five-digit codes (including the printed zero-padded
+        # format) can confirm or contradict a candidate's identity.
+        match = re.fullmatch(r"(?:0+\s*-\s*)?([0-9]{5})", str(value or "").strip())
+        return match[1] if match and match[1] != "00000" else ""
 
     def _schedule_match_payload(self, status: FTWilliamsStatusItem, fields: list[ExtractedField]) -> dict:
         match_details = self._schedule_match_details(fields, status)

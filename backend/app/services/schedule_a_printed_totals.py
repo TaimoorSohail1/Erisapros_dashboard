@@ -15,12 +15,13 @@ from app.services.storage import StorageService
 
 COVERED_TOTAL_PROVIDER = "Printed Schedule A covered-person total"
 _LOGGER = logging.getLogger(__name__)
+_SOURCE_EVIDENCE_HOLD = "Automatic extraction requires a source page and source text that supports the extracted value."
 _LEGACY_SOURCE_HOLDS = {
     "WlfrTotChargesPaidAmt": (
-        "10a", "Automatic extraction requires explicit nonexperience-rated/line 10 source evidence.",
+        "10a", frozenset({"Automatic extraction requires explicit nonexperience-rated/line 10 source evidence.", _SOURCE_EVIDENCE_HOLD}),
     ),
     "InsPrsnCoveredEoyCnt": (
-        "1e", "Enrollment tiers or an explicit covered-lives total do not support this persons-covered value.",
+        "1e", frozenset({"Enrollment tiers or an explicit covered-lives total do not support this persons-covered value.", _SOURCE_EVIDENCE_HOLD}),
     ),
 }
 _NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
@@ -29,6 +30,11 @@ _NEXT_SECTION = re.compile(r"(?im)^[ \t]*(?:section\s+\d+|part\s+(?:[IVX]+)\b)")
 _PREMIUM = re.compile(
     rf"(?im)^[ \t]*(?:(?:\(a\)|10\s*\.?\s*a\.?|a\.)\s*)?"
     rf"total\s+premiums?(?:\s+or\s+subscriptions?\s+charges)?\s+paid\s+to\s+(?:the\s+)?carrier"
+    rf"[:. \t]*\$?[ \t]*(?P<amount>{_NUMBER}(?:\.\d{{1,2}})?)[ \t]*$",
+)
+_EXPLICIT_PAID_PREMIUM = re.compile(
+    rf"(?im)^[ \t]*(?:(?:\(a\)|10\s*\.?\s*a\.?|a\.)\s*)?"
+    rf"total\s+premiums?[ \t]*\*?[ \t]+or[ \t]+subscriptions?[ \t]+charges[ \t]+paid[ \t]+to[ \t]+(?:the[ \t]+)?carrier"
     rf"[:. \t]*\$?[ \t]*(?P<amount>{_NUMBER}(?:\.\d{{1,2}})?)[ \t]*$",
 )
 _COVERED = re.compile(
@@ -58,13 +64,19 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
         if match := _COVERED.search(text):
             if (count := covered_total(text)) is not None:
                 totals["1e"].append((count, SourceEvidence(provider=COVERED_TOTAL_PROVIDER, page=page, source_text=match[0])))
+        premium_lines = {
+            match.span(): (_number(match["amount"]), match[0].strip())
+            for match in _EXPLICIT_PAID_PREMIUM.finditer(text)
+        }
         for heading in _SECTION_10.finditer(text):
             section = _NEXT_SECTION.split(text[heading.end():], maxsplit=1)[0]
             for match in _PREMIUM.finditer(section):
-                totals["10a"].append((_number(match["amount"]), SourceEvidence(
-                    provider="Printed Schedule A line 10a", page=page,
-                    source_text=f"{heading[0].strip()}\n{match[0].strip()}",
-                )))
+                span = (heading.end() + match.start(), heading.end() + match.end())
+                premium_lines[span] = (_number(match["amount"]), f"{heading[0].strip()}\n{match[0].strip()}")
+        for amount, source in premium_lines.values():
+            totals["10a"].append((amount, SourceEvidence(
+                provider="Printed Schedule A line 10a", page=page, source_text=source,
+            )))
     return {code: matches[0] for code, matches in totals.items() if len(matches) == 1}
 
 
@@ -85,15 +97,17 @@ def attach_printed_total_evidence(fields: list[NormalizedExtractionField], pages
 
 
 async def refresh_verified_totals(repo, filing: Filing, fields: list[ExtractedField], current: dict[str, str]) -> list[ExtractedField]:
-    """Restore proposals withheld by the two legacy label checks after rereading the same PDF."""
+    """Restore proposals withheld solely for missing label evidence after rereading the same PDF."""
     pending = {}
+    prefix = "Extraction requires review; automatic proposal withheld. "
     for field in fields:
         tag = resolve_ftw_update_tag(field)
         if (field.id and field.form_type == FormType.SCHEDULE_A and tag in _LEGACY_SOURCE_HOLDS
                 and field.status == ExtractedFieldStatus.LOW_CONFIDENCE and not field.proposed_value
                 and not resolve_ftw_current_value(field, current).strip()):
-            code, reason = _LEGACY_SOURCE_HOLDS[tag]
-            if field.status_reason == "Extraction requires review; automatic proposal withheld. " + reason:
+            code, allowed_reasons = _LEGACY_SOURCE_HOLDS[tag]
+            status_reason = field.status_reason or ""
+            if status_reason.startswith(prefix) and set(status_reason[len(prefix):].split("; ")) <= allowed_reasons:
                 pending[field.id] = (field, tag, code)
     if not pending:
         return fields

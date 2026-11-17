@@ -4835,6 +4835,8 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
         selected = [field for field in selected if field.field_name not in authoritative_names]
         selected.extend(metlife_fields)
     selected = prefer_authoritative_pomerene_fields(selected, plain_pages)
+    from app.services.schedule_a_printed_totals import attach_printed_total_evidence
+    attach_printed_total_evidence(selected, layout_pages)
     return _prefer_authoritative_aetna_attachment_fields(selected)
 
 
@@ -7032,6 +7034,12 @@ def _value_after_rule_alias(rule, remainder: str) -> str | None:
     if "date" in key or "date" in label:
         dates = _normalized_date_tokens(text)
         return dates[0] if dates else None
+    if key == "schedule_a_part_i_1e_persons_covered_end_of_policy_year":
+        match = re.match(
+            r"^(?:\(?(?:at\s+(?:the\s+)?)?end\s+of\s+(?:the\s+)?(?:policy(?:\s+or\s+contract)?|contract)\s+year\)?)?"
+            r"[*:=| \t]*([0-9][0-9,]*)(?![\w,./-])", text, re.IGNORECASE,
+        )
+        return money_value(match.group(1)) if match else None
     if any(token in key or token in label or token in field_type for token in ("amount", "premium", "commission", "fee", "currency", "covered", "number")):
         match = _RULE_MONEY_TOKEN.search(text)
         return money_value(match.group(1)) if match else None
@@ -8208,8 +8216,8 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
     covered = regex_first(
         text,
         [
-            r"\(\s*e\s*\)\s*Approximate\s+number\s+of\s+persons\s+covered\s+at\s+(?:the\s+)?end\s+of\s+policy\s+or\s+contract\s+year\s*:?\s*\*?\s*([0-9,]+)",
-            r"\bpersons\s+covered\s+at\s+(?:the\s+)?end\s+of\s+policy\s+or\s+contract\s+year\s*:?\s*\*?\s*([0-9,]+)",
+            r"\(\s*e\s*\)\s*Approximate\s+number\s+of\s+persons\s+covered\s+at\s+(?:the\s+)?end\s+of\s+policy\s+or\s+contract\s+year\s*:?\s*\*?\s*([0-9,]+)(?![\d,./-])",
+            r"\bpersons\s+covered\s+at\s+(?:the\s+)?end\s+of\s+policy\s+or\s+contract\s+year\s*:?\s*\*?\s*([0-9,]+)(?![\d,./-])",
         ],
         flags=re.IGNORECASE,
     )
@@ -8347,7 +8355,12 @@ def parse_schedule_a_text(text: str, page: int | None = None, *, rules=None) -> 
     if org_code:
         add("3e. Organizational Code", org_code, 0.9, value_validator=looks_like_org_code)
 
-    premium_total = extract_nonexperience_total_premium_from_text(text)
+    from app.services.schedule_a_printed_totals import read_printed_totals
+    printed_premium = read_printed_totals([(page, text)]).get("10a") if page else None
+    if printed_premium:
+        amount, evidence = printed_premium
+        add("10a. Total premiums or subscription charges paid to carrier", f"{amount:,}", 0.98, evidence.source_text)
+    premium_total = None if printed_premium else extract_nonexperience_total_premium_from_text(text)
     if premium_total:
         add("10a. Total premiums or subscription charges paid to carrier", premium_total, 0.9)
 
@@ -13427,7 +13440,7 @@ def extract_table_covered_persons(text: str) -> str | None:
         return worksheet_total.group(1)
 
     flattened_match = re.search(
-        r"NAIC\s+Code:.*?Listing\s*([0-9][0-9,]*)\s*[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}",
+        r"NAIC\s+Code:[^\n]{0,80}?Listing\s*([0-9][0-9,]*)\s+[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )

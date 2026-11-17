@@ -4305,6 +4305,25 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         })
         self.assertIsNone(service._match_schedule_a_status([real_naic, ein, contract], [different_naic]))
 
+    def test_schedule_match_does_not_treat_a_partial_naic_as_a_conflicting_identity(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field("schedule_a_part_i_1c_naic_code", "1c. NAIC Code", "0303"),
+            self._schedule_identity_field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "J63427"),
+            self._schedule_identity_field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. EIN", "12-3456789"),
+        ]
+        matched = FTWilliamsStatusItem(
+            type="ScheduleA", error_code="0", ftw_seq_no="1",
+            query_results={"InsCarrierNAICCode": "93303", "InsCarrierEIN": "12-3456789", "InsContractNum": "J63427"},
+        )
+        unrelated = matched.model_copy(update={
+            "ftw_seq_no": "2", "query_results": {"InsCarrierNAICCode": "93303", "InsContractNum": "J99999"},
+        })
+
+        self.assertEqual(service._match_schedule_a_status(fields, [unrelated, matched]), matched)
+        self.assertNotIn("NAIC", service._schedule_match_details(fields, matched)["reasons"])
+        self.assertIsNone(service._match_schedule_a_status(fields[:1], [matched]))
+
     def test_schedule_match_treats_multiple_eyemed_contracts_as_ftw_various(self):
         service = FTWilliamsReviewService()
         fields = [
