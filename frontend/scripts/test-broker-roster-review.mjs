@@ -59,9 +59,9 @@ assert.match(document.body.textContent,/Paused:/);
 assert.match(document.body.textContent,/Unclassified/);
 assert.equal(buttons().filter(b=>b.textContent==='Edit').length,1);
 assert.equal(buttons().filter(b=>b.textContent==='Approve').length,1);
-assert.equal(button('Approve').disabled,true,'Unclassified payments cannot be approved');
+assert.equal(button('Approve').disabled,false,'Approve opens classification without saving');
 assert.equal(document.querySelectorAll('form,textarea,select,details').length,0,'Main view contains only the row and short status');
-await click('Edit');
+await click('Approve');
 assert.equal(document.activeElement.id,'broker-review-heading');
 assert.match(document.body.textContent,/View evidence/);
 assert.match(document.body.textContent,/Current brokers \(1\)/);
@@ -108,7 +108,7 @@ assert.equal(saves[1].rows[0].purpose,'FEES');
 
 // Supporting-only does not silently authorize deletion of the current broker.
 await render();await click('Edit');await choose('SUPPORTING_ONLY');
-await submit();assert.equal(button('Approve').disabled,true);assert.equal(saves.length,2);
+await submit();assert.equal(button('Approve').disabled,false);assert.equal(saves.length,2);
 await click('Edit');await set(document.querySelector('textarea'),'Confirmed instruction: no reportable Schedule A recipients'.padEnd(2000,'x'));
 await submit();await click('Approve');assert.equal(saves.length,3);
 assert.equal(saves[2].rows.length,0);assert.match(saves[2].review.empty_list_evidence,/no reportable/);
@@ -147,8 +147,9 @@ let targetReviews=0;
 const destinationReason='The policy number may refer to existing Schedule A #7. Select it or explicitly confirm a separate new Schedule A.';
 await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason},onReviewDestination:()=>{targetReviews++;}});
 assert.match(document.body.textContent,/existing Schedule A #7/);
-assert.equal(button('Approve').disabled,true);
-await click('Review Schedule A');assert.equal(targetReviews,1);
+assert.equal(button('Approve').disabled,false);
+await click('Approve');assert.equal(targetReviews,1);
+assert.equal(saves.length,4);
 await click('Edit');assert.ok(document.querySelector('form'));await click('Cancel');
 // Destination readiness can change on refresh even if source/snapshot hashes did not.
 await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[row],schedule_a_broker_roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason}})});
@@ -166,22 +167,23 @@ await render({...sourceProps,rows:heldRows,onSaveReview:async()=>{heldSaves++;re
 assert.match(document.body.textContent,/Paused:/);
 assert.match(document.body.textContent,/Confirm whether these entries belong to one broker or separate recipients/);
 assert.doesNotMatch(document.body.textContent,/Ready for approval/);
-assert.equal(button('Approve').disabled,true);
+assert.equal(button('Approve').disabled,false);
 await click('Approve');assert.equal(heldSaves,0,'Do not submit a review the server must reject');
-await act(async()=>buttons().filter(b=>b.textContent==='Edit')[0].click());
 assert.match(document.querySelector('form').textContent,/Distinct printed addresses/);
 await set(input('Commission'),'4035.75');await submit();
-assert.equal(button('Approve').disabled,true,'Editing payment values does not confirm recipient identity');
+assert.equal(button('Approve').disabled,false,'Editing payment values still leaves identity review available');
+assert.equal(heldSaves,0);
 assert.doesNotMatch(document.body.textContent,/Changes ready\. Click Approve/);
 await render({...sourceProps,rows:heldRows,roster:{...sourceProps.roster,mode:'REPLACE'}});
 assert.doesNotMatch(document.body.textContent,/Broker list approved/,'An old roster mode cannot hide current source errors');
 // Newly returned source holds must be visible before attempting a save.
 await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[heldRows[0]],schedule_a_broker_roster:sourceProps.roster}),onSaveReview:async()=>{heldSaves++;return true;}});
-await click('Approve');assert.equal(heldSaves,0);assert.equal(button('Approve').disabled,true);
+await click('Approve');assert.equal(heldSaves,0);assert.equal(button('Approve').disabled,false);
 assert.match(document.body.textContent,/Confirm whether these entries belong to one broker or separate recipients/);
 // Unknown future blocking validators retain their actual explanation.
 await render({...sourceProps,rows:[{...row,validation_results:[{validator:'future_source_check',status:'ERROR',reason:'Source payment evidence is inconsistent.'}]}]});
-assert.match(document.body.textContent,/Source payment evidence is inconsistent/);assert.equal(button('Approve').disabled,true);
+assert.match(document.body.textContent,/Source payment evidence is inconsistent/);assert.equal(button('Approve').disabled,false);
+await click('Approve');assert.match(document.querySelector('form').textContent,/Source payment evidence is inconsistent/);
 // The four checks explicitly resolved by whole-list review must remain reviewable.
 await render({...sourceProps,rows:[{...row,validation_results:['complete_source_broker_roster','payment_classification_ambiguity','business_rule_confirmation','source_section_ambiguity'].map(validator=>({validator,status:'ERROR',reason:'Needs full-list review'}))}]});
 assert.equal(button('Approve').disabled,false);
@@ -220,7 +222,7 @@ await render({...identityProps,roster:savedIdentity});
 assert.equal(button('Approve').disabled,false,'Saved identity remains usable after a reload');
 await act(async()=>buttons().filter(b=>b.textContent==='Edit')[0].click());
 await set(input('Commission'),'999');await submit();
-assert.equal(button('Approve').disabled,true,'Changed reviewed values require identity review again');
+assert.equal(button('Approve').disabled,false,'Changed reviewed values can reopen identity review');
 await render({...identityProps,onSaveIdentityReview:async()=>null});
 await click('Confirm identity');await choose('SEPARATE');
 await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
@@ -246,7 +248,7 @@ if(process.env.BROKER_UI_REPLAY_FILE){
   await render({...sourceProps,rows:captured.source_rows});
   assert.match(document.body.textContent,/Paused: Confirm whether these entries belong to one broker or separate recipients/);
   assert.doesNotMatch(document.body.textContent,/Ready for approval/);
-  assert.equal(button('Approve').disabled,true);
+  assert.equal(button('Approve').disabled,false);
   assert.equal(document.querySelectorAll('tbody tr').length,captured.source_rows.length);
   if(process.env.BROKER_UI_EVIDENCE_FILE)await writeFile(process.env.BROKER_UI_EVIDENCE_FILE,document.documentElement.outerHTML,'utf8');
 }

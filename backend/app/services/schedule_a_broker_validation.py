@@ -25,6 +25,47 @@ SOURCE_REVIEW_VALIDATORS = {
 }
 
 
+def attach_labelled_broker_payment_columns(rows, page_texts):
+    """Bind paired payment columns to a unique printed recipient and address."""
+    pattern = re.compile(
+        r"(?im)^[^\n]*\bsales\s+and\s+base\s{2,}fees\s+paid[^\n]*\n[ \t]*commission\s+paid\s*$",
+    )
+    amounts = re.compile(r"^(?P<locality>.+?)\s{2,}\$\s*(?P<commission>[\d,]+\.\d{2})"
+                         r"\s{2,}\$\s*(?P<fees>[\d,]+\.\d{2})\s*$")
+
+    def normalize(value):
+        return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+
+    for row in rows:
+        if not (row.source_page and row.name and row.address_line_1 and row.city and row.state and row.zip_code):
+            continue
+        locality = normalize(f"{row.city} {row.state} {row.zip_code}")
+        hits = []
+        for page, text in page_texts:
+            if page != row.source_page or not (header := pattern.search(text)):
+                continue
+            body = re.split(r"(?m)^\s*\*", text[header.end():], maxsplit=1)[0]
+            lines = [line for line in body.splitlines() if line.strip()]
+            for index, line in enumerate(lines[2:], start=2):
+                match = amounts.fullmatch(line.strip())
+                if (match and normalize(match['locality']) == locality
+                        and normalize(lines[index - 2]) == normalize(row.name)
+                        and normalize(lines[index - 1]) == normalize(row.address_line_1)):
+                    hits.append((page, header[0].strip(), lines[index - 2:index + 1], match))
+        if len(hits) != 1:
+            continue
+        page, header, lines, match = hits[0]
+        try:
+            current = tuple(Decimal(str(v).replace(',', '')) for v in (row.commission_total, row.fee_total))
+        except InvalidOperation:
+            continue
+        if current != tuple(Decimal(match[key].replace(',', '')) for key in ('commission', 'fees')):
+            continue
+        source = header + '\n' + '\n'.join(line.strip() for line in lines)
+        row.commission_source_text = row.fee_source_text = source
+        row.evidence.append(SourceEvidence(provider="Printed broker payment columns", page=page, source_text=source))
+
+
 def hold_local_ocr_recipient_conflicts(result, *, corroborating_rows=None, grid_corroborating_rows=None) -> None:
     """A reconciled payment table does not prove an OCR recipient spelling.
 
