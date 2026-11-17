@@ -153,6 +153,7 @@ interface ReviewDecisionRow {
   currentFtw: string;
   extracted: string;
   proposed: string;
+  shortenedProposal?: string;
   issue: string;
   statusLabel: string;
   group: ReviewRowGroup;
@@ -3344,7 +3345,9 @@ function ReviewDecisionTableRow({
       <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">No current value</span>}</td>
       <td data-label="Proposed To Send" className="proposed-cell">
         <button className="proposed-value-button" type="button" disabled={disabled || !canEdit} onClick={onInspect}>
-          <span>{row.proposed || "No proposed value"}</span>
+          <span title={row.shortenedProposal ? "Shortened to the FT Williams field limit" : undefined}>
+            {row.shortenedProposal || row.proposed || "No proposed value"}
+          </span>
           {canEdit ? <Edit3 size={14} /> : null}
         </button>
         <div className="decision-actions">
@@ -3848,7 +3851,7 @@ function FTWilliamsSendConfirmationModal({
                   <tr key={row.key}>
                     <td data-label="Select / Field"><label><input type="checkbox" aria-label={`Send ${row.label}`} checked={Boolean(row.fieldId && selectedFieldIds.includes(row.fieldId))} disabled={busy || !row.fieldId} onChange={() => row.fieldId && onToggleField(row.fieldId)} /> <strong>{row.label}</strong></label><small>{row.formLabel} / {row.section}</small></td>
                     <td data-label="Current FTW">{row.currentFtw || <span className="muted-value">Blank</span>}</td>
-                    <td data-label="New value">{row.proposed || <span className="muted-value">Blank</span>}</td>
+                    <td data-label="New value">{row.shortenedProposal || row.proposed || <span className="muted-value">Blank</span>}</td>
                     <td data-label="Status"><span className="review-issue-pill issue-will_update">{row.fieldId && selectedFieldIds.includes(row.fieldId) ? "Selected" : "Keep current"}</span></td>
                   </tr>
                 ))}
@@ -4625,6 +4628,9 @@ function rowFromComparison(
 ): ReviewDecisionRow {
   const label = comparison.label || field?.mapped_label || field?.source_field_name || "FT Williams field";
   const group = rejectedField ? "NEEDS_DECISION" : groupForComparison(comparison, field);
+  const proposed = comparison.proposed_value || comparison.staged_value || field?.proposed_value || "";
+  const normalized = comparison.validation_normalized_value;
+  const original = proposed.trim().replace(/\s+/g, " ");
   return {
     key: comparison.field_id || `${comparison.rule_key || comparison.ftw_tag || label}-${index}`,
     fieldId: comparison.field_id,
@@ -4634,7 +4640,10 @@ function rowFromComparison(
     sourceLabel: sourceLabelForComparison(comparison, field),
     currentFtw: comparison.current_value || "",
     extracted: comparison.extracted_value || field?.value || "",
-    proposed: comparison.proposed_value || comparison.staged_value || field?.proposed_value || "",
+    proposed,
+    shortenedProposal: comparison.validation_expected_format?.startsWith("Text up to ")
+      && normalized && normalized.length < original.length && original.startsWith(normalized)
+      ? normalized : undefined,
     issue: rejectedField?.reason || issueForComparison(comparison, field, group),
     statusLabel: rejectedField ? "Rejected by FTW" : reviewedStatusLabel(group, field, comparison),
     group,

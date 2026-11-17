@@ -5394,9 +5394,6 @@ class FTWilliamsReviewService:
                     validation_status = "INVALID"
                     validation_message = issue.reason
                     validation_blocking = True
-                else:
-                    if validation_normalized_value and changed:
-                        changed = values_meaningfully_different(current_value, validation_normalized_value, tag=tag)
             if update_exclusion_reason:
                 validation_status = "REVIEW_REQUIRED"
                 validation_message = update_exclusion_reason

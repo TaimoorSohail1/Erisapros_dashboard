@@ -4324,7 +4324,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertNotIn("NAIC", service._schedule_match_details(fields, matched)["reasons"])
         self.assertIsNone(service._match_schedule_a_status(fields[:1], [matched]))
 
-    def test_review_does_not_ask_for_a_decision_when_ftw_already_has_the_shortened_text(self):
+    def test_review_exposes_ftw_text_limit_without_hiding_source_name_conflicts(self):
         service = FTWilliamsReviewService()
         source_name = "Sample Insurance Company for Employee Benefits in the Western Region of the United States"
         field = self._schedule_identity_field(
@@ -4332,13 +4332,13 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
         saved_name = source_name[:70].rstrip()
 
-        matching, = service._comparison_fields([field], {}, {"InsCarrierName": saved_name})
+        shortened_current, = service._comparison_fields([field], {}, {"InsCarrierName": saved_name})
         blank, = service._comparison_fields([field], {}, {})
         conflict, = service._comparison_fields([field], {}, {"InsCarrierName": "Different Insurer"})
 
-        self.assertEqual(matching.extracted_value, source_name)
-        self.assertEqual(matching.decision, "NO_CHANGE")
-        self.assertFalse(matching.changed)
+        self.assertEqual(shortened_current.extracted_value, source_name)
+        self.assertEqual(shortened_current.decision, "CONFLICT")
+        self.assertFalse(shortened_current.validation_blocking)
         self.assertEqual(blank.decision, "WILL_UPDATE")
         self.assertEqual(blank.validation_normalized_value, saved_name)
         self.assertEqual(conflict.decision, "CONFLICT")
