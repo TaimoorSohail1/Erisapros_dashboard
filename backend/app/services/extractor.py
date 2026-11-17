@@ -7031,6 +7031,9 @@ def _value_after_rule_alias(rule, remainder: str) -> str | None:
     if "naic" in key or "naic" in label:
         match = re.search(r"\b\d{4,6}\b", text)
         return match.group(0) if match else None
+    if key in {"schedule_a_part_i_1f_policy_year_beginning_date", "schedule_a_part_i_1g_policy_year_ending_date"}:
+        match = _RULE_DATE_TOKEN.match(text.lstrip("*=| \t"))
+        return normalize_schedule_a_date(match[0], end_of_month=False) if match else None
     if "date" in key or "date" in label:
         dates = _normalized_date_tokens(text)
         return dates[0] if dates else None

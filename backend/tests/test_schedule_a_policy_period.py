@@ -43,6 +43,16 @@ class PolicyPeriodRegressionTests(unittest.TestCase):
             [(1, "Letter March 12, 2026\nCertified March 12, 2026")], rules=DEFAULT_FIELD_RULES)
         self.assertFalse(any(f.field_name.startswith(("1f.", "1g.")) for f in fields))
 
+    def test_policy_date_alias_does_not_jump_across_a_flattened_column(self):
+        text = "Policy Year Ending Date: (c) NAIC Code: See Attached Listing83 03/01/202502/28/2026"
+        fields = extract_rules_driven_schedule_a_fields([(3, text)], rules=DEFAULT_FIELD_RULES)
+        self.assertFalse(any(f.field_name.startswith(("1f.", "1g.")) for f in fields))
+
+        labelled_dates = "Policy Year Beginning Date: 03/01/2025\nPolicy Year Ending Date: 02/28/2026"
+        fields = extract_rules_driven_schedule_a_fields([(3, labelled_dates)], rules=DEFAULT_FIELD_RULES)
+        dates = {f.field_name[:2]: f.value for f in fields if f.field_name.startswith(("1f.", "1g."))}
+        self.assertEqual(dates, {"1f": "03/01/2025", "1g": "02/28/2026"})
+
     def test_wrong_provider_dates_corrected_and_month_precision_reviewed(self):
         result = NormalizedExtractionResult(provider="Captured provider", fields=[
             NormalizedExtractionField(field_name=label, value="03/12/2026", confidence=0.98)
