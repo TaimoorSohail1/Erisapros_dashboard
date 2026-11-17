@@ -1,5 +1,6 @@
 """Reviewer confirmation is a separate, source/destination-bound permission."""
 import unittest
+from decimal import Decimal
 from app.models import ScheduleABrokerRow, ScheduleABrokerRosterReview, BrokerRosterReviewRequest
 from app.services.broker_review_confirmation import confirm_broker_review, review_token, disclosure_items
 from app.services.schedule_a_broker_roster import source_roster_review
@@ -50,6 +51,31 @@ class BrokerReviewConfirmationTests(unittest.TestCase):
     def test_unknown_is_not_zero(self):
         row=self.row();row.commission_total=None
         with self.assertRaisesRegex(ValueError,'amount'): self.confirm([row])
+
+    def test_reconciliation_requires_both_source_totals(self):
+        from app.models import ExtractionValidationResult
+
+        original = self.row().model_copy(update={'commission_total': '100', 'fee_total': '0', 'validation_results': [
+            ExtractionValidationResult(validator='broker_total_reconciliation', status='ERROR'),
+        ]})
+        status = ScheduleABrokerRosterReview()
+        request = BrokerRosterReviewRequest(
+            expected_context=review_token([original], status, self.context, self.snapshot),
+            complete_list_confirmed=True, reason='Verified complete broker list', row_sources=['SOURCE:0'],
+        )
+        def confirm(rows, expected):
+            return confirm_broker_review(rows, [original], status, request, actor='reviewer',
+                                         source_context=self.context, snapshot=self.snapshot, expected_payment_totals=expected)
+
+        totals = Decimal('100.00'), Decimal('50.00')
+        with self.assertRaisesRegex(ValueError, 'both Schedule A'):
+            confirm([original], totals)
+        with self.assertRaisesRegex(ValueError, 'both Schedule A'):
+            confirm([original], None)
+        request.row_sources.append('NEW')
+        fee_row = self.row().model_copy(update={'name':'Second broker', 'commission_total':'0', 'fee_total':'50'})
+        verified, _ = confirm([original, fee_row], totals)
+        self.assertEqual([row.purpose for row in verified], ['COMMISSIONS', 'FEES'])
 
     def test_changed_values_invalidate_manual_confirmation(self):
         rows,status=self.confirm([self.row()])

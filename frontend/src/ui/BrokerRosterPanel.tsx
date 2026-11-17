@@ -80,6 +80,7 @@ function blockingSourceIssues(item: Item, view: Draft) {
   return (original?.validation_results ?? []).filter(issue => issue.status === 'ERROR' && !reviewable.has(issue.validator)
     && !(issue.validator === 'recipient_identity_ambiguity' && identityChoiceApplies(item, view)));
 }
+const needsReconciliation = (issue: { validator: string }) => issue.validator === 'broker_total_reconciliation';
 function sourceIssueMessage(issue: { validator: string; reason?: string }) {
   if (issue.validator === 'recipient_identity_ambiguity') return 'Confirm whether these entries belong to one broker or separate recipients. Their addresses differ.';
   return issue.reason || 'A source check needs correction before this broker can be approved.';
@@ -111,6 +112,10 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const view = draft ?? makeDraft(rows, roster);
   const stale = Boolean(draft && draft.context !== roster?.review_context_sha256);
   const destinationProblem = view.roster?.destination_ready === false ? view.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.' : null;
+  const reconciliationIndex = view.items.findIndex(item => blockingSourceIssues(item, view).some(needsReconciliation));
+  const canOpenReconciliation = !stale && !destinationProblem && reconciliationIndex >= 0;
+  const canSubmitReconciliation = canOpenReconciliation && view.dirty
+    && !view.items.some(item => itemProblem(item) || blockingSourceIssues(item, view).some(issue => !needsReconciliation(issue)));
   const problem = stale ? 'Source or FTWilliam data changed. Cancel edits and reopen Edit to refresh.' :
     destinationProblem ?? sourceProblem(view) ?? view.items.map(itemProblem).find(Boolean) ?? (!view.items.some(item => item.included) && !view.emptyEvidence.trim() ? 'Confirm the complete source broker list before replacing current brokers.' : null);
   const approved = !problem && !draft?.dirty && (roster?.mode === 'REPLACE' || Boolean(approvedContext && approvedContext === roster?.review_context_sha256));
@@ -130,7 +135,11 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     try {
       const next = await refreshedDraft(); setDraft(next);
       if (next.context !== view.context) throw new Error('Broker data refreshed. Check the displayed rows and click Edit again.');
-      setEditing({ index, item: next.items[index] ? { ...next.items[index], row: { ...next.items[index].row } } : null, emptyEvidence: next.emptyEvidence });
+      const existing = next.items[index];
+      const item: Item | null = existing ? { ...existing, row: { ...existing.row } } : index === next.items.length
+        ? { source: 'NEW', row: { name: '', organization_code: '3' }, included: true }
+        : null;
+      setEditing({ index, item, emptyEvidence: next.emptyEvidence });
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to load the broker. Try again.'); }
     finally { setPending(false); }
   }
@@ -175,21 +184,28 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     if (!draft || !editing) return;
     const issue = editing.item && itemProblem(editing.item);
     if (issue) { setError(issue); return; }
-    const next = { ...draft, dirty: true, emptyEvidence: editing.emptyEvidence,
-      items: draft.items.map((item, index) => index === editing.index && editing.item ? editing.item : item) };
+    const items = [...draft.items];
+    if (editing.item && (editing.index < items.length || editing.item.included)) items[editing.index] = editing.item;
+    const next = { ...draft, dirty: true, emptyEvidence: editing.emptyEvidence, items };
     setDraft(next);
-    closeEdit(); setMessage(sourceProblem(next) ? 'Draft saved. The source check still needs resolution before approval.' : 'Changes ready. Click Approve to save the review and continue.');
+    closeEdit(); setMessage(sourceProblem(next) && !canOpenReconciliation ? 'Draft saved. The source check still needs resolution before approval.' : 'Changes ready. Click Approve to save the review and continue.');
   }
-  async function approve() {
-    if (disabled || approved || problem || editing || identityEditing || approvalInFlight.current) return;
+  async function approve(event: React.MouseEvent<HTMLButtonElement>) {
+    if (disabled || approved || editing || identityEditing || approvalInFlight.current) return;
+    if (canOpenReconciliation && !canSubmitReconciliation) {
+      await beginEdit(event, reconciliationIndex);
+      return;
+    }
+    if (problem && !canSubmitReconciliation) return;
     approvalInFlight.current = true;
     setPending(true); setError(''); setMessage('');
     try {
       const next = await refreshedDraft();
       if (next.roster?.destination_ready === false) { setDraft(next); throw new Error(next.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.'); }
       if (next.context !== view.context || !next.context) { setDraft(next); throw new Error('Broker data refreshed. Check the displayed list before approving.'); }
-      const sourceIssue = sourceProblem(next);
-      if (sourceIssue) { setDraft(next); throw new Error(sourceIssue); }
+      const sourceIssue = next.items.flatMap(item => blockingSourceIssues(item, next))
+        .find(issue => !(canSubmitReconciliation && needsReconciliation(issue)));
+      if (sourceIssue) { setDraft(next); throw new Error(sourceIssueMessage(sourceIssue)); }
       const issue = next.items.map(itemProblem).find(Boolean);
       if (issue) throw new Error(issue);
       const included = next.items.filter(item => item.included);
@@ -206,7 +222,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     finally { approvalInFlight.current = false; setPending(false); }
   }
   const approveButton = <button type="button" className="button primary" aria-describedby="broker-approval-scope broker-source-status"
-    disabled={disabled || approved || Boolean(problem) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
+    disabled={disabled || approved || (Boolean(problem) && !canOpenReconciliation) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
   const editItem = editing?.item;
   const editedItems = view.items.map((item,index) => index === editing?.index && editing.item ? editing.item : item);
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
@@ -245,7 +261,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
         {!view.items.length ? <tr><td colSpan={5}>No verified broker list. Current brokers remain unchanged. <button type="button" className="button secondary" disabled={disabled} onClick={event => beginEdit(event,-1)}>Edit</button></td></tr> : null}
       </tbody></table>
     </div>
-    <div className="broker-approval-bar"><small id="broker-approval-scope">Approve confirms the complete displayed broker list, exclusions and payment classifications. Other filing reviews still apply.</small>{view.items.length !== 1 ? approveButton : null}</div>
+    <div className="broker-approval-bar"><small id="broker-approval-scope">Approve confirms the complete displayed broker list, exclusions and payment classifications. Other filing reviews still apply.</small>{canOpenReconciliation ? <button type="button" className="button secondary" disabled={disabled || Boolean(editing) || Boolean(identityEditing)} onClick={event => beginEdit(event, view.items.length)}>Add broker</button> : null}{view.items.length !== 1 ? approveButton : null}</div>
     {message ? <p role="status">{message}</p> : null}
     {error ? <p role="alert" className="broker-review-error">{error}</p> : null}
     {draft?.dirty && !editing ? <button type="button" className="button secondary" disabled={disabled} onClick={() => {setDraft(null);setError('');setMessage('');}}>Cancel edits</button> : null}
@@ -253,7 +269,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
       <div className="broker-edit-toolbar"><h4 id="broker-review-heading" tabIndex={-1} ref={heading}>Edit broker</h4><button type="button" className="button secondary" disabled={disabled} onClick={closeEdit}>Cancel</button></div>
       {editItem?.disclosure ? <p>{editItem.disclosure.name} · Original {formatMoney(editItem.disclosure.amount)} · Page {editItem.disclosure.page}</p> : null}
       <form onSubmit={saveChanges}>
-        {editItem ? blockingSourceIssues(editItem, view).map((issue, index) => <div className="broker-review-error" key={index}><strong>Source check needs review</strong><p>{issue.reason || sourceIssueMessage(issue)}</p><small>Changing payment amounts does not resolve this source check. Its confirmation or correction is required before approval.</small></div>) : null}
+        {editItem ? blockingSourceIssues(editItem, view).map((issue, index) => <div className="broker-review-error" key={index}><strong>Source check needs review</strong><p>{issue.reason || sourceIssueMessage(issue)}</p><small>{needsReconciliation(issue) ? 'Verify each recipient and payment against the PDF. Save your corrections, then approve the reconciled list.' : 'This source check requires confirmation or correction before approval.'}</small></div>) : null}
         {editItem?.disclosure ? <fieldset className="broker-payment-treatment" disabled={disabled}><legend>Does this payment belong on this Schedule A?</legend>
           {([['INCLUDED','Use on this Schedule A'],['SUPPORTING_ONLY','Supporting information only']] as const).map(([value,label]) => <label key={value}><input type="radio" name="broker-treatment" checked={editItem.treatment === value} onChange={() => setEditing(previous => previous?.item ? { ...previous, item: { ...previous.item, treatment: value, included: value === 'INCLUDED' } } : previous)} />{label}</label>)}
           <small>Only choose a commission or fee classification supported by the source or confirmed instructions.</small>

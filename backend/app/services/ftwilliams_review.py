@@ -1484,13 +1484,21 @@ class FTWilliamsReviewService:
 
     async def _confirm_schedule_a_broker_review(self, filing_id, payload, *, actor):
         from app.services.broker_review_confirmation import confirm_broker_review
+        from app.services.schedule_a_extraction_pipeline import _source_text_supports_value, parse_decimal
         if not payload.review or not actor:
             raise ValueError('Authenticated reviewer and complete broker review are required.')
         filing,current,status=await self._broker_review_confirmation_context(filing_id)
         repo = get_repository()
+        source_fields = {field.mapped_rule_key: field for field in await repo.list_fields(filing_id)}
+        source_totals = tuple(
+            parse_decimal(field.value) if field and field.page and _source_text_supports_value(field.value, field.source_text or '') else None
+            for field in (source_fields.get(key) for key in (
+                'schedule_a_part_i_3b_amount_of_commissions', 'schedule_a_part_i_3c_amount_of_fees'))
+        )
         try:
             rows, confirmed = confirm_broker_review(payload.rows, self._normalized_schedule_a_broker_rows(filing.schedule_a_broker_rows), status, payload.review,
-                actor=actor, source_context=self.source_context_sha256(filing), snapshot=status.current_snapshot_sha256)
+                actor=actor, source_context=self.source_context_sha256(filing), snapshot=status.current_snapshot_sha256,
+                expected_payment_totals=source_totals)
         except FTWPayloadValidationError as exc:
             raise ValueError(self._friendly_broker_validation_error(exc)) from exc
         confirmed = source_roster_review(rows, confirmed)

@@ -40,6 +40,17 @@ const choose=async value=>{const e=document.querySelector(`input[type="radio"][v
 const row={name:'Source broker',address_line_1:'10 Main St',city:'Boston',state:'MA',zip_code:'02110',organization_code:'0',commission_total:'100',fee_total:'-100'};
 const sourceProps={rows:[row],roster:{...roster,other_disclosures:[]}};
 
+await render({...sourceProps,rows:[{...row, validation_results:[{
+  validator:'broker_total_reconciliation',status:'ERROR',reason:'Broker totals differ from Schedule A.'}]}]});
+assert.equal(button('Approve').disabled,false);
+await click('Approve');
+assert.equal(document.activeElement.id,'broker-review-heading');
+assert.equal(saves.length,0,'Opening reconciliation cannot approve an unreconciled roster');
+await click('Cancel');
+await click('Add broker');
+assert.equal(input('Broker name').value,'');
+await click('Cancel');
+
 // Visible information and the two requested actions, without a second large form.
 await render();
 assert.match(document.body.textContent,/Mercer Health & Benefits LLC/);
