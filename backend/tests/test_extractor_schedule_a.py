@@ -972,6 +972,27 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].commission_total, "125,287.31")
         self.assertEqual(rows[0].fee_total, "4,220.87")
 
+    def test_anthem_multiline_compensation_table_uses_each_physical_row_once(self):
+        pages = [
+            (1, "Anthem Blue Cross Blue Shield"),
+            (2, "Information For Completion Of ERISA 5500 Schedule A\n"
+                "Customer ID: J12345\nBlue Cross of California (G0200) 12-3456789 93303 Health PPO\n"
+                "Commission Paid Fees Paid *\n"
+                "SAMPLE BROKER ONE INC\n123 MAIN ST\nCLEVELAND, OH 44113\n$68,615.98 $1.86\n"
+                "SAMPLE BROKER TWO LLC\nP O BOX 66119\nVIRGINIA BEACH, VA 23466 $0.00 $0.39\n"
+                "2. and 3. Insurance Fee and Commission Information\n"
+                "* Fees include bonus compensation."),
+        ]
+        rows = extract_anthem_broker_rows(pages)
+        self.assertEqual([(r.name, r.commission_total, r.fee_total) for r in rows], [
+            ("SAMPLE BROKER ONE INC", "68,615.98", "1.86"),
+            ("SAMPLE BROKER TWO LLC", "0.00", "0.39"),
+        ])
+        self.assertIn("$0.39", rows[1].evidence[0].source_text)
+        fields = {field.field_name: field for field in extract_anthem_schedule_a_fields(pages)}
+        self.assertEqual(fields["1d. Contract/Policy Number"].source_text, "Customer ID: J12345")
+        self.assertIn("12-3456789", fields["1b. Insurance Carrier EIN"].source_text)
+
     def test_anthem_cover_brand_is_separate_from_schedule_fields(self):
         pages = [
             (1, "Anthem Blue Cross Blue Shield\nCustomer ID:"),

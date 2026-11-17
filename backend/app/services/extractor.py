@@ -9366,6 +9366,15 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
         r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
         re.DOTALL,
     )
+    line_pattern = re.compile(
+        r"^(?P<name>[A-Z][A-Z0-9 &.,'()-]+)[ \t]*\n"
+        r"(?P<street>(?:\d{1,6}\s+|P\.?\s*O\.?\s+BOX\s+)[^\n]+)\n"
+        r"(?P<city>[A-Z .'-]+),[ \t]*(?P<state>[A-Z]{2})[ \t]+"
+        r"(?P<zip>\d{5}(?:-\d{4})?)\s+"
+        r"\$\s*(?P<commission>[0-9,]+(?:\.\d{2})?)\s+"
+        r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
+        re.MULTILINE,
+    )
     pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
     if not _is_anthem_schedule_a_report("\n\n".join(text for _, text in pages)):
         return []
@@ -9373,10 +9382,15 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
     for page, normalized in pages:
         if _ANTHEM_SCHEDULE_A_HEADING not in normalized.upper():
             continue
+        columns = re.search(r"^\s*Commission\s+Paid\b[^\n]*\n", normalized, flags=re.MULTILINE | re.IGNORECASE)
+        native_matches = []
+        if columns:
+            table = re.split(r"^\s*(?:\*\s*Fees\b|2\.\s+and\s+3\.\s*Insurance\s+Fee)",
+                             normalized[columns.end():], maxsplit=1, flags=re.MULTILINE | re.IGNORECASE)[0]
+            native_matches = list(line_pattern.finditer(table))
         broker_section = re.split(r"2\s+and\s+3\.\s*Insurance\s+Fee", normalized, maxsplit=1, flags=re.IGNORECASE)
-        search_text = broker_section[-1]
-        search_text = re.split(r"\*Fees\s+may\s+include", search_text, maxsplit=1, flags=re.IGNORECASE)[0]
-        for match in pattern.finditer(search_text):
+        search_text = re.split(r"\*Fees\s+may\s+include", broker_section[-1], maxsplit=1, flags=re.IGNORECASE)[0]
+        for match in native_matches or pattern.finditer(search_text):
             name = clean_extracted_value(match.group("name")).upper()
             name = re.sub(r"^(?:AND\s+)?COMMISSION\s+PAID\s+FEES\s+PAID\*\s*", "", name)
             name = re.sub(r"^(?:HEALTH\s+)?(?:PPO|HMO|INDEMNITY)\s+", "", name)
@@ -9384,7 +9398,7 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
                 continue
             commission = money_value(match.group("commission")) or "0"
             fee = money_value(match.group("fee")) or "0"
-            source_text = "Anthem Schedule A fee and commission table"
+            source_text = clean_extracted_value(match.group(0))
             rows.append(
                 ScheduleABrokerRow(
                     name=name,
@@ -9478,7 +9492,11 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
                     value=clean,
                     confidence=0.995,
                     page=page,
-                    source_text="Anthem combined Schedule A report",
+                    source_text=next(
+                        (line.strip() for current_page, text in pages if current_page == page
+                         for line in text.splitlines() if clean.casefold() in line.casefold()),
+                        None,
+                    ),
                 )
             )
 
