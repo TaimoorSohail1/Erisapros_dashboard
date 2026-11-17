@@ -4550,7 +4550,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             "1d. Contract/Policy Number",
             "00001025181900000",
         )
-        contract.source_text = "(d) Contract or identification number: 000010251819 00000"
+        contract.source_text = (
+            "(a) Name of insurance carrier: The Lincoln National Life Insurance Company\r\n"
+            "(b) EIN: 35-0472300\r\n"
+            "(c) NAIC code: 65676\r\n"
+            "(d) Contract or identification number: 000010251819 00000\r\n"
+            "LTD 179 04/01/2025 03/31/2026\r\n"
+            "(a) Total premiums or subscription charges paid to carrier: $23,450.86"
+        )
         contract.page = 2
         existing = FTWilliamsStatusItem(
             type="ScheduleA",
@@ -4590,8 +4597,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         })
         self.assertIsNone(service._match_schedule_a_status(fields, [different_ein]))
 
-        contract.source_text = "(d) Contract or identification number: 00001025181900000"
-        self.assertIsNone(service._match_schedule_a_status(fields, [existing]))
+        for ambiguous_excerpt in (
+            "(d) Contract or identification number: 00001025181900000",
+            "(d) Contract or identification number: 000010251819 00000\n"
+            "(d) Contract or identification number: 000010251818 12345",
+        ):
+            with self.subTest(source=ambiguous_excerpt):
+                contract.source_text = ambiguous_excerpt
+                self.assertIsNone(service._match_schedule_a_status(fields, [existing]))
 
     def test_fresh_query_selects_the_schedule_with_matching_contract(self):
         service = FTWilliamsReviewService()

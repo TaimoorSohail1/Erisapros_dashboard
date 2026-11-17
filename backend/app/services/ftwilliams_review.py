@@ -7036,12 +7036,15 @@ class FTWilliamsReviewService:
             or field.status != ExtractedFieldStatus.MATCHED or not field.page
         ):
             return None
-        match = re.fullmatch(
-            r"\s*\(\s*d\s*\)\s*Contract\s+or\s+identification\s+number[ \t]*:[ \t]*"
-            r"([A-Za-z0-9]+)[ \t]+00000[ \t]*",
+        policy_lines = re.findall(
+            r"^[ \t]*\([ \t]*d[ \t]*\)[ \t]*Contract[ \t]+or[ \t]+identification"
+            r"[ \t]+number[ \t]*:[ \t]*([^\r\n]*)",
             field.source_text or "",
-            re.IGNORECASE,
+            re.IGNORECASE | re.MULTILINE,
         )
+        if len(policy_lines) != 1:
+            return None
+        match = re.fullmatch(r"([A-Za-z0-9]+)[ \t]+00000[ \t]*", policy_lines[0])
         if match and (
             self._identity_key(field.value) == match[1].upper() + "00000"
             and self._normalize_contract(match[1]) == self._normalize_contract(policy)
