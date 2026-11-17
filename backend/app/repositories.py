@@ -37,7 +37,14 @@ from app.models import (
     FieldRuleStatus,
     ReviewEvent,
     ShareFileOAuthToken,
+    SourceEvidence,
 )
+
+
+def _saved_extraction_stages(raw: object) -> list[dict]:
+    nested = raw.get("raw") if isinstance(raw, dict) else None
+    stages = nested.get("extraction_stages") if isinstance(nested, dict) else None
+    return [stage for stage in stages if isinstance(stage, dict)] if isinstance(stages, list) else []
 
 
 FTWILLIAMS_FAILURE_LIST_PROJECTION = {
@@ -259,6 +266,8 @@ class Repository:
         confidence: float | None = None,
         keep_current_context: str | None = None,
         expected_unproposed_value: str | None = None,
+        expected_status_reason: str | None = None,
+        verified_evidence: SourceEvidence | None = None,
     ) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
     async def list_events(self, filing_id: str) -> list[ReviewEvent]: ...
@@ -297,6 +306,7 @@ class Repository:
     async def update_extraction_job(self, job_id: str, values: dict) -> ExtractionJob | None: ...
     async def list_extraction_jobs(self, filing_id: str) -> list[ExtractionJob]: ...
     async def add_raw_extraction(self, raw: RawExtraction) -> RawExtraction: ...
+    async def schedule_a_extraction_stages(self, filing_id: str, job_id: str, file_name: str) -> list[dict]: ...
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None: ...
     async def upsert_sharefile_token(self, token: ShareFileOAuthToken) -> ShareFileOAuthToken: ...
     async def get_filing_by_sharefile_item_id(self, item_id: str) -> Filing | None: ...
@@ -784,6 +794,8 @@ class MongoRepository(Repository):
         confidence: float | None = None,
         keep_current_context: str | None = None,
         expected_unproposed_value: str | None = None,
+        expected_status_reason: str | None = None,
+        verified_evidence: SourceEvidence | None = None,
     ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
@@ -797,9 +809,13 @@ class MongoRepository(Repository):
             updates["status_reason"] = status_reason
         if confidence is not None:
             updates["confidence"] = confidence
+        if verified_evidence is not None:
+            updates.update(page=verified_evidence.page, source_text=verified_evidence.source_text)
         query = {"_id": ObjectId(field_id), "filing_id": filing_id}
         if expected_unproposed_value is not None:
             query.update(value=expected_unproposed_value, proposed_value="", status=ExtractedFieldStatus.LOW_CONFIDENCE.value)
+        if expected_status_reason is not None:
+            query["status_reason"] = expected_status_reason
         doc = await self.db.extracted_fields.find_one_and_update(
             query,
             {"$set": updates},
@@ -1168,6 +1184,13 @@ class MongoRepository(Repository):
         result = await self.db.raw_extractions.insert_one(to_mongo(raw))
         raw.id = str(result.inserted_id)
         return raw
+
+    async def schedule_a_extraction_stages(self, filing_id: str, job_id: str, file_name: str) -> list[dict]:
+        doc = await self.db.raw_extractions.find_one(
+            {"filing_id": filing_id, "job_id": job_id, "raw.file_name": file_name, "raw.document_type": "SCHEDULE_A"},
+            {"raw.raw.extraction_stages": 1}, sort=[("created_at", -1)],
+        )
+        return _saved_extraction_stages(doc.get("raw")) if doc else []
 
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None:
         doc = await self.db.sharefile_tokens.find_one({"provider": "sharefile"})
@@ -1879,6 +1902,8 @@ class MemoryRepository(Repository):
         confidence: float | None = None,
         keep_current_context: str | None = None,
         expected_unproposed_value: str | None = None,
+        expected_status_reason: str | None = None,
+        verified_evidence: SourceEvidence | None = None,
     ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
@@ -1887,6 +1912,8 @@ class MemoryRepository(Repository):
             field.value != expected_unproposed_value or field.proposed_value or field.status != ExtractedFieldStatus.LOW_CONFIDENCE
         ):
             return None
+        if expected_status_reason is not None and field.status_reason != expected_status_reason:
+            return None
         field.proposed_value = proposed_value
         field.keep_current_context = keep_current_context
         field.status = status
@@ -1894,6 +1921,8 @@ class MemoryRepository(Repository):
             field.status_reason = status_reason
         if confidence is not None:
             field.confidence = confidence
+        if verified_evidence is not None:
+            field.page, field.source_text = verified_evidence.page, verified_evidence.source_text
         field.updated_at = datetime.utcnow()
         return field
 
@@ -2105,6 +2134,13 @@ class MemoryRepository(Repository):
         raw.id = str(uuid4())
         self.raw_extractions[raw.id] = raw
         return raw
+
+    async def schedule_a_extraction_stages(self, filing_id: str, job_id: str, file_name: str) -> list[dict]:
+        record = max((item for item in self.raw_extractions.values() if item.filing_id == filing_id
+            and item.job_id == job_id and isinstance(item.raw, dict)
+            and item.raw.get("file_name") == file_name and item.raw.get("document_type") == "SCHEDULE_A"),
+            key=lambda item: item.created_at, default=None)
+        return _saved_extraction_stages(record.raw) if record else []
 
     async def get_sharefile_token(self) -> ShareFileOAuthToken | None:
         return getattr(self, "sharefile_token", None)

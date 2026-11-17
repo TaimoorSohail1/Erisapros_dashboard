@@ -4305,6 +4305,44 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         })
         self.assertIsNone(service._match_schedule_a_status([real_naic, ein, contract], [different_naic]))
 
+    def test_schedule_match_does_not_treat_a_partial_naic_as_a_conflicting_identity(self):
+        service = FTWilliamsReviewService()
+        fields = [
+            self._schedule_identity_field("schedule_a_part_i_1c_naic_code", "1c. NAIC Code", "0303"),
+            self._schedule_identity_field("schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "J63427"),
+            self._schedule_identity_field("schedule_a_part_i_1b_insurance_carrier_ein", "1b. EIN", "12-3456789"),
+        ]
+        matched = FTWilliamsStatusItem(
+            type="ScheduleA", error_code="0", ftw_seq_no="1",
+            query_results={"InsCarrierNAICCode": "93303", "InsCarrierEIN": "12-3456789", "InsContractNum": "J63427"},
+        )
+        unrelated = matched.model_copy(update={
+            "ftw_seq_no": "2", "query_results": {"InsCarrierNAICCode": "93303", "InsContractNum": "J99999"},
+        })
+
+        self.assertEqual(service._match_schedule_a_status(fields, [unrelated, matched]), matched)
+        self.assertNotIn("NAIC", service._schedule_match_details(fields, matched)["reasons"])
+        self.assertIsNone(service._match_schedule_a_status(fields[:1], [matched]))
+
+    def test_review_exposes_ftw_text_limit_without_hiding_source_name_conflicts(self):
+        service = FTWilliamsReviewService()
+        source_name = "Sample Insurance Company for Employee Benefits in the Western Region of the United States"
+        field = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", source_name,
+        )
+        saved_name = source_name[:70].rstrip()
+
+        shortened_current, = service._comparison_fields([field], {}, {"InsCarrierName": saved_name})
+        blank, = service._comparison_fields([field], {}, {})
+        conflict, = service._comparison_fields([field], {}, {"InsCarrierName": "Different Insurer"})
+
+        self.assertEqual(shortened_current.extracted_value, source_name)
+        self.assertEqual(shortened_current.decision, "CONFLICT")
+        self.assertFalse(shortened_current.validation_blocking)
+        self.assertEqual(blank.decision, "WILL_UPDATE")
+        self.assertEqual(blank.validation_normalized_value, saved_name)
+        self.assertEqual(conflict.decision, "CONFLICT")
+
     def test_schedule_match_treats_multiple_eyemed_contracts_as_ftw_various(self):
         service = FTWilliamsReviewService()
         fields = [
