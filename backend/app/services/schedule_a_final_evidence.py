@@ -6,7 +6,7 @@ matching digits is not proof: a relevant label must bind the exact value.
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, urlsplit
 from app.models import SourceEvidence
 from app.services.schedule_a_customer_rules import DEFAULT_CODE_REASON
 
@@ -123,6 +123,32 @@ def _recipient_evidence(result):
                 _attach(field,proof[0].page,f'Derived recipient payment category: {field.value}\n'+'\n'.join(e.source_text for e in proof),'Reconciled recipient classification')
 
 
+_UPLOAD_HOST_ALIASES = {'upload.groundx.ai', 'upload.eyelevel.ai'}
+_UPLOAD_OBJECT_PATH = re.compile(
+    r'/prod/file/ssp/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.[a-zA-Z0-9]+'
+)
+
+
+def _same_provider_source(output_url, document_url):
+    if not isinstance(output_url, str) or not isinstance(document_url, str) or not output_url or not document_url:
+        return False
+    if output_url == document_url:
+        return True
+    try:
+        output, document = urlsplit(output_url), urlsplit(document_url)
+    except ValueError:
+        return False
+    # Ingest status and X-Ray may use different upload domains for one object.
+    # Require the same exact provider object path on both known HTTPS origins.
+    return (
+        output.scheme == document.scheme == 'https'
+        and {output.netloc, document.netloc} == _UPLOAD_HOST_ALIASES
+        and not (output.query or output.fragment or document.query or document.fragment)
+        and output.path == document.path
+        and _UPLOAD_OBJECT_PATH.fullmatch(output.path) is not None
+    )
+
+
 def completed_document_source_pages(raw,file_name):
     """Read actual page evidence only for one matching completed document."""
     if not isinstance(raw,dict):
@@ -144,7 +170,7 @@ def completed_document_source_pages(raw,file_name):
     # never loosely decode or normalize different filenames into an alias.
     names = {file_name, quote(file_name, safe=''), quote_plus(file_name, safe='')}
     if (output.get('fileName') not in names or document.get('fileName')!=file_name
-        or not output.get('sourceUrl') or output['sourceUrl']!=document.get('sourceUrl')):
+        or not _same_provider_source(output.get('sourceUrl'), document.get('sourceUrl'))):
         return []
     chunks=output.get('chunks') or []
     pages=output.get('documentPages') or []

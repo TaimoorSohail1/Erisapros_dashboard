@@ -31,3 +31,33 @@ def test_encoded_filename_cannot_bypass_other_document_checks(mismatch):
     if mismatch == 'process': raw['process']['ingest']['processId'] = 'another-process'
     if mismatch == 'status': raw['process']['ingest']['status'] = 'processing'
     assert completed_document_source_pages(raw, name) == []
+
+
+@pytest.mark.parametrize('queued_host, xray_host', [
+    ('upload.groundx.ai', 'upload.eyelevel.ai'),
+    ('upload.eyelevel.ai', 'upload.groundx.ai'),
+])
+def test_provider_upload_aliases_bind_the_same_source_object(queued_host, xray_host):
+    name = '4. Carrier (1).pdf'
+    raw = payload(name, quote_plus(name))
+    path = '/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf'
+    document = raw['process']['ingest']['progress']['complete']['documents'][0]
+    document['sourceUrl'] = f'https://{queued_host}{path}'
+    raw['outputs'][0]['sourceUrl'] = f'https://{xray_host}{path}'
+    assert completed_document_source_pages(raw, name) == [(3, 'source table evidence')]
+
+
+@pytest.mark.parametrize('alias_url', [
+    'https://upload.eyelevel.ai/prod/file/ssp/12345678-1234-1234-1234-123456789def.pdf',
+    'http://upload.eyelevel.ai/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf',
+    'https://upload.eyelevel.ai:443/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf',
+    'https://upload.eyelevel.ai/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf?other=1',
+    'https://upload.eyelevel.ai.example/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf',
+])
+def test_provider_upload_aliases_reject_other_objects_and_origins(alias_url):
+    name = 'Carrier.pdf'
+    raw = payload(name, name)
+    document = raw['process']['ingest']['progress']['complete']['documents'][0]
+    document['sourceUrl'] = 'https://upload.groundx.ai/prod/file/ssp/12345678-1234-1234-1234-123456789abc.pdf'
+    raw['outputs'][0]['sourceUrl'] = alias_url
+    assert completed_document_source_pages(raw, name) == []
