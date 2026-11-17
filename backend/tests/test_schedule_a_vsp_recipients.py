@@ -63,3 +63,44 @@ Total Claims Paid by Carrier: $100.00
     ], [(1,source)])
     assert not any(field.field_name.startswith('10a.') for field in fields)
     assert any(field.field_name.startswith('9a.') and field.value=='125.25' for field in fields)
+
+
+def test_vsp_total_payments_label_is_sufficient_line_10_evidence():
+    from app.models import NormalizedExtractionField, NormalizedExtractionResult
+    from app.services.extractor import prefer_authoritative_carrier_statement_fields
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+
+    source = """Schedule A Form (5500) Insurance Information
+Group ID: 30110579
+Insurance Carrier: Vision Service Plan
+Policy or Contract Year: 04/01/2025 - 03/31/2026
+Total Payments Made to Carrier: $39,795.20
+"""
+    provider = NormalizedExtractionField(
+        field_name="10a. Total premiums or subscription charges paid to carrier",
+        value="39,795.20",
+        page=1,
+        source_text="Total Payments Made to Carrier: $39,795.20",
+    )
+    fields = prefer_authoritative_carrier_statement_fields([provider], [(1, source)])
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Example", fields=fields))
+    premium = next(field for field in result.fields if field.field_name.startswith("10a."))
+
+    assert premium.value == "39,795.20"
+    assert premium.decision == "AUTOMATIC"
+    assert premium.page == 1
+
+
+def test_generic_total_payments_label_still_requires_section_evidence():
+    from app.models import NormalizedExtractionField, NormalizedExtractionResult
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Example", fields=[
+        NormalizedExtractionField(
+            field_name="10a. Total premiums or subscription charges paid to carrier",
+            value="39,795.20",
+            page=1,
+            source_text="Total Payments Made to Carrier: $39,795.20",
+        ),
+    ]))
+    assert result.fields[0].decision == "REVIEW_REQUIRED"

@@ -72,6 +72,7 @@ from app.services.ftwilliams_tags import (
     FORM_5500_UPDATE_TAGS_BY_RULE,
     SCHEDULE_A_CURRENT_TAGS_BY_RULE,
     SCHEDULE_A_TAGS_BY_RULE,
+    canonical_carrier_legal_name,
     normalize_compare_value,
     resolve_ftw_current_tag,
     resolve_ftw_current_value,
@@ -5766,7 +5767,7 @@ class FTWilliamsReviewService:
             and not self._worksheet_policy_values_match(extracted_policy, worksheet_policy)
         ):
             return fields
-        canonical_carrier = self._canonical_carrier_legal_name(
+        canonical_carrier = canonical_carrier_legal_name(
             str(self._summary_attr(summary, "carrier_name") or "")
         )
         if not canonical_carrier:
@@ -5833,7 +5834,7 @@ class FTWilliamsReviewService:
                 updated.append(field)
                 continue
             proposed = str(field.proposed_value or field.value or "").strip()
-            canonical = self._canonical_carrier_legal_name(proposed)
+            canonical = canonical_carrier_legal_name(proposed)
             if not canonical or canonical == proposed:
                 updated.append(field)
                 continue
@@ -5849,15 +5850,6 @@ class FTWilliamsReviewService:
                 )
             )
         return updated
-
-    @staticmethod
-    def _canonical_carrier_legal_name(value: str) -> str:
-        return re.sub(
-            r"\s+(?:(?:and\s+)?affiliates?|d/?b/?a|a/?k/?a|formerly)\b.*$",
-            "",
-            str(value or "").strip(),
-            flags=re.IGNORECASE,
-        ).strip(" ,;-()[]{}\t\r\n")
 
     def _mark_plan_worksheet_conflicts(
         self,
