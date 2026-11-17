@@ -585,6 +585,10 @@ def _validate_financial_section_context(
                 "payments received by carrier from plan" in normalized
                 and re.search(r"\btotal\s*:\s*\$", normalized)
             )
+            or (
+                re.search(r"\b(?:insurance|ins\.?)\s+carrier\s*:\s*(?:vision service plan|vsp vision care)\b", normalized)
+                and re.search(r"\btotal payments made to carrier\s*:", normalized)
+            )
         )
         from app.services.schedule_a_confirmed_clarifications import has_confirmed_rule
         valid = valid or has_confirmed_rule(field, "nonexperience_rated")

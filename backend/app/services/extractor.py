@@ -10258,10 +10258,12 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
             [r"Approximate\s+Number\s+of\s+Persons\s+Covered.*?:\s*([0-9,]+)"],
             flags=re.IGNORECASE | re.DOTALL,
         )
-        premium = regex_first(
+        premium_match = re.search(
+            r"Total\s+Payments\s+Made\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)",
             normalized,
-            [r"Total\s+Payments\s+Made\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+            re.IGNORECASE,
         )
+        premium = premium_match.group(1) if premium_match else ""
         claims = regex_first(
             normalized,
             [r"Total\s+Claims\s+Paid\s+by\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
@@ -10272,7 +10274,13 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
         )
         source_text = "Vision Service Plan labelled Schedule A report"
 
-        def add(field_name: str, value: str | None, confidence: float = 0.99) -> None:
+        def add(
+            field_name: str,
+            value: str | None,
+            confidence: float = 0.99,
+            *,
+            evidence: SourceEvidence | None = None,
+        ) -> None:
             clean = clean_extracted_value(str(value or ""))
             if clean and not is_blank_extraction_value(clean):
                 fields.append(
@@ -10281,7 +10289,8 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
                         value=clean,
                         confidence=confidence,
                         page=page,
-                        source_text=source_text,
+                        source_text=evidence.source_text if evidence else source_text,
+                        evidence=[evidence] if evidence else [],
                     )
                 )
 
@@ -10320,8 +10329,16 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
                 money_value(administrative_fees),
                 0.99,
             )
-        else:
-            add("10a. Total premiums or subscription charges paid to carrier", money_value(premium or ""), 0.99)
+        elif premium_match:
+            add(
+                "10a. Total premiums or subscription charges paid to carrier",
+                money_value(premium),
+                evidence=SourceEvidence(
+                    provider="VSP Schedule A report parser",
+                    page=page,
+                    source_text=f"Insurance Carrier: {carrier or ''}\n{premium_match.group(0)}",
+                ),
+            )
         broker_rows = document_brokers
         if broker_rows:
             broker = broker_rows[0]
