@@ -3,7 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import ExtractedField, ExtractedFieldStatus, Filing, FormType, NormalizedExtractionField, NormalizedExtractionResult
+from app.models import (AuditLog, ExtractedField, ExtractedFieldStatus, ExtractionJob, ExtractionJobStatus,
+    Filing, FormType, NormalizedExtractionField, NormalizedExtractionResult, RawExtraction)
 from app.repositories import MemoryRepository
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.extractor import extract_fields_from_pdf_text, extract_rules_driven_schedule_a_fields, parse_schedule_a_text
@@ -118,3 +119,51 @@ async def test_refresh_legacy_totals_only_when_source_and_current_values_agree(v
     rows = {row.ftw_tag: row for row in comparison}
     assert rows["WlfrTotChargesPaidAmt"].update_included == (variant in {"verified", "missing_evidence", "existing_value", "broken_total"})
     assert rows["InsPrsnCoveredEoyCnt"].update_included == (variant in {"verified", "missing_evidence"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ("verified", "other_provider_count", "legitimate_local_count", "wrong_hash", "new_job", "different_ftw_count"))
+async def test_existing_alias_conflict_is_cleared_only_with_a_bound_trace_and_fresh_source(variant):
+    repo = MemoryRepository()
+    data = b"stored coverage row"
+    source_hash = hashlib.sha256(data).hexdigest()
+    name = "schedule.pdf"
+    filing = await repo.create_filing(Filing(file_name=name, content_type="application/pdf", file_size=len(data),
+        s3_key=name, package_documents=[{"document_type": "SCHEDULE_A", "file_name": name, "s3_key": name, "source_sha256": source_hash}]))
+    job = await repo.create_extraction_job(ExtractionJob(filing_id=filing.id, status=ExtractionJobStatus.COMPLETED))
+    if variant == "new_job":
+        await repo.create_extraction_job(ExtractionJob(filing_id=filing.id))
+    await repo.add_audit(AuditLog(filing_id=filing.id, event="GROUNDX_SUBMISSION_CHECKPOINT", message="Stored source",
+        details={"job_id": job.id, "status": "ACCEPTED", "process_id": "stored-process",
+            "binding": {"file_name": name, "form_type": "SCHEDULE_A", "source_sha256": "0" * 64 if variant == "wrong_hash" else source_hash}}))
+    count_label, _, rule, _ = FIELDS["InsPrsnCoveredEoyCnt"]
+    begin_label, end_label = "1f. Policy Year Beginning Date", "1g. Policy Year Ending Date"
+    text = "Approximate number of persons covered: 83   From: 03/01/2025   To: 02/28/2026"
+    fresh = [NormalizedExtractionField(field_name=label, value=value, confidence=.98, page=3, source_text=text)
+        for label, value in ((count_label, "83"), (begin_label, "03/01/2025"), (end_label, "02/28/2026"))]
+    old_count = ["83", "64" if variant == "legitimate_local_count" else "03"]
+    old_end = ["02/28/2026", "03/01/2025"]
+    stages = [{"stage": stage, "fields": [
+        {"field_name": count_label, "value": "83", "candidate_values": counts},
+        {"field_name": end_label, "value": "02/28/2026", "candidate_values": ends},
+    ]} for stage, counts, ends in (
+        ("structured_provider_normalized", ["83", "99"] if variant == "other_provider_count" else ["83"], ["02/28/2026"]),
+        ("local_parser_candidates", old_count, old_end), ("final_normalized", old_count, old_end),
+    )]
+    await repo.add_raw_extraction(RawExtraction(filing_id=filing.id, job_id=job.id, provider="GroundX",
+        raw={"file_name": name, "document_type": "SCHEDULE_A", "raw": {"extraction_stages": stages}}))
+    fields = await repo.add_fields([ExtractedField(filing_id=filing.id, source_field_name=label,
+        normalized_field_name=label, mapped_rule_key=key, form_type=FormType.SCHEDULE_A, value=value,
+        status=ExtractedFieldStatus.LOW_CONFIDENCE,
+        status_reason="Extraction requires review; automatic proposal withheld. Multiple source candidates disagree for this field.")
+        for label, value, key in ((count_label, "83", rule), (end_label, "02/28/2026", "schedule_a_part_i_1g_policy_year_ending_date"))])
+    current = {"InsPolicyToDate": "02/28/2026"}
+    if variant == "different_ftw_count":
+        current["InsPrsnCoveredEoyCnt"] = "15"
+    with patch("app.services.schedule_a_printed_totals.StorageService.load_pdf", return_value=data), \
+            patch("app.services.extractor.extract_pdf_layout_text_pages", return_value=[(3, text)]), \
+            patch("app.services.extractor.extract_fields_from_document_text", return_value=fresh):
+        refreshed = await refresh_verified_totals(repo, filing, fields, current)
+    rows = {row.ftw_tag: row for row in FTWilliamsReviewService()._comparison_fields(refreshed, {}, current)}
+    assert rows["InsPrsnCoveredEoyCnt"].decision == ("WILL_UPDATE" if variant == "verified" else "BLOCKED")
+    assert rows["InsPolicyToDate"].decision == ("BLOCKED" if variant in {"wrong_hash", "new_job"} else "NO_CHANGE")
