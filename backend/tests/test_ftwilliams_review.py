@@ -4224,6 +4224,41 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("Carrier EIN", candidates[0]["match_reasons"])
         self.assertIn("NAIC", candidates[0]["match_reasons"])
 
+    def test_schedule_match_ignores_all_zero_naic_placeholders(self):
+        service = FTWilliamsReviewService()
+        naic = self._schedule_identity_field(
+            "schedule_a_part_i_1c_naic_code", "1c. NAIC Code", "00000",
+        )
+        ein = self._schedule_identity_field(
+            "schedule_a_part_i_1b_insurance_carrier_ein", "1b. EIN", "94-1461312",
+        )
+        contract = self._schedule_identity_field(
+            "schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", "22855",
+        )
+        delta = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="4",
+            query_results={"InsCarrierNAICCode": "0000", "InsCarrierEIN": "94-1461312", "InsContractNum": "22855"},
+        )
+        kaiser = FTWilliamsStatusItem(
+            type="ScheduleA",
+            error_code="0",
+            ftw_seq_no="2",
+            query_results={"InsCarrierNAICCode": "00000", "InsCarrierEIN": "94-1340523", "InsContractNum": "230665"},
+        )
+        fields = [naic, ein, contract]
+
+        self.assertEqual(service._match_schedule_a_status(fields, [kaiser, delta]), delta)
+        self.assertIsNone(service._match_schedule_a_status([naic], [kaiser]))
+        self.assertNotIn("NAIC", service._schedule_match_details(fields, kaiser)["reasons"])
+
+        real_naic = naic.model_copy(update={"value": "12345", "proposed_value": "12345"})
+        different_naic = delta.model_copy(update={
+            "query_results": {**delta.query_results, "InsCarrierNAICCode": "54321"},
+        })
+        self.assertIsNone(service._match_schedule_a_status([real_naic, ein, contract], [different_naic]))
+
     def test_schedule_match_treats_multiple_eyemed_contracts_as_ftw_various(self):
         service = FTWilliamsReviewService()
         fields = [

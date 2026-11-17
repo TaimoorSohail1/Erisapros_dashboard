@@ -6781,8 +6781,8 @@ class FTWilliamsReviewService:
                 self._normalize_ein_digits(query_results.get("InsCarrierEIN") or query_results.get("INS_CARRIER_EIN")),
             ),
             (
-                self._normalize_identifier_digits(extracted_by_tag.get("InsCarrierNAICCode")),
-                self._normalize_identifier_digits(
+                self._normalize_naic_identity(extracted_by_tag.get("InsCarrierNAICCode")),
+                self._normalize_naic_identity(
                     query_results.get("InsCarrierNAICCode")
                     or query_results.get("INS_CARRIER_NAIC_CODE")
                     or query_results.get("NAICCode")
@@ -6863,10 +6863,10 @@ class FTWilliamsReviewService:
                 self._normalize_ein_digits(incoming_values.get("InsCarrierEIN") or incoming_values.get("INS_CARRIER_EIN")),
             ),
             (
-                self._normalize_identifier_digits(
+                self._normalize_naic_identity(
                     existing_values.get("InsCarrierNAICCode") or existing_values.get("INS_CARRIER_NAIC_CODE")
                 ),
-                self._normalize_identifier_digits(
+                self._normalize_naic_identity(
                     incoming_values.get("InsCarrierNAICCode") or incoming_values.get("INS_CARRIER_NAIC_CODE")
                 ),
             ),
@@ -6948,8 +6948,8 @@ class FTWilliamsReviewService:
             strong_matches += 1
             reasons.append("Carrier EIN")
 
-        extracted_naic = self._normalize_identifier_digits(extracted_by_tag.get("InsCarrierNAICCode"))
-        current_naic = self._normalize_identifier_digits(
+        extracted_naic = self._normalize_naic_identity(extracted_by_tag.get("InsCarrierNAICCode"))
+        current_naic = self._normalize_naic_identity(
             query_results.get("InsCarrierNAICCode")
             or query_results.get("INS_CARRIER_NAIC_CODE")
             or query_results.get("InsCarrierNAIC")
@@ -7118,9 +7118,10 @@ class FTWilliamsReviewService:
         text = re.sub(r"(?<=\d)\s+0{5}$", "", text)
         return re.sub(r"[^A-Za-z0-9]", "", text)
 
-    def _normalize_identifier_digits(self, value: object) -> str:
-        text = re.sub(r"\D", "", str(value or ""))
-        return text.lstrip("0") or text
+    @staticmethod
+    def _normalize_naic_identity(value: object) -> str:
+        # The all-zero missing-code default provides no carrier identity.
+        return re.sub(r"\D", "", str(value or "")).lstrip("0")
 
     def _schedule_match_payload(self, status: FTWilliamsStatusItem, fields: list[ExtractedField]) -> dict:
         match_details = self._schedule_match_details(fields, status)
