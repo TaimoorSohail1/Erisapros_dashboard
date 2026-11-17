@@ -972,6 +972,22 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].commission_total, "125,287.31")
         self.assertEqual(rows[0].fee_total, "4,220.87")
 
+    def test_anthem_cover_brand_is_separate_from_schedule_fields(self):
+        pages = [
+            (1, "Anthem Blue Cross Blue Shield\nCustomer ID:"),
+            (2, "Information For Completion Of ERISA 5500 Schedule A\n"
+                "For Period : 5/1/2025 - 4/30/2026\nCustomer ID : J12345\n"
+                "Blue Cross of California (G0200) 12-3456789 933 0303 Health HMO"),
+            (3, "Part III Welfare Benefit Contract Information\nHealth PPO $25,000 100/111"),
+        ]
+        fields = {field.field_name: field for field in extract_anthem_schedule_a_fields(pages)}
+        self.assertEqual((fields["1a. Name of Insurance Company"].value, fields["1a. Name of Insurance Company"].page),
+                         ("Blue Cross of California", 2))
+        self.assertEqual(fields["1d. Contract/Policy Number"].value, "J12345")
+        self.assertEqual(fields["1f. Policy Year Beginning Date"].page, 2)
+        self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"].page, 3)
+        self.assertNotIn("1c. NAIC Code", fields)
+
     def test_anthem_combined_report_supports_multiple_brokers_and_member_count(self):
         pages = [
             (

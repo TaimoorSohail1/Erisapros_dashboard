@@ -2547,6 +2547,26 @@ class FTWilliamsReviewService:
             lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
             return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
 
+        lookup_ein = self._normalize_ein_digits(lookup.company_employer_id)
+        lookup_number = self._normalize_plan_number(lookup.plan_number)
+        if len(lookup_ein) == 9 and lookup_number:
+            identity_matches = [
+                record for record in records
+                if self._normalize_ein_digits(record.get("CompanyEmployerID")) == lookup_ein
+                and self._normalize_plan_number(record.get("PlanNumber")) == lookup_number
+            ]
+            if any(self._plan_names_differ_by_dba(
+                lookup.plan_name, record.get("PlanLine1") or record.get("PlanName"),
+            ) for record in identity_matches):
+                if len(identity_matches) == 1:
+                    match = identity_matches[0]
+                    self._append_plan_ids_batch_summary(lookup, len(records), match)
+                    return await self._accept_plan_ids_batch_match(lookup, repo, match)
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.matches = identity_matches
+                lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
+                return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
+
         probe_limit = max(1, min(50, get_settings().ftw_plan_lookup_probe_limit))
         ranked_candidates = sorted(
             (
@@ -2647,8 +2667,13 @@ class FTWilliamsReviewService:
             lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
             return "PlanIDs_Batch returned multiple possible plan matches."
         if len(records) == 1:
-            self._append_plan_ids_batch_summary(lookup, len(records), records[0])
-            return await self._accept_plan_ids_batch_match(lookup, repo, records[0])
+            record = records[0]
+            if (record.get("PlanLine1") or record.get("PlanName")) and self._plan_lookup_score(record, lookup) < 0:
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
+                return "PlanIDs_Batch did not verify the extracted plan. Select the FT Williams plan manually."
+            self._append_plan_ids_batch_summary(lookup, len(records), record)
+            return await self._accept_plan_ids_batch_match(lookup, repo, record)
         self._append_plan_ids_batch_summary(lookup, len(records))
         lookup.matches = probe_records
         lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
@@ -2792,6 +2817,26 @@ class FTWilliamsReviewService:
             )
             result["error_message"] = "; ".join(filter(None, [note, result["error_message"]]))
         return result
+
+    async def confirm_prior_year_form_5500(self, review: FTWilliamsReview) -> bool:
+        """Verify the source Form 5500 before creating a current-year filing."""
+        year = self._normalize_year(review.year)
+        lookup = review.plan_lookup
+        if not year or not lookup or not review.ftw_customer_id or not review.ftw_plan_id:
+            return False
+        response = await self.ftwilliams.run_query(FTWilliamsQueryRequest(
+            operation="query_5500", send=True, year=str(int(year) - 1),
+            ftw_customer_id=review.ftw_customer_id, ftw_plan_id=review.ftw_plan_id,
+        ))
+        if not response.success or len(response.statuses) != 1:
+            return False
+        current = {k.casefold(): v for k, v in response.statuses[0].query_results.items()}
+        ein = self._normalize_ein_digits(current.get("sdein") or current.get("spons_dfe_ein"))
+        number = self._normalize_plan_number(
+            current.get("sponsdfeplannum") or current.get("spons_dfe_pn"),
+        )
+        return bool(ein and number and ein == self._normalize_ein_digits(lookup.company_employer_id)
+                    and number == self._normalize_plan_number(lookup.plan_number))
 
     async def _run_current_queries_for_year(
         self,
@@ -8037,6 +8082,21 @@ class FTWilliamsReviewService:
                 score += 2
                 break
         return score
+
+    @staticmethod
+    def _plan_names_differ_by_dba(first: str | None, second: str | None) -> bool:
+        names = (normalize_compare_value(first), normalize_compare_value(second))
+        for alias_name, legal_name in (names, names[::-1]):
+            parts = re.split(r"\s+(?:dba|d b a|d/b/a|doing business as)\s+", alias_name)
+            if len(parts) != 2:
+                continue
+            prefix, trade_and_plan = parts
+            if len(prefix.split()) < 2 or not legal_name.startswith(prefix + " "):
+                continue
+            plan = legal_name[len(prefix) + 1:]
+            if len(plan.split()) >= 2 and plan.endswith(" plan") and trade_and_plan.endswith(" " + plan):
+                return True
+        return False
 
     def _plan_ids_probe_score(self, match: dict[str, str], lookup: FTWilliamsPlanLookup) -> int:
         """Rank batch identifiers using only metadata available before a plan query."""

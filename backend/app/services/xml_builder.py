@@ -695,12 +695,13 @@ def _split_form_5500_sponsor_address(
             r"|(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|DEPT|BLDG|BUILDING|#)\s*[A-Za-z0-9-]+"
             r"(?:\s+(?:SUITE|STE|UNIT|ROOM|RM|FLOOR|FL)\s*[A-Za-z0-9-]+)?)"
         )
+        unit_city_separator = r"(?:[.,]\s*|\s+)"
         street_city_match = re.fullmatch(
-            rf"(?P<street>\d[^,]*?)\s+(?P<line2>{secondary})\s+(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            rf"(?P<street>\d[^,]*?)\s+(?P<line2>{secondary}){unit_city_separator}(?P<city>[A-Za-z][A-Za-z .'-]*)",
             suffix_match.group("body"),
             flags=re.IGNORECASE,
         ) or re.fullmatch(
-            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|SQ|SQUARE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary})\s+)?(?P<city>[A-Za-z][A-Za-z .'-]*)",
+            rf"(?P<street>.+?\b(?:ST(?:REET)?|AVE(?:NUE)?|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|HWY|HIGHWAY|PKWY|PARKWAY|PL|PLACE|SQ|SQUARE|WAY)\.?)(?:,\s*|\s+)(?:(?P<line2>{secondary}){unit_city_separator})?(?P<city>[A-Za-z][A-Za-z .'-]*)",
             suffix_match.group("body"),
             flags=re.IGNORECASE,
         )

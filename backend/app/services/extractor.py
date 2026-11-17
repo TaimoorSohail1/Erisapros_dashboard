@@ -4786,6 +4786,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     ]
     selected = select_best_schedule_a_fields(fields)
     selected = prefer_authoritative_anthem_fields(selected, plain_pages)
+    selected = prefer_authoritative_anthem_fields(selected, layout_pages)
     selected = prefer_authoritative_aig_fields(selected, plain_pages)
     selected = prefer_authoritative_aflac_fields(selected, plain_pages)
     selected = prefer_authoritative_colonial_fields(selected, plain_pages)
@@ -9344,10 +9345,13 @@ def extract_colonial_life_broker_rows(
     return rows
 
 
+_ANTHEM_SCHEDULE_A_HEADING = "INFORMATION FOR COMPLETION OF ERISA 5500 SCHEDULE A"
+
+
 def _is_anthem_schedule_a_report(text: str) -> bool:
     upper = str(text or "").upper()
     return (
-        "INFORMATION FOR COMPLETION OF ERISA 5500 SCHEDULE A" in upper
+        _ANTHEM_SCHEDULE_A_HEADING in upper
         and "ANTHEM BLUE CROSS" in upper
         and "CUSTOMER ID" in upper
     )
@@ -9362,10 +9366,12 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
         r"\$\s*(?P<fee>[0-9,]+(?:\.\d{2})?)",
         re.DOTALL,
     )
+    pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
+    if not _is_anthem_schedule_a_report("\n\n".join(text for _, text in pages)):
+        return []
     rows: list[ScheduleABrokerRow] = []
-    for page, text in page_texts:
-        normalized = normalize_ocr_text(text)
-        if not _is_anthem_schedule_a_report(normalized):
+    for page, normalized in pages:
+        if _ANTHEM_SCHEDULE_A_HEADING not in normalized.upper():
             continue
         broker_section = re.split(r"2\s+and\s+3\.\s*Insurance\s+Fee", normalized, maxsplit=1, flags=re.IGNORECASE)
         search_text = broker_section[-1]
@@ -9408,21 +9414,27 @@ def extract_anthem_broker_rows(page_texts: list[tuple[int, str]]) -> list[Schedu
 
 
 def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[NormalizedExtractionField]:
-    full_text = "\n\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
+    full_text = "\n\n".join(text for _, text in pages)
     if not _is_anthem_schedule_a_report(full_text):
         return []
-    source_page, source_text = next(
-        (page, normalize_ocr_text(text))
-        for page, text in page_texts
-        if _is_anthem_schedule_a_report(normalize_ocr_text(text))
+    report_page = next(
+        ((page, text) for page, text in pages if _ANTHEM_SCHEDULE_A_HEADING in text.upper()),
+        None,
     )
-    carrier = regex_first(
+    if report_page is None:
+        return []
+    source_page, source_text = report_page
+    carrier_row = regex_first(
         source_text,
-        [r"(Anthem\s+Blue\s+Cross(?:\s+Life\s+and\s+Health\s+Insurance\s+Company)?)\s*\(G\d+\)"],
+        [
+            r"(Anthem\s+Blue\s+Cross(?:\s+Life\s+and\s+Health\s+Insurance\s+Company)?)\s*\(G\d+\)(?:\s+(\d{2}-\d{7})(?:[ \t]+(\d{5})\b)?)?",
+            r"(Blue\s+Cross\s+of\s+California)\s*\(G\d+\)\s+(\d{2}-\d{7})(?:[ \t]+(\d{5})\b)?",
+        ],
         flags=re.IGNORECASE,
+        groups=True,
     )
-    ein = regex_first(source_text, [r"\(G\d+\)\s+(\d{2}-\d{7})"], flags=re.IGNORECASE)
-    naic = regex_first(source_text, [r"\(G\d+\)\s+\d{2}-\d{7}\s+(\d{5})"], flags=re.IGNORECASE)
+    carrier, ein, naic = carrier_row if carrier_row else (None, None, None)
     contract = regex_first(source_text, [r"Customer\s+ID\s*:\s*([A-Za-z0-9-]+)"], flags=re.IGNORECASE)
     period = regex_first(
         source_text,
@@ -9434,23 +9446,30 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         groups=True,
     )
     rows = extract_anthem_broker_rows(page_texts)
-    part_three = full_text.split("Part III Welfare Benefit Contract Information", 1)[-1]
-    premiums = re.findall(
-        r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*([0-9,]+(?:\.\d{2})?)",
-        part_three,
-        flags=re.IGNORECASE,
+    benefit_heading = "Part III Welfare Benefit Contract Information"
+    benefit_page = next(
+        (index for index, (_, text) in enumerate(pages) if benefit_heading in text), None,
     )
-    total_premium = sum_money_values(*premiums) if premiums else None
-    enrollment_rows = re.findall(
-        r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*[0-9,]+(?:\.\d{2})?\s+"
-        r"\d[\d,]*\s*/\s*(\d[\d,]*)",
-        part_three,
-        flags=re.IGNORECASE,
-    )
-    persons_covered = max_numeric_string(enrollment_rows)
+    benefit_pages = pages if benefit_page is None else pages[benefit_page:]
+    premium_rows = []
+    enrollment_rows = []
+    for page, text in benefit_pages:
+        text = text.split(benefit_heading, 1)[-1]
+        premium_rows.extend((page, value) for value in re.findall(
+            r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*([0-9,]+(?:\.\d{2})?)",
+            text, flags=re.IGNORECASE,
+        ))
+        enrollment_rows.extend((page, value) for value in re.findall(
+            r"Health\s+(?:PPO|HMO|Indemnity)\s+\$\s*[0-9,]+(?:\.\d{2})?\s+"
+            r"\d[\d,]*\s*/\s*(\d[\d,]*)",
+            text, flags=re.IGNORECASE,
+        ))
+    total_premium = sum_money_values(*(value for _, value in premium_rows)) if premium_rows else None
+    persons_covered = max_numeric_string([value for _, value in enrollment_rows])
+    enrollment_page = next((page for page, value in enrollment_rows if value == persons_covered), source_page)
     fields: list[NormalizedExtractionField] = []
 
-    def add(field_name: str, value: str | None) -> None:
+    def add(field_name: str, value: str | None, page: int = source_page) -> None:
         clean = clean_extracted_value(str(value or ""))
         if clean and not is_blank_extraction_value(clean):
             fields.append(
@@ -9458,7 +9477,7 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
                     field_name=field_name,
                     value=clean,
                     confidence=0.995,
-                    page=source_page,
+                    page=page,
                     source_text="Anthem combined Schedule A report",
                 )
             )
@@ -9467,7 +9486,7 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
     add("1b. Insurance Carrier EIN", ein)
     add("1c. NAIC Code", naic)
     add("1d. Contract/Policy Number", contract)
-    add("1e. Persons Covered (End of Policy Year)", persons_covered)
+    add("1e. Persons Covered (End of Policy Year)", persons_covered, enrollment_page)
     if isinstance(period, tuple) and len(period) == 2:
         add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False))
         add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True))
@@ -9477,7 +9496,8 @@ def extract_anthem_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[
         add("3c. Amount of Fees", sum_money_values(*(row.fee_total for row in rows)))
         add("3d. Purpose", "COMMISSIONS & FEES")
         add("3e. Organizational Code", "3")
-    add("10a. Total premiums or subscription charges paid to carrier", total_premium)
+    if premium_rows:
+        add("10a. Total premiums or subscription charges paid to carrier", total_premium, premium_rows[0][0])
     return fields
 
 

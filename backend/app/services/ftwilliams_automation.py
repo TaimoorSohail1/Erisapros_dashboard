@@ -633,6 +633,19 @@ class FTWAutomationService:
             )
 
             if decision.status == FTWAutomationStatus.BRING_FORWARD_REQUIRED:
+                if active_review.query_state == FTWilliamsQueryState.FORM_5500_MISSING:
+                    try:
+                        prior_year_verified = await self.review_service.confirm_prior_year_form_5500(active_review)
+                    except Exception:
+                        prior_year_verified = False
+                    if not prior_year_verified:
+                        return await self._stop_safely(
+                            filing_id,
+                            run_id=run_id,
+                            reason="FT Williams did not verify a prior-year Form 5500 for this EIN and plan number.",
+                            next_action="RETRY_AFTER_CURRENT_QUERY",
+                            audit_event="FTW_BRING_FORWARD_PRIOR_YEAR_UNVERIFIED",
+                        )
                 if self.settings.ftw_local_agent_enabled and self.local_agent_service is not None:
                     before_record_ids = self._schedule_a_record_ids(active_review)
                     try:

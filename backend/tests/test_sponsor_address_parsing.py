@@ -111,6 +111,16 @@ class SponsorAddressParsingTests(unittest.TestCase):
             "SDCity": "SAN DIMAS", "SDState": "CA", "SDZipCode": "91773",
         })
 
+    def test_period_separates_suite_from_city_before_validation(self):
+        source = "1800 N HIGHLAND AVE, SUITE 300. LOS ANGELES CA 90028"
+        field = self.field(source)
+        self.assertEqual(FTWilliamsReviewService._validated_field_value(field), source)
+        actual, _ = self.payload(field)
+        self.assertEqual(actual, {
+            "SDAddressLine1": "1800 N HIGHLAND AVE", "SDAddressLine2": "SUITE 300",
+            "SDCity": "LOS ANGELES", "SDState": "CA", "SDZipCode": "90028",
+        })
+
     def test_source_zip_is_not_replaced_by_current_zip_when_city_matches(self):
         actual, _ = self.payload(self.field("625 WEST ADAMS STREET, CHICAGO, IL 60661"), {
             "SDAddressLine1": "625 WEST ADAMS STREET", "SDCity": "CHICAGO",

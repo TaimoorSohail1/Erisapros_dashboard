@@ -996,6 +996,34 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertEqual(decision.next_action, "START_LOCAL_AGENT")
         self.assertIn("manual Bring Forward remains available", decision.reasons[0])
 
+    def test_missing_form_5500_requires_verified_prior_year_before_queuing(self):
+        for prior_found in (False, True):
+            with self.subTest(prior_found=prior_found):
+                filing, review, _extracted, settings = self.safe_case()
+                settings.ftw_automation_bring_forward_enabled = True
+                settings.ftw_local_agent_enabled = True
+                review.query_state = FTWilliamsQueryState.FORM_5500_MISSING
+                review.current_year_exists = False
+                review.bring_forward_required = True
+                review.schedule_a_records = []
+                review.fields = []
+                self.approve_bring_forward_target(filing, review)
+                repo = MemoryRepository()
+                saved = run_async(repo.create_filing(filing))
+                review.filing_id = str(saved.id)
+                local_agent = FakeLocalAgentService(connected=True)
+                review_service = FakeAutomationReviewService(review)
+                review_service.confirm_prior_year_form_5500 = AsyncMock(return_value=prior_found)
+                service = FTWAutomationService(repo=repo, review_service=review_service,
+                                               local_agent_service=local_agent, settings=settings)
+
+                decision = run_async(service.run(str(saved.id), review=review))
+
+                review_service.confirm_prior_year_form_5500.assert_awaited_once_with(review)
+                self.assertEqual(len(local_agent.enqueue_calls), int(prior_found))
+                self.assertEqual(decision.next_action,
+                                 "WAIT_FOR_LOCAL_AGENT" if prior_found else "RETRY_AFTER_CURRENT_QUERY")
+
     def test_bring_forward_success_requeries_before_continuing(self):
         filing, safe_review, extracted, settings = self.safe_case()
         settings.ftw_automation_bring_forward_enabled = True

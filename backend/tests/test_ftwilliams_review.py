@@ -1726,6 +1726,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("plan=2429100964,2986383641", url)
         self.assertNotIn("plan=1870755347,2262415502", url)
 
+    def test_plan_ids_batch_requires_unique_identifiers_for_a_dba_variation(self):
+        from unittest.mock import AsyncMock, patch
+
+        matching = {"FTWCustomerID": "101", "FTWPlanID": "50101", "CompanyEmployerID": "12-3456789",
+                    "PlanNumber": "501", "PlanLine1": "Example Holdings DBA Trade Name Wrap Benefit Plan"}
+        unrelated_plan = {**matching, "FTWPlanID": "00101", "PlanNumber": "001",
+                          "PlanLine1": "Example Holdings 401(K) Plan"}
+        for label, rows, expected in (
+            ("unique", [matching, unrelated_plan], FTWilliamsPlanLookupStatus.MATCHED),
+            ("ambiguous", [matching, {**matching, "FTWPlanID": "50102", "PlanLine1": "Different Plan"}],
+             FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES),
+            ("wrong EIN", [{**matching, "CompanyEmployerID": "98-7654321"}], FTWilliamsPlanLookupStatus.NOT_FOUND),
+            ("different plan", [{**matching, "PlanLine1": "Different Holdings Wrap Benefit Plan"}],
+             FTWilliamsPlanLookupStatus.NOT_FOUND),
+        ):
+            with self.subTest(label=label):
+                service = FTWilliamsReviewService()
+                lookup = FTWilliamsPlanLookup(company_employer_id="12-3456789", plan_number="501", year="2025",
+                                             plan_name="Example Holdings Wrap Benefit Plan")
+                response = FTWilliamsQueryResponse(operation="plan_ids_batch", raw_response="<reply/>", request_xml="<query/>",
+                                                   configured=True, sent=True, success=True)
+                with (
+                    patch.object(service.ftwilliams, "build_request_xml", return_value="<query/>"),
+                    patch.object(service.ftwilliams, "parse_plan_ids_batch_response", return_value=rows),
+                    patch.object(service.ftwilliams, "run_query", AsyncMock(return_value=response)),
+                    patch.object(service, "_persist_plan_mapping", AsyncMock()),
+                ):
+                    run_async(service._try_plan_ids_batch_lookup(lookup, repo=None))
+                self.assertEqual(lookup.status, expected)
+                if expected == FTWilliamsPlanLookupStatus.MATCHED:
+                    self.assertEqual(lookup.matched_identity["ftw_plan_id"], "50101")
+
     def test_plan_ids_batch_probes_only_a_bounded_filtered_candidate_set(self):
         class LargePlanBatchFTWilliamsService(FTWilliamsService):
             def __init__(self):
