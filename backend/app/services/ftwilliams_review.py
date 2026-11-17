@@ -5893,6 +5893,7 @@ class FTWilliamsReviewService:
             str(comparison.rule_key or ""): comparison
             for comparison in comparisons
         }
+        carrier_ein_comparison = comparison_by_rule.get("schedule_a_part_i_1b_insurance_carrier_ein")
         for rule_key, worksheet_value, same_value, label in checks:
             field = source_fields_by_rule.get(rule_key)
             if field is None:
@@ -5907,6 +5908,19 @@ class FTWilliamsReviewService:
                 continue
             comparison = comparison_by_rule.get(rule_key)
             if not comparison:
+                continue
+            if (
+                rule_key == "schedule_a_part_i_1d_contract_policy_number"
+                and carrier_ein_comparison
+                and any(
+                    same_value(comparison.current_value, policy)
+                    for policy in re.split(r"[/,;]", worksheet_value)
+                )
+                and self._lincoln_reporting_unit_match(fields, {
+                    "InsContractNum": comparison.current_value,
+                    "InsCarrierEIN": carrier_ein_comparison.current_value,
+                })
+            ):
                 continue
             reason = (
                 f"The Plan Worksheet {label} ({worksheet_value}) differs from "
@@ -7029,8 +7043,12 @@ class FTWilliamsReviewService:
             re.IGNORECASE,
         )
         if match and (
-            self._identity_key(field.proposed_value or field.value) == match[1].upper() + "00000"
+            self._identity_key(field.value) == match[1].upper() + "00000"
             and self._normalize_contract(match[1]) == self._normalize_contract(policy)
+            and (
+                self._identity_key(field.proposed_value or field.value) == self._identity_key(field.value)
+                or self._normalize_contract(field.proposed_value) == self._normalize_contract(policy)
+            )
         ):
             return field
         return None

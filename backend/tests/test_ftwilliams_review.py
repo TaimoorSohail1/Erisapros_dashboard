@@ -4564,6 +4564,22 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.ftw_seq_no, "3")
 
+        proposed = contract.model_copy(update={"proposed_value": "10251819"})
+        worksheet = ScheduleAWorksheetSummary(
+            source="Plan Worksheet fully-insured benefit table",
+            carrier_name=carrier.value,
+            account_number="MASADAHMS; 1609824; 10251818; 10251819",
+        )
+        review_fields = [carrier, ein, proposed]
+        comparisons = service._comparison_fields(review_fields, {}, existing.query_results, update_fields=review_fields)
+        service._mark_plan_worksheet_conflicts(comparisons, review_fields, [worksheet])
+        policy = next(field for field in comparisons if field.ftw_tag == "InsContractNum")
+        self.assertEqual(policy.decision, FTWFieldDecision.NO_CHANGE)
+
+        other_worksheet = worksheet.model_copy(update={"account_number": "MASADAHMS; 1609824; 10251818"})
+        service._mark_plan_worksheet_conflicts(comparisons, review_fields, [other_worksheet])
+        self.assertEqual(policy.decision, FTWFieldDecision.CONFLICT)
+
         full_contract = existing.model_copy(update={
             "ftw_seq_no": "4",
             "query_results": {"InsCarrierEIN": "35-0472300", "InsContractNum": contract.value},
