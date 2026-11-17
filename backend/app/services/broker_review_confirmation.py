@@ -43,7 +43,7 @@ def confirmation_matches(rows, status):
                 and not any(v.status == 'ERROR' for v in r.validation_results) for r in rows))
 
 
-def confirm_broker_review(rows, original_rows, status, request, *, actor, source_context, snapshot):
+def confirm_broker_review(rows, original_rows, status, request, *, actor, source_context, snapshot, expected_payment_totals=None):
     if not status or request.expected_context != review_token(original_rows, status, source_context, snapshot):
         raise ValueError('Broker source or FTWilliam data changed. Refresh and review again.')
     if not actor or not source_context or not snapshot:
@@ -66,6 +66,10 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     used_indexes = set()
     used_disclosures = set()
     verified = []
+    requires_reconciliation = any(
+        issue.validator == 'broker_total_reconciliation' and issue.status == 'ERROR'
+        for row in original_rows for issue in row.validation_results
+    )
     from app.services.broker_identity_review import confirmed_identity_decisions, apply_identity_decisions
     identity_decisions=confirmed_identity_decisions(rows,original_rows,sources,status,source_context,snapshot)
     identity_indexes={i for group in identity_decisions for i in group['source_indexes']}
@@ -89,7 +93,7 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
             row.validation_results = [v.model_copy(deep=True) for v in original.validation_results
                 if v.status == 'ERROR' and not (v.validator=='recipient_identity_ambiguity' and index in identity_indexes) and v.validator not in {
                     'complete_source_broker_roster', 'payment_classification_ambiguity',
-                    'business_rule_confirmation', 'source_section_ambiguity'}]
+                    'business_rule_confirmation', 'source_section_ambiguity', 'broker_total_reconciliation'}]
             if row.validation_results: raise ValueError('Unresolved source issues require correction before roster confirmation.')
         elif source.startswith('DISCLOSURE:'):
             key = source[11:]; disclosure = disclosures.get(key)
@@ -119,6 +123,11 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     if len(set(excluded)) != len(excluded) or used_indexes & set(excluded) or used_indexes | set(excluded) != set(range(len(original_rows))):
         raise ValueError('Review or explicitly exclude every original broker row.')
     verified,final_sources=apply_identity_decisions(verified,sources,identity_decisions)
+    if requires_reconciliation:
+        actual_totals = tuple(sum((Decimal(_money(getattr(row, field))) for row in verified), Decimal(0))
+                              for field in ('commission_total', 'fee_total'))
+        if actual_totals != expected_payment_totals:
+            raise ValueError('The complete broker list must match both Schedule A commission and fee totals before approval.')
     schedule_a_broker_update_values(verified, require_complete=True)
     reviewed = status.model_copy(deep=True)
     reviewed.reviewer_confirmation = {'actor': actor, 'at': datetime.now(timezone.utc).isoformat(),

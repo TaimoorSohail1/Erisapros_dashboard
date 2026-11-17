@@ -636,6 +636,24 @@ AD&D 592 | Base Commissions
         self.assertEqual(fields["10a. Total premiums or subscription charges paid to carrier"], "98,942.65")
         self.assertEqual([(row.name, row.commission_total) for row in brokers], [("REDTAIL LTD", "6,431.27"), ("HUMMEL GROUP INC", "6,431.27")])
 
+    def test_guardian_links_verified_premium_and_headcount_to_printed_pages(self):
+        from app.services.schedule_a_extraction_pipeline import NormalizedExtractionResult, resolve_schedule_a_result
+
+        pages = [
+            (1, 'The Guardian Life Insurance Company of America\nSchedule A\nPlan Number 00788651'),
+            (2, 'Approximate number of employees covered at the end of the plan year\n275'),
+            (3, 'Total commissions for plan $23,063.28'),
+            (4, 'Total Fees Paid $13,790.41\nGross premium paid'),
+            (5, 'Total premium paid $454,909.03'),
+        ]
+        result = resolve_schedule_a_result(NormalizedExtractionResult(
+            provider='guardian-test', fields=extract_guardian_schedule_a_fields(pages),
+        ))
+        for number, value, page in [('1e.', '275', 2), ('10a.', '454,909.03', 5)]:
+            field = next(field for field in result.fields if field.field_name.startswith(number))
+            self.assertEqual((field.value, field.page), (value, page))
+            self.assertTrue(all(check.status == 'PASS' for check in field.validation_results))
+
     def test_guardian_fee_with_blank_recipient_uses_matching_contract_broker(self):
         pages = [(2, """
             Guardian Life Insurance Company of America

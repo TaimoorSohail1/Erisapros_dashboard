@@ -579,7 +579,7 @@ def _validate_financial_section_context(
             )
             or (
                 re.search(r"\bgross\s+premium\s+paid\b", normalized)
-                and re.search(r"\btotals?\s*:", normalized)
+                and re.search(r"\b(?:totals?\s*:|total\s+premium\s+paid\b)", normalized)
             )
             or (
                 "payments received by carrier from plan" in normalized

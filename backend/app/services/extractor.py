@@ -10868,25 +10868,44 @@ def extract_guardian_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     page = page_texts[0][0] if page_texts else 1
     policy = regex_first(joined, [r"Plan\s+(?:Number|No\.?|#)\s*:?\s*(00\d{6})"])
     period = regex_first(joined, [r"(?:From\s*:?)\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:To\s*:?)\s*(\d{1,2}/\d{1,2}/\d{2,4})"], groups=True)
-    commission = regex_first(joined, [r"Total\s+(?:commissions\s+for\s+plan|Commissions\s+Paid\s+On\s+Plan)\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"])
-    fees = regex_first(joined, [r"Total\s+Fees\s+Paid\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"])
-    premium = regex_first(joined, [r"(?:Total\s+premium\s+paid|Totals:)\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"])
-    persons = regex_first(joined, [r"(?:employees|persons)\s+covered\s+at\s+the\s+end\s+of\s+the\s+plan\s+year\s*:?\s*([0-9,]+)"])
+    commission_pattern = r"\bTotal\s+(?:commissions\s+for\s+plan|Commissions\s+Paid\s+On\s+Plan)\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
+    fee_pattern = r"\bTotal\s+Fees\s+Paid[ \t]*:?[ \t]*\$?[ \t]*([0-9,]+(?:\.\d{2})?)"
+    commission = regex_first(joined, [commission_pattern])
+    fees = regex_first(joined, [fee_pattern])
+    premium_pattern = r"\bTotal\s+premium\s+paid\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
+    premium_totals_pattern = r"\bgross\s+premium\s+paid[^\n]*?\btotals?\s*:\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
+    persons_pattern = r"\b(?:employees|persons)\s+covered\s+at\s+the\s+end\s+of\s+the\s+plan\s+year\s*:?\s*([0-9,]+)"
     values = {
         "1a. Name of Insurance Company": "The Guardian Life Insurance Company of America",
         "1b. Insurance Carrier EIN": "13-5123390",
         "1c. NAIC Code": regex_first(joined, [r"NAIC(?:\s+Code)?\s*:?\s*(\d{5})"]),
         "1d. Contract/Policy Number": policy,
-        "1e. Persons Covered (End of Policy Year)": persons,
         "1f. Policy Year Beginning Date": normalize_eyemed_date(period[0]) if isinstance(period, tuple) else None,
         "1g. Policy Year Ending Date": normalize_eyemed_date(period[1]) if isinstance(period, tuple) else None,
-        "3b. Amount of Commissions": money_value(commission or ""),
-        "3c. Amount of Fees": money_value(fees or "0.00"),
+        "3c. Amount of Fees": None if fees is not None else "0.00",
         "3d. Purpose": derive_schedule_a_purpose(commission, fees or "0"),
         "3e. Organizational Code": "3",
-        "10a. Total premiums or subscription charges paid to carrier": money_value(premium or ""),
     }
-    return _pomerene_fields(values, page=page, source="Guardian Schedule A/5500 parser")
+    fields = _pomerene_fields(values, page=page, source="Guardian Schedule A/5500 parser")
+    for label, pattern, normalizer in (
+        ("1e. Persons Covered (End of Policy Year)", persons_pattern, clean_extracted_value),
+        ("3b. Amount of Commissions", commission_pattern, money_value),
+        ("3c. Amount of Fees", fee_pattern, money_value),
+        ("10a. Total premiums or subscription charges paid to carrier", f"(?:{premium_pattern})|(?:{premium_totals_pattern})", money_value),
+    ):
+        matches = [(n, hit) for n, text in page_texts for hit in re.finditer(pattern, normalize_ocr_text(text), re.I)]
+        if not matches or len({normalizer(next(value for value in hit.groups() if value is not None)) for _, hit in matches}) != 1:
+            continue
+        source_page, hit = matches[0]
+        field = _pomerene_field(label, normalizer(next(value for value in hit.groups() if value is not None)), page=source_page, source=hit[0])
+        if field and label.startswith("10a."):
+            header = next((n for n, text in reversed(page_texts) if n <= source_page
+                           and re.search(r"\bgross\s+premium\s+paid\b", text, re.I)), None)
+            if header is not None and not re.search(r"(?<!non[- ])\bexperience[- ]rated\b", joined, re.I):
+                field.evidence.append(SourceEvidence(page=header, source_text="Gross premium paid"))
+        if field:
+            fields.append(field)
+    return fields
 
 
 def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
