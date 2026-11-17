@@ -9,7 +9,7 @@ from app.repositories import MemoryRepository
 from app.services.ftwilliams_review import FTWilliamsReviewService
 from app.services.extractor import extract_fields_from_pdf_text, extract_rules_driven_schedule_a_fields, parse_schedule_a_text
 from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
-from app.services.schedule_a_printed_totals import attach_printed_total_evidence, refresh_verified_totals
+from app.services.schedule_a_printed_totals import attach_printed_total_evidence, read_printed_totals, refresh_verified_totals
 
 
 SOURCE = """Approximate Number of     Total (e)        111
@@ -64,6 +64,31 @@ def test_total_premiums_keep_the_printed_label_and_amount_as_evidence():
     assert result.fields[0].value == "571,719.25"
     assert result.fields[0].page == 2
     assert "$571,719.25" in result.fields[0].source_text
+
+
+@pytest.mark.parametrize("layout", ("valid", "no_section", "later_section", "ambiguous", "invalid_precision"))
+def test_applied_premium_requires_one_amount_in_the_printed_welfare_section(layout):
+    heading = "Part III: Welfare Benefit Contract Information"
+    label = "Premium applied by Example Health Plan, Inc. during your plan’s contract year: $1,815,868.99"
+    page = f"{heading}\n\n{label}\n\nPart IV: Provision of Information"
+    if layout == "no_section":
+        page = label
+    elif layout == "later_section":
+        page = f"{heading}\n\nPart IV: Provision of Information\n{label}"
+    elif layout == "ambiguous":
+        page = page.replace(label, f"{label}\n{label.replace('868.99', '999.00')}")
+    elif layout == "invalid_precision":
+        page = page.replace("868.99", "868.999")
+
+    result = read_printed_totals([(5, page)])
+
+    if layout == "valid":
+        amount, evidence = result["10a"]
+        assert str(amount) == "1815868.99"
+        assert evidence.page == 5
+        assert evidence.source_text == f"{heading}\n{label}"
+    else:
+        assert "10a" not in result
 
 
 def test_covered_alias_cannot_cross_the_next_column_heading():
