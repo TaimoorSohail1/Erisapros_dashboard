@@ -682,6 +682,40 @@ AD&D 592 | Base Commissions
         self.assertEqual(brokers[0].fee_rows[0].amount, "10,713.11")
         self.assertEqual(brokers[0].fee_rows[0].purpose, "FEES")
 
+    def test_guardian_fee_only_recipient_does_not_also_receive_commission(self):
+        pages = [
+            (1, "Guardian Schedule A/5500 Information\nEIN 13-5123390"),
+            (2, """
+                The following figure represents commissions that are to be reported on Schedule A, Line 3, Element (b):
+                000AB123 FIRST BROKER $1,213.18
+                000AB124 SECOND BROKER $2,123.61
+                Total commissions for plan $3,336.79
+            """),
+            (3, """
+                The following figure represents fees that are to be reported on Schedule A, Line 3, Element (c):
+                Contract ID Contract name Amount
+            """),
+            (4, """
+                000AB125 FEE ONLY BROKER $1,438.43
+                Total Fees Paid $1,438.43
+                Group insurance coverages Gross premium paid
+                000AB126 UNRELATED PAYMENT $7,000.00
+            """),
+        ]
+
+        brokers = extract_guardian_broker_rows(pages)
+
+        self.assertEqual(
+            [(row.name, row.commission_total, row.fee_total, row.source_page) for row in brokers],
+            [
+                ("FIRST BROKER", "1,213.18", "0.00", 2),
+                ("SECOND BROKER", "2,123.61", "0.00", 2),
+                ("FEE ONLY BROKER", "0.00", "1,438.43", 4),
+            ],
+        )
+        self.assertIn("fees", brokers[-1].fee_source_text.lower())
+        self.assertFalse(brokers[-1].commission_rows)
+
     def test_pomerene_guardian_letter_uses_plan_number_not_broker_code(self):
         pages = [(1, """
             Guardian Life Insurance Company of America

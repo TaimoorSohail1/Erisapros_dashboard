@@ -10960,74 +10960,92 @@ def extract_guardian_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
 
 
 def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
-    joined = "\n".join(normalize_ocr_text(text) for _, text in page_texts)
+    pages = [(page, normalize_ocr_text(text)) for page, text in page_texts]
+    joined = "\n".join(text for _, text in pages)
     if not _is_guardian_schedule_a(joined):
         return []
-    page = page_texts[0][0] if page_texts else 1
-    entries = []
-    for code, name, amount in re.findall(
-        r"\b(000[A-Z0-9]{4,5})\s+([A-Z][A-Z0-9 &.'-]+?)\s*\n.*?Total\s+For\s+Contract\s*:\s*\$?\s*([0-9,]+\.\d{2})",
-        joined,
-        flags=re.IGNORECASE | re.DOTALL,
-    ):
-        if code.upper() != "000NM733" and not is_zero_money(amount):
-            entries.append((code.upper(), clean_extracted_value(name), money_value(amount)))
-    for code, name, amount in re.findall(
-        r"\b(000[A-Z0-9]{4,5})\s+([A-Z][A-Z0-9 &.'-]+?)\s+(?:Short\s+Term\s+Disability\s+)?\$?([0-9,]+\.\d{2})(?=\s|$)",
-        joined,
-        flags=re.IGNORECASE,
-    ):
-        if code.upper() == "000NM733" or is_zero_money(amount):
-            continue
-        if code.upper() not in {entry[0] for entry in entries}:
-            entries.append((code.upper(), clean_extracted_value(name), money_value(amount)))
-    if not entries:
-        # Portal exports put the address between the recipient and amount.
-        for code, name, amount in re.findall(
-            r"\b(000[A-Z0-9]{4,5})\s+([A-Z][A-Z0-9 &.'-]+?)\s+.*?\$([0-9,]+\.\d{2})",
-            joined,
-            flags=re.IGNORECASE | re.DOTALL,
-        ):
-            if code.upper() != "000NM733" and not is_zero_money(amount):
-                entries.append((code.upper(), clean_extracted_value(name), money_value(amount)))
-    fee_by_contract: dict[str, str] = {}
+    page_ends = []
+    offset = 0
+    for page, text in pages:
+        offset += len(text) + 1
+        page_ends.append((offset, page))
+
+    def page_at(position: int) -> int:
+        return next(page for end, page in page_ends if position < end)
+
     fee_section = re.search(
-        r"The\s+following\s+figure\s+represents\s+fees\b(?P<section>.*?)(?=However\b|Recipient\s+of\s+One\s+Time\b|Group\s+Insurance\s+Coverage|$)",
+        r"The\s+following\s+figure\s+represents\s+fees\b(?P<section>.*?)"
+        r"(?=Total\s+Fees\s+Paid\b|However\b|Recipient\s+of\s+One\s+Time\b|"
+        r"Group\s+Insurance\s+Coverage|\Z)",
         joined,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    if fee_section:
-        for code, amount in re.findall(
-            r"\b(000[A-Z0-9]{4,5})\b[^\n$]*\$\s*([0-9,]+\.\d{2})",
-            fee_section.group("section"),
-            flags=re.IGNORECASE,
-        ):
-            if not is_zero_money(amount):
-                fee_by_contract[code.upper()] = money_value(amount)
-    seen: set[str] = set()
-    rows: list[ScheduleABrokerRow] = []
-    for code, name, amount in entries:
-        if code in seen:
-            continue
-        seen.add(code)
-        fee_amount = fee_by_contract.get(code, "0.00")
-        rows.append(
-            ScheduleABrokerRow(
-                name=name,
+    commission_end = re.search(
+        r"Total\s+(?:commissions\s+for\s+plan|commissions\s+paid\s+on\s+plan)\b",
+        joined,
+        flags=re.IGNORECASE,
+    )
+    commission_text = joined[:min(
+        fee_section.start() if fee_section else len(joined),
+        commission_end.start() if commission_end else len(joined),
+    )]
+    contract_pattern = r"\b(000[A-Z0-9]{4,5})\b"
+    commission_rows: dict[str, ScheduleABrokerRow] = {}
+    for pattern in (
+        contract_pattern + r"[ \t]+([A-Z][A-Z0-9 &.'-]+?)[ \t]*\n"
+        r"(?:(?!\b000[A-Z0-9]{4,5}\b).)*?Total\s+For\s+Contract\s*:\s*\$?\s*([0-9,]+\.\d{2})",
+        contract_pattern + r"[ \t]+([A-Z][A-Z0-9 &.'-]+?)[ \t]+"
+        r"(?:Short\s+Term\s+Disability\s+)?\$?([0-9,]+\.\d{2})(?=\s|$)",
+        contract_pattern + r"[ \t]+([A-Z][A-Z0-9 &.'-]+?)\s+"
+        r"(?:(?!\b000[A-Z0-9]{4,5}\b).)*?\$([0-9,]+\.\d{2})",
+    ):
+        for match in re.finditer(pattern, commission_text, re.IGNORECASE | re.DOTALL):
+            code, name, amount = match.groups()
+            code = code.upper()
+            if code == "000NM733" or code in commission_rows or is_zero_money(amount):
+                continue
+            amount = money_value(amount)
+            commission_rows[code] = ScheduleABrokerRow(
+                name=clean_extracted_value(name),
                 organization_code="3",
                 commission_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")],
-                fee_rows=(
-                    [ScheduleABrokerMoneyRow(amount=fee_amount, purpose="FEES")]
-                    if not is_zero_money(fee_amount)
-                    else []
-                ),
                 commission_total=amount,
-                fee_total=fee_amount,
-                source_page=page,
+                fee_total="0.00",
+                commission_source_text=f"Schedule A commissions: {match[0]}",
+                source_page=page_at(match.start()),
                 confidence=0.98,
             )
+
+    if fee_section:
+        fee_pattern = re.compile(
+            contract_pattern + r"(?P<name>[^\n$]*)\$\s*(?P<amount>[0-9,]+\.\d{2})", re.IGNORECASE
         )
-    return rows
+        fee_only_rows: dict[tuple[str, str], ScheduleABrokerRow] = {}
+        for match in fee_pattern.finditer(fee_section["section"]):
+            code = match[1].upper()
+            name = clean_extracted_value(match["name"])
+            if is_zero_money(match["amount"]):
+                continue
+            row = commission_rows.get(code)
+            if name and (row is None or _canonical_broker_name(name) != _canonical_broker_name(row.name)):
+                key = (code, _canonical_broker_name(name))
+                row = fee_only_rows.get(key)
+                if row is None and is_probable_person_or_entity_name(name):
+                    row = ScheduleABrokerRow(
+                        name=name,
+                        organization_code="3",
+                        commission_total="0.00",
+                        source_page=page_at(fee_section.start("section") + match.start()),
+                        confidence=0.98,
+                    )
+                    fee_only_rows[key] = row
+            if row is not None:
+                amount = money_value(match["amount"])
+                row.fee_rows.append(ScheduleABrokerMoneyRow(amount=amount, purpose="FEES"))
+                row.fee_total = _sum_money_rows(row.fee_rows)
+                row.fee_source_text = f"Schedule A fees: {match[0]}"
+        return [*commission_rows.values(), *fee_only_rows.values()]
+    return list(commission_rows.values())
 
 
 def _is_american_heritage_schedule_a(text: str) -> bool:
