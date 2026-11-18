@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.models import FTWilliamsQueryResponse, FTWilliamsStatusItem, NormalizedExtractionResult
+from app.models import FTWilliamsQueryResponse, FTWilliamsQueryState, FTWilliamsStatusItem, NormalizedExtractionResult
 from app.services.extractor import bcbsma_column_value, extract_columnar_broker_compensation_rows
 from app.services.ftwilliams_local_agent_jobs import FTWLocalAgentService
 from app.services.schedule_a_customer_rules import apply_customer_defaults
@@ -56,6 +56,7 @@ class OxfordReleaseSmoke(unittest.TestCase):
             expected_plan_number="501", expected_account="HighlandTech", operation_dispatched_at=None, result_state=None)
         review = SimpleNamespace(ftw_browser_customer_id="11", ftw_browser_plan_id="22", browser_mapping_confirmed=True,
             ftw_customer_id="11", ftw_plan_id="22", year="2025",
+            query_state=FTWilliamsQueryState.SCHEDULE_A_MISSING,
             plan_lookup=SimpleNamespace(company_employer_id="87-4619719", plan_number="501"))
         repo = SimpleNamespace(list_ftw_target_operation_history=AsyncMock(return_value=[SimpleNamespace(
             id="prior", target_url=url)] if prior else []))
