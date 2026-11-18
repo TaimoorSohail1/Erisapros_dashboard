@@ -35,6 +35,12 @@ _LEGACY_SOURCE_HOLDS = {
 }
 _NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
 _SECTION_10 = re.compile(r"(?im)^[ \t]*(?:(?:section|line)\s+)?10[.:\s-]+non[- ]?experience[- ]rated\s+contracts?\s*$")
+_SECTION_9 = re.compile(r"(?im)^[ \t]*(?:(?:section[ \t]+)?9[.): \t-]+)?experience[ \t-]+rated[ \t]+contracts?[ \t]*$")
+_END_SECTION_9 = re.compile(r"(?im)^[ \t]*(?:(?:section[ \t]+)?10[.): \t-]+)?non[ \t-]*experience[ \t-]+rated\b|^[ \t]*part[ \t]+iv\b")
+_CLAIMS_PAID = re.compile(
+    rf"(?im)^[ \t]*benefit[ \t]+charges[ \t]*:?[ \t]*\n[ \t]*(?:\(i\)[ \t]*)?claims[ \t]+paid[ \t]*:?[ \t]*"
+    rf"\$?[ \t]*(?P<amount>{_NUMBER}(?:\.\d{{1,2}})?)[ \t]*$",
+)
 _WELFARE_SECTION = re.compile(rf"^[ \t]*{WELFARE_CONTRACT_HEADER.pattern}[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _NEXT_SECTION = re.compile(r"(?im)^[ \t]*(?:section\s+\d+|part\s+(?:[IVX]+)\b)")
 _PREMIUM = re.compile(
@@ -121,6 +127,13 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
         if match := _COVERED.search(text):
             if (count := covered_total(text)) is not None:
                 totals["1e"].append((count, SourceEvidence(provider=COVERED_TOTAL_PROVIDER, page=page, source_text=match[0])))
+        for heading in _SECTION_9.finditer(text):
+            section = _END_SECTION_9.split(text[heading.end():], maxsplit=1)[0]
+            for claim in _CLAIMS_PAID.finditer(section):
+                totals["9b(1)"].append((_number(claim['amount']), SourceEvidence(
+                    provider="Printed Schedule A experience-rated claims", page=page,
+                    source_text=f"{heading[0].strip()}\n{claim[0].strip()}",
+                )))
         premium_lines = {
             match.span(): (_number(match["amount"]), match[0].strip())
             for match in _EXPLICIT_PAID_PREMIUM.finditer(text)

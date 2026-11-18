@@ -257,6 +257,34 @@ a/k    Health PPO    $3,170,109          175/205
                 if field:
                     self.assertEqual(field.decision, "AUTOMATIC")
 
+    def test_split_coverage_row_uses_covered_count_before_the_dated_policy_columns(self):
+        from app.services.field_rules import DEFAULT_FIELD_RULES
+
+        heading = ("Type of Benefit:".ljust(42)
+                   + "Approximate Number of Persons Covered @ End of Policy or".ljust(90)
+                   + "Policy/Contract Year")
+        row = ("Hosp./Med-Surgical".ljust(42) + "Contract Year  --  224".ljust(94)
+               + "From        Thru")
+        dates = "Example Insurer: EIN# 42-1234567 NAIC# 12345".ljust(132) + "4/1/2025       3/31/2026"
+        for row_text, date_text, expected in (
+            (row, dates, "224"),
+            (row.replace("224", "   "), dates, "42"),
+            (row, dates.replace("3/31/2026", "3/31/2024"), "42"),
+            (row, dates.lstrip()[:50] + "4/1/2025     3/31/2026", "42"),
+        ):
+            with self.subTest(row=row_text, dates=date_text):
+                document = SemanticDocument.from_page_texts([(1, "\n".join((heading, row_text, date_text)))])
+                result = NormalizedExtractionResult(provider="fixture", fields=[NormalizedExtractionField(
+                    field_name="1e. Persons Covered (End of Policy Year)", value="42",
+                    page=1, source_text="Example Insurer: EIN# 42-1234567",
+                )])
+                resolved = resolve_schedule_a_result(enrich_schedule_a_result(result, document, rules=DEFAULT_FIELD_RULES))
+                covered = next(field for field in resolved.fields if field.field_name.startswith("1e."))
+                self.assertEqual(covered.value, expected)
+                if expected == "224":
+                    self.assertEqual(covered.decision, "AUTOMATIC")
+                    self.assertIn("Contract Year  --  224", covered.source_text)
+
     def test_carrier_payment_total_adds_line_10a_with_section_evidence(self):
         document = SemanticDocument.from_page_texts(
             [

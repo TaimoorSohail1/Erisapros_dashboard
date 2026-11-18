@@ -93,6 +93,17 @@ def test_total_premiums_keep_the_printed_label_and_amount_as_evidence():
     assert "$571,719.25" in result.fields[0].source_text
 
 
+@pytest.mark.parametrize("section,expected", (("Experience - Rated Contracts", "AUTOMATIC"),
+    ("Experience - Rated Contracts\nNon experience-Rated Contracts", "REVIEW_REQUIRED")))
+def test_claims_attach_their_own_experience_rated_section_heading(section, expected):
+    label = "9b(1). Benefit Charges (1) Claims paid"
+    line = "Benefit Charges\n    (i) Claims Paid    $3,624,642.47"
+    field = NormalizedExtractionField(field_name=label, value="3,624,642.47", page=1, source_text=line, confidence=.99)
+    attach_printed_total_evidence([field], [(1, f"{section}\n\n{line}")])
+    (resolved,) = resolve_schedule_a_result(NormalizedExtractionResult(provider="Native", fields=[field])).fields
+    assert resolved.decision == expected
+
+
 @pytest.mark.parametrize("layout", ("valid", "no_section", "later_section", "ambiguous", "invalid_precision"))
 def test_applied_premium_requires_one_amount_in_the_printed_welfare_section(layout):
     heading = "Part III: Welfare Benefit Contract Information"
