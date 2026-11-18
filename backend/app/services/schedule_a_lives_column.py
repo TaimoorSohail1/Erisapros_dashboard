@@ -1,5 +1,6 @@
 """Find covered-lives maxima using preserved text columns, not nearby numbers."""
 from dataclasses import dataclass
+from datetime import datetime
 import re
 
 
@@ -15,6 +16,13 @@ _NUMERIC_DATE = r"[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}"
 _COVERAGE_ROW = re.compile(
     rf"(?<!\S)(?P<count>[0-9,]+)\s{{2,}}{_NUMERIC_DATE}\s+{_NUMERIC_DATE}\s*$"
 )
+_SPLIT_COVERAGE_HEADING = re.compile(
+    r"\bapproximate\s+number\s+of\s+persons\s+covered\s+(?:at|@)\s+end\s+of\s+policy\s+or\s*$", re.I,
+)
+_SPLIT_PERIOD_HEADING = re.compile(r"\bpolicy\s*/\s*contract\s+year\s*$", re.I)
+_SPLIT_COUNT_CELL = re.compile(r"contract\s+year[ \t]+[-\u2013\u2014]{1,2}[ \t]+(?P<count>[\d,]+)[ \t]*", re.I)
+_SPLIT_DATE_LABELS = re.compile(r"[ \t]*from[ \t]+thru[ \t]*", re.I)
+_SPLIT_DATES = re.compile(rf"[ \t]*(?P<start>{_NUMERIC_DATE})[ \t]+(?P<end>{_NUMERIC_DATE})[ \t]*")
 
 
 
@@ -34,7 +42,8 @@ def lives_column_selections(pages: list[tuple[int, str]]) -> list[LivesColumnSel
     for page, text in pages:
         lines = text.splitlines()
         for index, header in enumerate(lines):
-            if wrapped := _wrapped_coverage_selection(page, lines, index):
+            if wrapped := (_wrapped_coverage_selection(page, lines, index)
+                    or _split_coverage_selection(page, lines, index)):
                 selections.append(wrapped)
             cells = list(re.finditer(r"\S.*?(?=\s{2,}|$)", header))
             # Unaligned OCR/paragraphs do not establish a numeric column.
@@ -132,3 +141,31 @@ def _wrapped_coverage_selection(
     count = match["count"].replace(",", "")
     evidence = "\n".join([f"Counts in covered-lives column: {count}", *headers, row])
     return LivesColumnSelection(count, page, row_index + 1, evidence, (count,), ())
+
+
+def _split_coverage_selection(page: int, lines: list[str], index: int) -> LivesColumnSelection | None:
+    """Read a benefit count whose dates are printed on the next row."""
+    header = lines[index]
+    if index + 2 >= len(lines) or not re.match(r"^\s*type of benefit:", header, re.I):
+        return None
+    period = _SPLIT_PERIOD_HEADING.search(header)
+    if period is None:
+        return None
+    covered = _SPLIT_COVERAGE_HEADING.search(header[:period.start()])
+    if covered is None:
+        return None
+    row, date_row = lines[index + 1:index + 3]
+    if not row[:covered.start()].strip() or not _SPLIT_DATE_LABELS.fullmatch(row[period.start():]):
+        return None
+    count_cell = _SPLIT_COUNT_CELL.fullmatch(row[covered.start():period.start()].strip())
+    dates = _SPLIT_DATES.fullmatch(date_row[period.start():])
+    if count_cell is None or not _COUNT.fullmatch(count_cell['count']) or dates is None:
+        return None
+    try:
+        if datetime.strptime(dates['start'], '%m/%d/%Y') > datetime.strptime(dates['end'], '%m/%d/%Y'):
+            return None
+    except ValueError:
+        return None
+    count = count_cell['count'].replace(',', '')
+    evidence = '\n'.join((f'Counts in covered-lives column: {count}', header, row, date_row[period.start():]))
+    return LivesColumnSelection(count, page, index + 2, evidence, (count,), ())

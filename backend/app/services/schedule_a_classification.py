@@ -136,7 +136,10 @@ def classify_schedule_a_fields(
     classification_signals: list[str] | None = None,
 ) -> ScheduleAClassification:
     values = {
-        str(field.mapped_rule_key or ""): str(field.proposed_value or field.value or "")
+        str(field.mapped_rule_key or ""): str(
+            (field.value if str(field.status_reason or "").startswith("Automatically derived")
+             else field.proposed_value or field.value) or ""
+        )
         for field in fields
         if field.form_type == FormType.SCHEDULE_A and field.mapped_rule_key
     }
@@ -335,6 +338,18 @@ def classify_schedule_a_values(
     has_generic_premium = has_10a or "PREMIUM_AMOUNT_PRESENT" in signals
     has_generic_claims = "CLAIM_AMOUNT_PRESENT" in signals
 
+    if (
+        {"EXPLICIT_EXPERIENCE_RATED", "EXPLICIT_NONEXPERIENCE_RATED"} <= signals
+        and not has_10a
+        and _has_meaningful_amount(values_by_rule_key.get("schedule_a_part_iii_9a_premiums_1_amount_received"))
+        and _has_meaningful_amount(values_by_rule_key.get("schedule_a_part_iii_9b_1_benefit_charges_1_claims_paid"))
+    ):
+        return ScheduleAClassification(
+            ScheduleAContractType.EXPERIENCE_RATED,
+            "Both rating sections are printed. Experience-rated premiums and claims are populated and the nonexperience-rated premium is blank or zero.",
+            0.98,
+            ("LINE_9A_AMOUNT_PRESENT", "CLAIM_AMOUNT_PRESENT"),
+        )
     if "EXPLICIT_NONEXPERIENCE_RATED" in signals:
         return ScheduleAClassification(
             ScheduleAContractType.NONEXPERIENCE_RATED,

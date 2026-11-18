@@ -81,6 +81,21 @@ class ScheduleAClassificationTests(unittest.TestCase):
 
         self.assertEqual(classification.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
 
+    def test_both_printed_rating_sections_use_the_populated_premium_and_claims_section(self):
+        premium = extracted_field(LINE_9A, "5,019,105.58")
+        claims = extracted_field("schedule_a_part_iii_9b_1_benefit_charges_1_claims_paid", "3,624,642.47")
+        line_10a = extracted_field(LINE_10A, "0.00")
+        line_10a.status = ExtractedFieldStatus.MATCHED
+        line_10a.proposed_value = "5,019,105.58"
+        line_10a.status_reason = "Automatically derived from premium evidence in 9a."
+        signals = classification_signals_from_text("Experience - Rated Contracts\nNon experience-Rated Contracts")
+        self.assertEqual(classify_schedule_a_fields([premium, claims, line_10a], signals).contract_type,
+                         ScheduleAContractType.EXPERIENCE_RATED)
+        updated = apply_schedule_a_classification([premium, claims, line_10a], signals)
+        self.assertEqual(updated.contract_type, ScheduleAContractType.EXPERIENCE_RATED)
+        self.assertEqual(line_10a.proposed_value, "0")
+        self.assertEqual(premium.proposed_value, "5,019,105.58")
+
     def test_explicit_experience_rated_wording_is_used_when_line_mapping_is_missing(self):
         classification = classify_schedule_a_fields([], ["EXPLICIT_EXPERIENCE_RATED"])
 

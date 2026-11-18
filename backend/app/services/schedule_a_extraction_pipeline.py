@@ -905,9 +905,10 @@ def _has_explicit_experience_evidence(field: NormalizedExtractionField) -> bool:
         if text
     ).lower()
     normalized = re.sub(r"\s+", " ", evidence_text)
+    rating_text = re.sub(r"\bnon[\s-]*experience[\s-]*rated\b", " ", normalized)
     return bool(
         re.search(r"\bpart\s+ii\b", normalized)
-        or re.search(r"\bexperience[- ]rated\b", normalized)
+        or re.search(r"\bexperience(?:\s*-\s*|\s+)rated\b", rating_text)
         or re.search(r"\b9[abcd](?:\b|\s*\()", normalized)
     )
 
