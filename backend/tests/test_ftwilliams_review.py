@@ -1870,6 +1870,45 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 if expected == FTWilliamsPlanLookupStatus.MATCHED:
                     self.assertEqual(lookup.matched_identity["ftw_plan_id"], "50101")
 
+    def test_plan_inventory_verifies_a_unique_ein_and_plan_number_despite_a_name_change(self):
+        from unittest.mock import AsyncMock, patch
+
+        record = {"FTWCustomerID": "101", "FTWPlanID": "50101", "CompanyEmployerID": "12-3456789",
+                  "PlanNumber": "501", "PlanLine1": "Example Inc. Welfare Benefit Plan"}
+        for variant, expected in (
+            ("verified", FTWilliamsPlanLookupStatus.MATCHED),
+            ("different plan number", FTWilliamsPlanLookupStatus.NOT_FOUND),
+            ("different returned ID", FTWilliamsPlanLookupStatus.NOT_FOUND),
+            ("different EIN", FTWilliamsPlanLookupStatus.NOT_FOUND),
+            ("duplicate pair", FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES),
+        ):
+            with self.subTest(variant=variant):
+                service = FTWilliamsReviewService()
+                lookup = FTWilliamsPlanLookup(company_employer_id="12-3456789", plan_number="501", year="2025",
+                    plan_name="Example Wrap Benefit Plan")
+                records = [record, {**record, "FTWPlanID": "50102"}] if variant == "duplicate pair" else [record]
+                batch = FTWilliamsQueryResponse(operation="plan_ids_batch", request_xml="<batch/>", raw_response="<batch/>",
+                    configured=True, sent=True, success=True)
+                status = FTWilliamsStatusItem(type="PlanData", error_code="0", ftw_customer_id="101",
+                    ftw_plan_id="50102" if variant == "different returned ID" else "50101",
+                    query_results={"PlanNumber": "502" if variant == "different plan number" else "501"})
+                if variant == "different EIN":
+                    status.query_results["CompanyEmployerID"] = "98-7654321"
+                plan = FTWilliamsQueryResponse(operation="query_plan", request_xml="<plan/>", raw_response="<plan/>",
+                    configured=True, sent=True, success=True, statuses=[status])
+                with (
+                    patch.object(service.ftwilliams, "parse_plan_ids_batch_response", return_value=records),
+                    patch.object(service.ftwilliams, "run_query", AsyncMock(side_effect=[batch, plan])) as query,
+                    patch.object(service, "_persist_plan_mapping", AsyncMock()) as persist,
+                ):
+                    run_async(service._try_plan_ids_batch_lookup(lookup, repo=None))
+                self.assertEqual(lookup.status, expected)
+                self.assertEqual(persist.await_count, int(variant == "verified"))
+                self.assertEqual(query.await_count, 1 if variant == "duplicate pair" else 2)
+                if variant == "verified":
+                    self.assertEqual(lookup.matched_identity, {"ftw_customer_id": "101", "ftw_plan_id": "50101"})
+                    self.assertEqual(lookup.year, "2025")
+
     def test_plan_ids_batch_probes_only_a_bounded_filtered_candidate_set(self):
         class LargePlanBatchFTWilliamsService(FTWilliamsService):
             def __init__(self):
