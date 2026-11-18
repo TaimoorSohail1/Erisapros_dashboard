@@ -5791,8 +5791,14 @@ def extract_litera_lincoln_schedule_a_broker_rows(
             if not paid or not is_probable_person_or_entity_name(paid.group('name')) or index + 2 >= len(lines):
                 continue
             address = lines[index + 1]
+            address_payment = re.fullmatch(
+                r"(?P<street>[^$]+?)\s+\$\s*(?P<amount>[\d,]+\.\d{2})\s+(?P<purpose>[A-Za-z][A-Za-z /&-]+)",
+                address,
+            )
+            if address_payment:
+                address = address_payment["street"]
             locality = re.match(
-                r"^(?P<city>[A-Z][A-Z .'-]+?),?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)$",
+                r"^(?P<city>[A-Z][A-Z .'-]+?)\s*,?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)$",
                 lines[index + 2],
                 re.IGNORECASE,
             )
@@ -5829,6 +5835,24 @@ def extract_litera_lincoln_schedule_a_broker_rows(
             purpose = clean_extracted_value(paid.group("purpose")) or None
             is_fee = purpose is not None and purpose.casefold() != "commissions"
             source = "\n".join(lines[index : index + 3]) + corroboration
+            fees = [ScheduleABrokerMoneyRow(amount=amount, purpose=purpose)] if is_fee else []
+            fee_total = amount if is_fee else "0"
+            if address_payment:
+                subtotal = re.fullmatch(
+                    r"Totals?\s*:\s*\$\s*0(?:\.00)?\s+\$\s*([\d,]+\.\d{2})",
+                    lines[index + 3] if index + 3 < len(lines) else "", re.I,
+                )
+                continuation = money_value(address_payment["amount"])
+                continuation_purpose = clean_extracted_value(address_payment["purpose"])
+                combined = sum_money_values(amount, continuation)
+                if (not is_fee or not subtotal or continuation_purpose.casefold() == "commissions"
+                        or not combined or not money_value(subtotal[1])
+                        or Decimal(combined.replace(",", "")) != Decimal(subtotal[1].replace(",", ""))):
+                    continue
+                fees.append(ScheduleABrokerMoneyRow(amount=continuation, purpose=continuation_purpose))
+                fee_total = combined
+                purpose = "; ".join(dict.fromkeys([purpose, continuation_purpose]))
+                source += "\n" + subtotal[0]
             parsed_rows.append(
                 ScheduleABrokerRow(
                     name=clean_extracted_value(paid.group("name")),
@@ -5838,12 +5862,12 @@ def extract_litera_lincoln_schedule_a_broker_rows(
                     zip_code=locality.group("zip"),
                     organization_code=paid.group("code"),
                     commission_total="0" if is_fee else amount,
-                    fee_total=amount if is_fee else "0",
+                    fee_total=fee_total,
                     purpose=purpose,
                     commission_rows=[] if is_fee else [
                         ScheduleABrokerMoneyRow(amount=amount, purpose="COMMISSIONS")
                     ],
-                    fee_rows=[ScheduleABrokerMoneyRow(amount=amount, purpose=purpose)] if is_fee else [],
+                    fee_rows=fees,
                     source_page=page,
                     commission_source_text=source,
                     fee_source_text=source,

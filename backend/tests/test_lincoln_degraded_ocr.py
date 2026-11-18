@@ -76,6 +76,26 @@ def test_lincoln_ocr_po_box_needs_identical_box_number_and_locality():
     ]) == []
 
 
+def test_lincoln_fee_continuation_on_address_line_requires_printed_subtotal():
+    source = (SOURCE.replace("EXAMPLE BENEFITS LLC $12.34 Broker Bonus 3\n42 RESEARCH RD\nBOSTON, MA 02110",
+                             "SECOND BENEFITS LLC $7.25 Overrides 3\nPO BOX 123 $5.09 Broker Bonus\nBOSTON , MA 02110"))
+    pages = [(2, source)]
+    rows = extractor.extract_litera_lincoln_schedule_a_broker_rows(pages)
+    result = NormalizedExtractionResult(provider="fixture", fields=[])
+    assert extractor.reconcile_lincoln_part_i_compensation(result, rows, pages)
+    broker = rows[1]
+    assert broker.address_line_1 == "PO BOX 123"
+    assert broker.commission_total == "0"
+    assert broker.fee_total == "12.34"
+    assert [(line.amount, line.purpose) for line in broker.fee_rows] == [
+        ("7.25", "Overrides"), ("5.09", "Broker Bonus"),
+    ]
+    damaged = [(2, source.replace("Totals: $0.00 $12.34", "Totals: $60.00 $12.34"))]
+    rows = extractor.extract_litera_lincoln_schedule_a_broker_rows(damaged)
+    assert len(rows) == 1
+    assert not extractor.reconcile_lincoln_part_i_compensation(result, rows, damaged)
+
+
 def test_fragmented_premium_and_partial_compensation_are_not_authoritative():
     fields=extractor.extract_litera_lincoln_schedule_a_fields([(2,DAMAGED)])
     assert not any(f.field_name.startswith('10a.') for f in fields)
