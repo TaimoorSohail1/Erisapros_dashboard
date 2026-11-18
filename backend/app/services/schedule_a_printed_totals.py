@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 import hashlib
 import logging
@@ -19,6 +20,7 @@ from app.services.storage import StorageService
 
 COVERED_TOTAL_PROVIDER = "Printed Schedule A covered-person total"
 COVERED_MEMBERS_PROVIDER = "Printed Schedule A covered members"
+COVERED_EXPOSURES_PROVIDER = "Schedule A last-month exposure counts"
 _COVERED_PERSONS_FIELD = "1e. Persons Covered (End of Policy Year)"
 _LOGGER = logging.getLogger(__name__)
 _SOURCE_EVIDENCE_HOLD = "Automatic extraction requires a source page and source text that supports the extracted value."
@@ -70,6 +72,24 @@ _ENROLLMENT_BLOCK = re.compile(
     rf"(?:[ \t]*\n)*{_BULLET}members:[ \t]*(?P<members>{_NUMBER})[ \t]*$",
     re.I | re.M,
 )
+_EXPOSURE_COLUMNS = r"benefit\s+employee\s+dependent\s+spouse\s+family\s+child"
+_EMPTY_EXPOSURE_SUMMARY = re.compile(
+    rf"{_ENROLLMENT_HEADING}\s*\n\s*{_EXPOSURE_COLUMNS}\s*\n\s*insurance fees\b",
+    re.I | re.M,
+)
+_EXPOSURE_SUMMARY_ID = re.compile(
+    r"(?m)^\s*\d{2}-\d{7}[ \t]+\d{5}[ \t]+(?P<contract>[A-Z0-9-]+)[ \t]+"
+    r"(?P<begin>\d{1,2}/\d{1,2}/\d{4})[ \t]+(?P<end>\d{1,2}/\d{1,2}/\d{4})[ \t]*$",
+    re.I,
+)
+_EXPOSURE_DETAIL_PERIOD = re.compile(
+    r"For Plan Year Beginning:[ \t]*(?P<begin>[A-Za-z]+ \d{1,2}, \d{4})"
+    r"[ \t]+and Ending:[ \t]*(?P<end>[A-Za-z]+ \d{1,2}, \d{4})",
+    re.I,
+)
+_EXPOSURE_DETAIL_ID = re.compile(r"(?im)\bPlan[ \t]+#:[ \t]*([A-Z0-9-]+)[ \t]*$")
+_EXPOSURE_DETAIL_HEADING = "exposures detail (last month of the plan period)"
+_MEDICAL_EXPOSURES = re.compile(rf"medical\s+({_NUMBER})\s+({_NUMBER})\s+0\s+0\s+0", re.I)
 
 
 def _number(text: str) -> Decimal:
@@ -92,6 +112,64 @@ def covered_member_counts(source: str) -> tuple[int, int] | None:
     subscribers = int(_number(match["subscribers"]))
     members = int(_number(match["members"]))
     return (subscribers, members) if members >= subscribers else None
+
+
+def last_month_exposure_count(source: str) -> int | None:
+    lines = source.splitlines()
+    if (len(lines) != 3 or lines[0].strip().casefold() != _EXPOSURE_DETAIL_HEADING
+            or not re.fullmatch(_EXPOSURE_COLUMNS, lines[1].strip(), re.I)):
+        return None
+    cells = _MEDICAL_EXPOSURES.fullmatch(lines[2].strip())
+    if cells:
+        return int(_number(cells[1]) + _number(cells[2]))
+    return None
+
+
+def reconcile_last_month_exposures(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
+    """Use one detail row of disjoint populations for the same printed contract and period."""
+    summaries = [(page, row) for page, text in pages
+                 if "schedule a - insurance information" in text.casefold() and _EMPTY_EXPOSURE_SUMMARY.search(text)
+                 for row in _EXPOSURE_SUMMARY_ID.finditer(text)]
+    details = [(page, text) for page, text in pages if _EXPOSURE_DETAIL_HEADING in text.casefold()]
+    if len(summaries) != 1 or len(details) != 1 or summaries[0][0] == details[0][0]:
+        return
+    _, summary = summaries[0]
+    page, text = details[0]
+    ids = _EXPOSURE_DETAIL_ID.findall(text)
+    periods = list(_EXPOSURE_DETAIL_PERIOD.finditer(text))
+    if ids != [summary["contract"]] or len(periods) != 1:
+        return
+    try:
+        if any(datetime.strptime(summary[key], "%m/%d/%Y") != datetime.strptime(periods[0][key], "%B %d, %Y")
+               for key in ("begin", "end")):
+            return
+    except ValueError:
+        return
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    headings = [index for index, line in enumerate(lines) if line.casefold() == _EXPOSURE_DETAIL_HEADING]
+    if len(headings) != 1:
+        return
+    detail_lines = lines[headings[0]:]
+    if len(detail_lines) > 3 and not detail_lines[3].startswith("*"):
+        return  # The source could contain overlapping enrollment across benefit rows.
+    source = "\n".join(detail_lines[:3])
+    count = last_month_exposure_count(source)
+    if not count:
+        return
+    existing = [(index, field) for index, field in enumerate(fields) if field.field_name == _COVERED_PERSONS_FIELD]
+    value = str(count)
+    evidence = SourceEvidence(provider=COVERED_EXPOSURES_PROVIDER, page=page, source_text=source)
+    verified = NormalizedExtractionField(field_name=_COVERED_PERSONS_FIELD, value=value, page=page,
+        source_text=source, evidence=[evidence], confidence=.99, candidate_values=[value])
+    if not existing:
+        fields.append(verified)
+    elif len(existing) == 1:
+        index, field = existing[0]
+        alternatives = {str(x).replace(",", "").strip() for x in [field.value, *field.candidate_values] if x}
+        if alternatives <= {"0", value} and not field.page and not any(e.page for e in field.evidence):
+            fields[index] = verified
+        elif alternatives == {value} and evidence not in field.evidence:
+            field.evidence.append(evidence)
 
 
 def reconcile_printed_member_total(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
@@ -160,6 +238,7 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
 
 def attach_printed_total_evidence(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
     reconcile_printed_member_total(fields, pages)
+    reconcile_last_month_exposures(fields, pages)
     totals = read_printed_totals(pages)
     for field in fields:
         code = field.field_name.split(".", 1)[0].strip().lower()

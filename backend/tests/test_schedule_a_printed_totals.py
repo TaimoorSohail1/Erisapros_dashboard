@@ -93,6 +93,44 @@ def test_total_premiums_keep_the_printed_label_and_amount_as_evidence():
     assert "$571,719.25" in result.fields[0].source_text
 
 
+@pytest.mark.parametrize("change", ("none", "contract", "period", "family", "second_benefit", "populated_summary"))
+def test_last_month_exposure_reconciles_only_one_matching_medical_row(change):
+    summary = """SCHEDULE A - INSURANCE INFORMATION
+12-3456789  47892  00182763  3/1/2025  2/28/2026
+Approximate number of persons covered at end of policy or contract year:
+Benefit     Employee    Dependent    Spouse   Family   Child
+Insurance fees, benefit advisor fees and commissions
+"""
+    detail = """For Plan Year Beginning: March 01, 2025 and Ending: February 28, 2026
+Name of Plan: Example Plan    Plan #: 00182763
+EXPOSURES DETAIL (Last Month of the Plan Period)
+BENEFIT    EMPLOYEE    DEPENDENT     SPOUSE   FAMILY   CHILD
+MEDICAL       105          15           0        0        0
+*Admin Fees Include Commissions
+"""
+    if change == "contract":
+        detail = detail.replace("00182763", "00182764")
+    elif change == "period":
+        detail = detail.replace("February 28", "February 27")
+    elif change == "family":
+        detail = detail.replace("0        0        0", "0        4        0")
+    elif change == "second_benefit":
+        detail = detail.replace("*Admin", "DENTAL 50 10 0 0 0\n*Admin")
+    elif change == "populated_summary":
+        summary = summary.replace("Insurance fees", "MEDICAL 102 15 0 0 0\nInsurance fees")
+    label = FIELDS["InsPrsnCoveredEoyCnt"][0]
+    fields = [NormalizedExtractionField(field_name=label, value="0", confidence=.95)]
+    attach_printed_total_evidence(fields, [(2, summary), (6, detail)])
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Native", fields=fields))
+    covered, = result.fields
+    if change == "none":
+        assert (covered.value, covered.page, covered.decision) == ("120", 6, "AUTOMATIC")
+        assert "105" in covered.source_text and "15" in covered.source_text
+        assert "120" not in covered.source_text
+    else:
+        assert covered.value == "0" and covered.page is None
+
+
 @pytest.mark.parametrize("section,expected", (("Experience - Rated Contracts", "AUTOMATIC"),
     ("Experience - Rated Contracts\nNon experience-Rated Contracts", "REVIEW_REQUIRED")))
 def test_claims_attach_their_own_experience_rated_section_heading(section, expected):

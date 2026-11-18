@@ -337,6 +337,13 @@ def _validate_source_evidence(
         if any(e.provider == WORKSHEET_PROVIDER and re.search(r"(?<!\d)" + re.escape(field.value) + r"(?!\d)", e.source_text or "") for e in field.evidence):
             return ExtractionValidationResult(validator="source_evidence", status="PASS",
                 reason="Count comes from verified matching worksheet line 6(a)(2), per client approval; it is not claimed as printed in the carrier PDF.")
+    if field.field_name.strip().lower().startswith("1e."):
+        from app.services.schedule_a_printed_totals import COVERED_EXPOSURES_PROVIDER, last_month_exposure_count
+        for evidence in field.evidence:
+            if evidence.provider == COVERED_EXPOSURES_PROVIDER and evidence.page:
+                count = last_month_exposure_count(evidence.source_text or "")
+                if count is not None and str(count) == field.value:
+                    return _result("source_evidence", True, "The last-month employee and dependent cells sum to this count.", field.value)
     if (field.field_name.strip().lower().startswith(("3c.", "3d."))
             and has_confirmed_rule(field, "combined_payment_commission") and field.value in {"0", ""}):
         return ExtractionValidationResult(validator="source_evidence", status="PASS",
@@ -497,9 +504,15 @@ def _validate_persons_covered_semantics(
                 "Client-approved worksheet line 6(a)(2) replaces the printed carrier count. Original PDF evidence is retained but does not override that verified replacement.", field.value)
     extracted = str(field.value or "").replace(",", "").strip()
     from app.services.schedule_a_printed_totals import (
-        COVERED_MEMBERS_PROVIDER, COVERED_TOTAL_PROVIDER, covered_member_counts, covered_total,
+        COVERED_EXPOSURES_PROVIDER, COVERED_MEMBERS_PROVIDER, COVERED_TOTAL_PROVIDER,
+        covered_member_counts, covered_total, last_month_exposure_count,
     )
     for evidence in field.evidence:
+        if evidence.provider == COVERED_EXPOSURES_PROVIDER and evidence.page:
+            count = last_month_exposure_count(evidence.source_text or "")
+            if count is not None:
+                return _result("persons_covered_semantics", extracted == str(count),
+                    "The single last-month medical row reports separate employee and dependent counts.", extracted)
         if evidence.provider == COVERED_MEMBERS_PROVIDER and evidence.page:
             counts = covered_member_counts(evidence.source_text or "")
             if counts is not None:
