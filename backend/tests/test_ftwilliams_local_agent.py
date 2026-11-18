@@ -20,7 +20,10 @@ from app.models import (
     FTWAutomationStatus,
     FTWilliamsPlanLookup,
     FTWilliamsPlanLookupStatus,
+    FTWilliamsQueryResponse,
+    FTWilliamsQueryState,
     FTWilliamsReview,
+    FTWilliamsStatusItem,
     FTWLocalAgentCompleteRequest,
     FTWLocalAgentDevice,
     FTWLocalAgentDeviceStatus,
@@ -874,6 +877,51 @@ def test_claim_cancels_a_queued_job_after_manual_bring_forward_completed():
     assert claim.job is None
     assert cancelled.status == FTWLocalAgentJobStatus.EXPIRED
     assert cancelled.result_state == "NO_LONGER_REQUIRED"
+
+
+@pytest.mark.parametrize("source_form, dispatch", [
+    ({}, False),
+    ({"SDEIN": "12-3456789", "SponsDfePlanNum": "502"}, False),
+    ({"SDEIN": "12-3456789", "SponsDfePlanNum": "501"}, True),
+])
+def test_claim_rechecks_prior_form_for_queued_missing_current_form(monkeypatch, source_form, dispatch):
+    repo, service, filing, job = _submitted_job_fixture(None)
+    review = run_async(repo.get_ftwilliams_review(str(filing.id)))
+    review.query_state = FTWilliamsQueryState.FORM_5500_MISSING
+    run_async(repo.upsert_ftwilliams_review(review))
+    run_async(repo.update_ftw_local_agent_job(str(job.id), {
+        "status": FTWLocalAgentJobStatus.QUEUED,
+        "result_state": None,
+        "created_at": datetime.utcnow() - timedelta(days=18),
+    }))
+    device = run_async(repo.create_ftw_local_agent_device(FTWLocalAgentDevice(
+        name="Benefits workstation", token_hash="fresh-device-token", token_prefix="fresh-",
+        expected_account="HighlandTech", agent_version="0.4.2", status=FTWLocalAgentDeviceStatus.CONNECTED,
+        browser_ready=True, last_seen_at=datetime.utcnow(),
+    )))
+    queries = []
+
+    async def query(_self, request):
+        assert request.send
+        assert (request.ftw_customer_id, request.ftw_plan_id) == ("customer-1", "plan-1")
+        queries.append((request.operation, request.year))
+        values = source_form if request.operation == "query_5500" else {}
+        return FTWilliamsQueryResponse(operation=request.operation, configured=True, sent=True,
+            request_xml="", http_status=200, success=bool(values),
+            statuses=[FTWilliamsStatusItem(error_code="0" if values else "59", query_results=values)])
+
+    monkeypatch.setattr("app.services.ftwilliams.FTWilliamsService.run_query", query)
+    claim = run_async(service.claim(device))
+    saved_job = run_async(repo.get_ftw_local_agent_job(str(job.id)))
+    saved_filing = run_async(repo.get_filing(str(filing.id)))
+
+    assert bool(claim.job) is dispatch
+    assert bool(saved_job.operation_dispatched_at) is dispatch
+    assert queries == [("query_schedule_a", "2025"), ("query_5500", "2024")]
+    if not dispatch:
+        assert saved_job.result_state == "CURRENT_QUERY_REQUIRED"
+        assert "prior-year Form 5500" in saved_job.result_message
+        assert saved_filing.automation_next_action == "RETRY_AFTER_CURRENT_QUERY"
 
 
 def _workspace_routing_fixture():

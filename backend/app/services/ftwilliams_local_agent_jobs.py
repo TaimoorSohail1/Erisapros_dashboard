@@ -13,6 +13,7 @@ from app.models import (
     FTWAutomationStatus,
     FTWilliamsReview,
     FTWilliamsQueryRequest,
+    FTWilliamsQueryState,
     FTWLocalAgentClaimResponse,
     FTWLocalAgentCompleteRequest,
     FTWLocalAgentDevice,
@@ -775,6 +776,7 @@ class FTWLocalAgentService:
         vendor propagation delays, across filings, workspaces and API processes.
         """
         from app.services.ftwilliams import FTWilliamsService
+        from app.services.ftwilliams_review import FTWilliamsReviewService
         pair = self._browser_plan_ids(job.target_url)
         expected = (str(review.ftw_browser_customer_id or ""), str(review.ftw_browser_plan_id or ""))
         lookup = review.plan_lookup
@@ -801,7 +803,6 @@ class FTWLocalAgentService:
             if not exists and not missing:
                 return await self._hold_preflight(job, "CURRENT_QUERY_REQUIRED", "Bring Forward was not run: a fresh FTW query did not conclusively confirm that the current-year Schedule A is missing.")
             if exists:
-                from app.services.ftwilliams_review import FTWilliamsReviewService
                 from app.services.ftwilliams_automation import FTWAutomationService
                 review_service = self.review_service or FTWilliamsReviewService()
                 refreshed = await review_service.prepare_review(job.filing_id, send_queries=True, reuse_current_snapshot=False)
@@ -851,6 +852,15 @@ class FTWLocalAgentService:
                 for previous in history
             ):
                 return await self._hold_preflight(job, "PRIOR_OPERATION_UNCONFIRMED", "This plan/year already has a submitted, verified or uncertain Bring Forward operation. Fresh FTW data still reports it missing; no repeat copy was attempted.")
+            if review.query_state == FTWilliamsQueryState.FORM_5500_MISSING:
+                # A queued job can outlive the prior-year check that authorized it.
+                source_service = FTWilliamsService()
+                try:
+                    prior_year_verified = await FTWilliamsReviewService(source_service).confirm_prior_year_form_5500(review)
+                finally:
+                    await source_service._close_client()
+                if not prior_year_verified:
+                    return await self._hold_preflight(job, "CURRENT_QUERY_REQUIRED", "Bring Forward was not run: FT Williams did not verify a prior-year Form 5500 for this EIN and plan number.")
             return True
         except Exception:
             # Do not expose query credentials or RequestXML in diagnostics.
