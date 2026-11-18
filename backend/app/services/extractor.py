@@ -470,6 +470,8 @@ class ExtractionService:
                     if field.field_name not in authoritative_names
                 ]
                 result.fields.extend(litera_lincoln_fields)
+            from app.services.schedule_a_american_heritage import reconcile_american_heritage_report
+            reconcile_american_heritage_report(result, semantic_pages)
             result = remove_inapplicable_experience_rated_fields(result, authoritative_pages)
         aultcare_summaries = extract_aultcare_schedule_a_summaries(file_bytes, file_name)
         if aultcare_summaries:
