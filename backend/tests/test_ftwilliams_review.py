@@ -9245,6 +9245,49 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(review.comparison_year, "2024")
         self.assertTrue(any(field.current_value for field in review.fields if field.form_type == FormType.FORM_5500))
 
+    def test_mixed_package_years_use_worksheet_start_for_the_query_and_update(self):
+        repo = repositories.get_repository()
+        filing = sample_filing()
+        filing.package_documents = [
+            {"document_type": "PLAN_WORKSHEET", "filing_year": "2026"},
+            {"document_type": "SCHEDULE_A", "filing_year": "2025"},
+        ]
+        filing = run_async(repo.create_filing(filing))
+        def source_field(rule, value, form):
+            return ExtractedField(
+                filing_id=filing.id, source_field_name=rule, normalized_field_name=rule,
+                mapped_rule_key=rule, form_type=form, value=value, proposed_value=value,
+                source_document_type=DocumentType.PLAN_WORKSHEET if form == FormType.FORM_5500 else DocumentType.SCHEDULE_A,
+            )
+        run_async(repo.add_fields([
+            source_field("form_5500_part_i_1e_plan_sponsor_ein", "73-1185740", FormType.FORM_5500),
+            source_field("form_5500_part_i_1b_plan_number_pn", "501", FormType.FORM_5500),
+            source_field("form_5500_part_i_6_plan_year_beginning_date", "04-01-2025", FormType.FORM_5500),
+            source_field("form_5500_part_i_7_plan_year_ending_date", "03-31-2026", FormType.FORM_5500),
+            source_field("schedule_a_part_i_1d_contract_policy_number", "1246876", FormType.SCHEDULE_A),
+            source_field("schedule_a_part_i_1b_insurance_carrier_ein", "36-2739571", FormType.SCHEDULE_A),
+            source_field("schedule_a_part_i_1e_persons_covered_end_of_policy_year", "83", FormType.SCHEDULE_A),
+        ]))
+        stale = FTWilliamsReview(filing_id=filing.id, year="2026", comparison_year="2026", ftw_seq_no="3",
+            schedule_a_match={"source": "MANUAL", "ftw_seq_no": "3"}, current_query_sent=True)
+        run_async(repo.upsert_ftwilliams_review(stale))
+        ftw = FakeFTWilliamsCurrentTagService()
+        service = FTWilliamsReviewService(ftw)
+        review = run_async(service.prepare_review(filing.id, send_queries=True))
+
+        self.assertEqual(review.year, "2025")
+        self.assertEqual(review.comparison_year, "2025")
+        self.assertEqual(review.plan_lookup.year, "2025")
+        self.assertEqual({call.year for call in ftw.calls if call.operation in {"query_5500", "query_schedule_a"}}, {"2025"})
+        self.assertEqual(review.ftw_seq_no, "1")
+        self.assertIn("<Year>2025</Year>", review.update_xml_schedule_a)
+
+        stale.active_failure = True
+        run_async(repo.upsert_ftwilliams_review(stale))
+        with self.assertRaisesRegex(ValueError, "Resolve the previous FT Williams update"):
+            run_async(service.prepare_review(filing.id, send_queries=True))
+        self.assertEqual(run_async(repo.get_ftwilliams_review(filing.id)).year, "2026")
+
     def test_equitable_schedule_a_mismatched_year_blocks_unsafe_update_fields(self):
         repo = repositories.get_repository()
         filing = sample_filing()

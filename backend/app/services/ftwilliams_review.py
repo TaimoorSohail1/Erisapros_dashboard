@@ -261,6 +261,18 @@ class FTWilliamsReviewService:
             and self._should_preserve_authoritative_plan_lookup(plan_lookup, existing_review.plan_lookup)
         ):
             plan_lookup = deepcopy(existing_review.plan_lookup)
+        if send_queries and plan_lookup.status == FTWilliamsPlanLookupStatus.MATCHED and existing_review and plan_lookup.year:
+            previous_years = {year for year in (existing_review.year, existing_review.comparison_year) if year}
+            if previous_years - {plan_lookup.year}:
+                if existing_review.active_failure or existing_review.update_remaining_count or (
+                    existing_review.failure_dismissed_at is None and existing_review.status in {
+                        FTWilliamsReviewStatus.UPDATE_FAILED, FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+                    }
+                ):
+                    raise ValueError("Resolve the previous FT Williams update before changing the filing year.")
+                # Current values, manual sequence choices, and payloads only
+                # apply to the filing year for which they were prepared.
+                existing_review = None
         review_identity_base = self._merge_plan_lookup_identity(query_payload_base, plan_lookup)
         current_query_payload_base = self._current_query_payload_identity(query_payload_base, plan_lookup)
         query_request_xmls: list[str] = []
@@ -7750,7 +7762,7 @@ class FTWilliamsReviewService:
                 label_needles=["plan number", "pn"],
             )
         )
-        package_filing_year = self._filing_year_from_filing(filing)
+        package_filing_year = self._filing_year_from_filing(filing, fields)
         year = package_filing_year or self._normalize_year(
             self._first_field_value(
                 fields,
@@ -7951,14 +7963,27 @@ class FTWilliamsReviewService:
                 matches.append(mapping)
         return matches
 
-    def _filing_year_from_filing(self, filing) -> str | None:
+    def _filing_year_from_filing(self, filing, fields: list[ExtractedField]) -> str | None:
         if not filing:
             return None
         package_documents = getattr(filing, "package_documents", None) or []
-        for document in package_documents:
-            year = self._normalize_year(str(document.get("filing_year") or ""))
-            if year:
-                return year
+        document_years = [year for document in package_documents
+                          if (year := self._normalize_year(str(document.get("filing_year") or "")))]
+        if len(set(document_years)) > 1:
+            starts = {field.value for field in fields
+                      if field.mapped_rule_key == "form_5500_part_i_6_plan_year_beginning_date"
+                      and field.source_document_type == DocumentType.PLAN_WORKSHEET
+                      and field.status == ExtractedFieldStatus.MATCHED and field.value}
+            if len(starts) == 1:
+                try:
+                    start = normalize_ftw_update_value(FormType.FORM_5500, "PlanYearBeginDate", next(iter(starts)))
+                except FTWPayloadValidationError:
+                    start = ""
+                year = self._normalize_year(start)
+                if year in document_years:
+                    return year
+        if document_years:
+            return document_years[0]
         for document in package_documents:
             path_parts = [
                 str(document.get("sharefile_path") or ""),
