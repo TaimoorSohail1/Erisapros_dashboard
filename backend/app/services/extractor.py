@@ -9414,6 +9414,7 @@ def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[
         ("Dental", r"(?m)^\s*Dental\s+([\d,]+(?:\.\d{1,2})?)\s*\|?\s*Base\s+Commissions"),
         ("Long Term Disability", r"(?m)^\s*Long\s+Term(?:\s+Disability)?\s+([\d,]+(?:\.\d{1,2})?)\s*\|?\s*Base\s+Commissions(?:\s*\n\s*Disability)?"),
         ("AD&D", r"(?m)^\s*AD\s*&\s*D\s+([\d,]+(?:\.\d{1,2})?)\s*\|?\s*Base\s+Commissions"),
+        ("Temporary Disability", r"(?m)^[ \t]*Temporary\s+Disability[ \t]+([\d,]+(?:\.\d{1,2})?)[ \t]*\|?[ \t]*Base\s+Commissions"),
     )
     for coverage, pattern in coverage_patterns:
         amount = regex_first(text, [pattern], flags=re.I)

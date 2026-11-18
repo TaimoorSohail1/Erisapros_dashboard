@@ -71,6 +71,30 @@ City: BOSTON State: MA ZIP Code: 02110
     assert extract_metlife_standard_broker_rows([(2, source)]) == []
 
 
+def test_metlife_broker_reads_wrapped_disability_coverage_and_ignores_adjacent_fee():
+    source = '''METROPOLITAN LIFE INSURANCE COMPANY
+SCHEDULE A Insurance Information
+Name: EXAMPLE AGENCY
+Address: 42 RESEARCH RD City: BOSTON ST: MA ZIP: 02110
+Commissions Paid Fees Paid Organization
+Coverage Amount Purpose Coverage Amount Purpose code
+Temporary
+Disability 17,218 Base Commissions Multiple 44 Non-Monetary Compensation 03
+LIFE 16,101 Base Commissions
+Long Term
+Disability 6,013 Base Commissions
+AD&D 1,465 Base Commissions
+40,797 Sub-total 44 Sub-total
+'''
+    [broker] = extract_metlife_standard_broker_rows([(4, source)])
+    assert {line.coverage: line.amount for line in broker.commission_rows} == {
+        'LIFE': '16,101', 'Long Term Disability': '6,013', 'AD&D': '1,465',
+        'Temporary Disability': '17,218',
+    }
+    assert broker.commission_total == '40,797'
+    assert broker.fee_total == '44'
+
+
 def test_metlife_scalar_code_cannot_disagree_with_the_printed_recipient_code():
     text='''METROPOLITAN LIFE INSURANCE COMPANY
 SCHEDULE A Insurance Information
