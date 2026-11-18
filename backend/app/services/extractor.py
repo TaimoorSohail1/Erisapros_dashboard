@@ -10505,10 +10505,10 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
             ],
             groups=True,
         )
-        people = regex_first(
+        people_match = re.search(
+            r"Approximate\s+Number\s+of\s+Persons\s+Covered[^:\n]{0,96}:[ \t]*([0-9,]+)(?![\d,.])",
             normalized,
-            [r"Approximate\s+Number\s+of\s+Persons\s+Covered.*?:\s*([0-9,]+)"],
-            flags=re.IGNORECASE | re.DOTALL,
+            re.IGNORECASE,
         )
         premium_match = re.search(
             r"Total\s+Payments\s+Made\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)",
@@ -10516,13 +10516,15 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
             re.IGNORECASE,
         )
         premium = premium_match.group(1) if premium_match else ""
-        claims = regex_first(
+        claims_match = re.search(
+            r"Total\s+Claims\s+Paid\s+by\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)",
             normalized,
-            [r"Total\s+Claims\s+Paid\s+by\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+            re.IGNORECASE,
         )
-        administrative_fees = regex_first(
+        administrative_fee_match = re.search(
+            r"Total\s+Administrative\s+Fees\s+Paid\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)",
             normalized,
-            [r"Total\s+Administrative\s+Fees\s+Paid\s+to\s+Carrier\s*:\s*\$?\s*([0-9,]+(?:\.\d{1,2})?)"],
+            re.IGNORECASE,
         )
         source_text = "Vision Service Plan labelled Schedule A report"
 
@@ -10566,21 +10568,24 @@ def extract_vsp_schedule_a_fields(page_texts: list[tuple[int, str]]) -> list[Nor
         else:
             add("1c. NAIC Code", normalize_schedule_a_naic(naic or ""), 0.99)
         add("1d. Contract/Policy Number", group_number, 0.99)
-        add("1e. Persons Covered (End of Policy Year)", money_value(people or ""), 0.98)
+        if people_match:
+            add("1e. Persons Covered (End of Policy Year)", money_value(people_match[1]), 0.98,
+                evidence=SourceEvidence(provider="VSP Schedule A report parser", page=page, source_text=people_match[0]))
         if isinstance(period, tuple) and len(period) == 2:
             add("1f. Policy Year Beginning Date", normalize_schedule_a_date(period[0], end_of_month=False), 0.99)
             add("1g. Policy Year Ending Date", normalize_schedule_a_date(period[1], end_of_month=True), 0.99)
-        if claims and administrative_fees:
-            # VSP's payment/claim/administrative-fee summary supplies the
-            # experience-rated Part III values.  The administrative fee is a
-            # carrier retention amount, not a Part I broker fee.
-            add("9a. Premiums: (1) Amount Received", money_value(premium or ""), 0.99)
-            add("9b(1). Benefit Charges (1) Claims paid", money_value(claims), 0.99)
-            add(
-                "9c(1)(B). Administrative service or other fees",
-                money_value(administrative_fees),
-                0.99,
-            )
+        if claims_match and administrative_fee_match:
+            # Bind each amount to its printed payment label. The section
+            # validator still requires separately supported rating context.
+            for field_name, match in (
+                ("9a. Premiums: (1) Amount Received", premium_match),
+                ("9b(1). Benefit Charges (1) Claims paid", claims_match),
+                ("9c(1)(B). Administrative service or other fees", administrative_fee_match),
+            ):
+                if match:
+                    add(field_name, money_value(match[1]), evidence=SourceEvidence(
+                        provider="VSP Schedule A report parser", page=page, source_text=match[0],
+                    ))
         elif premium_match:
             add(
                 "10a. Total premiums or subscription charges paid to carrier",

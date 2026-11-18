@@ -496,8 +496,17 @@ def _validate_persons_covered_semantics(
             return _result("persons_covered_semantics", True,
                 "Client-approved worksheet line 6(a)(2) replaces the printed carrier count. Original PDF evidence is retained but does not override that verified replacement.", field.value)
     extracted = str(field.value or "").replace(",", "").strip()
-    from app.services.schedule_a_printed_totals import COVERED_TOTAL_PROVIDER, covered_total
+    from app.services.schedule_a_printed_totals import (
+        COVERED_MEMBERS_PROVIDER, COVERED_TOTAL_PROVIDER, covered_member_counts, covered_total,
+    )
     for evidence in field.evidence:
+        if evidence.provider == COVERED_MEMBERS_PROVIDER and evidence.page:
+            counts = covered_member_counts(evidence.source_text or "")
+            if counts is not None:
+                valid = extracted == str(counts[1])
+                return _result("persons_covered_semantics", valid,
+                    "The year-end covered members are the printed total population." if valid
+                    else "Expected the covered members count from the printed year-end coverage block.", extracted)
         if evidence.provider == COVERED_TOTAL_PROVIDER and evidence.page:
             count = covered_total(evidence.source_text or "")
             if count is not None:

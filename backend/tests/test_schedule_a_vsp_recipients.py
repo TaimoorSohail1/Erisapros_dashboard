@@ -104,3 +104,28 @@ def test_generic_total_payments_label_still_requires_section_evidence():
         ),
     ]))
     assert result.fields[0].decision == "REVIEW_REQUIRED"
+
+
+def test_vsp_preserves_each_printed_value_while_rating_context_still_requires_review():
+    from app.models import NormalizedExtractionResult
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+
+    source = """Schedule A Form (5500) Insurance Information
+Insurance Carrier: Vision Service Plan
+Approximate Number of Persons Covered at the End of Policy or Contract Year: 48
+Total Administrative Fees Paid to Carrier: $1,231.47
+Total Payments Made to Carrier: $7,037.16
+Total Claims Paid by Carrier: $6,965.84
+"""
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Native",
+        fields=extract_vsp_schedule_a_fields([(1, source)])))
+    covered = next(field for field in result.fields if field.field_name.startswith("1e."))
+    assert (covered.value, covered.decision) == ("48", "AUTOMATIC")
+    financial = [field for field in result.fields if field.field_name.startswith("9")]
+    assert [field.source_text for field in financial] == [
+        "Total Payments Made to Carrier: $7,037.16",
+        "Total Claims Paid by Carrier: $6,965.84",
+        "Total Administrative Fees Paid to Carrier: $1,231.47",
+    ]
+    assert all(field.decision == "REVIEW_REQUIRED" and [v.validator for v in field.validation_results
+        if v.status == "ERROR"] == ["section_context"] for field in financial)
