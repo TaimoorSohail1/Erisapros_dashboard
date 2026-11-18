@@ -4637,6 +4637,32 @@ LONG FORM INFORMATION
         self.assertEqual(len(summaries[0].benefit_rows), 3)
         self.assertEqual(summaries[0].benefit_rows[2].benefit_type, "Long-Term Disability")
 
+    def test_prudential_inline_coverage_row_preserves_printed_contract_and_footnoted_period(self):
+        report = """Insurance Information For SCHEDULE A (Form 5500) Insured Welfare Plan Data
+        Example Benefit Plan
+        1 (a) Prudential Insurance Company of America
+        1 (b) Prudential's EIN: 22-1211670 1 (c) NAIC code: 68241 1 (d) Contract number or identification: 62536
+        1(e) Approximate number 2 Insurance fees and
+        of persons covered at end Policy Contract Year commissions paid to
+        7 Type of benefit of policy or contract year 1 (f) From 1 (g) To agents or brokers
+        Long-Term Disability 270 3/1/2025 12/31/2025* SEE FORM GRP 27722
+        9 Non experience rated contracts:
+        a. Total premiums or subscription charges paid to carrier $ 17,151
+        """
+        fields = extract_prudential_schedule_a_fields([(1, "For support, call 888-598-5671."), (3, report)])
+        by_number = {field.field_name.split(".")[0]: field for field in fields}
+        self.assertEqual(by_number["1d"].value, "62536")
+        self.assertEqual(by_number["1e"].value, "270")
+        self.assertEqual(by_number["1e"].page, 3)
+        self.assertIn("Long-Term Disability 270", by_number["1e"].source_text)
+        self.assertEqual(by_number["1f"].value, "03/01/2025")
+        self.assertEqual(by_number["1g"].value, "12/31/2025")
+        self.assertEqual(by_number["10a"].value, "17,151")
+        self.assertFalse(extract_prudential_schedule_a_fields([(3, report.replace(
+            "9 Non experience rated contracts:",
+            "Another benefit 120 1/1/2025 12/31/2025 SEE FORM GRP 27722\n9 Non experience rated contracts:",
+        ))]))
+
     def test_schedule_a_parser_extracts_prudential_commission_information_rows(self):
         pages = [
             (

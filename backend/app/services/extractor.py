@@ -13005,13 +13005,22 @@ def extract_prudential_schedule_a_fields(page_texts: list[tuple[int, str]]) -> l
     if not summaries:
         return []
     fields: list[NormalizedExtractionField] = []
+    text_by_page = dict(page_texts)
     for summary in summaries:
         source_text = f"{summary.source} {summary.account_name or ''} {summary.account_number or ''}".strip()
+        source_page = None
+        if len(summary.benefit_rows) == 1:
+            page = summary.benefit_rows[0].source_page
+            record = extract_prudential_benefit_record(text_by_page.get(page, ""), page)
+            if record and record["inline_evidence"]:
+                source_page = page
+                source_text = record["inline_evidence"]
 
         def add(field_name: str, value: str | None, confidence: float = 0.98):
             clean = clean_extracted_value(str(value or ""))
             if clean and not is_blank_extraction_value(clean):
-                fields.append(NormalizedExtractionField(field_name=field_name, value=clean, confidence=confidence, page=None, source_text=source_text))
+                fields.append(NormalizedExtractionField(field_name=field_name, value=clean, confidence=confidence,
+                                                        page=source_page, source_text=source_text))
 
         values_by_label = {value.label: value.value for value in summary.values}
         add("1a. Name of Insurance Company", summary.carrier_name, 0.99)
@@ -13106,24 +13115,54 @@ def extract_prudential_benefit_record(text: str, page: int | None = None) -> dic
     ein = regex_first(normalized, [r"1\s*\(b\)\s*Prudential'?s\s+EIN:\s*([0-9]{2}-[0-9]{7})"])
     naic = regex_first(normalized, [r"1\s*\(c\)\s*NAIC\s+code:\s*([0-9]{4,6})"])
     contract = regex_first(normalized, [r"1\s*\(d\)\s*Contract\s+number\s+or\s+identification:\s*([A-Za-z0-9-]+)"])
-    period = regex_first(normalized, [r"\n\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s+See\s+Form"], groups=True)
-    premium = regex_first(normalized, [r"Non\s+experience\s+rated\s+contracts:.*?Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier\s+\$\s*([0-9,]+(?:\.\d{2})?)"], flags=re.IGNORECASE | re.DOTALL)
-    account_name = regex_first(normalized, [r"Insured\s+Welfare\s+Plan\s+Data\s*\n\s*(.+?)\s+\(Item\s+numbers"], flags=re.IGNORECASE | re.DOTALL)
-    benefit_match = re.search(r"\n\s*([A-Za-z][A-Za-z0-9 &/'().-]+?)\s+([0-9,]+)\s*$", normalized.strip(), flags=re.IGNORECASE)
-    if not all([carrier_name, ein, naic, contract, isinstance(period, tuple), premium, benefit_match]):
+    premium = re.search(
+        r"Non\s+experience\s+rated\s+contracts:.*?Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier\s+\$\s*([0-9,]+(?:\.\d{2})?)",
+        normalized, re.IGNORECASE | re.DOTALL,
+    )
+    account_name = regex_first(normalized, [
+        r"Insured\s+Welfare\s+Plan\s+Data\s*\n\s*(.+?)\s+\(Item\s+numbers",
+        r"Insured\s+Welfare\s+Plan\s+Data\s*\n\s*([^\n]+?)\s*\n\s*1\s*\(a\)",
+    ], flags=re.IGNORECASE | re.DOTALL)
+    date = r"\d{1,2}/\d{1,2}/\d{4}"
+    benefit_and_count = r"([A-Za-z][A-Za-z0-9 &/'().-]+?)[ \t]+([0-9,]+)"
+    inline = list(re.finditer(
+        rf"^[ \t]*{benefit_and_count}[ \t]+({date})[ \t]+({date})\*?[ \t]+See\s+Form(?:[ \t]+GRP)?[ \t]+\d+[ \t]*$",
+        normalized, re.IGNORECASE | re.MULTILINE,
+    ))
+    if len(inline) > 1:
+        return None
+    inline_evidence = ""
+    if inline:
+        if not re.search(r"of persons covered at end\s+Policy Contract Year", normalized, re.I):
+            return None
+        benefit, covered, start, end = inline[0].groups()
+        if premium:
+            header = [line.strip() for line in normalized.splitlines()
+                      if re.search(r"1\s*\([abcd]\)|of persons covered at end", line, re.I)]
+            inline_evidence = "\n".join([*header, inline[0][0].strip(), premium[0]])
+    else:
+        period = re.search(rf"\n\s*({date})\s+({date})\s+See\s+Form", normalized, re.I)
+        benefit_match = re.search(r"\n\s*([A-Za-z][A-Za-z0-9 &/'().-]+?)\s+([0-9,]+)\s*$",
+                                  normalized.strip(), re.I)
+        if not period or not benefit_match:
+            return None
+        start, end = period.groups()
+        benefit, covered = benefit_match.groups()
+    if not all([carrier_name, ein, naic, contract, premium]):
         return None
     return {
         "carrier_name": clean_extracted_value(carrier_name or "Prudential Insurance Company of America"),
         "ein": clean_extracted_value(ein or ""),
         "naic_code": clean_extracted_value(naic or ""),
         "contract_number": clean_extracted_value(contract or ""),
-        "period_begin": normalize_schedule_a_date(period[0], end_of_month=False),
-        "period_end": normalize_schedule_a_date(period[1], end_of_month=True),
-        "premium": money_value(premium or ""),
+        "period_begin": normalize_schedule_a_date(start, end_of_month=False),
+        "period_end": normalize_schedule_a_date(end, end_of_month=True),
+        "premium": money_value(premium[1]),
         "account_name": clean_extracted_value(account_name or ""),
-        "benefit_type": clean_extracted_value(benefit_match.group(1)),
-        "persons_covered": money_value(benefit_match.group(2)),
+        "benefit_type": clean_extracted_value(benefit),
+        "persons_covered": money_value(covered),
         "source_page": str(page or ""),
+        "inline_evidence": inline_evidence,
     }
 
 
