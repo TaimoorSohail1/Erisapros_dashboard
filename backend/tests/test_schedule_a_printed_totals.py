@@ -74,6 +74,35 @@ def test_year_end_enrollment_uses_covered_members_instead_of_subscribers(variant
         assert (covered.value, covered.decision) == ("999", "REVIEW_REQUIRED")
 
 
+@pytest.mark.parametrize("variant", ("complete", "missing_period", "second_group", "other_candidate"))
+def test_form_5500_insurance_summary_distinguishes_members_from_subscribers(variant):
+    source = """Form 5500 - Insurance Information
+Group Name:: Example Plan
+Group Number:: 22855
+Division Number:
+Number of Subscribers:: 506
+Number of Members:: 724
+Commissions Paid:
+Plan Year:: 04/01/2025 -03/31/2026
+Premium Paid:: 202324.07"""
+    pages = [(1, source)]
+    if variant == "missing_period":
+        pages = [(1, source.replace("Plan Year:: 04/01/2025 -03/31/2026", ""))]
+    elif variant == "second_group":
+        pages.append((2, source.replace("22855", "70002")))
+    field = NormalizedExtractionField(field_name=FIELDS["InsPrsnCoveredEoyCnt"][0], value="506",
+        candidate_values=["506", "875"] if variant == "other_candidate" else ["506"])
+    fields = [field]
+    attach_printed_total_evidence(fields, pages)
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Native", fields=fields))
+    covered, = result.fields
+    if variant == "complete":
+        assert (covered.value, covered.page, covered.decision) == ("724", 1, "AUTOMATIC")
+        assert "Number of Members:: 724" in covered.source_text
+    else:
+        assert (covered.value, covered.decision) == ("506", "REVIEW_REQUIRED")
+
+
 @pytest.mark.parametrize("count_separator", (" ", ""))
 def test_covered_count_does_not_consume_digits_from_the_policy_date(count_separator):
     text = "(c) NAIC Code: See Attached Listing\n03/01/2025 02/28/2026"
