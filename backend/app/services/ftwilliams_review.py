@@ -2630,17 +2630,24 @@ class FTWilliamsReviewService:
                 if self._normalize_ein_digits(record.get("CompanyEmployerID")) == lookup_ein
                 and self._normalize_plan_number(record.get("PlanNumber")) == lookup_number
             ]
-            if any(self._plan_names_differ_by_dba(
-                lookup.plan_name, record.get("PlanLine1") or record.get("PlanName"),
-            ) for record in identity_matches):
-                if len(identity_matches) == 1:
-                    match = identity_matches[0]
-                    self._append_plan_ids_batch_summary(lookup, len(records), match)
-                    return await self._accept_plan_ids_batch_match(lookup, repo, match)
+            if len(identity_matches) > 1:
                 self._append_plan_ids_batch_summary(lookup, len(records))
                 lookup.matches = identity_matches
                 lookup.status = FTWilliamsPlanLookupStatus.MULTIPLE_MATCHES
                 return "PlanIDs_Batch returned multiple plans with the extracted EIN and plan number."
+            if identity_matches:
+                match = identity_matches[0]
+                if self._plan_names_differ_by_dba(lookup.plan_name, match.get("PlanLine1") or match.get("PlanName")):
+                    self._append_plan_ids_batch_summary(lookup, len(records), match)
+                    return await self._accept_plan_ids_batch_match(lookup, repo, match)
+                if await self._verify_exact_batch_plan_pair(lookup, match):
+                    self._append_plan_ids_batch_summary(lookup, len(records), match)
+                    return await self._accept_plan_ids_batch_match(
+                        lookup, repo, match, source="PLAN_IDS_BATCH_VERIFIED_EIN_AND_PLAN_NUMBER",
+                    )
+                self._append_plan_ids_batch_summary(lookup, len(records))
+                lookup.status = FTWilliamsPlanLookupStatus.NOT_FOUND
+                return "FT Williams could not verify the plan found by sponsor EIN and plan number."
 
         probe_limit = max(1, min(50, get_settings().ftw_plan_lookup_probe_limit))
         ranked_candidates = sorted(
@@ -2790,11 +2797,36 @@ class FTWilliamsReviewService:
         lookup.request_xml = "\n\n".join(filter(None, [lookup.request_xml, request_xml]))
         lookup.response_xml = "\n\n".join(filter(None, [lookup.response_xml, response_xml]))
 
+    async def _verify_exact_batch_plan_pair(self, lookup: FTWilliamsPlanLookup, match: dict[str, str]) -> bool:
+        """Verify access to the exact inventory pair before accepting a different plan name."""
+        identity = self._identity_from_lookup_match(match)
+        if not self._has_plan_identity(identity):
+            return False
+        try:
+            response = await self.ftwilliams.run_query(FTWilliamsQueryRequest(operation="query_plan", send=True, **identity))
+        except (OSError, ValueError):
+            return False
+        self._append_plan_lookup_trace(lookup, response.request_xml, response.raw_response)
+        statuses = [status for status in response.statuses if status.error_code == "0" and status.query_results]
+        if not response.success or len(statuses) != 1:
+            return False
+        status = statuses[0]
+        returned = self._identity_from_status(status)
+        if any(returned.get(key) and returned[key] != value for key, value in identity.items()):
+            return False
+        values = status.query_results
+        if self._normalize_plan_number(values.get("PlanNumber")) != self._normalize_plan_number(lookup.plan_number):
+            return False
+        reported_ein = values.get("CompanyEmployerID") or values.get("EIN") or values.get("SPONS_DFE_EIN")
+        return not reported_ein or self._normalize_ein_digits(reported_ein) == self._normalize_ein_digits(lookup.company_employer_id)
+
     async def _accept_plan_ids_batch_match(
         self,
         lookup: FTWilliamsPlanLookup,
         repo,
         match: dict[str, str],
+        *,
+        source: str = "PLAN_IDS_BATCH",
     ) -> str | None:
         identity = self._identity_from_lookup_match(match)
         if not self._has_plan_identity(identity):
@@ -2803,12 +2835,13 @@ class FTWilliamsReviewService:
         lookup.matched_identity = identity
         lookup.status = FTWilliamsPlanLookupStatus.MATCHED
         lookup.error_message = None
-        await self._persist_plan_mapping(lookup, repo, match, source="PLAN_IDS_BATCH")
+        await self._persist_plan_mapping(lookup, repo, match, source=source)
         return None
 
     async def _persist_plan_mapping(self, lookup: FTWilliamsPlanLookup, repo, match: dict[str, str], *, source: str) -> None:
         plan_name = match.get("PlanLine1") or match.get("PlanName") or lookup.plan_name
-        plan_name_key = self._plan_name_key(plan_name)
+        binding_name = lookup.plan_name if source == "PLAN_IDS_BATCH_VERIFIED_EIN_AND_PLAN_NUMBER" else None
+        plan_name_key = self._plan_name_key(binding_name or plan_name)
         existing = await repo.get_ftwilliams_plan_mapping(
             lookup.company_employer_id,
             lookup.plan_number,
