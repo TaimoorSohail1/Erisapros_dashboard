@@ -1,11 +1,14 @@
 import asyncio
+from datetime import datetime
 import hashlib
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from bson import ObjectId
 
-from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJob, Filing, FormType, RawExtraction
-from app.repositories import MemoryRepository
+from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, ExtractionJob, Filing, FormType, RawExtraction, SourceEvidence
+from app.repositories import MemoryRepository, MongoRepository, to_mongo
 from app.services.schedule_a_retained_period import refresh_retained_policy_end
 
 
@@ -34,6 +37,31 @@ def test_refresh_preserves_unsafe_or_reviewed_dates(reason):
     assert stored.value == "02/01/2026"
     if reason == "concurrent_edit":
         assert stored.proposed_value == "02/02/2026"
+
+
+@pytest.mark.parametrize("store_as_text", [True, False])
+def test_mongo_correction_matches_extraction_and_edit_timestamps(store_as_text):
+    timestamp = datetime(2026, 11, 11, 17, 7, 16, 373771)
+    field = ExtractedField(id=str(ObjectId()), filing_id="filing", source_field_name="Ending date",
+                           normalized_field_name="endingdate", value="02/01/2026", proposed_value="02/01/2026",
+                           updated_at=timestamp)
+    record = to_mongo(field) | {"_id": ObjectId(field.id)}
+    if not store_as_text:
+        record["updated_at"] = timestamp
+
+    async def find_and_update(query, update, **kwargs):
+        assert {"_id", "filing_id", "value", "proposed_value", "status", "updated_at"} == set(query)
+        if record["updated_at"] not in query["updated_at"]["$in"]:
+            return None
+        return record | update["$set"]
+
+    repo = MongoRepository.__new__(MongoRepository)
+    repo.db = SimpleNamespace(extracted_fields=SimpleNamespace(find_one_and_update=AsyncMock(side_effect=find_and_update)))
+    evidence = SourceEvidence(provider="Original PDF", page=3, source_text=LABEL)
+    corrected = asyncio.run(repo.correct_extracted_value(field, "01/31/2026", evidence, "Verified date"))
+
+    assert corrected.value == corrected.proposed_value == "01/31/2026"
+    assert corrected.id == field.id
 
 
 async def refresh(*, read_path, issue=None):
