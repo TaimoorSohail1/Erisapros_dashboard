@@ -1358,6 +1358,38 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertIn("NBX36", policy_comparison.decision_reason)
         self.assertIn("52-0807803", policy_comparison.decision_reason)
 
+    def test_plan_worksheet_numeric_policy_list_matches_exact_members_with_same_scope(self):
+        service = FTWilliamsReviewService(FakeFTWilliamsService())
+        carrier = self._schedule_identity_field(
+            "schedule_a_part_i_1a_name_of_insurance_company", "1a. Name of Insurance Company", "EXAMPLE LIFE",
+        )
+        start = self._schedule_identity_field(
+            "schedule_a_part_i_1f_policy_year_beginning_date", "1f. Policy Year Beginning Date", "04/01/2025",
+        )
+        end = self._schedule_identity_field(
+            "schedule_a_part_i_1g_policy_year_ending_date", "1g. Policy Year Ending Date", "03/31/2026",
+        )
+        for policy_value, period_begin, ftw_value, expected in (
+            ("37029", "04/01/2025", "", FTWFieldDecision.WILL_UPDATE),
+            ("37030", "04/01/2025", "", FTWFieldDecision.WILL_UPDATE),
+            ("3702", "04/01/2025", "", FTWFieldDecision.CONFLICT),
+            ("37029", "01/01/2025", "", FTWFieldDecision.CONFLICT),
+            ("37029", "04/01/2025", "37030", FTWFieldDecision.CONFLICT),
+        ):
+            with self.subTest(policy=policy_value, begin=period_begin, current=ftw_value):
+                policy = self._schedule_identity_field(
+                    "schedule_a_part_i_1d_contract_policy_number", "1d. Contract/Policy Number", policy_value,
+                )
+                summary = ScheduleAWorksheetSummary(
+                    source="Plan Worksheet fully-insured benefit table", carrier_name="EXAMPLE LIFE",
+                    account_number="37030 / 37029", period_begin=period_begin, period_end="03/31/2026",
+                )
+                fields = [carrier, policy, start, end]
+                comparisons = service._comparison_fields(fields, {}, {"InsContractNum": ftw_value}, update_fields=fields)
+                service._mark_plan_worksheet_conflicts(comparisons, fields, [summary])
+                result = next(row for row in comparisons if row.rule_key == policy.mapped_rule_key)
+                self.assertEqual(result.decision, expected)
+
     def test_plan_worksheet_single_character_policy_suffix_mismatch_is_a_real_conflict(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(
