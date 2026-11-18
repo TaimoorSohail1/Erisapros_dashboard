@@ -469,8 +469,11 @@ def _normalize_carrier_name_compare(value: str) -> str:
         "ltd",
         "limited",
     }
+    has_legal_suffix = bool(words and words[-1] in legal_suffixes)
     while words and words[-1] in legal_suffixes:
         words.pop()
+    if has_legal_suffix and len(words) > 1 and words[-1] == "ins":
+        words[-1] = "insurance"
     return "".join(words)
 
 
