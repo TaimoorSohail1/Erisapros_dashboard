@@ -47,6 +47,33 @@ def test_printed_totals_validate_without_erasing_a_competing_candidate():
     ]
 
 
+@pytest.mark.parametrize("variant", ("one_block", "sample", "different_candidate", "second_policy", "reversed_counts"))
+def test_year_end_enrollment_uses_covered_members_instead_of_subscribers(variant):
+    label = FIELDS["InsPrsnCoveredEoyCnt"][0]
+    heading = "Approximate number of persons covered at end of policy or contract year:"
+    body = f"\u2022 {heading}\n\n  \u25e6 Subscribers: 999\n\n  \u25e6 Members: 1,700\n\nFunding Type: Fully Insured"
+    pages = [(1, f"Schedule A information\n{body}")]
+    candidates = ["999", "1,700"]
+    if variant == "sample":
+        pages = [(1, pages[0][1].replace(heading, "Enrollment statistics:"))]
+    elif variant == "different_candidate":
+        candidates.append("2200")
+    elif variant == "second_policy":
+        pages.append((2, f"{heading} 2000"))
+    elif variant == "reversed_counts":
+        pages = [(1, pages[0][1].replace("1,700", "700"))]
+    fields = [NormalizedExtractionField(field_name=label, value="999", candidate_values=candidates)]
+    attach_printed_total_evidence(fields, pages)
+    result = resolve_schedule_a_result(NormalizedExtractionResult(provider="Native", fields=fields))
+    (covered,) = result.fields
+    if variant == "one_block":
+        assert (covered.value, covered.page, covered.decision) == ("1700", 1, "AUTOMATIC")
+        assert covered.candidate_values == ["1700"]
+        assert "Members: 1,700" in covered.source_text
+    else:
+        assert (covered.value, covered.decision) == ("999", "REVIEW_REQUIRED")
+
+
 @pytest.mark.parametrize("count_separator", (" ", ""))
 def test_covered_count_does_not_consume_digits_from_the_policy_date(count_separator):
     text = "(c) NAIC Code: See Attached Listing\n03/01/2025 02/28/2026"

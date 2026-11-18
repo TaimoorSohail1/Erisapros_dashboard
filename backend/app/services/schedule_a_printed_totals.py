@@ -18,6 +18,8 @@ from app.services.storage import StorageService
 
 
 COVERED_TOTAL_PROVIDER = "Printed Schedule A covered-person total"
+COVERED_MEMBERS_PROVIDER = "Printed Schedule A covered members"
+_COVERED_PERSONS_FIELD = "1e. Persons Covered (End of Policy Year)"
 _LOGGER = logging.getLogger(__name__)
 _SOURCE_EVIDENCE_HOLD = "Automatic extraction requires a source page and source text that supports the extracted value."
 _WITHHELD = "Extraction requires review; automatic proposal withheld. "
@@ -51,6 +53,17 @@ _COVERED = re.compile(
     rf"(?:[^\n\d]*\n){{0,2}}[ \t]*(?:of\s+)?(?:policy|contract)\s+year[ \t]+dependents[ \t]+(?P<dependents>{_NUMBER})(?![\d,.])",
     re.I,
 )
+_BULLET = r"[ \t]*[\u2022\u25e6\u25aa*]?[ \t]*"
+_ENROLLMENT_HEADING = (
+    rf"^{_BULLET}(?:approximate[ \t]+)?number[ \t]+of[ \t]+persons[ \t]+covered[ \t]+at[ \t]+"
+    r"(?:the[ \t]+)?end[ \t]+of[ \t]+(?:the[ \t]+)?policy[ \t]+or[ \t]+contract[ \t]+year[ \t]*:"
+)
+_ENROLLMENT_BLOCK = re.compile(
+    rf"{_ENROLLMENT_HEADING}[ \t]*\n"
+    rf"(?:[ \t]*\n)*{_BULLET}subscribers:[ \t]*(?P<subscribers>{_NUMBER})[ \t]*\n"
+    rf"(?:[ \t]*\n)*{_BULLET}members:[ \t]*(?P<members>{_NUMBER})[ \t]*$",
+    re.I | re.M,
+)
 
 
 def _number(text: str) -> Decimal:
@@ -64,6 +77,42 @@ def covered_total(source: str) -> Decimal | None:
     match = matches[0]
     total = _number(match["total"])
     return total if total == _number(match["employees"]) + _number(match["dependents"]) else None
+
+
+def covered_member_counts(source: str) -> tuple[int, int] | None:
+    match = _ENROLLMENT_BLOCK.fullmatch(source)
+    if match is None:
+        return None
+    subscribers = int(_number(match["subscribers"]))
+    members = int(_number(match["members"]))
+    return (subscribers, members) if members >= subscribers else None
+
+
+def reconcile_printed_member_total(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
+    """Resolve a single headed enrollment block with separate population labels."""
+    if not any(re.search(r"\bschedule\s+a\b", text, re.I) for _, text in pages):
+        return
+    if sum(len(re.findall(_ENROLLMENT_HEADING, text, re.I | re.M)) for _, text in pages) != 1:
+        return
+    blocks = [(page, match[0]) for page, text in pages for match in _ENROLLMENT_BLOCK.finditer(text)]
+    if len(blocks) != 1:
+        return
+    page, source = blocks[0]
+    counts = covered_member_counts(source)
+    if counts is None:
+        return
+    subscribers, members = map(str, counts)
+    existing = [(index, field) for index, field in enumerate(fields) if field.field_name == _COVERED_PERSONS_FIELD]
+    evidence = SourceEvidence(provider=COVERED_MEMBERS_PROVIDER, page=page, source_text=source)
+    values = {"value": members, "page": page, "source_text": source, "evidence": [evidence],
+              "confidence": .99, "candidate_values": [members]}
+    if not existing:
+        fields.append(NormalizedExtractionField(field_name=_COVERED_PERSONS_FIELD, **values))
+    elif len(existing) == 1:
+        index, field = existing[0]
+        alternatives = {value.replace(",", "").strip() for value in [field.value, *field.candidate_values] if value}
+        if alternatives <= {subscribers, members}:
+            fields[index] = field.model_copy(update=values)
 
 
 def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal, SourceEvidence]]:
@@ -97,6 +146,7 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
 
 
 def attach_printed_total_evidence(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
+    reconcile_printed_member_total(fields, pages)
     totals = read_printed_totals(pages)
     for field in fields:
         code = field.field_name.split(".", 1)[0].strip().lower()
