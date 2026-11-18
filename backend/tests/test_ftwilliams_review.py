@@ -5868,6 +5868,41 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 self.assertEqual(held.decision, FTWFieldDecision.BLOCKED)
                 self.assertFalse(held.update_included)
 
+    def test_month_only_period_retains_matching_current_and_worksheet_dates(self):
+        service = FTWilliamsReviewService()
+        hold = (
+            "Extraction requires review; automatic proposal withheld. "
+            "Automatic extraction requires a source page and source text that supports the extracted value.; "
+            "Confirm exact policy dates: source has month-only or conflicting contract periods."
+        )
+        source = "Contract Year from 04/2025 - 03/2026"
+        begin, end = "04/01/2025", "03/31/2026"
+        identity = ExtractedField(filing_id="filing-1", source_field_name="Policy Number",
+            normalized_field_name="policy number", form_type=FormType.SCHEDULE_A,
+            mapped_rule_key="schedule_a_part_i_1d_contract_policy_number", value="AB-123", proposed_value="AB-123")
+        dates = [ExtractedField(filing_id="filing-1", source_field_name=label, normalized_field_name=label,
+            mapped_rule_key=f"schedule_a_part_i_{suffix}", form_type=FormType.SCHEDULE_A,
+            source_document_type=DocumentType.SCHEDULE_A, page=3, source_text=source, value=value,
+            status=ExtractedFieldStatus.LOW_CONFIDENCE, status_reason=hold)
+            for suffix, label, value in [("1f_policy_year_beginning_date", "Beginning", begin),
+                                        ("1g_policy_year_ending_date", "Ending", end)]]
+        summary = ScheduleAWorksheetSummary(source="Plan Worksheet", account_number="AB123", period_begin=begin, period_end=end)
+        current = {"InsContractNum": "AB123", "InsPolicyFromDate": begin, "InsPolicyToDate": end}
+        for case, vendor, rows, fields, expected in (
+            ("exact policy and dates", current, [summary], dates, FTWFieldDecision.NO_CHANGE),
+            ("current date differs", current | {"InsPolicyToDate": "03/30/2026"}, [summary], dates, FTWFieldDecision.BLOCKED),
+            ("different current contract", current | {"InsContractNum": "AB124"}, [summary], dates, FTWFieldDecision.BLOCKED),
+            ("duplicate worksheet policy", current, [summary, summary], dates, FTWFieldDecision.BLOCKED),
+            ("worksheet date differs", current, [summary.model_copy(update={"period_end": "03/30/2026"})], dates, FTWFieldDecision.BLOCKED),
+            ("ambiguous printed ranges", current, [summary], [dates[0], dates[1].model_copy(update={
+                "source_text": source + "\nContract Year from 03/2025 - 02/2026"})], FTWFieldDecision.BLOCKED),
+        ):
+            with self.subTest(case=case):
+                compared = service._comparison_fields([identity, *fields], {}, vendor, worksheet_summaries=rows)
+                policy_dates = [row for row in compared if row.ftw_tag in {"InsPolicyFromDate", "InsPolicyToDate"}]
+                self.assertEqual(len(policy_dates), 2)
+                self.assertTrue(all(row.decision == expected and not row.update_included for row in policy_dates))
+
     def test_schedule_match_stays_pending_when_identifier_match_is_ambiguous(self):
         service = FTWilliamsReviewService()
         fields = [

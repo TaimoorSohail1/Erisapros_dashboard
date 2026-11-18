@@ -524,6 +524,7 @@ class FTWilliamsReviewService:
             # updates while the final payload remains locked by the block.
             update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
+            worksheet_summaries=schedule_a_worksheet_summaries,
         )
         self._mark_plan_worksheet_conflicts(comparison_fields, fields, schedule_a_worksheet_summaries)
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
@@ -1202,6 +1203,7 @@ class FTWilliamsReviewService:
             schedule_a_current,
             update_fields=[*candidate_form_5500_fields, *safe_schedule_a_fields],
             schedule_a_contract_type=extracted_contract_classification.contract_type,
+            worksheet_summaries=schedule_a_worksheet_summaries,
         )
         self._mark_plan_worksheet_conflicts(comparison_fields, fields, schedule_a_worksheet_summaries)
         self._mark_structured_broker_comparisons(comparison_fields, schedule_a_broker_rows)
@@ -4793,6 +4795,7 @@ class FTWilliamsReviewService:
                 review.schedule_a_current_values or {},
                 update_fields=[*safe_form_fields, *safe_schedule_fields],
                 schedule_a_contract_type=review.schedule_a_contract_type,
+                worksheet_summaries=review.schedule_a_worksheet_summaries,
             )
             self._mark_plan_worksheet_conflicts(
                 comparisons,
@@ -5328,6 +5331,51 @@ class FTWilliamsReviewService:
         header_tokens = {"EIN", "INSURANCE", "CARRIER", "NAIC", "CODE", "FROM", "TO"}
         return header_tokens.issubset(set(normalized.split()))
 
+    def _corroborated_month_only_policy_tags(self, fields, current, summaries) -> set[str]:
+        from app.services.schedule_a_policy_period import explicit_contract_periods
+
+        if not summaries or not current:
+            return set()
+        policy = self._normalize_contract(self._field_value_by_rule(fields, "schedule_a_part_i_1d_contract_policy_number"))
+        if not policy or policy == "VARIOUS" or policy != self._normalize_contract(current.get("InsContractNum") or current.get("INS_CONTRACT_NUM")):
+            return set()
+        rows = [row for row in summaries
+                if "plan worksheet" in str(self._summary_attr(row, "source") or "").lower()
+                and policy == self._normalize_contract(self._summary_attr(row, "account_number"))]
+        if len(rows) != 1:
+            return set()
+        paired_dates = (
+            ("InsPolicyFromDate", "1f_policy_year_beginning_date", "period_begin", "beginning"),
+            ("InsPolicyToDate", "1g_policy_year_ending_date", "period_end", "ending"),
+        )
+        reasons = {
+            "Automatic extraction requires a source page and source text that supports the extracted value.",
+            "Confirm exact policy dates: source has month-only or conflicting contract periods.",
+        }
+        printed_pairs = set()
+        for tag, suffix, worksheet_key, period_key in paired_dates:
+            candidates = [field for field in fields if field.mapped_rule_key == f"schedule_a_part_i_{suffix}"]
+            if len(candidates) != 1:
+                return set()
+            field = candidates[0]
+            held_reasons = set((field.status_reason or "").removeprefix(
+                "Extraction requires review; automatic proposal withheld. ").split("; "))
+            if (field.status != ExtractedFieldStatus.LOW_CONFIDENCE or field.proposed_value
+                    or field.form_type != FormType.SCHEDULE_A or field.source_document_type != DocumentType.SCHEDULE_A
+                    or not field.page or not field.value
+                    or not held_reasons <= reasons):
+                return set()
+            periods = explicit_contract_periods(field.source_text)
+            if len(periods) != 1 or not periods[0].month_precision or periods[0].adjusted_to_twelve_months:
+                return set()
+            printed_pairs.add((periods[0].beginning, periods[0].ending))
+            printed_period_value = getattr(periods[0], period_key)
+            worksheet_value = self._summary_attr(rows[0], worksheet_key)
+            current_value = resolve_ftw_current_value(field, current)
+            if not all(self._same_date(value, printed_period_value) for value in (field.value, worksheet_value, current_value)):
+                return set()
+        return {item[0] for item in paired_dates} if len(printed_pairs) == 1 else set()
+
     def _comparison_fields(
         self,
         fields: list[ExtractedField],
@@ -5335,9 +5383,11 @@ class FTWilliamsReviewService:
         schedule_a_current: dict[str, str],
         update_fields: list[ExtractedField] | None = None,
         schedule_a_contract_type: ScheduleAContractType | None = None,
+        worksheet_summaries: list | None = None,
     ) -> list[FTWilliamsComparisonField]:
         comparison: list[FTWilliamsComparisonField] = []
         update_field_ids = {id(field) for field in update_fields} if update_fields is not None else None
+        corroborated_dates = self._corroborated_month_only_policy_tags(fields, schedule_a_current, worksheet_summaries)
         compensation_is_represented_by_checkbox = bool(
             str(schedule_a_current.get("OverrideCommissionsAndFees") or "").strip() == "1"
             and _source_reports_no_broker_compensation(fields)
@@ -5411,11 +5461,11 @@ class FTWilliamsReviewService:
                 and not extracted_proposed_value.strip()
                 and current_value.strip()
                 and str(field.value or "").strip()
-                and field.status_reason in (
+                and (tag in corroborated_dates or field.status_reason in (
                     "Extraction requires review; automatic proposal withheld.",
                     "Extraction requires review; automatic proposal withheld. "
                     "Automatic extraction requires a source page and source text that supports the extracted value.",
-                )
+                ))
                 and not values_meaningfully_different(current_value, field.value, tag=tag)
             )
             if (
@@ -5479,7 +5529,10 @@ class FTWilliamsReviewService:
                 decision_reason = "The field does not apply to the selected Schedule A contract type."
             elif retains_matching_current:
                 decision = FTWFieldDecision.NO_CHANGE
-                decision_reason = "The extracted value matches FT Williams and no update is required."
+                decision_reason = (
+                    "The worksheet and FT Williams agree on the dates for the printed policy period. No update is required."
+                    if tag in corroborated_dates else "The extracted value matches FT Williams and no update is required."
+                )
             elif not extracted_proposed_value.strip():
                 if current_value.strip():
                     decision = FTWFieldDecision.KEEP_CURRENT
