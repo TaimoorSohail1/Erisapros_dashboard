@@ -2570,6 +2570,13 @@ def add_not_applicable_experience_rated_fields(
         )
 
 
+_LINCOLN_REPORT_CARRIER = re.compile(
+    r"\b(?:THE\s*)?LINCOLN\s*(?:NATIONAL\s*LIFE\s*INSURANCE\s*COMPANY"
+    r"|LIFE\s*(?:&|AND)\s*ANNUITY\s*COMPANY\s*OF\s*NEW\s*YORK)\b",
+    re.IGNORECASE,
+)
+
+
 def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
     normalized = normalize_ocr_text(text)
     if not normalized:
@@ -2585,7 +2592,7 @@ def extract_nonexperience_total_premium_from_text(text: str) -> str | None:
     )
     if vendor_total:
         if (re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', normalized, re.I)
-                and re.search(r'THE\s+LINCOLN\s+NATIONAL', normalized, re.I)
+                and _LINCOLN_REPORT_CARRIER.search(normalized)
                 and re.match(r'[ \t]+\d', normalized[vendor_total.end():].split('\n',1)[0])):
             return None
         return vendor_total.group(1)
@@ -3629,7 +3636,7 @@ def local_schedule_a_pdf_result(
         ),
     )
     if (any(re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', text, re.I) for _,text in page_texts)
-            and any(re.search(r'THE\s+LINCOLN\s+NATIONAL', text, re.I) for _,text in page_texts)):
+            and any(_LINCOLN_REPORT_CARRIER.search(text) for _, text in page_texts)):
         complete = reconcile_lincoln_part_i_compensation(local_result,
             extract_litera_lincoln_schedule_a_broker_rows(page_texts), page_texts)
         if not complete:
@@ -4891,7 +4898,7 @@ def _read_scanned_lincoln_broker_roster(
             return [], []
         if not all(page["readable"] for page in _broker_page_coverage(pages)):
             return [], []
-        if not any(re.search(r"THE\s*LINCOLN\s*NATIONAL\s*LIFE\s*INSURANCE\s*COMPANY", text, re.I) for _, text in pages):
+        if not any(_LINCOLN_REPORT_CARRIER.search(text) for _, text in pages):
             return [], []
         rows = extract_litera_lincoln_schedule_a_broker_rows(pages)
         probe = NormalizedExtractionResult(provider="Independent local OCR", fields=[])
@@ -5559,7 +5566,7 @@ def recover_lincoln_source_pages(page_texts, raw, file_name):
     A readable differing scalar is a conflict, not permission to prefer a
     provider. Original local OCR remains in the extraction-stage evidence.
     """
-    if not isinstance(raw, dict) or not any(re.search(r'THE\s+LINCOLN\s+NATIONAL', text, re.I) for _,text in page_texts):
+    if not isinstance(raw, dict) or not any(_LINCOLN_REPORT_CARRIER.search(text) for _, text in page_texts):
         return page_texts
     alternate = completed_document_source_pages(raw, file_name)
     if not alternate:
@@ -5597,7 +5604,7 @@ def recover_lincoln_source_pages(page_texts, raw, file_name):
 def _is_litera_lincoln_report(page_texts):
     packet = '\n'.join(text or '' for _,text in page_texts)
     return bool(re.search(r'SCHEDULE\s*A\s*REPORTING\s*INFORMATION', packet, re.I) or (
-        re.search(r'THE\s+LINCOLN\s+NATIONAL\s+LIFE\s+INSURANCE\s+COMPANY', packet, re.I)
+        _LINCOLN_REPORT_CARRIER.search(packet)
         and re.search(r'Contract\s+or\s+identification\s+number', packet, re.I)
         and re.search(r'Insurance\s+fee[s]?\s+and\s+commission', packet, re.I)))
 
@@ -5614,7 +5621,7 @@ def extract_litera_lincoln_schedule_a_fields(
         (
             (page, normalize_ocr_text(text or ""))
             for page, text in page_texts
-            if re.search(r"THE\s*LINCOLN\s*NATIONAL\s*LIFE\s*INSURANCE\s*COMPANY", text or "", re.IGNORECASE)
+            if _LINCOLN_REPORT_CARRIER.search(text or "")
             and re.search(r"Contract\s+or\s+identification\s+number", text or "", re.IGNORECASE)
         ),
         None,
@@ -5668,6 +5675,16 @@ def extract_litera_lincoln_schedule_a_fields(
     if premium and re.match(r'[ \t]+\d', text[premium.end():].split('\n',1)[0]):
         premium_value = None
     premium_source = premium.group(0) if premium else ""
+    if not premium_value:
+        printed_premium = re.search(
+            r"(?im)^[ \t]*10\.[ \t]*Nonexperience[- ]rated contracts:[ \t]*\n"
+            r"[ \t]*\(a\)[ \t]*Total premiums or subscription charges paid to carrier[ .:]+"
+            r"((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{2})?)[ \t]*$",
+            text,
+        )
+        if printed_premium:
+            premium_value = money_value(printed_premium[1])
+            premium_source = printed_premium[0]
     if not premium_value:
         damaged_premium = re.search(
             r"Total\s+premiums\s+or\s+subscription\s+charges\s+paid\s+to\s+carrier"

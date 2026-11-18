@@ -31,6 +31,26 @@ Part III Welfare Benefit Contract Information
 DAMAGED=SOURCE.replace('$77.44 3','$77.44 ie').replace('$1,234.56','87 2, 345 «el').replace('01/01/2025','0170172025')
 
 
+@pytest.mark.parametrize('carrier', ['Lincoln Life & Annuity Company of New York',
+                                     'Lincoln Life and Annuity Company of New York'])
+def test_lincoln_new_york_worksheet_keeps_verified_count_and_unprefixed_premium(carrier):
+    source = (SOURCE.replace('THE LINCOLN NATIONAL LIFE INSURANCE COMPANY', carrier.upper())
+              .replace('The Lincoln National Life Insurance Company', carrier)
+              .replace('Weekly Income 17 01/01/2025 12/31/2025', 'Weekly Income 51 01/01/2026 02/28/2026')
+              .replace('$1,234.56', '5935.25'))
+    fields = {field.field_name.split('.')[0]: field for field in
+              extractor.extract_litera_lincoln_schedule_a_fields([(2, source)])}
+    assert fields['1e'].value == '51'
+    assert fields['1e'].page == 2 and 'Weekly Income 51' in fields['1e'].source_text
+    assert fields['1f'].value == '01/01/2026' and fields['1g'].value == '02/28/2026'
+    assert fields['10a'].value == '5935.25'
+    ambiguous = source.replace('5935.25', '5935.25 100.00')
+    assert not any(f.field_name.startswith('10a.') for f in
+                   extractor.extract_litera_lincoln_schedule_a_fields([(2, ambiguous)]))
+    unrelated = source.replace(carrier.upper(), 'UNRELATED INSURANCE COMPANY').replace(carrier, 'Another Carrier')
+    assert not extractor.extract_litera_lincoln_schedule_a_fields([(2, unrelated)])
+
+
 def bound(text):
     return {'ingest':{'ingest':{'processId':'current'}},
         'process':{'ingest':{'processId':'current','status':'complete','progress':{'complete':{'documents':[
