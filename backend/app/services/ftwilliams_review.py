@@ -407,12 +407,19 @@ class FTWilliamsReviewService:
                         preservation_note = "FT Williams current data could not be refreshed; the last valid snapshot was preserved for safety."
                         error_message = "; ".join(filter(None, [preservation_note, error_message]))
 
+        schedule_destination_missing = bring_forward_required and not active_failure
+        if schedule_destination_missing:
+            # The saved sequence or create-new choice was prepared against a
+            # schedule inventory that the current-year query no longer returns.
+            create_new_schedule_a = False
+            new_schedule_desc = None
+
         selected_schedule_desc = None
         if matched_schedule_a:
             selected_schedule_desc = matched_schedule_a.query_results.get("ScheduleDesc") or matched_schedule_a.query_results.get("SCHEDULE_DESC")
         elif create_new_schedule_a:
             selected_schedule_desc = new_schedule_desc
-        elif existing_review and existing_review.schedule_a_match:
+        elif not schedule_destination_missing and existing_review and existing_review.schedule_a_match:
             selected_schedule_desc = str(
                 existing_review.schedule_a_match.get("schedule_desc")
                 or existing_review.schedule_a_match.get("description")
@@ -547,7 +554,7 @@ class FTWilliamsReviewService:
             )
         )
         existing_identity = self._identity_from_review(existing_review) if existing_review else {}
-        if existing_review and existing_review.ftw_seq_no:
+        if not schedule_destination_missing and existing_review and existing_review.ftw_seq_no:
             existing_identity["ftw_seq_no"] = existing_review.ftw_seq_no
         identity = review_identity_base | existing_identity | self._identity_from_status(matched_schedule_a)
         broker_binding = self._broker_review_binding_identity(identity, create_new_schedule_a,
@@ -709,7 +716,7 @@ class FTWilliamsReviewService:
                 if automatic_schedule_a_match
                 else (
                     (existing_review.schedule_a_match or None)
-                    if existing_review
+                    if existing_review and not schedule_destination_missing
                     and (
                         not send_queries
                         or current_query_failed
