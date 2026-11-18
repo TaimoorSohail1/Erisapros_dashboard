@@ -5957,9 +5957,10 @@ class FTWilliamsReviewService:
         summary = self._matching_plan_worksheet_summary(fields, summaries)
         if not summary:
             return
+        policy_rule = "schedule_a_part_i_1d_contract_policy_number"
         checks = (
             (
-                "schedule_a_part_i_1d_contract_policy_number",
+                policy_rule,
                 str(self._summary_attr(summary, "account_number") or "").strip(),
                 self._worksheet_policy_values_match,
                 "policy number",
@@ -5998,7 +5999,22 @@ class FTWilliamsReviewService:
             comparison = comparison_by_rule.get(rule_key)
             if not comparison:
                 continue
-            if rule_key == "schedule_a_part_i_1d_contract_policy_number" and carrier_ein_comparison:
+            if (
+                rule_key == policy_rule
+                and field.status == ExtractedFieldStatus.MATCHED
+                and field.proposed_value == extracted_value
+                and field.source_text
+                and re.fullmatch(r"[0-9]{3,}(?:\s*[/,;]\s*[0-9]{3,})+", worksheet_value)
+                and extracted_value in re.split(r"\s*[/,;]\s*", worksheet_value)
+                and self._carrier_identity_key(self._summary_attr(summary, "carrier_name"))
+                == self._carrier_identity_key(self._field_value_by_rule(fields, "schedule_a_part_i_1a_name_of_insurance_company"))
+                and all(value and same_date(self._field_value_by_rule(fields, date_rule), value)
+                        for date_rule, value, same_date, _ in checks[1:])
+            ):
+                # This worksheet row explicitly lists the contract within the same
+                # carrier and period. Keep the independent FT Williams comparison.
+                continue
+            if rule_key == policy_rule and carrier_ein_comparison:
                 policies = re.split(r"[/,;]", worksheet_value)
                 reference_policies = []
                 reference_ein = carrier_ein_comparison.current_value
