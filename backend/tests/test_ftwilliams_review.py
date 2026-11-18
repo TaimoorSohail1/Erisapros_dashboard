@@ -5767,6 +5767,25 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
 
         fake_ftw.fail_refresh = False
         fake_ftw.missing_schedule_a = True
+        run_async(repo.upsert_ftwilliams_review(baseline))
+        fresh_missing = run_async(service.prepare_review(filing.id, send_queries=True))
+        self.assertEqual(fresh_missing.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
+        self.assertTrue(fresh_missing.form_5500_current_values)
+        self.assertTrue(fresh_missing.bring_forward_required)
+        self.assertIsNone(fresh_missing.ftw_seq_no)
+        self.assertIsNone(fresh_missing.schedule_a_match)
+        self.assertFalse(fresh_missing.update_xml_schedule_a)
+
+        auto_new = baseline.model_copy(update={
+            "ftw_seq_no": None,
+            "schedule_a_match": {"source": "AUTO_NEW_SCHEDULE_A", "create_new": True, "schedule_desc": "NEW"},
+        })
+        run_async(repo.upsert_ftwilliams_review(auto_new))
+        refreshed_new = run_async(service.prepare_review(filing.id, send_queries=True))
+        self.assertEqual(refreshed_new.query_state, FTWilliamsQueryState.SCHEDULE_A_MISSING)
+        self.assertIsNone(refreshed_new.schedule_a_match)
+        self.assertFalse(refreshed_new.update_xml_schedule_a)
+
         baseline.status = FTWilliamsReviewStatus.UPDATE_UNKNOWN
         baseline.active_failure = True
         run_async(repo.upsert_ftwilliams_review(baseline))
