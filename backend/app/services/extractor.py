@@ -3529,6 +3529,7 @@ def local_schedule_a_pdf_result(
     aultcare_summaries = extract_aultcare_schedule_a_summaries(file_bytes, file_name)
     document_summaries = aultcare_summaries
     document_broker_rows = extract_aultcare_broker_rows(file_bytes, file_name) if aultcare_summaries else []
+    workbook_broker_rows = _extract_workbook_broker_rows(file_bytes, file_name, page_texts)
     provider_broker_rows = [
         *extract_first_unum_broker_rows(page_texts),
         *extract_ace_schedule_a_broker_rows(page_texts),
@@ -3561,6 +3562,7 @@ def local_schedule_a_pdf_result(
         provider_broker_rows.extend(omaha_rows)
     authoritative_broker_rows = (
         acroform_broker_rows
+        or workbook_broker_rows
         or provider_broker_rows
         or extract_columnar_broker_compensation_rows(page_texts)
     )
@@ -3842,6 +3844,114 @@ def _spreadsheet_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
         if lines:
             pages.append((index, "\n".join(lines)))
     return pages
+
+
+def _extract_workbook_broker_rows(file_bytes: bytes, file_name: str, pages: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    """Recover payment rows whose field roles depend on physical spreadsheet columns."""
+    if not file_name.lower().endswith((".xlsx", ".xlsm")):
+        return []
+    has_coverage_worksheet = any(is_bcbsma_schedule_a_worksheet(text) for _, text in pages)
+    has_group_summary = any(re.search(r"(?im)^Schedule A Information\s*$", text) for _, text in pages)
+    if has_coverage_worksheet == has_group_summary:
+        return []
+    from openpyxl import load_workbook
+
+    try:
+        workbook = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        sheets = [list(sheet.iter_rows(values_only=True)) for sheet in workbook.worksheets]
+    finally:
+        workbook.close()
+    candidates = (_workbook_coverage_commissions(sheets) if has_coverage_worksheet
+                  else _workbook_group_commission(sheets))
+    return candidates[0] if len(candidates) == 1 else []
+
+
+def _workbook_coverage_commissions(sheets: list[list[tuple]]) -> list[list[ScheduleABrokerRow]]:
+    candidates = []
+    coverage_labels = {"medical", "dental", "senior", "vision"}
+    for page, sheet in enumerate(sheets, 1):
+        for index, section in enumerate(sheet[:-1]):
+            if _workbook_label(section, 1) != "commission breakdown":
+                continue
+            headers = [{column: label for column in range(len(row))
+                        if (label := _workbook_label(row, column)) in coverage_labels} for row in sheet[:index]]
+            headers = [header for header in headers if set(header.values()) == coverage_labels and len(header) == len(coverage_labels)]
+            if len(headers) != 1:
+                continue
+            rows = []
+            for line_number, detail in enumerate(sheet[index + 1:], index + 2):
+                if not any(value is not None for value in detail):
+                    break
+                if not _workbook_label(detail, 1) or len(detail) <= max(headers[0]):
+                    rows = []
+                    break
+                name = clean_extracted_value(str(detail[1]))
+                by_coverage = {label: _workbook_currency(detail[column]) for column, label in headers[0].items()}
+                if not is_probable_person_or_entity_name(name) or any(value is None for value in by_coverage.values()):
+                    rows = []
+                    break
+                monetary = [ScheduleABrokerMoneyRow(coverage=label.title(), amount=f"{amount:.2f}", purpose="Base Commission")
+                            for label, amount in by_coverage.items() if amount]
+                if not monetary:
+                    continue
+                evidence = "\n".join(f"{label.title()}: {amount:.2f}" for label, amount in by_coverage.items())
+                rows.append(_held_workbook_broker(name, page, sum(by_coverage.values()), monetary,
+                    f"Commission Breakdown, row {line_number}\n{name}\n{evidence}",
+                    "Confirm which workbook benefit columns apply to the selected Schedule A and verify broker identity before updating."))
+            if rows:
+                candidates.append(rows)
+    return candidates
+
+
+def _workbook_group_commission(sheets: list[list[tuple]]) -> list[list[ScheduleABrokerRow]]:
+    candidates = []
+    for page, sheet in enumerate(sheets, 1):
+        labels: dict[str, list[tuple[int, object]]] = {}
+        for number, row in enumerate(sheet, 1):
+            if len(row) > 1 and row[1] is not None:
+                labels.setdefault(_workbook_label(row, 0), []).append((number, row[1]))
+        if not any(_workbook_label(row, 0) == "schedule a information" for row in sheet):
+            continue
+        if any(len(labels.get(label, [])) != 1 for label in ("broker", "commission paid", "group number")):
+            continue
+        name = clean_extracted_value(str(labels["broker"][0][1]))
+        row_number, value = labels["commission paid"][0]
+        commission = _workbook_currency(value)
+        if not is_probable_person_or_entity_name(name) or not commission:
+            continue
+        candidates.append([_held_workbook_broker(name, page, commission, [],
+            f"Broker: {name}\nCommission Paid, row {row_number}: {commission:.2f}",
+            "Verify the broker identity and that the commission detail belongs to this group before updating.")])
+    return candidates
+
+
+def _workbook_label(row: tuple, column: int) -> str:
+    return str(row[column] or "").strip().casefold() if column < len(row) else ""
+
+
+def _workbook_currency(value: object) -> Decimal | None:
+    if not isinstance(value, (int, float, Decimal)) or isinstance(value, bool):
+        return None
+    amount = Decimal(str(value))
+    if not amount.is_finite() or amount < 0:
+        return None
+    try:
+        if amount != amount.quantize(Decimal("0.01")):
+            return None
+    except InvalidOperation:
+        return None
+    return amount
+
+
+def _held_workbook_broker(name: str, page: int, total: Decimal, rows: list[ScheduleABrokerMoneyRow],
+                          source: str, reason: str) -> ScheduleABrokerRow:
+    return ScheduleABrokerRow(name=name, source_page=page, commission_total=f"{total:.2f}",
+        commission_rows=rows, commission_source_text=source, decision="REVIEW_REQUIRED",
+        evidence=[SourceEvidence(provider="Original workbook cells", page=page, source_text=source)],
+        validation_results=[ExtractionValidationResult(validator="business_rule_confirmation", status="ERROR", reason=reason)])
 
 
 def _delimited_text(text: str) -> str:
