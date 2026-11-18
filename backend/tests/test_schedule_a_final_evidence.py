@@ -62,6 +62,52 @@ def test_policy_period_evidence_does_not_use_a_correspondence_date():
     assert '04/15/2024' not in result.fields[0].source_text
 
 
+@pytest.mark.parametrize('variant', ['eyemed', 'eyemed_two_rows', 'aflac', 'aflac_wrong_count'])
+def test_carrier_report_columns_support_only_the_values_they_print(variant):
+    eye = variant.startswith('eyemed')
+    if eye:
+        source = '''Vision Insurance Information For Form 5500
+Report Start Date     Report End Date
+4/1/25       3/31/26
+Payments Received by carrier from plan or plan sponsor:
+Approximate number of    Approximate number of
+subscribers covered at        subscribers and
+Contract or    end of policy or contract   dependents covered at end
+Name of Plan   ID #     Enrollment Group   year:   of policy or contract year:   EIN   NAIC   Amount
+EXAMPLE    10165061001    Example Plan     140     219     430949844    71870     $20,024.81
+140      219       Total:      $20,024.81
+Commissions or fees paid by carrier to agents, brokers or other persons:
+'''
+        if variant == 'eyemed_two_rows':
+            source = source.replace('\n140      219', '\nOTHER   10165061002   Other Plan   3   4   430949844  71870  $300.00\n140      219')
+    else:
+        source = '''SCHEDULE A EARNINGS REPORT
+Group Number        Total Premium Collected      Group Covered Count
+    AEF36                 $459,287.17                427
+Group Address                 Name of Insurance Carrier
+Example Plan                  AFLAC
+Example City, State             PLAN YEAR 04/01/2025-03/31/2026
+'''
+    values = {
+        '1d. Contract/Policy Number': '10165061001' if eye else 'AEF36',
+        '1e. Persons Covered (End of Policy Year)': '219' if eye else '426' if variant.endswith('wrong_count') else '427',
+        '1f. Policy Year Beginning Date': '04/01/2025',
+        '1g. Policy Year Ending Date': '03/31/2026',
+        '10a. Total premiums or subscription charges paid to carrier': '20,024.81' if eye else '459,287.17',
+    }
+    result = NormalizedExtractionResult(provider='External', fields=[
+        NormalizedExtractionField(field_name=label, value=value, confidence=.99)
+        for label, value in values.items()
+    ])
+    attach_final_field_evidence(result, [(1, source)])
+    resolved = resolve_schedule_a_result(result)
+    decisions = {f.field_name.split('.')[0]: f.decision for f in resolved.fields}
+    assert decisions['1e'] == ('REVIEW_REQUIRED' if variant.endswith(('two_rows', 'wrong_count')) else 'AUTOMATIC')
+    assert decisions['10a'] == ('AUTOMATIC' if variant == 'eyemed' else 'REVIEW_REQUIRED')
+    if variant in {'eyemed', 'aflac'}:
+        assert all(decisions[field] == 'AUTOMATIC' for field in ('1d', '1f', '1g'))
+
+
 def test_a_nearby_phone_number_cannot_prove_an_incorrect_ein():
     result=NormalizedExtractionResult(provider='External',fields=[
         NormalizedExtractionField(field_name='1b. Insurance Carrier EIN',value='13-1898173',confidence=.99)])

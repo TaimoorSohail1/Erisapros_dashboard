@@ -30,6 +30,24 @@ _PERIOD=re.compile(r'(?:Policy\s+or\s+Contract\s+Year|Plan/Policy\s+Year|DATE\s+
 _PREMIUM=re.compile(r'(?:Total\s+Premiums?(?:\s*\*)?(?:\s+or\s+Subscriptions?\s+Charges)?\s+Paid\s+to\s+Carrier|'
     r'Total\s+Payments\s+Made\s+to\s+Carrier)[\s.:]*\$?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)',re.I)
 
+_COUNT = r'\d+(?:,\d{3})*'
+_CURRENCY = rf'{_COUNT}\.\d{{2}}'
+_VISION_PAID_TABLE = re.compile(
+    r'(?im)^\s*Payments Received by carrier from plan or plan sponsor:\s*\n'
+    r'(?P<header>[^\n]*(?:\n[^\n]*){0,7}?\bEIN\s+NAIC\s+Amount)[ \t]*\n\s*'
+    rf'[^\n]+?[ \t]+(?P<contract>\d{{11}})[ \t]+[^\n]+?[ \t]+(?P<subscribers>{_COUNT})[ \t]+'
+    rf'(?P<count>{_COUNT})[ \t]+\d{{9}}[ \t]+\d{{5}}[ \t]+\$[ \t]*(?P<premium>{_CURRENCY})[ \t]*\n\s*'
+    rf'(?P<total_subscribers>{_COUNT})[ \t]+(?P<total_count>{_COUNT})[ \t]+Total:[ \t]*\$[ \t]*'
+    rf'(?P<total_premium>{_CURRENCY})[ \t]*$',
+)
+_VISION_PERIOD = re.compile(r'(?im)^\s*Report Start Date[ \t]+Report End Date[ \t]*\n\s*'
+    r'(\d{1,2}/\d{1,2}/\d{2,4})[ \t]+(\d{1,2}/\d{1,2}/\d{2,4})[ \t]*$')
+_EARNINGS_GROUP_TABLE = re.compile(
+    r'(?im)^\s*Group Number[ \t]+Total Premium Collected[ \t]+Group Covered Count[ \t]*\n\s*'
+    rf'(?P<contract>[A-Z0-9-]+)[ \t]+\$[ \t]*(?P<premium>{_CURRENCY})[ \t]+(?P<count>{_COUNT})[ \t]*$',
+)
+_EARNINGS_PERIOD = re.compile(rf'(?im)(?:^|[ \t]{{2,}})[ \t]*Plan Year[ \t]+({_DATE})[ \t]*-[ \t]*({_DATE})[ \t]*$')
+
 
 def _attach(field,page,source,provider='Final labelled source evidence'):
     evidence=SourceEvidence(provider=provider,page=page,source_text=source)
@@ -49,6 +67,40 @@ def _money(value):
         return number if number.is_finite() else None
     except InvalidOperation:
         return None
+
+
+def _report_table_evidence(page_texts):
+    tables = []
+    for page, text in page_texts:
+        for row in _VISION_PAID_TABLE.finditer(text):
+            if (re.search(r'\bsubscribers\s+and\b', row['header'], re.I)
+                    and re.search(r'\bdependents\s+covered\s+at\s+end\b', row['header'], re.I)
+                    and all(_money(row[key]) == _money(row['total_'+key]) for key in ('subscribers','count','premium'))
+                    and _money(row['count']) >= _money(row['subscribers'])):
+                tables.append((page, row, list(_VISION_PERIOD.finditer(text))))
+        if 'schedule a earnings report' in text.casefold():
+            for row in _EARNINGS_GROUP_TABLE.finditer(text):
+                tables.append((page, row, list(_EARNINGS_PERIOD.finditer(text))))
+    if len(tables) != 1:
+        return {}
+    page, row, periods = tables[0]
+    source = row[0].strip()
+    evidence = {
+        '1d': (page, row['contract'], source),
+        '1e': (page, row['count'], source),
+        '10a': (page, row['premium'], source),
+    }
+    if len(periods) == 1:
+        period = periods[0]
+        try:
+            dates = [datetime.strptime(literal.replace('-', '/'), '%m/%d/%y' if len(literal.rsplit('/', 1)[-1]) == 2
+                                      else '%m/%d/%Y') for literal in period.groups()]
+        except ValueError:
+            return evidence
+        if dates[0] <= dates[1]:
+            evidence.update({code: (page, value.strftime('%m/%d/%Y'), period[0].strip())
+                             for code, value in zip(('1f', '1g'), dates, strict=True)})
+    return evidence
 
 
 def _recipient_evidence(result):
@@ -217,6 +269,11 @@ def provider_source_pages(raw):
 def attach_final_field_evidence(result, page_texts):
     """Evidence-only pass: no new values, default approvals or held decisions."""
     _recipient_evidence(result)
+    report = _report_table_evidence(page_texts)
+    contract = report.get('1d')
+    if contract and [field.value.strip().casefold() for field in result.fields
+                     if field.field_name.startswith('1d.')] != [contract[1].casefold()]:
+        report = {}
     for field in result.fields:
         code=field.field_name.split('.',1)[0]
         label=_LABELS.get(code)
@@ -224,6 +281,11 @@ def attach_final_field_evidence(result, page_texts):
         expected=re.sub(r'[^a-z0-9]','',str(field.value or '').casefold())
         if not expected:
             continue
+        if code in report:
+            page, printed, source = report[code]
+            matches = _money(field.value) == _money(printed) if code in {'1e', '10a'} else _normal(field.value) == _normal(printed)
+            if matches:
+                candidates.append((page, source))
         if code=='10a':
             review=(result.raw or {}).get('source_review',{})
             for check in review.get('reconciliations',[]):
