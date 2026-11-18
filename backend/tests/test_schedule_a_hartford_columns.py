@@ -183,3 +183,33 @@ Total $0.00 $0.00 $5.55 $0.00
     assert rows[0].fee_total=='5.55'
     assert [r.amount for r in rows[0].fee_rows]==['-2.11','3.22','4.44']
     assert all('000123' in r.coverage for r in rows[0].fee_rows)
+def test_hartford_source_binds_identity_and_keeps_multiple_policy_totals_in_review():
+    from app.models import NormalizedExtractionResult
+    from app.services.extractor import extract_hartford_schedule_a_fields
+    from app.services.schedule_a_extraction_pipeline import resolve_schedule_a_result
+
+    pages = [(1, "Disclosed under the brand name The Hartford. Hartford Life and Accident."),
+             (2, """The Hartford
+Annual Statement of Premiums and Producer Compensation
+Plan/Policy Year - 01/01/2025 to 12/31/2025
+Name of Insurance Carrier     EIN          NAIC Code       Policy Number
+HARTFORD LIFE AND ACCIDENT    06-0838648   70815           592A
+                                                           632A
+Premium was applied as follows during the Plan/Policy Year -
+Policy Number  Type of Benefit  Premium Applied    Approximate # of Lives Covered
+592A           PFL-STAN         $100.00            20
+592A           WD-STAT          $200.00            5
+632A           PFL-STAN         $350.00            42
+Total                           $650.00
+""")]
+    result = resolve_schedule_a_result(NormalizedExtractionResult(
+        provider="Native PDF", fields=extract_hartford_schedule_a_fields(pages),
+    ))
+    fields = {row.field_name.split(".", 1)[0]: row for row in result.fields}
+    assert (fields["1a"].value, fields["1a"].page, fields["1a"].decision) == (
+        "HARTFORD LIFE AND ACCIDENT", 2, "AUTOMATIC",
+    )
+    assert all(fields[code].decision == "AUTOMATIC" for code in ("1b", "1c"))
+    assert fields["1d"].candidate_values == ["592A", "632A"]
+    assert all(fields[code].decision == "REVIEW_REQUIRED" for code in ("1d", "1e", "10a"))
+    assert any("multiple contracts" in item.reason for item in fields["10a"].validation_results)
