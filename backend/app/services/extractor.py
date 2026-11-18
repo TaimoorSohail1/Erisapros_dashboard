@@ -11938,9 +11938,22 @@ def extract_principal_short_form_schedule_a_fields(
         text,
         re.IGNORECASE,
     )
-    persons = regex_first(text, [r"(?P<count>\d\s*\d?\s*\d?)\s*E\s*mployees"])
+    printed_persons = re.search(r"\bTotal[ \t]*\(e\)[ \t]*([\d,]+)\b", text, re.I)
+    persons = printed_persons[1] if printed_persons else regex_first(
+        text, [r"(?P<count>\d\s*\d?\s*\d?)\s*E\s*mployees"],
+    )
     premiums = regex_first(text, [r"Total\s+Premiums\s+Paid\s+to\s+Carrier\s*(\d\s*[\d,]*(?:\.\d{2})?)"])
-    commissions = regex_first(text, [r"Commissions\s+Paid\s*(\d\s*[\d,]*(?:\.\d{2})?)"])
+    payment_header = r"\(a\)\s*Commissions\s+Paid\s*\(b\)\s*Fees\s+Paid"
+    amount = r"\$?\s*([\d,]+(?:\.\d{2})?)"
+    payment_totals = re.search(
+        rf"{payment_header}\s*Total\s*\(from below\){amount}[ \t]+{amount}(?![\d,.])",
+        text, re.I,
+    )
+    commissions = payment_totals[1] if payment_totals else regex_first(
+        text, [r"Commissions\s+Paid\s*(\d\s*[\d,]*(?:\.\d{2})?)"],
+    )
+    fees = (money_value(payment_totals[2]) if payment_totals
+            else None if re.search(payment_header, text, re.I) else "0.00")
     values = [
         ("1a. Name of Insurance Company", "Principal Life Insurance Company"),
         ("1b. Insurance Carrier EIN", ein),
@@ -11950,7 +11963,7 @@ def extract_principal_short_form_schedule_a_fields(
         ("1f. Policy Year Beginning Date", normalize_schedule_a_date(dates.group("start"), end_of_month=False) if dates else None),
         ("1g. Policy Year Ending Date", normalize_schedule_a_date(dates.group("end"), end_of_month=True) if dates else None),
         ("3b. Amount of Commissions", money_value(_compact_spaced_number(commissions))),
-        ("3c. Amount of Fees", "0.00"),
+        ("3c. Amount of Fees", fees),
         ("3d. Purpose", "COMMISSIONS"),
         ("3e. Organizational Code", "3"),
         ("10a. Total premiums or subscription charges paid to carrier", money_value(_compact_spaced_number(premiums))),
@@ -11963,10 +11976,17 @@ def extract_principal_short_form_schedule_a_fields(
         for name, value in values
         if value not in (None, "")
     )
+    printed_source = {}
+    if printed_persons:
+        printed_source["1e. Persons Covered (End of Policy Year)"] = printed_persons[0]
+    if payment_totals:
+        printed_source["3b. Amount of Commissions"] = payment_totals[0]
+        printed_source["3c. Amount of Fees"] = payment_totals[0]
     return [
         field
         for name, value in values
-        if (field := _short_form_field(name, value, page=page, source_text=source)) is not None
+        if (field := _short_form_field(name, value, page=page,
+                                       source_text=printed_source.get(name, source))) is not None
     ]
 
 
