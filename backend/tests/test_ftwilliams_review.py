@@ -1173,6 +1173,14 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             )
         )
 
+    def test_compare_expands_insurance_abbreviation_before_carrier_company_suffix(self):
+        current = "ANTHEM LIFE & DISABILITY INSURANCE COMPANY"
+        extracted = "Anthem Life And Disability Ins Co"
+        self.assertFalse(values_meaningfully_different(current, extracted, tag="InsCarrierName"))
+        self.assertTrue(values_meaningfully_different(current, extracted, tag="PlanName"))
+        self.assertTrue(values_meaningfully_different(current, "Anthem Life Ins Co", tag="InsCarrierName"))
+        self.assertTrue(values_meaningfully_different("Example Ins Group", "Example Insurance Group", tag="InsCarrierName"))
+
     def test_compare_ignores_leading_carrier_article(self):
         self.assertFalse(
             values_meaningfully_different(
