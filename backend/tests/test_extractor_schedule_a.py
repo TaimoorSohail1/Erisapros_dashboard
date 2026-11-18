@@ -2026,6 +2026,28 @@ AD&D 592 | Base Commissions
         self.assertEqual(rows[0].commission_total, "1,897")
         self.assertEqual(rows[0].organization_code, "3")
 
+    def test_principal_short_form_uses_the_printed_compensation_and_coverage_totals(self):
+        worksheet = """
+            Contract # 1234567
+            Principal Life Insurance Company
+            Section 1: Coverage Approximate Number of Total (e) 111
+            Persons Covered at End Employees 92
+            of Policy Year Dependents 19
+            Section 2: Insurance fee and commissions information
+            (a) Commissions Paid       (b) Fees Paid
+            Total (from below)                1,039          415
+            Section 3: Persons receiving commissions and fees
+        """
+        fields = extract_principal_short_form_schedule_a_fields([(3, worksheet)])
+        selected = {field.field_name.split(".")[0]: field for field in fields}
+        self.assertEqual(selected["1e"].value, "111")
+        self.assertEqual(selected["3b"].value, "1,039")
+        self.assertEqual(selected["3c"].value, "415")
+        self.assertIn("Total (from below)", selected["3c"].source_text)
+        unreadable = worksheet.replace("415", "???")
+        fields = extract_principal_short_form_schedule_a_fields([(3, unreadable)])
+        self.assertFalse(any(field.field_name.startswith("3c.") for field in fields))
+
     def test_principal_short_form_restores_labelled_values_after_semantic_enrichment(self):
         pages = [(1, """
             C ontract # 1205934
