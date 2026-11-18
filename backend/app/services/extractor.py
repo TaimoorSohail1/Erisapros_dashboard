@@ -10260,13 +10260,18 @@ def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     combined = "\n".join(normalize_ocr_text(text) for _, text in page_texts if text)
     if not _is_hartford_annual_statement(combined):
         return []
-    identity_match = re.search(
+    identity_pattern = re.compile(
         r"Name of Insurance Carrier\s+EIN\s+NAIC Code\s+Policy Number\s*\n\s*"
         r"(?P<carrier>HARTFORD LIFE AND ACCIDENT)\s+"
         r"(?P<ein>\d{2}-?\d{7})\s+(?P<naic>\d{5})\s+(?P<policy>[A-Z0-9-]+)",
-        combined,
         flags=re.IGNORECASE,
     )
+    identity_page, identity_match = next(
+        ((page, match) for page, text in page_texts if (match := identity_pattern.search(normalize_ocr_text(text)))),
+        (None, None),
+    )
+    if identity_match is None:
+        identity_match = identity_pattern.search(combined)
     period_match = re.search(
         r"Plan/Policy Year\s*-\s*(\d{1,2}/\d{1,2}/\d{4})\s+to\s+(\d{1,2}/\d{1,2}/\d{4})",
         combined,
@@ -10283,13 +10288,13 @@ def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         flags=re.IGNORECASE | re.DOTALL,
     )
     premium_section = premium_section_match.group("section") if premium_section_match else ""
-    lives = [
-        int(value.replace(",", ""))
-        for value in re.findall(
-            r"(?m)^\s*[A-Z0-9-]+\s+.+?\$[0-9,]+\.\d{2}[ \t]+([0-9,]+)[ \t]*$",
-            premium_section,
-        )
-    ]
+    premium_rows = re.findall(
+        r"(?m)^\s*([A-Z0-9-]+)\s+.+?\$[0-9,]+\.\d{2}[ \t]+([0-9,]+)[ \t]*$",
+        premium_section,
+    )
+    lives = [int(value.replace(",", "")) for _, value in premium_rows]
+    policies = [identity_match["policy"].upper()] if identity_match else []
+    policies = list(dict.fromkeys([*policies, *(policy.upper() for policy, _ in premium_rows)]))
     broker_rows = extract_hartford_broker_rows(page_texts)
     page = next((number for number, text in page_texts if "HARTFORD LIFE AND ACCIDENT" in text.upper()), None)
     source_text = "Hartford annual statement of premiums and producer compensation"
@@ -10315,6 +10320,14 @@ def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         add("1b. Insurance Carrier EIN", format_eyemed_ein(identity_match.group("ein")))
         add("1c. NAIC Code", identity_match.group("naic"))
         add("1d. Contract/Policy Number", identity_match.group("policy"))
+        if identity_page is not None:
+            source = identity_match.group(0)
+            for field in fields:
+                field.page = identity_page
+                field.source_text = source
+                field.evidence = [SourceEvidence(
+                    provider="Hartford labeled insurance identity", page=identity_page, source_text=source,
+                )]
     if lives:
         add("1e. Persons Covered (End of Policy Year)", str(max(lives)), 0.98)
         # The cover letter can mention the carrier before the insurance page.
@@ -10350,6 +10363,16 @@ def extract_hartford_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         add("3c. Amount of Fees", fee_total, 0.99)
         add("3d. Purpose", derive_schedule_a_purpose(commission_total, fee_total), 0.99)
         add("3e. Organizational Code", broker_rows[0].organization_code, 0.99)
+    if len(policies) > 1:
+        reason = "The Hartford premium table includes multiple contracts. Review the policy allocation before applying these values."
+        for field in fields:
+            if field.field_name.startswith("1d."):
+                field.candidate_values = policies
+            if field.field_name.startswith(("1d.", "1e.", "3b.", "3c.", "3d.", "3e.", "10a.")):
+                field.decision = "REVIEW_REQUIRED"
+                field.validation_results.append(ExtractionValidationResult(
+                    validator="business_rule_confirmation", status="ERROR", reason=reason,
+                ))
     return fields
 
 
