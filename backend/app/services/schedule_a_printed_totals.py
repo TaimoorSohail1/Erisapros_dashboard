@@ -72,6 +72,20 @@ _ENROLLMENT_BLOCK = re.compile(
     rf"(?:[ \t]*\n)*{_BULLET}members:[ \t]*(?P<members>{_NUMBER})[ \t]*$",
     re.I | re.M,
 )
+_FORM_5500_INSURANCE_HEADING = r"^[ \t]*form[ \t]+5500[ \t]*-[ \t]*insurance[ \t]+information[ \t]*$"
+_FORM_5500_GROUP_NUMBER = r"^[ \t]*group[ \t]+number[ \t]*:"
+_FORM_5500_ENROLLMENT_BLOCK = re.compile(
+    rf"{_FORM_5500_INSURANCE_HEADING}\n"
+    r"[ \t]*group[ \t]+name[ \t]*:+[ \t]*[^\n]+\n"
+    rf"{_FORM_5500_GROUP_NUMBER}:*[ \t]*[A-Z0-9-]+[ \t]*\n"
+    r"(?:[ \t]*division[ \t]+number[ \t]*:[ \t]*\n)?"
+    rf"[ \t]*number[ \t]+of[ \t]+subscribers[ \t]*:+[ \t]*(?P<subscribers>{_NUMBER})[ \t]*\n"
+    rf"[ \t]*number[ \t]+of[ \t]+members[ \t]*:+[ \t]*(?P<members>{_NUMBER})[ \t]*\n"
+    r"(?:[ \t]*commissions[ \t]+paid[ \t]*:[ \t]*\n)?"
+    r"[ \t]*plan[ \t]+year[ \t]*:+[ \t]*(?P<begin>\d{1,2}/\d{1,2}/\d{4})[ \t]*-[ \t]*"
+    r"(?P<end>\d{1,2}/\d{1,2}/\d{4})[ \t]*$",
+    re.I | re.M,
+)
 _EXPOSURE_COLUMNS = r"benefit\s+employee\s+dependent\s+spouse\s+family\s+child"
 _EMPTY_EXPOSURE_SUMMARY = re.compile(
     rf"{_ENROLLMENT_HEADING}\s*\n\s*{_EXPOSURE_COLUMNS}\s*\n\s*insurance fees\b",
@@ -108,7 +122,14 @@ def covered_total(source: str) -> Decimal | None:
 def covered_member_counts(source: str) -> tuple[int, int] | None:
     match = _ENROLLMENT_BLOCK.fullmatch(source)
     if match is None:
-        return None
+        match = _FORM_5500_ENROLLMENT_BLOCK.fullmatch(source)
+        if match is None:
+            return None
+        try:
+            if datetime.strptime(match["end"], "%m/%d/%Y") < datetime.strptime(match["begin"], "%m/%d/%Y"):
+                return None
+        except ValueError:
+            return None
     subscribers = int(_number(match["subscribers"]))
     members = int(_number(match["members"]))
     return (subscribers, members) if members >= subscribers else None
@@ -174,11 +195,19 @@ def reconcile_last_month_exposures(fields: list[NormalizedExtractionField], page
 
 def reconcile_printed_member_total(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
     """Resolve a single headed enrollment block with separate population labels."""
-    if not any(re.search(r"\bschedule\s+a\b", text, re.I) for _, text in pages):
+    headings = sum(len(re.findall(_ENROLLMENT_HEADING, text, re.I | re.M)) for _, text in pages)
+    insurance_headings = sum(len(re.findall(_FORM_5500_INSURANCE_HEADING, text, re.I | re.M)) for _, text in pages)
+    if headings + insurance_headings != 1:
         return
-    if sum(len(re.findall(_ENROLLMENT_HEADING, text, re.I | re.M)) for _, text in pages) != 1:
-        return
-    blocks = [(page, match[0]) for page, text in pages for match in _ENROLLMENT_BLOCK.finditer(text)]
+    if insurance_headings:
+        if sum(len(re.findall(_FORM_5500_GROUP_NUMBER, text, re.I | re.M)) for _, text in pages) != 1:
+            return
+        block_pattern = _FORM_5500_ENROLLMENT_BLOCK
+    else:
+        if not any(re.search(r"\bschedule\s+a\b", text, re.I) for _, text in pages):
+            return
+        block_pattern = _ENROLLMENT_BLOCK
+    blocks = [(page, match[0]) for page, text in pages for match in block_pattern.finditer(text)]
     if len(blocks) != 1:
         return
     page, source = blocks[0]
