@@ -834,8 +834,11 @@ class MongoRepository(Repository):
     async def correct_extracted_value(self, field: ExtractedField, value: str, evidence: SourceEvidence, reason: str) -> ExtractedField | None:
         if not ObjectId.is_valid(field.id):
             return None
+        # Extraction inserts use JSON timestamps. Field edits store BSON dates.
+        serialized_timestamp = field.model_dump(mode="json", include={"updated_at"})["updated_at"]
         doc = await self.db.extracted_fields.find_one_and_update(
-            {"_id": ObjectId(field.id), "filing_id": field.filing_id, "updated_at": field.updated_at,
+            {"_id": ObjectId(field.id), "filing_id": field.filing_id,
+             "updated_at": {"$in": [field.updated_at, serialized_timestamp]},
              "value": field.value, "proposed_value": field.proposed_value, "status": field.status},
             {"$set": {"value": value, "proposed_value": value, "page": evidence.page,
                       "source_text": evidence.source_text, "status_reason": reason, "updated_at": datetime.utcnow()}},
