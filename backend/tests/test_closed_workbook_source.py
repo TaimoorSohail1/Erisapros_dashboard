@@ -27,6 +27,14 @@ def test_mismatched_printed_total_cannot_verify_list():
 def test_missing_formula_cache_cannot_verify_list():
     assert closed_workbook_roster(source(detail='=50+50')) is None
 
+def test_explicit_zero_organization_code_is_preserved_and_blank_defaults_to_three():
+    from openpyxl import load_workbook
+    for value,expected,defaulted in [(0,'0',False),(None,'3',True)]:
+        book=load_workbook(BytesIO(source()));book.active['C7']=value;b=BytesIO();book.save(b)
+        _,rows,_,_=closed_workbook_roster(b.getvalue())
+        assert rows[0].organization_code==expected
+        assert rows[0].organization_code_defaulted==defaulted
+
 def test_all_sheets_checked_and_duplicate_policy_grid_not_assumed_same():
     from openpyxl import load_workbook
     book=load_workbook(BytesIO(source()));book.copy_worksheet(book.active);b=BytesIO();book.save(b)

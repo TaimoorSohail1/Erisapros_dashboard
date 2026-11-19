@@ -72,9 +72,11 @@ def closed_workbook_roster(content):
                 if not recipient:return None
                 row=_row(recipient[0],recipient[1:],*amounts,page,text,provider='OOXML and openpyxl cell agreement')
                 if row is None:return None
-                code=str(labels.get('3e') or '3').strip()
-                if code not in {'1','2','3','4','5','6','7','8','9'}:return None
+                original_code=labels.get('3e')
+                code='3' if original_code is None or not str(original_code).strip() else str(original_code).strip()
+                if code not in {str(i) for i in range(10)}:return None
                 row.organization_code=code
+                row.organization_code_defaulted=original_code is None or not str(original_code).strip()
                 row.purpose='COMMISSIONS AND FEES' if Decimal(amounts[1]) else 'COMMISSIONS'
                 grids.append((str(labels['1d']),row))
         if len(grids)!=1:return None
