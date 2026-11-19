@@ -49,6 +49,7 @@ from app.models import (
     FTWilliamsReviewStatus,
     FTWilliamsUpdateReceipt,
     ScheduleAContractType,
+    SourceEvidence,
     ScheduleABrokerMatch,
     ScheduleABrokerRow,
     ScheduleABrokerRosterReview,
@@ -494,6 +495,7 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
+        fields = [field.model_copy(deep=True) for field in fields]
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         if apply_automatic_derivations:
@@ -1193,6 +1195,7 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
+        fields = [field.model_copy(deep=True) for field in fields]
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         computed_contract_classification = apply_schedule_a_classification(
@@ -2073,9 +2076,9 @@ class FTWilliamsReviewService:
         }
 
     @staticmethod
-    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, tuple[str, ExtractedFieldStatus, str | None, float]]:
+    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, ExtractedField]:
         return {
-            field.id: (field.proposed_value, field.status, field.status_reason, float(field.confidence or 0))
+            field.id: field.model_copy(deep=True)
             for field in fields
             if field.id
         }
@@ -2084,28 +2087,29 @@ class FTWilliamsReviewService:
     async def _persist_automatic_field_changes(
         repo,
         filing_id: str,
-        before: dict[str, tuple[str, ExtractedFieldStatus, str | None, float]],
+        before: dict[str, ExtractedField],
         fields: list[ExtractedField],
     ) -> None:
         for field in fields:
-            if not field.id:
+            original = before.get(field.id)
+            if not original or original.status == ExtractedFieldStatus.EDITED:
                 continue
-            current = (
-                field.proposed_value,
-                field.status,
-                field.status_reason,
-                float(field.confidence or 0),
-            )
-            if before.get(field.id) == current:
+            state_keys = {"proposed_value", "status", "status_reason", "confidence", "page", "source_text"}
+            if original.model_dump(include=state_keys) == field.model_dump(include=state_keys):
                 continue
-            await repo.update_field(
+            saved = await repo.update_field(
                 filing_id,
                 field.id,
                 field.proposed_value,
                 status=field.status,
                 status_reason=field.status_reason,
                 confidence=field.confidence,
+                verified_evidence=SourceEvidence(page=field.page, source_text=field.source_text),
+                expected_field=original,
             )
+            if saved is None:
+                raise ValueError("An extracted field changed during automatic verification. Refresh the review before continuing.")
+            field.updated_at = saved.updated_at
 
     async def send_approved_update(self, filing_id: str, payload: FTWilliamsSendUpdateRequest) -> FTWilliamsReview | None:
         repo = get_repository()
@@ -3047,6 +3051,32 @@ class FTWilliamsReviewService:
                 # After FT Williams creates it, the exact contract + carrier
                 # identity safely reconciles the decision to the assigned row.
                 schedule_a_error = None
+                if (
+                    not matched_schedule_a
+                    and (existing_match or {}).get("source") == "AUTO_NEW_SCHEDULE_A"
+                    and not (existing_match or {}).get("new_target_confirmed")
+                    and str((existing_match or {}).get("schedule_desc") or "").strip()
+                    and existing_review is not None
+                    and not existing_review.update_attempted_count
+                    and not existing_review.update_response_xml
+                    and not existing_review.active_failure
+                    and existing_review.status not in {
+                        FTWilliamsReviewStatus.UPDATE_SENT,
+                        FTWilliamsReviewStatus.UPDATE_FAILED,
+                        FTWilliamsReviewStatus.UPDATE_UNKNOWN,
+                    }
+                    and any(
+                        normalize_compare_value((record.get("query_results") or {}).get("ScheduleDesc"))
+                        == normalize_compare_value((existing_match or {}).get("schedule_desc"))
+                        for record in schedule_a_records
+                    )
+                ):
+                    # Another filing may have used this generated description
+                    # while this unsubmitted proposal was waiting. Generate a
+                    # fresh unique label; never bind a different policy by name.
+                    automatic_schedule_a_match = self._automatic_new_schedule_a_match(
+                        fields, schedule_statuses, schedule_a_records,
+                    )
             elif manual_sequence:
                 # A reviewer-selected sequence is authoritative.  Refresh its
                 # current values even when extracted identity fields differ;
@@ -7645,20 +7675,18 @@ class FTWilliamsReviewService:
     ) -> dict | None:
         """Reconcile a create-new decision to the exact row FT Williams assigned."""
         expected_desc_key = normalize_compare_value(expected_schedule_desc)
-        if expected_desc_key:
-            description_matches = [
-                record
-                for record in records
-                if normalize_compare_value(
-                    (record.get("query_results") or {}).get("ScheduleDesc")
-                )
-                == expected_desc_key
-            ]
-            if len(description_matches) == 1:
-                return description_matches[0]
+        expected_ein = self._normalize_ein_digits(next(
+            (field.proposed_value or field.value for field in fields
+             if field.form_type == FormType.SCHEDULE_A and resolve_ftw_tag(field) == "InsCarrierEIN"),
+            None,
+        ))
+        identity_matches = []
         for record in records:
             current = record.get("query_results") or {}
             if not isinstance(current, dict) or not current:
+                continue
+            current_ein = self._normalize_ein_digits(current.get("InsCarrierEIN") or current.get("INS_CARRIER_EIN"))
+            if expected_ein and current_ein and expected_ein != current_ein:
                 continue
             status = FTWilliamsStatusItem(
                 type="ScheduleA",
@@ -7671,8 +7699,18 @@ class FTWilliamsReviewService:
             contract_matches = bool({"Exact contract", "Contract"} & reasons)
             carrier_matches = bool({"Carrier EIN", "NAIC", "Carrier name", "Carrier name partial"} & reasons)
             if contract_matches and carrier_matches and not self._schedule_identity_conflicts(fields, status):
-                return record
-        return None
+                identity_matches.append(record)
+        # Description is a disambiguating label, not policy identity. Parallel
+        # filings from the same carrier can generate the same eight characters.
+        description_matches = [
+            record for record in identity_matches
+            if expected_desc_key and normalize_compare_value(
+                (record.get("query_results") or {}).get("ScheduleDesc")
+            ) == expected_desc_key
+        ]
+        if len(description_matches) == 1:
+            return description_matches[0]
+        return identity_matches[0] if len(identity_matches) == 1 else None
 
     def _automatic_new_schedule_a_match(
         self,
@@ -7766,12 +7804,15 @@ class FTWilliamsReviewService:
         base = re.sub(r"[^A-Z0-9]", "", str(source).upper())[:8] or "SCHEDULE"
         if base not in existing:
             return base
-        stem = base[:7] or "SCHEDUL"
-        for index in range(1, 10):
-            candidate = f"{stem}{index}"[:8]
+        digits = len(str(len(existing) + 1))
+        if digits > 8:
+            raise ValueError("No unique eight-character Schedule A description is available.")
+        stem = base[:8 - digits]
+        for index in range(1, len(existing) + 2):
+            candidate = f"{stem}{index:0{digits}d}"
             if candidate not in existing:
                 return candidate
-        return base[:6] + "99"
+        raise ValueError("No unique eight-character Schedule A description is available.")
 
     def _extract_plan_lookup_identifiers(self, fields: list[ExtractedField], filing=None) -> dict:
         sponsor_ein = self._normalize_ein(

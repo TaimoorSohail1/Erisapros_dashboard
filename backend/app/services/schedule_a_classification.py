@@ -157,6 +157,8 @@ def apply_schedule_a_classification(
     classification_signals: list[str] | None = None,
 ) -> ScheduleAClassification:
     for field in fields:
+        if field.status == ExtractedFieldStatus.EDITED:
+            continue
         if not str(field.status_reason or "").startswith("Automatically derived"):
             continue
         original_value = str(field.value or "").strip()
@@ -175,7 +177,7 @@ def apply_schedule_a_classification(
     if classification.contract_type == ScheduleAContractType.NONEXPERIENCE_RATED:
         line_10a = next((field for field in fields if field.mapped_rule_key == NONEXPERIENCE_PREMIUM_RULE), None)
         premium_source = _premium_amount_source(fields)
-        if line_10a and premium_source and not _has_meaningful_amount(line_10a.proposed_value or line_10a.value):
+        if line_10a and line_10a.status != ExtractedFieldStatus.EDITED and premium_source and not _has_meaningful_amount(line_10a.proposed_value or line_10a.value):
             line_10a.proposed_value = str(premium_source.proposed_value or premium_source.value or "").strip()
             trusted_premium = _field_has_trusted_source_evidence(premium_source)
             line_10a.status = (
@@ -197,7 +199,7 @@ def apply_schedule_a_classification(
         else NONEXPERIENCE_ZERO_RULES
     )
     for field in fields:
-        if field.form_type != FormType.SCHEDULE_A or field.mapped_rule_key not in zero_rules:
+        if field.form_type != FormType.SCHEDULE_A or field.mapped_rule_key not in zero_rules or field.status == ExtractedFieldStatus.EDITED:
             continue
         direct_source = field if _field_has_trusted_source_evidence(field) and str(field.value or "").strip() else None
         trusted_source = direct_source or classification_source
@@ -251,7 +253,7 @@ def _derive_experience_calculated_totals(fields: list[ExtractedField]) -> None:
     )
     for target_rule, component_rules in formulas:
         target = by_rule.get(target_rule)
-        if not target or _field_has_trusted_source_evidence(target):
+        if not target or target.status == ExtractedFieldStatus.EDITED or _field_has_trusted_source_evidence(target):
             continue
         components = [by_rule.get(rule) for rule, _ in component_rules]
         if any(

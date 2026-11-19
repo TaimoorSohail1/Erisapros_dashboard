@@ -303,6 +303,32 @@ class FTWAutomationPolicyTests(unittest.TestCase):
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.reasons, [])
 
+    def test_derived_evidence_survives_persistence_before_automation_evaluation(self):
+        from app.services.ftwilliams_review import FTWilliamsReviewService
+        from app.services.schedule_a_classification import apply_schedule_a_classification
+        filing, review, extracted, settings = self.safe_case()
+        repo = MemoryRepository()
+        target = ExtractedField(filing_id=filing.id, source_field_name="Earned", normalized_field_name="earned",
+            mapped_rule_key="schedule_a_part_iii_9a_4_earned_1_2_3", form_type=FormType.SCHEDULE_A,
+            value="", proposed_value="0", status=ExtractedFieldStatus.MATCHED, confidence=.95)
+        premium = ExtractedField(filing_id=filing.id, source_field_name="Premium", normalized_field_name="premium",
+            mapped_rule_key="schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier",
+            form_type=FormType.SCHEDULE_A, value="450", proposed_value="450", page=2,
+            source_text="Nonexperience rated premium: 450.00", confidence=.95)
+        stored = run_async(repo.add_fields([extracted, target, premium]))
+        review.fields[0].field_id = stored[0].id
+        review.fields.append(FTWilliamsComparisonField(field_id=stored[1].id, label="Earned",
+            form_type=FormType.SCHEDULE_A, extraction_status=ExtractedFieldStatus.MATCHED,
+            proposed_value="0", changed=True, update_included=True, decision=FTWFieldDecision.WILL_UPDATE))
+        blocked = FTWAutomationPolicy(settings).evaluate(filing, review, stored)
+        self.assertEqual(blocked.reasons, ["Earned has no source evidence."])
+        before = FTWilliamsReviewService._automatic_field_state(stored)
+        derived = [field.model_copy(deep=True) for field in stored]
+        apply_schedule_a_classification(derived, ["EXPLICIT_NONEXPERIENCE_RATED"])
+        run_async(FTWilliamsReviewService._persist_automatic_field_changes(repo, filing.id, before, derived))
+        decision = FTWAutomationPolicy(settings).evaluate(filing, review, run_async(repo.list_fields(filing.id)))
+        self.assertEqual(decision.status, FTWAutomationStatus.SAFE_TO_SEND, decision.reasons)
+
     def test_valid_low_confidence_value_with_source_evidence_can_update_blank_ftw_field(self):
         filing, review, extracted, settings = self.safe_case()
         extracted.status = ExtractedFieldStatus.LOW_CONFIDENCE
