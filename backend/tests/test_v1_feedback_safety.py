@@ -69,6 +69,7 @@ class V1FeedbackSafetyTests(unittest.TestCase):
     def test_complete_source_roster_removes_carried_forward_and_zero_payment_rows_only_on_selected_schedule(self):
         from app.services.schedule_a_broker_roster import attest_source_broker_roster, broker_roster_is_complete
         source_rows = [ScheduleABrokerRow(name="Current broker", address_line_1="10 Main St",
+            city="BOSTON", state="MA", zip_code="02110",
             commission_total="100", fee_total="0", organization_code="3", source_page=1,
             evidence=[SourceEvidence(provider="Local source", page=1, source_text="Current broker 10 Main St 100 0")]),
             ScheduleABrokerRow(name="Unpaid broker", commission_total="0", fee_total="0", source_page=1,

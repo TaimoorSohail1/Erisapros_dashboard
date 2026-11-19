@@ -366,7 +366,7 @@ assert.match(
 );
 assert.match(source, /Add as new/, "Unmatched extracted brokers must offer an explicit new-row decision.");
 assert.match(source, /setFTWilliamsScheduleABrokerMatches/, "Broker match decisions must be saved through the FT Williams review API.");
-assert.match(source, /Approve confirms the complete displayed broker list/, "Approval explicitly confirms the complete source-bound broker list.");
+assert.match(source, /Verified brokers continue automatically/, "Verified brokers do not require another approval.");
 assert.match(source, /heading\.current\?\.scrollIntoView/, "Opening a broker review brings its controls into view.");
 assert.match(
   styles,

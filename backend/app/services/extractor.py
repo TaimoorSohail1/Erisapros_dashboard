@@ -572,6 +572,8 @@ class ExtractionService:
                     note_incomplete_source_roster(final_result,
                         'Independent full-document broker read failed; existing brokers will be preserved.')
         from app.services.schedule_a_broker_roster import source_roster_review
+        from app.services.broker_address_policy import apply_address_policy
+        final_result.schedule_a_broker_rows = apply_address_policy(final_result.schedule_a_broker_rows)
         final_result.schedule_a_broker_roster = source_roster_review(final_result.schedule_a_broker_rows, final_result.schedule_a_broker_roster)
         final_result.schedule_a_broker_roster.source_sha256 = hashlib.sha256(file_bytes).hexdigest()
         capture_extraction_stage(final_result, "final_normalized")

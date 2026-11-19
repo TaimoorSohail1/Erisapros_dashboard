@@ -1434,6 +1434,11 @@ class FTWilliamsReviewService:
             return await self._save_broker_identity_review(filing_id, payload, actor=actor)
 
         rows = self._normalized_schedule_a_broker_rows(payload.rows)
+        # Address acknowledgements are server-issued during source-bound review.
+        from app.services.broker_address_policy import ADDRESS_CONFIRMATION, apply_address_policy
+        for row in rows:
+            row.validation_results = [v for v in row.validation_results if v.validator != ADDRESS_CONFIRMATION]
+        rows = apply_address_policy(rows)
         try:
             # Let reviewers correct one broker at a time even when another row
             # is still invalid. The complete set is validated again before send.
@@ -5793,7 +5798,8 @@ class FTWilliamsReviewService:
         # Extraction already removes parser duplicates. Rows reaching the review
         # workspace are reviewer-controlled records, so preserve their order and
         # exact values even when two recipients share the same name/address.
-        return normalize_broker_payment_purposes(default_blank_broker_values(default_blank_organization_codes(normalized)))
+        from app.services.broker_address_policy import apply_address_policy
+        return apply_address_policy(normalize_broker_payment_purposes(default_blank_broker_values(default_blank_organization_codes(normalized))))
 
     def _resolve_schedule_a_brokers(
         self,

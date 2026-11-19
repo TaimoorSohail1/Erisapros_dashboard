@@ -1284,6 +1284,7 @@ def _schedule_a_broker_row_update_values(
     # It is produced by the broker matcher and is not an incomplete new row.
     if row is None:
         return {}
+    from app.services.broker_address_policy import address_state, partial_address_confirmed
     validations = row.get("validation_results", []) if isinstance(row, dict) else getattr(row, "validation_results", [])
     has_errors = any(
         str(item.get("status", "") if isinstance(item, dict) else getattr(item, "status", "")).upper() == "ERROR"
@@ -1349,7 +1350,6 @@ def _schedule_a_broker_row_update_values(
         f"Code{index}": code,
     }
     normalized: dict[str, str] = {}
-    identity_confirmed = not isinstance(row, dict) and broker_identity_is_confirmed(row)
     for tag, value in values.items():
         text = normalize_ftw_update_value(
             FormType.SCHEDULE_A,
@@ -1357,9 +1357,14 @@ def _schedule_a_broker_row_update_values(
             value,
             uppercase_text=True,
         )
-        if str(text or "").strip() or (identity_confirmed and re.fullmatch(
-            r"(?:AddressLine1|AddressLine2|City|State|ZipCode)\d+", tag)):
+        if str(text or "").strip() or re.fullmatch(
+            r"(?:AddressLine1|AddressLine2|City|State|ZipCode)\d+", tag):
             normalized[tag] = str(text)
+    if require_complete and address_state(row) == 'PARTIAL' and (isinstance(row, dict) or not partial_address_confirmed(row)):
+        raise FTWPayloadValidationError([FTWFieldValidationIssue(
+            tag=f"AddressLine1{index}", value=_broker_row_attr(row, "address_line_1"),
+            reason="Partial broker address requires review or explicit Save and send as-is.",
+        )])
     return normalized
 
 

@@ -8,6 +8,7 @@ from app.models import SourceEvidence
 from app.services.schedule_a_broker_roster import _fingerprint, _money
 from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
 from app.services.xml_builder import schedule_a_broker_update_values
+from app.services.broker_address_policy import ADDRESS_REVIEW, address_state, acknowledge_partial_address
 
 
 def digest(value):
@@ -93,7 +94,8 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
             row.validation_results = [v.model_copy(deep=True) for v in original.validation_results
                 if v.status == 'ERROR' and not (v.validator=='recipient_identity_ambiguity' and index in identity_indexes) and v.validator not in {
                     'complete_source_broker_roster', 'payment_classification_ambiguity',
-                    'business_rule_confirmation', 'source_section_ambiguity', 'broker_total_reconciliation'}]
+                    'business_rule_confirmation', 'source_section_ambiguity', 'broker_total_reconciliation', ADDRESS_REVIEW,
+                    'source_zip_shape', 'printed_recipient_address_unreadable', 'broker_address_semantics'}]
             if row.validation_results: raise ValueError('Unresolved source issues require correction before roster confirmation.')
         elif source.startswith('DISCLOSURE:'):
             key = source[11:]; disclosure = disclosures.get(key)
@@ -112,8 +114,12 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
         else: raise ValueError('Unknown broker source reference.')
         if _money(row.commission_total) is None or _money(row.fee_total) is None:
             raise ValueError('Commission and fee amounts must be classified; unknown is not zero.')
-        if not all(str(getattr(row, key) or '').strip() for key in ('name','address_line_1','city','state','zip_code')):
-            raise ValueError('Complete the broker name, street, city, state and ZIP.')
+        if not row.name.strip():
+            raise ValueError('Broker name is required.')
+        if address_state(row) == 'PARTIAL':
+            if not request.accept_partial_addresses:
+                raise ValueError('Broker address is incomplete. Complete it or choose Save and send as-is.')
+            acknowledge_partial_address(row)
         row.organization_code = str(row.organization_code or '').strip() or '3'
         row.purpose = canonical_broker_payment_purpose(row.commission_total,row.fee_total)
         verified.append(row)
@@ -132,6 +138,7 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     reviewed = status.model_copy(deep=True)
     reviewed.reviewer_confirmation = {'actor': actor, 'at': datetime.now(timezone.utc).isoformat(),
         'reason': request.reason.strip(), 'complete_list_confirmed': True,
+        'partial_addresses_accepted': request.accept_partial_addresses,
         'empty_list_evidence': request.empty_list_evidence.strip(), 'source_context_sha256': source_context,
         'snapshot_sha256': snapshot, 'roster_sha256': _fingerprint(verified),
         'disclosure_decisions': decisions, 'row_sources': final_sources, 'excluded_source_indexes': excluded,
