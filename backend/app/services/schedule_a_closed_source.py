@@ -63,6 +63,8 @@ def closed_native_roster(content, pages, coverage):
         if len(rows) != 1:
             return [], None
         row = rows[0]
+        if any(number != row.source_page and re.search(r'\$\s*\d', text) for number,text in pages):
+            return [], None
         import pdfplumber
         from app.services.schedule_a_pdf_source import source_page
         with pdfplumber.open(BytesIO(content)) as document:
@@ -105,6 +107,8 @@ def closed_native_roster(content, pages, coverage):
     import pdfplumber
     from app.services.schedule_a_pdf_source import source_page
     reference = rows[0]
+    if any(number != reference.source_page and re.search(r'\$\s*\d', text) for number,text in pages):
+        return [], None
     with pdfplumber.open(BytesIO(content)) as pdf:
         if len(pdf.pages) != coverage.get('page_count'):
             return [], None

@@ -71,6 +71,10 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
         issue.validator == 'broker_total_reconciliation' and issue.status == 'ERROR'
         for row in original_rows for issue in row.validation_results
     )
+    from app.services.schedule_a_native_brokers import printed_payment_totals
+    source_totals = printed_payment_totals(original_rows)
+    if source_totals is not None:
+        expected_payment_totals = source_totals
     from app.services.broker_identity_review import confirmed_identity_decisions, apply_identity_decisions
     identity_decisions=confirmed_identity_decisions(rows,original_rows,sources,status,source_context,snapshot)
     identity_indexes={i for group in identity_decisions for i in group['source_indexes']}

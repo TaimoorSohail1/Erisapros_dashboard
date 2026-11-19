@@ -124,7 +124,7 @@ def broker_roster_is_complete(rows, status=None):
         return False
     fingerprint = _fingerprint(rows)
     proofs = [{v.normalized_value for v in row.validation_results if v.validator == VALIDATOR and v.status == "PASS"
-        and re.fullmatch(r"[a-f0-9]{64}:" + fingerprint + r":[a-f0-9]{64}", str(v.normalized_value or ""))} for row in rows]
+        and re.fullmatch(r"[a-f0-9]{64}:" + fingerprint + r":[a-f0-9]{64}:v2", str(v.normalized_value or ""))} for row in rows]
     return bool(set.intersection(*proofs))
 
 
@@ -193,7 +193,7 @@ def attest_source_broker_roster(result, independent_rows, source_sha256, *, nati
         if len(totals) != 1 or sum((Decimal(_money(getattr(row, attribute))) for row in rows), Decimal(0)) not in totals:
             return note_incomplete_source_roster(result, 'Broker payments do not reconcile with verified commission and fee section totals.')
     coverage_sha256 = hashlib.sha256(json.dumps(coverage, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    proof = source_sha256 + ":" + _fingerprint(rows) + ':' + coverage_sha256
+    proof = source_sha256 + ":" + _fingerprint(rows) + ':' + coverage_sha256 + ':v2'
     for row in rows:
         row.validation_results.append(ExtractionValidationResult(validator=VALIDATOR, status="PASS",
             normalized_value=proof, reason=("Two independent source reads agree on every cell of the closed recipient grid and its reconciled category totals."

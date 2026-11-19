@@ -11,7 +11,7 @@ from datetime import datetime
 
 from app.models import AuditLog, ExtractedFieldStatus, NormalizedExtractionField, NormalizedExtractionResult
 from app.services.broker_address_policy import apply_address_policy
-from app.services.schedule_a_broker_roster import attest_source_broker_roster, broker_roster_is_complete, source_roster_review
+from app.services.schedule_a_broker_roster import attest_source_broker_roster, broker_roster_is_complete, source_roster_review, _money
 from app.services.storage import StorageService
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
         from app.services.extractor import extract_pdf_layout_text_pages, extract_schedule_a_broker_rows_from_document, extract_schedule_a_acroform
         from app.services.schedule_a_statement_evidence import statement_identity_fields
         pages = await asyncio.to_thread(extract_pdf_layout_text_pages, content)
-        coverage, native_proof, independent = {}, None, None
+        coverage, native_proof, independent, unbound_payment_mismatch = {}, None, None, False
         if not evidence:
             # Old traces without a hash cannot act as a corroborating read.
             # Establish a NEW proof from two separate native source readers.
@@ -68,8 +68,12 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
             independent = await asyncio.to_thread(extract_schedule_a_broker_rows_from_document, content, document['file_name'], page_coverage=coverage)
             closed_rows, native_proof = await asyncio.to_thread(closed_native_roster, content, pages, coverage)
             if native_proof is None:
-                return filing, fields
-            independent = closed_rows
+                from app.services.schedule_a_native_brokers import printed_payment_totals
+                if printed_payment_totals(independent) is None:
+                    return filing, fields
+                unbound_payment_mismatch = True
+            else:
+                independent = closed_rows
             evidence = {'document_worksheet_summaries': [], 'extraction_stages': []}
         recovered = {f.field_name: f for f in statement_identity_fields(pages)}
         widgets, _ = await asyncio.to_thread(extract_schedule_a_acroform, content)
@@ -106,6 +110,11 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
             from app.services.schedule_a_broker_roster import separate_service_provider_disclosures
             separate_service_provider_disclosures(result, pages)
             from app.services.schedule_a_broker_source_repair import repair_source_rows
+            if unbound_payment_mismatch and not any(v.validator.startswith('reviewer_') and v.status == 'PASS'
+                    for row in result.schedule_a_broker_rows for v in row.validation_results):
+                # This is review-only recovery of an explicit source mismatch,
+                # never independent corroboration or permission to replace.
+                result.schedule_a_broker_rows = [row.model_copy(deep=True) for row in independent]
             if native_proof is not None:
                 from app.services.schedule_a_broker_source_repair import set_corroborated_totals
                 protected_rows = any(v.validator.startswith('reviewer_') and v.status == 'PASS'
@@ -115,7 +124,7 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
                 set_corroborated_totals(result, independent, corroboration='two independent source readers and both printed section totals')
                 repaired = not protected_rows
             else:
-                repaired = repair_source_rows(result, independent)
+                repaired = repair_source_rows(result, independent) or unbound_payment_mismatch
             from app.services.schedule_a_broker_validation import hold_invalid_source_organization_codes, hold_invalid_source_zip_codes
             for rows in (result.schedule_a_broker_rows, independent):
                 hold_invalid_source_organization_codes(rows)
@@ -126,7 +135,7 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
             else:
                 attest_source_broker_roster(result, independent, source_sha, native_proof=native_proof)
             checked = source_roster_review(result.schedule_a_broker_rows, result.schedule_a_broker_roster)
-            if checked.mode == 'REPLACE' or repaired:
+            if checked.mode == 'REPLACE' or repaired or (filing.schedule_a_broker_roster is not None and filing.schedule_a_broker_roster != checked):
                 values = {'schedule_a_broker_rows': result.schedule_a_broker_rows, 'schedule_a_broker_roster': checked}
             # Keep displayed section totals synchronized only with the separately
             # corroborated category sums, never with unverified nearby numbers.
@@ -142,6 +151,36 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
                         'status':ExtractedFieldStatus.MATCHED, 'confidence':native.confidence, 'page':native.page,
                         'source_text':native.source_text, 'status_reason':'Category sum recovered from labelled physical rows and independent source corroboration.',
                         'updated_at':datetime.utcnow()}, deep=True)))
+            # Withdraw summaries made under an older, weaker automatic proof
+            # when the current source cannot corroborate the complete amounts.
+            # User corrections and explicit Keep Current choices are protected.
+            verified = {f.field_name for f in result.fields if f.source_text and f.source_text.startswith(
+                'Verified sum of full labelled recipient payment columns;')}
+            originals = {f.get('field_name'): f for f in final.get('fields', [])}
+            from app.services.schedule_a_native_brokers import printed_payment_totals
+            printed = printed_payment_totals(independent)
+            for field in fields:
+                label = field.mapped_label or field.source_field_name
+                owned = (str(field.source_text or '').startswith('Verified sum of full labelled recipient payment columns;')
+                    or str(field.status_reason or '').startswith('SOURCE_RECOVERY_PENDING:'))
+                printed_value = (format(printed[0 if str(label).startswith('3b.') else 1],'f')
+                    if printed is not None and str(label).startswith(('3b.','3c.')) else None)
+                wrong_printed_value = printed_value is not None and _money(field.value) != _money(printed_value)
+                if ((not owned and not wrong_printed_value) or label in verified or not str(label).startswith(('3b.', '3c.'))
+                        or field.status in {ExtractedFieldStatus.EDITED, ExtractedFieldStatus.IGNORED}
+                        or field.keep_current_context or re.search(r'reviewer|manual|user',field.status_reason or '',re.I)):
+                    continue
+                native = originals.get(label) or {}
+                value = printed_value if printed_value is not None else (native.get('value') if native.get('value') is not None else field.value)
+                reason = 'SOURCE_RECOVERY_PENDING: payment totals require reconciliation against the complete source.'
+                source_text = ('\n'.join(e.source_text for row in independent for e in row.evidence if e.source_text)
+                    if printed_value is not None else native.get('source_text') or field.source_text)
+                if field.value == value and not field.proposed_value and field.status == ExtractedFieldStatus.LOW_CONFIDENCE and field.status_reason == reason:
+                    continue
+                updates.append((field, field.model_copy(update={'value':value,'proposed_value':'',
+                    'confidence':0,'status':ExtractedFieldStatus.LOW_CONFIDENCE,
+                    'source_text':source_text,'status_reason':reason,
+                    'updated_at':datetime.utcnow()},deep=True)))
         if not updates and not values:
             return filing, fields
         saved = await repo.save_source_verification(filing, updates, values)
