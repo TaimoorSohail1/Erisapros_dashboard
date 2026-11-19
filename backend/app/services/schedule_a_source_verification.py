@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 IDENTITY_KEYS = {
     'schedule_a_part_i_1a_name_of_insurance_company': '1a. Name of Insurance Company',
     'schedule_a_part_i_1b_insurance_carrier_ein': '1b. Insurance Carrier EIN',
+    'schedule_a_part_i_1c_naic_code': '1c. NAIC Code',
+    'schedule_a_part_i_1d_contract_policy_number': '1d. Contract/Policy Number',
 }
 
 
@@ -43,23 +45,35 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
         return filing, fields
     missing = [f for f in fields if _recoverable(f)]
     roster = filing.schedule_a_broker_roster
-    needs_roster = bool(filing.schedule_a_broker_rows and not getattr(roster, 'reviewer_confirmation', None)
+    needs_roster = bool(not getattr(roster, 'reviewer_confirmation', None)
         and not (broker_roster_is_complete(filing.schedule_a_broker_rows, roster)
                  and getattr(roster, 'source_sha256', None) == source_sha))
     if not missing and not needs_roster:
         return filing, fields
     # Evidence must be tied to these exact bytes, never merely the same filename.
     evidence = await repo.source_verification_evidence(filing.id, document['file_name'], source_sha)
-    if not evidence:
-        return filing, fields
     try:
         content = await asyncio.to_thread(StorageService().load_pdf, document['s3_key'],
             document.get('s3_bucket') or filing.s3_bucket, document.get('storage_path'))
         if hashlib.sha256(content).hexdigest() != source_sha:
             return filing, fields
-        from app.services.extractor import extract_pdf_layout_text_pages, extract_schedule_a_broker_rows_from_document
+        from app.services.extractor import extract_pdf_layout_text_pages, extract_schedule_a_broker_rows_from_document, extract_schedule_a_acroform
         from app.services.schedule_a_statement_evidence import statement_identity_fields
-        recovered = {f.field_name: f for f in statement_identity_fields(extract_pdf_layout_text_pages(content))}
+        pages = await asyncio.to_thread(extract_pdf_layout_text_pages, content)
+        coverage, native_proof, independent = {}, None, None
+        if not evidence:
+            # Old traces without a hash cannot act as a corroborating read.
+            # Establish a NEW proof from two separate native source readers.
+            from app.services.schedule_a_closed_source import closed_native_roster
+            independent = await asyncio.to_thread(extract_schedule_a_broker_rows_from_document, content, document['file_name'], page_coverage=coverage)
+            closed_rows, native_proof = await asyncio.to_thread(closed_native_roster, content, pages, coverage)
+            if native_proof is None:
+                return filing, fields
+            independent = closed_rows
+            evidence = {'document_worksheet_summaries': [], 'extraction_stages': []}
+        recovered = {f.field_name: f for f in statement_identity_fields(pages)}
+        widgets, _ = await asyncio.to_thread(extract_schedule_a_acroform, content)
+        recovered.update({f.field_name: f for f in widgets if f.field_name in IDENTITY_KEYS.values()})
         updates = []
         for field in missing:
             native = recovered.get(IDENTITY_KEYS[field.mapped_rule_key])
@@ -80,15 +94,54 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
                 schedule_a_broker_roster=roster.model_copy(deep=True) if roster else None,
                 schedule_a_worksheet_summaries=source_summaries,
                 raw=dict(evidence))
-            coverage = {}
-            independent = extract_schedule_a_broker_rows_from_document(content, document['file_name'],
-                page_coverage=coverage, retained_ocr_source_reads=evidence.get('local_ocr_source_reads'))
+            if independent is None:
+                independent = await asyncio.to_thread(extract_schedule_a_broker_rows_from_document, content, document['file_name'],
+                    page_coverage=coverage, retained_ocr_source_reads=evidence.get('local_ocr_source_reads'))
+            if native_proof is None:
+                from app.services.schedule_a_closed_source import closed_native_roster
+                closed_rows, native_proof = await asyncio.to_thread(closed_native_roster, content, pages, coverage)
+                if native_proof is not None:
+                    independent = closed_rows
             result.raw['independent_source_page_coverage'] = coverage
+            from app.services.schedule_a_broker_roster import separate_service_provider_disclosures
+            separate_service_provider_disclosures(result, pages)
+            from app.services.schedule_a_broker_source_repair import repair_source_rows
+            if native_proof is not None:
+                from app.services.schedule_a_broker_source_repair import set_corroborated_totals
+                protected_rows = any(v.validator.startswith('reviewer_') and v.status == 'PASS'
+                    for row in result.schedule_a_broker_rows for v in row.validation_results)
+                if not protected_rows:
+                    result.schedule_a_broker_rows = [r.model_copy(deep=True) for r in independent]
+                set_corroborated_totals(result, independent, corroboration='two independent source readers and both printed section totals')
+                repaired = not protected_rows
+            else:
+                repaired = repair_source_rows(result, independent)
+            from app.services.schedule_a_broker_validation import hold_invalid_source_organization_codes, hold_invalid_source_zip_codes
+            for rows in (result.schedule_a_broker_rows, independent):
+                hold_invalid_source_organization_codes(rows)
+                hold_invalid_source_zip_codes(rows)
             result.schedule_a_broker_rows = apply_address_policy(result.schedule_a_broker_rows)
-            attest_source_broker_roster(result, independent, source_sha)
+            if native_proof is None:
+                attest_source_broker_roster(result, independent, source_sha)
+            else:
+                attest_source_broker_roster(result, independent, source_sha, native_proof=native_proof)
             checked = source_roster_review(result.schedule_a_broker_rows, result.schedule_a_broker_roster)
-            if checked.mode == 'REPLACE':
+            if checked.mode == 'REPLACE' or repaired:
                 values = {'schedule_a_broker_rows': result.schedule_a_broker_rows, 'schedule_a_broker_roster': checked}
+            # Keep displayed section totals synchronized only with the separately
+            # corroborated category sums, never with unverified nearby numbers.
+            for native in result.fields:
+                if not native.source_text or not native.source_text.startswith('Verified sum of full labelled recipient payment columns;'):
+                    continue
+                field = next((f for f in fields if f.form_type and str(f.form_type) in {'SCHEDULE_A', 'FormType.SCHEDULE_A'}
+                    and (f.mapped_label or f.source_field_name) == native.field_name), None)
+                if (field and field.status not in {ExtractedFieldStatus.EDITED, ExtractedFieldStatus.IGNORED}
+                        and not field.keep_current_context and (field.value != native.value or field.proposed_value != native.value)
+                        and not re.search(r'reviewer|manual|user', field.status_reason or '', re.I)):
+                    updates.append((field, field.model_copy(update={'value':native.value, 'proposed_value':native.value,
+                        'status':ExtractedFieldStatus.MATCHED, 'confidence':native.confidence, 'page':native.page,
+                        'source_text':native.source_text, 'status_reason':'Category sum recovered from labelled physical rows and independent source corroboration.',
+                        'updated_at':datetime.utcnow()}, deep=True)))
         if not updates and not values:
             return filing, fields
         saved = await repo.save_source_verification(filing, updates, values)
@@ -97,7 +150,8 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
         await repo.add_audit(AuditLog(filing_id=filing.id, event='stored_schedule_a_source_verified',
             message='Stored PDF evidence recovered without reupload or manual broker approval.',
             details={'source_sha256': source_sha, 'recovered_rule_keys': [old.mapped_rule_key for old,new in updates],
-                'broker_roster_verified': bool(values), 'broker_count': len(saved.schedule_a_broker_rows)}))
+                'broker_roster_verified': bool(values and values['schedule_a_broker_roster'].mode == 'REPLACE'),
+                'broker_mapping_recovered': bool(values), 'broker_count': len(saved.schedule_a_broker_rows)}))
         by_id = {old.id: new for old,new in updates}
         return saved, [by_id.get(f.id, f) for f in fields]
     except Exception as exc:

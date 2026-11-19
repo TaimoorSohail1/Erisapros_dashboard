@@ -5,6 +5,7 @@ import csv
 from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+from functools import lru_cache
 from io import BytesIO, StringIO
 from itertools import islice
 import json
@@ -561,7 +562,18 @@ class ExtractionService:
                         retained_ocr_source_reads=roster_raw.get("local_ocr_source_reads"))
                     roster_raw['independent_source_page_coverage'] = coverage
                     final_result.raw = roster_raw
-                    attest_source_broker_roster(final_result, independent_rows, hashlib.sha256(file_bytes).hexdigest())
+                    from app.services.schedule_a_broker_source_repair import repair_source_rows
+                    repair_source_rows(final_result, independent_rows)
+                    from app.services.schedule_a_closed_source import closed_native_roster
+                    closed_rows, native_proof = closed_native_roster(file_bytes, extract_pdf_layout_text_pages(file_bytes), coverage)
+                    if native_proof is not None:
+                        from app.services.schedule_a_broker_source_repair import set_corroborated_totals
+                        independent_rows = closed_rows
+                        final_result.schedule_a_broker_rows = [r.model_copy(deep=True) for r in closed_rows]
+                        set_corroborated_totals(final_result, closed_rows, corroboration='two independent source readers and printed payment category cells')
+                        attest_source_broker_roster(final_result, independent_rows, hashlib.sha256(file_bytes).hexdigest(), native_proof=native_proof)
+                    else:
+                        attest_source_broker_roster(final_result, independent_rows, hashlib.sha256(file_bytes).hexdigest())
                 except Exception as exc:
                     # Optional deletion permission must fail closed without
                     # preventing the ordinary extraction/review flow.
@@ -2989,6 +3001,13 @@ def _acroform_broker_address(value: str | None) -> tuple[str | None, str | None,
 
 
 def extract_pdf_layout_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
+    # Callers receive their own list; cached source reads cannot be mutated by
+    # a later normalization or test fixture.
+    return list(_cached_pdf_layout_text_pages(file_bytes))
+
+
+@lru_cache(maxsize=2)
+def _cached_pdf_layout_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
     """Extract PDF text while retaining the whitespace that describes tables.
 
     The ordinary text layer is useful for prose and carrier-specific parsers,
@@ -3020,6 +3039,26 @@ def extract_pdf_layout_text_pages(file_bytes: bytes) -> list[tuple[int, str]]:
         text = str(text).replace("\u00a0", " ").replace("\r\n", "\n").replace("\r", "\n")
         text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
         pages.append((index, text.strip("\n")))
+    # Font encodings in some native reports omit the filled table cells from
+    # pypdf's layout output even though the values are visible. Use the separate
+    # geometry engine when it recovers additional monetary cells; do not make
+    # a sparse header look like a complete read of an otherwise filled table.
+    def money_cells(text):
+        return len(re.findall(r'\$\s*\(?-?\d[\d,]*(?:\.\d{1,2})?\)?', text))
+    candidates = {number for number,text in pages if money_cells(text) == 0
+                  and re.search(r'commissions?|fees', text, re.I)}
+    try:
+        if not candidates:
+            return pages
+        import pdfplumber
+        from app.services.schedule_a_pdf_source import source_page
+        with pdfplumber.open(BytesIO(file_bytes)) as document:
+            geometric = {number: source_page(page).extract_text(layout=True) or ''
+                         for number, page in enumerate(document.pages, 1) if number in candidates}
+        pages = [(number, geometric[number] if money_cells(geometric.get(number, '')) > money_cells(text) + 1 else text)
+                 for number, text in pages]
+    except Exception:
+        pass
     return pages
 
 
@@ -4811,20 +4850,121 @@ def extract_labelled_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
 def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: str | None = None,
     *, page_coverage: dict | None = None, retained_ocr_source_reads: list[dict] | None = None,
 ) -> list[ScheduleABrokerRow]:
+    rows = _read_schedule_a_broker_document(file_bytes, file_name, page_coverage=page_coverage,
+        retained_ocr_source_reads=retained_ocr_source_reads)
+    if rows:
+        pages = dict(extract_pdf_layout_text_pages(file_bytes))
+        sha = hashlib.sha256(file_bytes).hexdigest()
+        for read in retained_ocr_source_reads or []:
+            page, text = read.get('page'), read.get('text')
+            if (read.get('source_sha256') == sha and type(page) is int and isinstance(text, str)
+                    and len(text) > len(pages.get(page, ''))):
+                pages[page] = text
+        for row in rows:
+            source = pages.get(row.source_page)
+            if source and not any(e.page == row.source_page and e.source_text for e in row.evidence):
+                row.evidence.append(SourceEvidence(provider='Independent full source page', page=row.source_page, source_text=source))
+    return rows
+
+
+def _read_schedule_a_broker_document(file_bytes: bytes, file_name: str | None = None,
+    *, page_coverage: dict | None = None, retained_ocr_source_reads: list[dict] | None = None,
+) -> list[ScheduleABrokerRow]:
     page_texts = extract_document_text_pages(file_bytes, file_name)
+    pdf_document = None
     if page_coverage is not None:
         from pypdf import PdfReader
         source_sha256 = hashlib.sha256(file_bytes).hexdigest()
-        page_count = len(PdfReader(BytesIO(file_bytes)).pages)
+        pdf_document = PdfReader(BytesIO(file_bytes))
+        page_count = len(pdf_document.pages)
+        native_coverage = _broker_page_coverage(page_texts)
+        if retained_ocr_source_reads and not any(p['readable'] for p in native_coverage):
+            page_coverage.clear()
+            page_coverage.update(source_sha256=source_sha256, page_count=page_count, pages=native_coverage)
+            if any(_LINCOLN_REPORT_CARRIER.search(str(read.get('text') or '')) for read in retained_ocr_source_reads):
+                scanned_pages, scanned_rows = _read_scanned_lincoln_broker_roster(
+                    retained_ocr_source_reads, source_sha256, page_count)
+                if scanned_rows:
+                    page_coverage['pages'] = _broker_page_coverage(scanned_pages)
+                return scanned_rows
+            # A partial or stale OCR packet cannot stand in for the current
+            # complete PDF. This is required even if its last page has a table.
+            complete_modes = set()
+            for mode in {read.get('psm') for read in retained_ocr_source_reads}:
+                reads = [read for read in retained_ocr_source_reads if read.get('psm') == mode
+                         and read.get('source_sha256') == source_sha256 and isinstance(read.get('text'), str)]
+                if sorted(read.get('page') for read in reads if type(read.get('page')) is int) == list(range(1,page_count+1)):
+                    complete_modes.add(mode)
+            if not complete_modes:
+                return []
+            retained_ocr_source_reads = [read for read in retained_ocr_source_reads if read.get('psm') in complete_modes]
+        # Reuse only OCR text bound to the exact source bytes and physical page.
+        # Native text can be absent in one page of an otherwise readable packet.
+        by_page = dict(page_texts)
+        for read in retained_ocr_source_reads or []:
+            page = read.get('page')
+            text = read.get('text')
+            if (read.get('source_sha256') == source_sha256 and type(page) is int
+                    and 1 <= page <= page_count and isinstance(text, str)
+                    and len(re.findall(r'\b\w+\b', text)) > len(re.findall(r'\b\w+\b', by_page.get(page, '')))):
+                by_page[page] = text
+        page_texts = sorted(by_page.items())
         page_coverage.clear()
         page_coverage.update(source_sha256=source_sha256, page_count=page_count, pages=_broker_page_coverage(page_texts))
-        if retained_ocr_source_reads and not any(page["readable"] for page in page_coverage["pages"]):
-            scanned_pages, scanned_rows = _read_scanned_lincoln_broker_roster(
-                retained_ocr_source_reads, source_sha256, page_count,
-            )
-            if scanned_rows:
-                page_coverage["pages"] = _broker_page_coverage(scanned_pages)
-                return scanned_rows
+        # A genuinely blank PDF page is covered, not a failed OCR page. Never
+        # infer blankness merely from an empty text extraction on an image page.
+        for coverage_page in page_coverage['pages']:
+            physical = pdf_document.pages[coverage_page['page'] - 1]
+            if not coverage_page['readable'] and not physical.get('/Annots'):
+                stream = physical.get_contents()
+                if stream is None or not stream.operations or all(op in {b'q', b'Q', b'cm', b'gs'} for _, op in stream.operations):
+                    coverage_page.update(readable=True, blank_page=True)
+                else:
+                    # A PDF exporter can paint a white rectangle on a trailing
+                    # page, including a white raster image. Check the actual
+                    # rendered pixels, not word counts or image presence.
+                    try:
+                        import pdfplumber
+                        with pdfplumber.open(BytesIO(file_bytes)) as rendered:
+                            extrema = rendered.pages[coverage_page['page']-1].to_image(resolution=36).original.convert('L').getextrema()
+                        if extrema == (255, 255):
+                            coverage_page.update(readable=True, blank_page=True)
+                    except Exception:
+                        pass
+    from app.services.schedule_a_native_brokers import (labelled_payee_rows, labelled_recipient_blocks,
+        commission_payee_bullets, labelled_payee_compensation, labelled_payee_totals_table, labelled_id_payment_table,
+        labelled_contract_payment_table, approved_commission_recipient_blocks, labelled_single_recipient,
+        labelled_benefit_compensation, monthly_commission_recipient, header_named_fee_rows)
+    layout_pages = extract_pdf_layout_text_pages(file_bytes) if str(file_name or '').lower().endswith('.pdf') else page_texts
+    if not has_substantive_native_text(layout_pages):
+        layout_pages = page_texts
+    if page_coverage is not None:
+        prior_coverage = {p['page']: p for p in page_coverage.get('pages', [])}
+        page_coverage['pages'] = [p if p['readable'] else prior_coverage.get(p['page'], p)
+                                  for p in _broker_page_coverage(layout_pages)]
+    if str(file_name or '').lower().endswith('.pdf'):
+        from app.services.schedule_a_native_brokers import bordered_recipient_tables
+        if (any('Agent Number' in text and re.search(r'Address\s+of\s+the\s+Agents',text,re.I)
+                for _,text in layout_pages) and (grid_rows := bordered_recipient_tables(file_bytes))):
+            return grid_rows
+        widget_fields, widget_rows = extract_schedule_a_acroform(file_bytes)
+        if widget_rows:
+            from app.services.schedule_a_native_brokers import mark_section_totals, mark_payment_columns
+            for row in widget_rows:
+                mark_payment_columns(row)
+            commission = next((f for f in widget_fields if f.field_name.startswith('3b.')), None)
+            fees = next((f for f in widget_fields if f.field_name.startswith('3c.')), None)
+            # Only explicit header widgets qualify, not totals derived from rows.
+            if (commission and fees and 'broker rows total' not in (commission.source_text or '')
+                    and 'broker rows total' not in (fees.source_text or '')):
+                mark_section_totals(widget_rows, commission.value, fees.value, [*commission.evidence, *fees.evidence])
+            return widget_rows
+    for parser in (labelled_payee_rows, labelled_recipient_blocks, commission_payee_bullets, labelled_payee_compensation,
+                   labelled_payee_totals_table, labelled_id_payment_table, labelled_contract_payment_table,
+                   approved_commission_recipient_blocks, labelled_single_recipient,
+                   labelled_benefit_compensation, monthly_commission_recipient, header_named_fee_rows):
+        if rows := parser(layout_pages):
+            return rows
     for parser in (
         extract_transamerica_broker_rows,
         extract_combined_chubb_broker_rows,
@@ -4861,6 +5001,13 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
     omaha_rows = extract_united_omaha_combined_broker_rows(page_texts)
     if omaha_rows:
         return omaha_rows
+    # These labelled readers require physical whitespace. Plain text streams
+    # concatenate headings and values and can silently drop entire recipients.
+    for parser in (extract_guardian_broker_rows, extract_prudential_broker_rows,
+                   extract_standard_broker_rows, extract_standard_short_form_broker_rows,
+                   extract_sun_life_broker_rows):
+        if rows := parser(layout_pages):
+            return rows
     full_text = "\n\n".join(text for _, text in page_texts)
     generic_rows = dedupe_schedule_a_broker_rows(
         [
@@ -4888,7 +5035,7 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
 def _broker_page_coverage(pages: list[tuple[int, str]]) -> list[dict]:
     return [
         {"page": page, "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-         "readable": len(re.findall(r"\b\w+\b", text)) >= 40}
+         "readable": len(re.findall(r"\b\w+\b", text)) >= 4}
         for page, text in pages
     ]
 
@@ -9459,9 +9606,10 @@ def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[
         r"(?P<city>[A-Za-z ]+?)\s+ST\s*:\s*(?P<state>[A-Z]{2})\s+ZIP\s*:\s*(?P<zip>\d{5}(?:-\d{4})?)",
         text, re.I | re.S,
     )
+    signed_amount = r'(?:\([\d,]+(?:\.\d{1,2})?\)|-?[\d,]+(?:\.\d{1,2})?)'
     total_match = re.search(
-        r"(?m)^\s*(?P<commission>[\d,]+(?:\.\d{1,2})?)\s*\|?\s*Sub\s*-?\s*total\b"
-        r"(?:[ \t]+(?P<fees>[\d,]+(?:\.\d{1,2})?)\s+Sub\s*-?\s*total\b)?", text, re.I,
+        rf"(?m)^\s*(?P<commission>{signed_amount})\s*\|?\s*Sub\s*-?\s*total\b"
+        rf"(?:[ \t]+(?P<fees>{signed_amount})\s+Sub\s*-?\s*total\b)?", text, re.I,
     )
     total = total_match.group('commission') if total_match else None
     if not name or not total:
@@ -9498,6 +9646,9 @@ def _extract_metlife_standard_broker_block(text: str, source_page: int) -> list[
             reason='The source prints a recipient address label, but its address cells could not be read. Review the source; do not treat the printed address as absent.'))
         row.confidence=0.5
         row.decision='REVIEW_REQUIRED'
+    if total_match.group('fees') is not None:
+        from app.services.schedule_a_native_brokers import mark_payment_columns
+        mark_payment_columns(row)
     return [row]
 
 
@@ -10669,6 +10820,9 @@ def extract_vsp_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleA
     address expression recognizes common street suffixes without requiring a
     whitespace boundary after the suffix.
     """
+    from app.services.schedule_a_native_brokers import approved_commission_recipient_blocks
+    if rows := approved_commission_recipient_blocks(page_texts):
+        return rows
     street_suffix = (
         r"Road|Rd|Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Lane|Ln|"
         r"Way|Parkway|Pkwy|Court|Ct"
@@ -11236,6 +11390,7 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
     contract_pattern = r"\b(000[A-Z0-9]{4,5})\b"
     commission_rows: dict[str, ScheduleABrokerRow] = {}
     for pattern in (
+        contract_pattern + r"\s+([A-Z][A-Z0-9 &.'-]*(?:\n[A-Z][A-Z0-9 &.'-]*){0,3})\s+\$\s*([0-9,]+\.\d{2})",
         contract_pattern + r"[ \t]+([A-Z][A-Z0-9 &.'-]+?)[ \t]*\n"
         r"(?:(?!\b000[A-Z0-9]{4,5}\b).)*?Total\s+For\s+Contract\s*:\s*\$?\s*([0-9,]+\.\d{2})",
         contract_pattern + r"[ \t]+([A-Z][A-Z0-9 &.'-]+?)[ \t]+"
@@ -11292,17 +11447,18 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
     recipients = {(code, _canonical_broker_name(row.name)): row for code, row in commission_rows.items()}
     recipients.update(fee_only_rows)
     _attach_guardian_broker_addresses(recipients, pages)
-    return list(recipients.values())
+    from app.services.schedule_a_native_brokers import mark_payment_columns
+    return [mark_payment_columns(row) for row in recipients.values()]
 
 
 def _attach_guardian_broker_addresses(
     recipients: dict[tuple[str, str], ScheduleABrokerRow], pages: list[tuple[int, str]],
 ) -> None:
     """Use a recipient's printed address block only when its code and name agree."""
-    heading = re.compile(r"^(000[A-Z0-9]{4,5})\s*[-–]\s*([^$]+)$", re.IGNORECASE)
+    heading = re.compile(r"^(000[A-Z0-9]{4,5})(?:\s*[-–]\s*|\s+)([^$]+)$", re.IGNORECASE)
     address = re.compile(
-        r"(?P<street>(?:\d+\s+.+?\b(?:STREET|ST|AVENUE|AVE|ROAD|RD|PARKWAY|PKWY|DRIVE|DR|"
-        r"BOULEVARD|BLVD|LANE|LN|WAY|COURT|CT|ROUTE\s+\d+)|P\.?\s*O\.?\s+BOX\s+\d+[A-Z]?))"
+        r"(?P<street>(?:(?:\d+|ONE|TWO|THREE)\s+.+?\b(?:STREET|ST|AVENUE|AVE|ROAD|RD|PARKWAY|PKWY|DRIVE|DR|"
+        r"BOULEVARD|BLVD|LANE|LN|WAY|COURT|CT|TRPK|TPKE|TRAIL|TRL|PLACE|PL|ROUTE\s+\d+)|P\.?\s*O\.?\s+BOX\s+\d+[A-Z]?))"
         r"(?:[ ,]+(?P<unit>(?:SUITE|STE|UNIT|APT|FLOOR|FL|#)\s*[A-Z0-9-]+))?"
         r"[ ,]+(?P<city>[A-Z][A-Z .'-]+?)\s*,?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-\d{4})?)",
         re.IGNORECASE,
@@ -11844,6 +12000,9 @@ def extract_eyemed_payment_records(text: str) -> list[dict[str, str]]:
 
 
 def extract_eyemed_broker_rows(page_texts: list[tuple[int, str]]) -> list[ScheduleABrokerRow]:
+    from app.services.schedule_a_native_brokers import labelled_payee_rows
+    if rows := labelled_payee_rows(page_texts):
+        return rows
     rows: list[ScheduleABrokerRow] = []
     for page, text in page_texts:
         normalized = normalize_ocr_text(text)
@@ -14158,6 +14317,8 @@ def normalize_rule_label(label: str) -> str:
 
 def money_value(value: str) -> str:
     clean = str(value or "").replace("$", "").strip()
+    if re.fullmatch(r'\([\d,]+(?:\.\d{1,2})?\)', clean):
+        clean = '-' + clean[1:-1]
     return re.sub(r"^([+-]?)\.(\d{1,2})$", r"\g<1>0.\2", clean)
 
 
