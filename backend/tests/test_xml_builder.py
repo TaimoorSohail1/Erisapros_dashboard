@@ -380,6 +380,7 @@ class XmlBuilderTests(unittest.TestCase):
             schedule_a_broker_rows=[
                 {
                     "name": "Example Broker",
+                    "address_line_1": "123 MAIN ST",
                     "city": "ST LOUIS",
                     "state": "MO",
                     "zip_code": "63101",

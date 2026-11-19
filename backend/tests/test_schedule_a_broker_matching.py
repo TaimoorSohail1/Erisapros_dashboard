@@ -347,6 +347,8 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
             extracted("First Broker", "1 Main St", "10001", "100"),
             extracted("Second Broker", "2 Main St", "10002", "50"),
         ]
+        for row in extracted_rows:
+            row.city, row.state = 'NEW YORK', 'NY'
         current_rows = [
             current(1, "First Broker", "1 Main St", "10001", "90"),
             current(2, "Second Broker", "2 Main St", "10002", "40"),
@@ -542,6 +544,8 @@ class ScheduleABrokerMatchingTests(unittest.TestCase):
             extracted("Alpha Broker", "1 Main St", "10001", "100"),
             extracted("Beta Broker", "2 Main St", "10002", "200"),
         ]
+        for row in extracted_rows:
+            row.city, row.state = 'NEW YORK', 'NY'
         current_rows = [
             current(1, "Beta Broker", "2 Main St", "10002", "20"),
             current(2, "Keep Broker", "5 Keep St", "50005", "50"),

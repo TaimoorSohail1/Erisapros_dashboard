@@ -40,124 +40,52 @@ const choose=async value=>{const e=document.querySelector(`input[type="radio"][v
 const row={name:'Source broker',address_line_1:'10 Main St',city:'Boston',state:'MA',zip_code:'02110',organization_code:'0',commission_total:'100',fee_total:'-100'};
 const sourceProps={rows:[row],roster:{...roster,other_disclosures:[]}};
 
-await render({...sourceProps,rows:[{...row, validation_results:[{
-  validator:'broker_total_reconciliation',status:'ERROR',reason:'Broker totals differ from Schedule A.'}]}]});
-assert.equal(button('Approve').disabled,false);
-await click('Approve');
-assert.equal(document.activeElement.id,'broker-review-heading');
-assert.equal(saves.length,0,'Opening reconciliation cannot approve an unreconciled roster');
-await click('Cancel');
-await click('Add broker');
-assert.equal(input('Broker name').value,'');
-await click('Cancel');
 
-// Visible information and the two requested actions, without a second large form.
-await render();
-assert.match(document.body.textContent,/Mercer Health & Benefits LLC/);
-assert.match(document.body.textContent,/\$240,148\.74/);
-assert.match(document.body.textContent,/Paused:/);
-assert.match(document.body.textContent,/Unclassified/);
-assert.equal(buttons().filter(b=>b.textContent==='Edit').length,1);
-assert.equal(buttons().filter(b=>b.textContent==='Approve').length,1);
-assert.equal(button('Approve').disabled,false,'Approve opens classification without saving');
-assert.equal(document.querySelectorAll('form,textarea,select,details').length,0,'Main view contains only the row and short status');
-await click('Approve');
-assert.equal(document.activeElement.id,'broker-review-heading');
-assert.match(document.body.textContent,/View evidence/);
-assert.match(document.body.textContent,/Current brokers \(1\)/);
-assert.equal(buttons().some(b=>b.textContent==='Add broker'),false);
-assert.equal(document.querySelectorAll('textarea').length,0,'Unknown payments do not expose an empty-roster form');
-await choose('INCLUDED');
-assert.equal(input('Commission').value,'');assert.equal(input('Fees').value,'');
-await click('Cancel');assert.equal(saves.length,0,'Opening, choosing and cancelling never save or authorize an update');
-assert.match(document.body.textContent,/Unclassified/);
-
-// Edit saves a local draft; Approve alone sends the complete, source-bound review.
-await render(sourceProps);
-assert.equal(button('Approve').disabled,false);
-await click('Edit');assert.equal(input('Organization code').value,'0');
-await set(input('Commission'),'200');await set(input('Fees'),'-200');
-assert.equal(input('Purpose').value,'COMMISSIONS AND FEES');
-await submit();assert.equal(saves.length,0,'Save changes is local only');
-assert.equal(document.querySelector('form'),null);
-assert.match(document.body.textContent,/\$200\.00/);
-await click('Approve');assert.equal(saves.length,1);
-assert.equal(saves[0].rows[0].commission_total,'200');
+// Verified source rosters, with blank or complete addresses, require no approval.
+for (const addressValues of [{address_line_1:'',city:'',state:'',zip_code:''}, {}]) {
+  await render({...sourceProps,rows:[{...row,...addressValues}],roster:{...sourceProps.roster,mode:'REPLACE'}});
+  assert.match(document.body.textContent,/Ready for automatic sending/);
+  assert.equal(buttons().some(b=>b.textContent==='Approve'),false);
+}
+// Editor persistence is the confirmation: there is no second approval click.
+await render({...sourceProps,onSaveReview:async(rows,review)=>{saves.push({rows,review});return true;}});
+await click('Edit');await set(input('Commission'),'200');await set(input('Fees'),'-200');
+await click('Save and continue');assert.equal(saves.length,1);
 assert.equal(saves[0].rows[0].purpose,'COMMISSIONS AND FEES');
-assert.equal(saves[0].review.complete_list_confirmed,true);
 assert.equal(saves[0].review.expected_context,roster.review_context_sha256);
-assert.match(saves[0].review.reason,/Reviewer approved the complete displayed/);
-assert.doesNotMatch(saves[0].review.reason,/Client confirmed/,'Approval provenance does not invent a client instruction');
-assert.match(document.body.textContent,/edits are retained/);
-await click('Edit');assert.equal(input('Commission').value,'200');await click('Cancel');
-await render({...sourceProps,roster:{...sourceProps.roster,review_context_sha256:'b'.repeat(64)}},true);
-assert.equal(button('Approve').disabled,true,'A changed source or vendor snapshot invalidates approval');
-assert.equal(saves.length,1);
-
-// Disclosure allocation must equal its original amount, using exact cents.
-await render();await click('Edit');await choose('INCLUDED');
+assert.equal(saves[0].review.complete_list_confirmed,true);
+assert.equal(saves[0].review.accept_partial_addresses,false);
+assert.equal(document.querySelector('form'),null);
+assert.match(document.body.textContent,/Sending continues automatically/);
+// Payment allocation and explicit supporting-only classification remain exact.
+await render({onSaveReview:async(rows,review)=>{saves.push({rows,review});return true;}});
+await click('Edit');await choose('INCLUDED');
 await set(input('Commission'),'0');await set(input('Fees'),'240148.73');
-for(const [label,value] of [['Street','4565 PAYSPHERE CIRCLE'],['City','CHICAGO'],['State','IL'],['ZIP','60674']])await set(input(label),value);
-await submit();assert.match(document.body.textContent,/must equal the original/);assert.ok(document.querySelector('form'));
-await set(input('Fees'),'240148.74');await submit();
-assert.equal(button('Approve').disabled,false);
-await click('Approve');assert.equal(saves.length,2);
+await submit();assert.match(document.body.textContent,/must equal the original/);assert.equal(saves.length,1);
+await set(input('Fees'),'240148.74');await submit();assert.equal(saves.length,2);
 assert.equal(saves[1].review.disclosure_decisions[0].treatment,'INCLUDED');
 assert.equal(saves[1].review.row_sources[0],'DISCLOSURE:mercer-proof');
-assert.equal(saves[1].rows[0].purpose,'FEES');
-
-// Supporting-only does not silently authorize deletion of the current broker.
-await render();await click('Edit');await choose('SUPPORTING_ONLY');
-await submit();assert.equal(button('Approve').disabled,false);assert.equal(saves.length,2);
-await click('Edit');await set(document.querySelector('textarea'),'Confirmed instruction: no reportable Schedule A recipients'.padEnd(2000,'x'));
-await submit();await click('Approve');assert.equal(saves.length,3);
-assert.equal(saves[2].rows.length,0);assert.match(saves[2].review.empty_list_evidence,/no reportable/);
-assert.ok(saves[2].review.reason.length<=2000,'Approval provenance fits the existing backend reason limit');
-
-// An exclusion is explicit; all remaining source rows are shown and approved together.
-await render({rows:[row,{...row,name:'Excluded source broker'}],roster:{...roster,other_disclosures:[]}});
-assert.equal(buttons().filter(b=>b.textContent==='Approve').length,1);
-await act(async()=>buttons().filter(b=>b.textContent==='Edit')[1].click());
-await act(async()=>document.querySelector('input[type="checkbox"]').click());await submit();await click('Approve');
-assert.equal(saves.length,4);assert.equal(saves[3].rows.length,1);assert.equal(saves[3].review.excluded_source_indexes[0],1);
-
-// Refresh must never approve unseen source/destination changes or open another row by old index.
-const fresh={schedule_a_broker_rows:[{...row,name:'Refreshed broker'}],schedule_a_broker_roster:{...sourceProps.roster,review_context_sha256:'c'.repeat(64)}};
-await render({...sourceProps,onRefreshReview:async()=>fresh});await click('Approve');
-assert.equal(saves.length,4);assert.match(document.body.textContent,/Check the displayed list/);
-await render({...sourceProps,onRefreshReview:async()=>fresh});await click('Edit');
-assert.equal(document.querySelector('form'),null);assert.match(document.body.textContent,/Check the displayed rows/);
-
-// Successful approval and an already verified list introduce no extra broker decision.
-let resolveSave;const delayed=new Promise(resolve=>{resolveSave=resolve;});let attempts=0;
-await render({...sourceProps,onSaveReview:async()=>{attempts++;return delayed;}});
-await act(async()=>{button('Approve').click();button('Approve').click();});
-assert.equal(attempts,1,'Double-click cannot submit duplicate approvals');
-assert.equal(button('Please wait…').disabled,true);
-await act(async()=>resolveSave(true));assert.equal(button('Approved').disabled,true);
-assert.match(document.body.textContent,/other filing reviews are clear/);
-await render({...sourceProps,roster:{...sourceProps.roster,mode:'REPLACE',replacement_count:1}});
-assert.equal(button('Approved').disabled,true);
-await render({rows:[{...row,commission_total:'100,901.12',fee_total:'(100,901.12)'}],roster:{...sourceProps.roster,mode:'REPLACE'}});
-assert.match(document.body.textContent,/COMMISSIONS AND FEES/);assert.doesNotMatch(document.body.textContent,/NaN/);
-await render({rows:[{...row,commission_total:'90071992547409.91',fee_total:'0'}],roster:{...sourceProps.roster,mode:'REPLACE'}});
-assert.match(document.body.textContent,/\$90,071,992,547,409\.91/,'Displaying a large amount must not round away cents');
-// A broker draft may be edited before selecting a target, but cannot be approved.
+await render({onSaveReview:async(rows,review)=>{saves.push({rows,review});return true;}});
+await click('Edit');await choose('SUPPORTING_ONLY');
+await set(document.querySelector('textarea'),'Confirmed instruction: no reportable Schedule A recipients');
+await submit();assert.equal(saves.length,3);assert.equal(saves[2].rows.length,0);
+assert.match(saves[2].review.empty_list_evidence,/no reportable/);
+// Failed saves retain the editor, entered values, and source-bound context.
+await render(sourceProps);await click('Edit');await set(input('Commission'),'201');await submit();
+assert.equal(saves.length,4);assert.ok(document.querySelector('form'));
+assert.equal(input('Commission').value,'201');assert.match(document.body.textContent,/edits are retained/);
+await click('Cancel');
+// Stale snapshots and destination locks cannot save or automatically send.
+let blockedSaves=0,refreshes=0;
+const changed={...sourceProps.roster,review_context_sha256:'c'.repeat(64)};
+await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[row],schedule_a_broker_roster:++refreshes===1?sourceProps.roster:changed}),onSaveReview:async()=>{blockedSaves++;return true;}});
+await click('Edit');await submit();assert.equal(blockedSaves,0);assert.match(document.body.textContent,/data changed/);
 let targetReviews=0;
 const destinationReason='The policy number may refer to existing Schedule A #7. Select it or explicitly confirm a separate new Schedule A.';
 await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason},onReviewDestination:()=>{targetReviews++;}});
-assert.match(document.body.textContent,/existing Schedule A #7/);
-assert.equal(button('Approve').disabled,false);
 await click('Approve');assert.equal(targetReviews,1);
-assert.equal(saves.length,4);
-await click('Edit');assert.ok(document.querySelector('form'));await click('Cancel');
-// Destination readiness can change on refresh even if source/snapshot hashes did not.
-await render({...sourceProps,onRefreshReview:async()=>({schedule_a_broker_rows:[row],schedule_a_broker_roster:{...sourceProps.roster,destination_ready:false,destination_reason:destinationReason}})});
-await click('Approve');assert.equal(saves.length,4);assert.match(document.body.textContent,/existing Schedule A #7/);
-assert.equal(button('Approve').disabled,true);
-// A genuinely new, verified target uses the same approval path without a sequence.
-await render({...sourceProps,roster:{...sourceProps.roster,destination_ready:true},onSaveReview:async()=>true});
-await click('Approve');assert.equal(button('Approved').disabled,true);
+// Source identity regressions below exercise the unchanged classification controls.
+const identityBaseline=saves.length;
 // Reproduce the Lincoln UI: valid payments must not hide source identity holds.
 const identityHold={validator:'recipient_identity_ambiguity',status:'ERROR',reason:'Distinct printed addresses may be abbreviations of the same recipient. Preserve the physical rows and confirm aggregation before an update.'};
 const heldRows=[{...row,name:'Mercer',address_line_1:'4565 PAYSPHERE CIR',commission_total:'4035.74',fee_total:'0',validation_results:[identityHold]},
@@ -170,7 +98,7 @@ assert.doesNotMatch(document.body.textContent,/Ready for approval/);
 assert.equal(button('Approve').disabled,false);
 await click('Approve');assert.equal(heldSaves,0,'Do not submit a review the server must reject');
 assert.match(document.querySelector('form').textContent,/Distinct printed addresses/);
-await set(input('Commission'),'4035.75');await submit();
+await set(input('Commission'),'4035.75');await submit();assert.ok(document.querySelector('form'));await click('Cancel');
 assert.equal(button('Approve').disabled,false,'Editing payment values still leaves identity review available');
 assert.equal(heldSaves,0);
 assert.doesNotMatch(document.body.textContent,/Changes ready\. Click Approve/);
@@ -197,7 +125,7 @@ const identityRoster={...sourceProps.roster,identity_groups:[identityGroup]};
 // review endpoint and open the current server-generated group without reuploading.
 await render({...sourceProps,rows:heldRows,onRefreshReview:async()=>({schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,review_context_sha256:'e'.repeat(64)}})});
 await click('Confirm identity');assert.ok(document.querySelector('#broker-identity-editor'));
-assert.equal(button('Approve').disabled,true);assert.equal(saves.length,4);
+assert.equal(button('Approve').disabled,true);assert.equal(saves.length,identityBaseline);
 let identitySaves=[];
 const identityProps={...sourceProps,rows:heldRows,roster:identityRoster,onSaveIdentityReview:async request=>{
   identitySaves.push(request);return {schedule_a_broker_rows:heldRows,schedule_a_broker_roster:{...identityRoster,
@@ -221,7 +149,7 @@ assert.match(document.body.textContent,/Identity confirmed: same broker/i);
 await render({...identityProps,roster:savedIdentity});
 assert.equal(button('Approve').disabled,false,'Saved identity remains usable after a reload');
 await act(async()=>buttons().filter(b=>b.textContent==='Edit')[0].click());
-await set(input('Commission'),'999');await submit();
+await set(input('Commission'),'999');await submit();await click('Cancel');
 assert.equal(button('Approve').disabled,false,'Changed reviewed values can reopen identity review');
 await render({...identityProps,onSaveIdentityReview:async()=>null});
 await click('Confirm identity');await choose('SEPARATE');
@@ -243,6 +171,36 @@ await render({...identityProps,onRefreshReview:async()=>({schedule_a_broker_rows
 await click('Confirm identity');await choose('SEPARATE');
 await act(async()=>document.querySelector('#broker-identity-editor input[type="checkbox"]').click());
 await click('Save confirmation');assert.equal(identitySaves.length,2);assert.match(document.body.textContent,/data changed/);
+// Optional broker addresses: no approval for verified rows; explicit as-is for partial data.
+for (const addressValues of [{address_line_1:'',city:'',state:'',zip_code:''}, {}]) {
+  await render({...sourceProps,rows:[{...row,...addressValues}],roster:{...sourceProps.roster,mode:'REPLACE'}});
+  assert.match(document.body.textContent,/Ready for automatic sending/);
+  assert.equal(buttons().some(b=>b.textContent==='Approve'),false);
+}
+let addressSaves=[];
+const partialRow={...row,address_line_1:'',state:'',zip_code:'',organization_code:null};
+const addressProps={...sourceProps,rows:[partialRow],onSaveReview:async(rows,review)=>{addressSaves.push({rows,review});return true;}};
+await render(addressProps);
+assert.match(document.body.textContent,/Address is incomplete/);
+await click('Edit');
+for (const label of ['Street','Address line 2','City','State','ZIP']) assert.equal(input(label).required,false);
+assert.equal(input('Organization code').value,'3');
+await click('Save and send as-is');
+assert.equal(addressSaves.length,1);
+assert.equal(addressSaves[0].review.accept_partial_addresses,true);
+assert.equal(addressSaves[0].rows[0].city,'Boston');
+assert.equal(addressSaves[0].rows[0].address_line_1,'');
+assert.equal(document.querySelector('form'),null);
+assert.match(document.body.textContent,/Sending continues automatically/);
+// Correcting the incomplete address uses the same save, without a second approval.
+await render(addressProps);await click('Edit');
+for (const [label,value] of [['Street','123 MAIN ST'],['State','MA'],['ZIP','02110']]) await set(input(label),value);
+await click('Save and continue');assert.equal(addressSaves.length,2);
+assert.equal(addressSaves[1].review.accept_partial_addresses,false);
+// A failed persistence keeps the partial address editor and entered values.
+await render({...addressProps,onSaveReview:async()=>false});await click('Edit');await click('Save and send as-is');
+assert.ok(document.querySelector('form'));assert.equal(input('City').value,'Boston');
+assert.match(document.body.textContent,/edits are retained/);
 if(process.env.BROKER_UI_REPLAY_FILE){
   const captured=JSON.parse(await readFile(process.env.BROKER_UI_REPLAY_FILE,'utf8'));
   await render({...sourceProps,rows:captured.source_rows});

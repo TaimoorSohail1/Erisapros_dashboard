@@ -96,6 +96,9 @@ def broker_row_has_payment(row):
 
 def broker_roster_is_complete(rows, status=None):
     from app.services.broker_review_confirmation import confirmation_matches
+    from app.services.broker_address_policy import address_state, partial_address_confirmed
+    if any(address_state(row) == 'PARTIAL' and not partial_address_confirmed(row) for row in rows):
+        return False
     if confirmation_matches(rows, status):
         return True
     if not rows or any(row.decision == "REVIEW_REQUIRED" or any(v.status == "ERROR" for v in row.validation_results)
