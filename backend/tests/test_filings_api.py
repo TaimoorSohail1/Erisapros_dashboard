@@ -776,7 +776,7 @@ class FilingsApiTests(unittest.TestCase):
         self.assertEqual(detail.file_name, "Concurrent.pdf")
         self.assertEqual(max_active_reads, 5)
 
-    def test_filing_detail_stages_numeric_schedule_a_values_without_making_them_sendable(self):
+    def test_filing_detail_keeps_blocked_source_conflicts_in_decisions_not_staged_updates(self):
         async def scenario():
             repo = repositories.get_repository()
             filing = await repo.create_filing(
@@ -802,7 +802,7 @@ class FilingsApiTests(unittest.TestCase):
             return detail.ftw_review.fields, stored.fields
 
         rows, stored = run_async(scenario())
-        self.assertEqual([row.staged_value for row in rows], ["42,031.50", "358", None, None, None, None])
+        self.assertTrue(all(row.staged_value is None for row in rows))
         self.assertTrue(all(row.validation_blocking and not row.update_included and row.proposed_value == "" for row in rows))
         self.assertTrue(all(row.staged_value is None for row in stored))
 

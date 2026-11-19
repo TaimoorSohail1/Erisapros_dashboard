@@ -79,6 +79,11 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     source_totals = printed_payment_totals(original_rows)
     if source_totals is not None:
         expected_payment_totals = source_totals
+    # Known source totals are authoritative even if an earlier normalization
+    # cleared the old discrepancy flag. A clean validation list is not proof
+    # that every printed payment was allocated to a recipient.
+    if expected_payment_totals is not None and all(v is not None for v in expected_payment_totals):
+        requires_reconciliation = True
     from app.services.broker_identity_review import confirmed_identity_decisions, apply_identity_decisions
     identity_decisions=confirmed_identity_decisions(rows,original_rows,sources,status,source_context,snapshot)
     identity_indexes={i for group in identity_decisions for i in group['source_indexes']}

@@ -5,6 +5,15 @@ from app.services.broker_review_confirmation import confirm_broker_review, revie
 
 
 class BrokerPaymentReconciliationTests(unittest.TestCase):
+    def test_known_printed_fee_is_required_even_after_error_flag_is_cleared(self):
+        from app.services.broker_payment_reconciliation import payment_reconciliation
+        row=self.original(error=False);status=ScheduleABrokerRosterReview()
+        self.assertTrue(payment_reconciliation([row],[]).required)
+        request=BrokerRosterReviewRequest(expected_context=review_token([row],status,'a','b'),
+            complete_list_confirmed=True,reason='Checked source',row_sources=['SOURCE:0'])
+        with self.assertRaisesRegex(ValueError,'Fees: source 25.00, allocated 0.00, remaining 25.00'):
+            confirm_broker_review([row],[row],status,request,actor='qa',source_context='a',snapshot='b')
+
     def original(self, error=True):
         return ScheduleABrokerRow(name='Example Brokerage', commission_total='100', fee_total='0', source_page=2,
             validation_results=[ExtractionValidationResult(validator='broker_total_reconciliation',

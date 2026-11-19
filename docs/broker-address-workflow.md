@@ -104,3 +104,12 @@ including evidence-only repairs to older derived values. Their original extracte
 value remains unchanged. Automation uses the saved evidence after refresh rather
 than requesting another review. Explicit reviewer values are preserved, and a
 concurrent field edit stops automatic verification until the review is refreshed.
+
+The API does not move blocked premium or persons-covered conflicts into a
+display-only staged update. Valid single values are real Will Update FTW
+proposals; blocked conflicts remain in Decisions Needed.
+
+Known printed commission and fee totals remain authoritative even after an old
+error flag becomes a warning. Both category totals must reconcile before broker
+confirmation. Clearing a flag or acknowledging the list cannot allocate an
+unnamed payment or approve a missing recipient.

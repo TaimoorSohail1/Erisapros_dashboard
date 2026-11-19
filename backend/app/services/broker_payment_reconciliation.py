@@ -23,5 +23,10 @@ def payment_reconciliation(rows, fields):
         source='EXTRACTED_SOURCE'
     if any(v is None for v in totals):
         return BrokerPaymentReconciliation(required=required,source='UNAVAILABLE')
+    from app.services.schedule_a_broker_roster import _money
+    amounts=[[_money(getattr(row,key)) for row in rows] for key in ('commission_total','fee_total')]
+    actual=(tuple(sum((Decimal(value) for value in values),Decimal(0)) for values in amounts)
+            if all(value is not None for values in amounts for value in values) else None)
+    required=required or actual!=tuple(Decimal(value) for value in totals)
     return BrokerPaymentReconciliation(required=required,source=source,
         expected_commission=format(Decimal(totals[0]),'.2f'),expected_fees=format(Decimal(totals[1]),'.2f'))

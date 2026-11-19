@@ -115,7 +115,7 @@ def printed_payment_totals(rows):
     for row in rows:
         for issue in row.validation_results:
             value = str(issue.normalized_value or '')
-            if issue.validator != 'broker_total_reconciliation' or issue.status != 'ERROR' or not value.startswith('source_totals:'):
+            if issue.validator != 'broker_total_reconciliation' or not value.startswith('source_totals:'):
                 continue
             parts = value.split(':')
             if len(parts) != 3 or any(_amount(v) is None for v in parts[1:]):
