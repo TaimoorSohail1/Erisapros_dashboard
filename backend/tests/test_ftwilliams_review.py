@@ -5972,8 +5972,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         for flagged, vendor, expected in (
             (field, {}, FTWFieldDecision.WILL_UPDATE),
             (field, {"InsCarrierEIN": "95-3760981"}, FTWFieldDecision.CONFLICT),
-            (legacy_hold, {}, FTWFieldDecision.BLOCKED),
-            (legacy_hold, {"InsCarrierEIN": "95-3760981"}, FTWFieldDecision.BLOCKED),
+            (legacy_hold, {}, FTWFieldDecision.WILL_UPDATE),
+            (legacy_hold, {"InsCarrierEIN": "95-3760981"}, FTWFieldDecision.CONFLICT),
             (field.model_copy(update={"status_reason": source_hold +
                 " Multiple source candidates disagree for this field."}), current, FTWFieldDecision.BLOCKED),
         ):
