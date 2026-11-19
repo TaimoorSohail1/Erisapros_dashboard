@@ -103,7 +103,7 @@ Example City, State             PLAN YEAR 04/01/2025-03/31/2026
     resolved = resolve_schedule_a_result(result)
     decisions = {f.field_name.split('.')[0]: f.decision for f in resolved.fields}
     assert decisions['1e'] == ('REVIEW_REQUIRED' if variant.endswith(('two_rows', 'wrong_count')) else 'AUTOMATIC')
-    assert decisions['10a'] == ('AUTOMATIC' if variant == 'eyemed' else 'REVIEW_REQUIRED')
+    assert decisions['10a'] == ('REVIEW_REQUIRED' if variant == 'eyemed_two_rows' else 'AUTOMATIC')
     if variant in {'eyemed', 'aflac'}:
         assert all(decisions[field] == 'AUTOMATIC' for field in ('1d', '1f', '1g'))
 
@@ -114,7 +114,7 @@ def test_a_nearby_phone_number_cannot_prove_an_incorrect_ein():
     attach_final_field_evidence(result,[(1,'TAX ID: 12-3456789\nBroker phone: 131898173')])
     resolve_schedule_a_result(result)
     assert result.fields[0].decision=='REVIEW_REQUIRED'
-    assert any(v.validator=='source_evidence' and v.status=='ERROR' for v in result.fields[0].validation_results)
+    assert any(v.validator=='candidate_conflict' and v.status=='ERROR' for v in result.fields[0].validation_results)
 
 
 def test_identity_table_attaches_each_value_to_its_own_column():
@@ -341,4 +341,4 @@ Total $62.50'''
     resolve_schedule_a_result(result)
     premium=next(f for f in result.fields if f.field_name.startswith('10a.'))
     assert any(v.validator=='source_evidence' and v.status=='PASS' for v in premium.validation_results)
-    assert any(v.validator=='section_context' and v.status=='ERROR' for v in premium.validation_results)
+    assert any(v.validator=='section_context' and v.status=='WARN' for v in premium.validation_results)

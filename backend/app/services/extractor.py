@@ -8945,8 +8945,10 @@ def extract_bcbsma_commission_breakdown_broker_rows(text: str, page: int | None 
     senior_commission = money_value(commission_match.group(4))
     other_commission = regex_first(normalized, [r"OTHER\s+COMMISSION\s+\*?\s*\n\s*.+?\s+\$?([0-9,]+\.\d{2})"])
     non_monetary = regex_first(normalized, [r"NON\s+MONETARY\s+C[O0]MPENSATION\s+\*?\s*\n\s*.+?\s+\$?([0-9,]+\.\d{2})"])
-    commission_total = whole_dollar_money_value(sum_money_values(medical_commission, dental_commission, senior_commission, other_commission))
-    fee_total = whole_dollar_money_value(non_monetary) if non_monetary else None
+    commission_total = sum_money_values(medical_commission, dental_commission, senior_commission, other_commission)
+    # A non-monetary benefit is not a cash fee. Account-wide other commission
+    # is also never reclassified as a fee or silently allocated to one policy.
+    fee_total = '0'
     if not broker_name or not is_probable_person_or_entity_name(broker_name):
         return []
     return [
@@ -8958,11 +8960,16 @@ def extract_bcbsma_commission_breakdown_broker_rows(text: str, page: int | None 
                 ScheduleABrokerMoneyRow(coverage="Senior", amount=money_value(senior_commission), purpose="Base Commission"),
                 ScheduleABrokerMoneyRow(coverage=None, amount=money_value(other_commission or "0"), purpose="Other Commission"),
             ],
-            fee_rows=[ScheduleABrokerMoneyRow(coverage=None, amount=fee_total, purpose="Non-Monetary Compensation")] if fee_total else [],
+            fee_rows=[],
             commission_total=commission_total,
             fee_total=fee_total,
             source_page=page,
             confidence=0.92,
+            purpose='COMMISSIONS',
+            evidence=[SourceEvidence(provider='Labelled commission breakdown',page=page,source_text=normalized)],
+            validation_results=[ExtractionValidationResult(validator='business_rule_confirmation',status='ERROR',
+                reason='Commission breakdown includes account-wide or multiple-benefit amounts. Confirm the allocation to the selected Schedule A; other commission and non-monetary compensation are not fees.')],
+            decision='REVIEW_REQUIRED',
         )
     ]
 

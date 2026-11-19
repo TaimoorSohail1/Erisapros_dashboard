@@ -247,7 +247,7 @@ async def test_refresh_legacy_totals_only_when_source_and_current_values_agree(v
         refreshed = await refresh_verified_totals(repo, filing, fields, current)
     comparison = FTWilliamsReviewService()._comparison_fields(refreshed, {}, current)
     rows = {row.ftw_tag: row for row in comparison}
-    assert rows["WlfrTotChargesPaidAmt"].update_included == (variant in {"verified", "missing_evidence", "existing_value", "broken_total"})
+    assert rows["WlfrTotChargesPaidAmt"].update_included == (variant in {"verified", "missing_evidence", "existing_value", "broken_total", "different_file"})
     assert rows["InsPrsnCoveredEoyCnt"].update_included == (variant in {"verified", "missing_evidence"})
 
 

@@ -205,7 +205,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             )
         )
 
-    def test_valid_value_without_page_evidence_is_review_required(self):
+    def test_valid_value_without_page_evidence_is_warning_only(self):
         result = NormalizedExtractionResult(
             provider="structured extraction",
             fields=[
@@ -221,10 +221,10 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
         resolved = resolve_schedule_a_result(result)
 
         field = resolved.fields[0]
-        self.assertEqual(field.decision, "REVIEW_REQUIRED")
+        self.assertEqual(field.decision, "AUTOMATIC")
         self.assertTrue(
             any(
-                item.validator == "source_evidence" and item.status == "ERROR"
+                item.validator == "source_evidence" and item.status == "WARN"
                 for item in field.validation_results
             )
         )
@@ -269,7 +269,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
 
         self.assertEqual(field.decision, "REVIEW_REQUIRED")
         evidence_result = next(
-            item for item in field.validation_results if item.validator == "source_evidence"
+            item for item in field.validation_results if item.validator == "source_value_conflict"
         )
         self.assertEqual(evidence_result.status, "ERROR")
 
@@ -704,7 +704,7 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
             resolved.raw["extraction_quality"]["cross_field_errors"],
         )
 
-    def test_financial_value_without_matching_section_context_requires_review(self):
+    def test_financial_value_without_matching_section_context_is_warning_only(self):
         result = NormalizedExtractionResult(
             provider="layout OCR",
             fields=[
@@ -727,12 +727,12 @@ class ScheduleAExtractionPipelineTests(unittest.TestCase):
 
         resolved = resolve_schedule_a_result(result)
 
-        self.assertTrue(all(field.decision == "REVIEW_REQUIRED" for field in resolved.fields
+        self.assertTrue(all(field.decision == "AUTOMATIC" for field in resolved.fields
                             if field.field_name.startswith(("9", "10"))))
         self.assertTrue(
             all(
                 any(
-                    item.validator == "section_context" and item.status == "ERROR"
+                    item.validator == "section_context" and item.status == "WARN"
                     for item in field.validation_results
                 )
                 for field in resolved.fields

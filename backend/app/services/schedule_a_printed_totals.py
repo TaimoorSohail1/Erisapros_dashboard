@@ -267,6 +267,16 @@ def read_printed_totals(pages: list[tuple[int, str]]) -> dict[str, tuple[Decimal
 
 def attach_printed_total_evidence(fields: list[NormalizedExtractionField], pages: list[tuple[int, str]]) -> None:
     reconcile_printed_member_total(fields, pages)
+    for field in fields:
+        if field.field_name==_COVERED_PERSONS_FIELD:
+            for _,text in pages:
+                if re.search(_FORM_5500_INSURANCE_HEADING,text,re.I|re.M):
+                    for members in re.findall(r'(?im)^\s*Number of Members\s*:+\s*([\d,]+)',text):
+                        if members.replace(',','')!=field.value.replace(',','') and members not in field.candidate_values:
+                            field.candidate_values.append(members)
+        if field.field_name.startswith('9') and any(re.search(r'Experience\s*-\s*Rated Contracts\s*\nNon\s+experience',text,re.I) for _,text in pages):
+            from app.models import ExtractionValidationResult
+            field.validation_results.append(ExtractionValidationResult(validator='business_rule_confirmation',status='ERROR',reason='Contradictory financial-section headings require classification review.'))
     reconcile_last_month_exposures(fields, pages)
     totals = read_printed_totals(pages)
     for field in fields:

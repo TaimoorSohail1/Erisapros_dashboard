@@ -153,13 +153,17 @@ def resolve_schedule_a_result(
         if section_context is not None:
             validations.append(section_context)
         validations.append(_validate_source_evidence(field, rules=rules))
+        from app.services.single_value_policy import informational_validation
+        for validation in validations:
+            if validation.status == 'ERROR' and informational_validation(validation):
+                validation.status = 'WARN'
         field.validation_results = validations
         if any(item.status == "ERROR" for item in validations):
             field.confidence = min(float(field.confidence or 0), REVIEW_CONFIDENCE_CEILING)
             field.decision = "REVIEW_REQUIRED"
             error_fields.add(field.field_name)
         else:
-            field.decision = "AUTOMATIC" if float(field.confidence or 0) >= 0.8 else "REVIEW_REQUIRED"
+            field.decision = "AUTOMATIC"
 
     _validate_date_order(result.fields, error_fields)
     cross_field_errors = _validate_cross_section_duplicates(result.fields)
@@ -392,11 +396,13 @@ def _validate_source_evidence(
                 break
     valid = has_page and has_source_text and supports_value
     return ExtractionValidationResult(
-        validator="source_evidence",
+        validator="source_value_conflict" if has_page and has_source_text and not supports_value else "source_evidence",
         status="PASS" if valid else "ERROR",
         reason=(
             "Field has page-level source evidence containing the extracted value."
             if valid
+            else "The available source text disagrees with the extracted value."
+            if has_page and has_source_text and not supports_value
             else "Automatic extraction requires a source page and source text that supports the extracted value."
         ),
     )

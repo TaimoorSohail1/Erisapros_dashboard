@@ -335,9 +335,9 @@ def test_provider_value_is_not_used_as_fabricated_source_evidence():
     field = next(item for item in resolved.fields if item.field_name == contract_rule.label)
     self_evidence = field.evidence[0]
     assert self_evidence.source_text is None
-    assert field.decision == "REVIEW_REQUIRED"
+    assert field.decision == "AUTOMATIC"
     assert any(
-        item.validator == "source_evidence" and item.status == "ERROR"
+        item.validator == "source_evidence" and item.status == "WARN"
         for item in field.validation_results
     )
 

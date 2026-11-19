@@ -1647,6 +1647,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             confidence=0.5,
             source_text="",
             page=None,
+            status_reason='Parser default zero; no extracted source amount.',
         )
 
         comparison = FTWilliamsReviewService()._comparison_fields(
@@ -5968,18 +5969,18 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 self.assertEqual(matched.decision, FTWFieldDecision.NO_CHANGE)
                 self.assertEqual(matched.proposed_value, current["InsCarrierEIN"])
                 self.assertFalse(matched.update_included)
-        for flagged, vendor in (
-            (field, {}),
-            (field, {"InsCarrierEIN": "95-3760981"}),
-            (legacy_hold, {}),
-            (legacy_hold, {"InsCarrierEIN": "95-3760981"}),
+        for flagged, vendor, expected in (
+            (field, {}, FTWFieldDecision.WILL_UPDATE),
+            (field, {"InsCarrierEIN": "95-3760981"}, FTWFieldDecision.CONFLICT),
+            (legacy_hold, {}, FTWFieldDecision.BLOCKED),
+            (legacy_hold, {"InsCarrierEIN": "95-3760981"}, FTWFieldDecision.BLOCKED),
             (field.model_copy(update={"status_reason": source_hold +
-                " Multiple source candidates disagree for this field."}), current),
+                " Multiple source candidates disagree for this field."}), current, FTWFieldDecision.BLOCKED),
         ):
             with self.subTest(vendor=vendor, reason=flagged.status_reason):
-                held, = service._comparison_fields([flagged], {}, vendor)
-                self.assertEqual(held.decision, FTWFieldDecision.BLOCKED)
-                self.assertFalse(held.update_included)
+                held, = service._comparison_fields([flagged.model_copy(deep=True)], {}, vendor)
+                self.assertEqual(held.decision, expected)
+                self.assertEqual(held.update_included, expected in {FTWFieldDecision.WILL_UPDATE, FTWFieldDecision.CONFLICT})
 
     def test_month_only_period_retains_matching_current_and_worksheet_dates(self):
         service = FTWilliamsReviewService()
