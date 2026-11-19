@@ -61,7 +61,7 @@ class FieldRuleAdminTests(unittest.TestCase):
 
         baseline, draft, before_publish, published, after_publish, history = run_async(scenario())
 
-        self.assertGreaterEqual(len(baseline), 58)
+        self.assertGreaterEqual(len(baseline), 57)
         self.assertEqual(draft.status, FieldRuleStatus.DRAFT)
         before_rule = next(rule for rule in before_publish if rule.key == draft.key)
         self.assertNotIn("Test admin alias", before_rule.aliases)
@@ -119,6 +119,22 @@ class FieldRuleAdminTests(unittest.TestCase):
             for text in [rule.label, rule.ftw_field, rule.xml_tag or "", rule.notes, rule.client_notes, *rule.aliases]
         ).lower()
         self.assertNotIn("plan administrator", searchable_rule_text)
+
+    def test_welfare_question_is_retired_from_rules_and_unmapped_extraction(self):
+        async def scenario():
+            published = await FieldRuleService(repositories.get_repository()).published_rules()
+            mapped = map_extraction_to_rules(
+                "filing",
+                [NormalizedExtractionField(field_name=label, value="Yes", confidence=0.86)
+                 for label in ("6. Plan is a welfare plan?", "Plan is a welfare plan?")],
+                rules=published,
+            )
+            return published, mapped["fields"]
+
+        published, fields = run_async(scenario())
+        self.assertNotIn("form_5500_part_ii_6_plan_is_a_welfare_plan", {rule.key for rule in published})
+        self.assertTrue(all("welfare plan" not in field.source_field_name.lower() for field in fields))
+        self.assertIn("form_5500_part_ii_8c_welfare_benefit_features", {rule.key for rule in published})
 
     def test_prior_year_form_5500_arrangement_fields_are_retired_from_published_rules(self):
         async def scenario():

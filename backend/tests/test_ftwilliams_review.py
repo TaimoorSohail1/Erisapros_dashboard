@@ -1752,6 +1752,8 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
                 FTWilliamsComparisonField(label="Blocked", decision="BLOCKED"),
                 FTWilliamsComparisonField(label="Skip", decision="SKIP_EMPTY"),
                 FTWilliamsComparisonField(label="Same", decision="NO_CHANGE"),
+                FTWilliamsComparisonField(label="6. Plan is a welfare plan?", decision="BLOCKED"),
+                FTWilliamsComparisonField(label="Plan is a welfare plan?", decision="CONFLICT"),
             ],
         )
 
@@ -2884,8 +2886,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             update_fields=safe,
         )
 
-        self.assertFalse(comparison[0].update_included)
-        self.assertIn("complete FT Williams administrator contact block", comparison[0].update_exclusion_reason or "")
+        self.assertEqual(comparison, [])
 
     def test_retired_administrator_name_is_never_sent(self):
         administrator = ExtractedField(
@@ -2912,6 +2913,20 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(safe, [])
+
+    def test_legacy_unmapped_welfare_question_is_excluded_from_comparison_and_coverage(self):
+        welfare = ExtractedField(
+            filing_id="filing", source_field_name="6. Plan is a welfare plan?",
+            normalized_field_name="plan_is_a_welfare_plan", value="Yes", proposed_value="Yes",
+            form_type=FormType.FORM_5500, priority=FieldPriority.LOW,
+            status=ExtractedFieldStatus.UNMAPPED,
+        )
+        service = FTWilliamsReviewService()
+        self.assertEqual(service._comparison_fields([welfare], {}, {}), [])
+        counts = service._review_field_count_updates([welfare], [welfare])
+        self.assertEqual(counts["review_field_count"], 0)
+        self.assertEqual(counts["unmapped_count"], 0)
+        self.assertEqual(counts["excluded_field_count"], 0)
 
     def test_comparison_exposes_invalid_ftw_format_as_blocking(self):
         field = ExtractedField(
