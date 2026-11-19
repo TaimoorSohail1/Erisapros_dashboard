@@ -25,4 +25,6 @@ The complete source recipient list must be corroborated before automatic broker 
 
 An agent number, payee code, account number or contract number is not a broker organization code. Explicit valid organization codes are preserved; a blank organization-code cell defaults to 3. Manual corrections and saved partial-address decisions are retained.
 
+Payment verification accounts for unassigned amounts as well as named recipients. Matching recipient rows and readable pages alone cannot replace a reported fee total with zero. A discrepancy stays in the normal reconciliation flow, where a reviewer can correct the allocation against the source. Automatic proofs issued under earlier checks are reverified; human confirmations are preserved. Identical repeated statement pages are counted once only after their drawing or rendered content is confirmed, while different pages remain separate.
+
 If the FT Williams query loaded successfully but no eligible policy matches, choose the correct destination or confirm a new Schedule A. A record for a different contract is not overwritten automatically. A unique highest eligible match is selected automatically; equal highest scores require a decision. An incomplete or uneditable query must be refreshed before sending.

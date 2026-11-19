@@ -2,6 +2,31 @@ import unittest
 from app.services.extractor import extract_schedule_a_broker_rows_from_document, extract_eyemed_broker_rows, extract_metlife_standard_broker_rows
 
 class GlobalSourceReaderTests(unittest.TestCase):
+ def test_unassigned_refund_decimal_or_unreadable_total_is_not_zero(self):
+  from app.services.extractor import extract_guardian_broker_rows
+  for total in ['$.50','($25.00)','NOT PROVIDED','25.000.1']:
+   rows=extract_guardian_broker_rows([(1,'''Guardian Schedule A/5500 EIN 13-5123390
+000AB123 EXAMPLE BROKER LLC $100.00
+123 MAIN ST BOSTON MA 02110
+Total commissions for plan $100.00
+Total Fees Paid '''+total)])
+   self.assertEqual(len(rows),1)
+   self.assertTrue(any(v.status=='ERROR' for v in rows[0].validation_results),total)
+
+ def test_closed_payment_reader_rejects_an_unassigned_amount_and_extra_payment_page(self):
+  from app.services.schedule_a_native_brokers import approved_commission_recipient_blocks,CLOSED_ROSTER
+  text='''SCHEDULE A Vision Service Plan
+Commissions/Fees Paid for Policy or Contract Year
+Agent or Broker
+Example Brokerage        $100.00
+123 MAIN STREET
+BOSTON MA 02110'''
+  rows=approved_commission_recipient_blocks([(1,text)])
+  self.assertEqual(len(rows),1)
+  self.assertTrue(any(v.validator==CLOSED_ROSTER for v in rows[0].validation_results))
+  self.assertEqual(approved_commission_recipient_blocks([(1,text+'\n$25.00')]),[])
+  self.assertEqual(approved_commission_recipient_blocks([(1,text),(2,'Additional payment $25.00')]),[])
+
  def test_labelled_address_columns_keep_unit_in_street_and_city_separate(self):
   from app.services.schedule_a_native_brokers import labelled_payee_rows
   rows=labelled_payee_rows([(1,'''Commissions or fees paid by carrier to agents, brokers or other persons:

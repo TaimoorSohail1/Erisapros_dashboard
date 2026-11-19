@@ -751,7 +751,8 @@ AD&D 592 | Base Commissions
                 (None, None, None, None, None),
             ],
         )
-        self.assertEqual([e.page for e in brokers[1].evidence], [2, 3])
+        self.assertEqual([e.page for e in brokers[1].evidence[:2]], [2, 3])
+        self.assertIn(4, [e.page for e in brokers[1].evidence])  # fee-total reconciliation evidence
         self.assertEqual(brokers[2].fee_total, "1,438.43")
 
     def test_pomerene_guardian_letter_uses_plan_number_not_broker_code(self):

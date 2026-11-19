@@ -10,6 +10,13 @@ from app.models import ExtractionValidationResult, ScheduleABrokerMoneyRow, Sche
 
 PAYMENT_COLUMNS = 'native_labelled_broker_payment_columns'
 SECTION_TOTALS = 'native_printed_broker_section_totals'
+CLOSED_ROSTER = 'native_closed_broker_payment_roster'
+
+
+def mark_closed_roster(rows, reason):
+    for row in rows:
+        row.validation_results.append(ExtractionValidationResult(validator=CLOSED_ROSTER, status='PASS', reason=reason))
+    return rows
 
 
 def mark_payment_columns(row):
@@ -26,7 +33,9 @@ def mark_section_totals(rows, commission, fees, evidence):
     if (sum(Decimal(_amount(r.commission_total)) for r in rows) != Decimal(_amount(commission))
             or sum(Decimal(_amount(r.fee_total)) for r in rows) != Decimal(_amount(fees))):
         for row in rows:
-            row.validation_results.append(ExtractionValidationResult(validator=SECTION_TOTALS, status='ERROR',
+            row.evidence.extend(evidence)
+            row.validation_results.append(ExtractionValidationResult(validator='broker_total_reconciliation', status='ERROR',
+                normalized_value='source_totals:'+_amount(commission)+':'+_amount(fees),
                 reason='Printed source category totals do not reconcile to all recipient rows.'))
             row.decision = 'REVIEW_REQUIRED'
         return
@@ -78,7 +87,8 @@ def provider_supports_labelled_payments(result, source_rows):
         prior = [ScheduleABrokerRow.model_validate(r) for r in stage.get('broker_rows', [])]
     except (ValueError, TypeError):
         return False
-    if (not source_rows or not prior or any(not r.source_page or not any(e.page == r.source_page and e.source_text
+    if (not source_rows or not prior or any(r.decision == 'REVIEW_REQUIRED' or any(v.status == 'ERROR' for v in r.validation_results)
+            or not r.source_page or not any(e.page == r.source_page and e.source_text
             for e in r.evidence) or not any(v.validator == PAYMENT_COLUMNS and v.status == 'PASS'
             for v in r.validation_results) for r in source_rows)
             or not recipient_sets_corroborate(prior, source_rows)):
@@ -97,6 +107,23 @@ def provider_supports_labelled_payments(result, source_rows):
 def _amount(value):
     from app.services.schedule_a_broker_roster import _money
     return _money(value)
+
+
+def printed_payment_totals(rows):
+    """Read server-produced source totals, never a browser-supplied assertion."""
+    totals = set()
+    for row in rows:
+        for issue in row.validation_results:
+            value = str(issue.normalized_value or '')
+            if issue.validator != 'broker_total_reconciliation' or issue.status != 'ERROR' or not value.startswith('source_totals:'):
+                continue
+            parts = value.split(':')
+            if len(parts) != 3 or any(_amount(v) is None for v in parts[1:]):
+                raise ValueError('Printed payment totals could not be validated.')
+            totals.add(tuple(Decimal(_amount(v)) for v in parts[1:]))
+    if len(totals) > 1:
+        raise ValueError('Printed payment totals disagree; verify the separate source schedules.')
+    return next(iter(totals)) if totals else None
 
 
 def _row(name, address, commission, fees, page, source, *, provider):
@@ -191,9 +218,6 @@ def labelled_recipient_blocks(pages):
             if row is None:
                 return []
             rows.append(row)
-    if (sum((Decimal(r.commission_total) for r in rows), Decimal(0)) != Decimal(_amount(commission_total[0]))
-            or sum((Decimal(r.fee_total) for r in rows), Decimal(0)) != Decimal(_amount(fee_total[0]))):
-        return []
     mark_section_totals(rows, commission_total[0], fee_total[0], [SourceEvidence(
         provider='Printed commission and fee section totals', page=pages[0][0],
         source_text=f'Total Amount of Commissions Paid: ${commission_total[0]}\nTotal Amount of Fees Paid: ${fee_total[0]}')])
@@ -374,12 +398,16 @@ def approved_commission_recipient_blocks(pages):
     rows = []
     for page, text in pages:
         if not approved_vsp_commission_label(text):
+            if text.strip():
+                return []
             continue
         section = re.search(r'Agent\s+or\s+Broker', text, re.I)
         if not section:
             continue
         body = text[section.end():]
         starts = list(re.finditer(r'(?m)^\s*([A-Za-z][^\n$]+?)\s{2,}\$\s*([\d,]+\.\d{2})\s*$', body))
+        if body.count('$') != len(starts):
+            return []  # An unnamed payment/total must not disappear from the list.
         for index, start in enumerate(starts):
             tail = body[start.end():starts[index+1].start() if index+1 < len(starts) else len(body)]
             lines = [s.strip() for s in tail.splitlines() if s.strip()]
@@ -396,7 +424,7 @@ def approved_commission_recipient_blocks(pages):
             if row is None:
                 return []
             rows.append(row)
-    return rows
+    return mark_closed_roster(rows, 'Every monetary cell in the approved recipient payment column belongs to one parsed recipient; no unassigned payment remains.')
 
 
 def labelled_single_recipient(pages):
@@ -425,8 +453,6 @@ def labelled_single_recipient(pages):
             return []
         mark_section_totals([row], comm_total[0], fee_total[0], [SourceEvidence(provider='Printed commission and fee section totals',
             page=page, source_text=f'Total Amount of Commissions Paid: ${comm_total[0]}\nTotal Fees Paid/Amount: ${fee_total[0]}')])
-        if not any(v.validator == SECTION_TOTALS and v.status == 'PASS' for v in row.validation_results):
-            return []
         rows.append(row)
     return rows
 
@@ -517,6 +543,8 @@ def labelled_benefit_compensation(pages):
         total = re.search(r'Total\s+Amount\s+of\s+Commissions\s+and\s+Fees\s+\$([\d,]+\.\d{2})', text, re.I)
         contract = re.search(r'Contract\s+or\s+Identification\s+Number\s*:\s*([A-Z0-9-]+)', text, re.I)
         if not marker or not total or not contract or re.search(r'Schedule\s+C\b', text, re.I):
+            if text.strip():
+                return []
             continue
         header = text[max(0,marker.start()-600):marker.end()+300]
         comm_columns = [m.start() for line in header.splitlines() if (m := re.search(r'\bCommission\b', line))]
@@ -525,6 +553,8 @@ def labelled_benefit_compensation(pages):
             return []
         match = re.search(r'(?m)^\s*([A-Z][A-Z &.,\'-]+?)\s{2,}\$([\d,]+\.\d{2})(?:\s+\$([\d,]+\.\d{2}))?\s*$', text[marker.end():])
         if not match:
+            return []
+        if text[marker.end():].count('$') != 1 + bool(match[3]):
             return []
         row_line_start = text[marker.end():].rfind('\n', 0, match.start(2)) + 1
         if not comm_columns[0] <= match.start(2) - row_line_start < fee_columns[0]:
@@ -543,7 +573,7 @@ def labelled_benefit_compensation(pages):
             prior.evidence.extend(row.evidence); prior.commission_rows.extend(row.commission_rows); prior.fee_rows.extend(row.fee_rows)
         else:
             rows.append(row)
-    return rows
+    return mark_closed_roster(rows, 'Every benefit page has separately labelled commission/fee columns and its recipient amounts reconcile to the printed compensation total.')
 
 
 def monthly_commission_recipient(pages):
@@ -554,7 +584,11 @@ def monthly_commission_recipient(pages):
         heading = next((i for i,line in enumerate(lines) if re.search(r'Commissions\s+paid\s+to\s*:', line, re.I)), None)
         table = next((i for i,line in enumerate(lines) if re.search(r'Invoice\s+Month\s+Premium\s+Paid\s+Commission\s*$', line, re.I)), None)
         if heading is None or table is None or heading >= table:
+            if text.strip():
+                return []
             continue
+        if re.search(r'\bfees?\b', text, re.I):
+            return []
         label = re.search(r'Commissions\s+paid\s+to\s*:', lines[heading], re.I)
         gap = re.search(r'\s{2,}Commissions\s+paid\s+to', lines[heading], re.I)
         column = (gap.start()+label.start())//2 if gap else label.start()
@@ -572,13 +606,15 @@ def monthly_commission_recipient(pages):
         if (not months or any(m is None for m in months)
                 or any(sum(Decimal(_amount(m[i])) for m in months) != Decimal(_amount(totals[i])) for i in (1,2))):
             return []
+        if '\n'.join(tail).count('$') != 2*(len(months)+1):
+            return []
         source = lines[heading]+'\n'+'\n'.join(block)+'\n'+'\n'.join(lines[table:])
         row = _row(name, block[street:], _amount(totals[2]), '0', page, source,
                    provider='Named payee and reconciled monthly commission column')
         if row is None or not row.city:
             return []
         rows.append(row)
-    return rows
+    return mark_closed_roster(rows, 'Every monthly commission entry reconciles to the printed commission total and the named payee; this statement has no separate fee column.')
 
 
 def header_named_fee_rows(pages):

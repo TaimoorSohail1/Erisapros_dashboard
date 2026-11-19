@@ -4942,11 +4942,53 @@ def _read_schedule_a_broker_document(file_bytes: bytes, file_name: str | None = 
         prior_coverage = {p['page']: p for p in page_coverage.get('pages', [])}
         page_coverage['pages'] = [p if p['readable'] else prior_coverage.get(p['page'], p)
                                   for p in _broker_page_coverage(layout_pages)]
+    if pdf_document is not None:
+        # An exact duplicated physical page is one statement, not a second
+        # payment. Require identical drawing streams, resource references,
+        # geometry and annotations; identical extracted text alone is unsafe.
+        seen, visual_seen, duplicates, rendered_pairs = {}, {}, {}, 0
+        text_by_page = dict(layout_pages)
+        for number, physical in enumerate(pdf_document.pages, 1):
+            stream = physical.get_contents()
+            operations = list(stream.operations) if stream is not None else []
+            operations = [(args,op) for args,op in operations if not (op == b'cm' and args == [1,0,0,1,0,0])]
+            # A complete outer save/restore pair does not change a page's
+            # drawing. Do not remove inner graphics-state operations.
+            while operations and operations[0][1] == b'q' and operations[-1][1] == b'Q':
+                depth, wraps_all = 0, True
+                for _,op in operations[:-1]:
+                    depth += (op == b'q') - (op == b'Q')
+                    if depth <= 0:
+                        wraps_all = False
+                        break
+                if not wraps_all or depth != 1:
+                    break
+                operations = operations[1:-1]
+            signature = (repr(operations), repr(physical.get('/Resources')),
+                tuple(physical.mediabox), tuple(physical.cropbox), physical.rotation,
+                repr(physical.get('/Annots')))
+            if signature in seen:
+                duplicates[number] = seen[signature]
+            else:
+                seen[signature] = number
+                visual_key = (text_by_page.get(number,''), *signature[1:])
+                previous = visual_seen.get(visual_key)
+                if previous and len(re.findall(r'\b\w+\b',visual_key[0])) >= 4 and rendered_pairs < 8:
+                    rendered_pairs += 1
+                    if _same_rendered_source_pages(file_bytes,previous,number):
+                        duplicates[number] = previous
+                else:
+                    visual_seen[visual_key] = number
+        if duplicates:
+            page_texts = [(n,t) for n,t in page_texts if n not in duplicates]
+            layout_pages = [(n,t) for n,t in layout_pages if n not in duplicates]
+            for item in page_coverage['pages']:
+                if item['page'] in duplicates:
+                    item['duplicate_of'] = duplicates[item['page']]
     if str(file_name or '').lower().endswith('.pdf'):
         from app.services.schedule_a_native_brokers import bordered_recipient_tables
-        if (any('Agent Number' in text and re.search(r'Address\s+of\s+the\s+Agents',text,re.I)
-                for _,text in layout_pages) and (grid_rows := bordered_recipient_tables(file_bytes))):
-            return grid_rows
+        if any('Agent Number' in text and re.search(r'Address\s+of\s+the\s+Agents',text,re.I) for _,text in layout_pages):
+            return bordered_recipient_tables(file_bytes)
         widget_fields, widget_rows = extract_schedule_a_acroform(file_bytes)
         if widget_rows:
             from app.services.schedule_a_native_brokers import mark_section_totals, mark_payment_columns
@@ -4959,6 +5001,15 @@ def _read_schedule_a_broker_document(file_bytes: bytes, file_name: str | None = 
                     and 'broker rows total' not in (fees.source_text or '')):
                 mark_section_totals(widget_rows, commission.value, fees.value, [*commission.evidence, *fees.evidence])
             return widget_rows
+    from app.services.schedule_a_vsp_rules import approved_vsp_commission_label
+    if any(approved_vsp_commission_label(text) for _,text in layout_pages):
+        return approved_commission_recipient_blocks(layout_pages)
+    if any(re.search(r'Persons\s+Receiving\s+Commissions\s*:',text,re.I)
+           and re.search(r'Total\s+Amount\s+of\s+Commissions\s+and\s+Fees',text,re.I) for _,text in layout_pages):
+        return labelled_benefit_compensation(layout_pages)
+    if any(re.search(r'Commissions\s+paid\s+to\s*:',text,re.I)
+           and re.search(r'Invoice\s+Month\s+Premium\s+Paid\s+Commission',text,re.I) for _,text in layout_pages):
+        return monthly_commission_recipient(layout_pages)
     for parser in (labelled_payee_rows, labelled_recipient_blocks, commission_payee_bullets, labelled_payee_compensation,
                    labelled_payee_totals_table, labelled_id_payment_table, labelled_contract_payment_table,
                    approved_commission_recipient_blocks, labelled_single_recipient,
@@ -5030,6 +5081,31 @@ def _read_schedule_a_broker_document(file_bytes: bytes, file_name: str | None = 
             if native_coverage.get(p['page'], {}).get('readable') else p
             for p in _broker_page_coverage(layout_pages)]
     return rows
+
+
+def _same_rendered_source_pages(content, first, second):
+    """Bounded pixel confirmation; extracted text alone never removes a page."""
+    from app.services.schedule_a_closed_source import _PDFIUM_LOCK
+    import pypdfium2 as pdfium
+    try:
+        with _PDFIUM_LOCK:
+            document = pdfium.PdfDocument(content)
+            hashes = []
+            try:
+                for number in (first,second):
+                    page = document[number-1]
+                    bitmap = page.render(scale=300/72,draw_annots=True)
+                    try:
+                        image = bitmap.to_pil()
+                        hashes.append((image.size,hashlib.sha256(image.tobytes()).hexdigest()))
+                    finally:
+                        bitmap.close()
+                        page.close()
+            finally:
+                document.close()
+            return hashes[0] == hashes[1]
+    except Exception:
+        return False
 
 
 def _broker_page_coverage(pages: list[tuple[int, str]]) -> list[dict]:
@@ -11317,8 +11393,9 @@ def extract_guardian_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
     page = page_texts[0][0] if page_texts else 1
     policy = regex_first(joined, [r"Plan\s+(?:Number|No\.?|#)\s*:?\s*(00\d{6})"])
     period = regex_first(joined, [r"(?:From\s*:?)\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:To\s*:?)\s*(\d{1,2}/\d{1,2}/\d{2,4})"], groups=True)
-    commission_pattern = r"\bTotal\s+(?:commissions\s+for\s+plan|Commissions\s+Paid\s+On\s+Plan)\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
-    fee_pattern = r"\bTotal\s+Fees\s+Paid[ \t]*:?[ \t]*\$?[ \t]*([0-9,]+(?:\.\d{2})?)"
+    total_money = r"(\(?-?\$?(?:[0-9,]+(?:\.\d{1,2})?|\.\d{1,2})\)?)(?![\d.,])"
+    commission_pattern = r"\bTotal\s+(?:commissions\s+for\s+plan|Commissions\s+Paid\s+On\s+Plan)\s*:?\s*\$?\s*" + total_money
+    fee_pattern = r"\bTotal\s+Fees\s+Paid[ \t]*:?[ \t]*\$?[ \t]*" + total_money
     commission = regex_first(joined, [commission_pattern])
     fees = regex_first(joined, [fee_pattern])
     premium_pattern = r"\bTotal\s+premium\s+paid\s*:?\s*\$?\s*([0-9,]+(?:\.\d{2})?)"
@@ -11331,7 +11408,7 @@ def extract_guardian_schedule_a_fields(page_texts: list[tuple[int, str]]) -> lis
         "1d. Contract/Policy Number": policy,
         "1f. Policy Year Beginning Date": normalize_eyemed_date(period[0]) if isinstance(period, tuple) else None,
         "1g. Policy Year Ending Date": normalize_eyemed_date(period[1]) if isinstance(period, tuple) else None,
-        "3c. Amount of Fees": None if fees is not None else "0.00",
+        "3c. Amount of Fees": None if fees is not None or re.search(r'\bTotal\s+Fees\s+Paid\b',joined,re.I) else "0.00",
         "3d. Purpose": derive_schedule_a_purpose(commission, fees or "0"),
         "3e. Organizational Code": "3",
     }
@@ -11447,8 +11524,19 @@ def extract_guardian_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sche
     recipients = {(code, _canonical_broker_name(row.name)): row for code, row in commission_rows.items()}
     recipients.update(fee_only_rows)
     _attach_guardian_broker_addresses(recipients, pages)
-    from app.services.schedule_a_native_brokers import mark_payment_columns
-    return [mark_payment_columns(row) for row in recipients.values()]
+    from app.services.schedule_a_native_brokers import mark_payment_columns, mark_section_totals
+    rows = [mark_payment_columns(row) for row in recipients.values()]
+    totals = extract_guardian_schedule_a_fields(page_texts)
+    commission = next((f for f in totals if f.field_name.startswith('3b.')), None)
+    fees = next((f for f in totals if f.field_name.startswith('3c.')), None)
+    if commission and fees:
+        mark_section_totals(rows, commission.value, fees.value, [*commission.evidence, *fees.evidence])
+    elif re.search(r'\bTotal\s+(?:Fees\s+Paid|commissions\s+for\s+plan|Commissions\s+Paid\s+On\s+Plan)\b',joined,re.I):
+        for row in rows:
+            row.decision = 'REVIEW_REQUIRED'
+            row.validation_results.append(ExtractionValidationResult(validator='source_section_ambiguity',status='ERROR',
+                reason='Printed payment totals are unreadable or inconsistent; absence of a parsed amount is not a verified zero.'))
+    return rows
 
 
 def _attach_guardian_broker_addresses(

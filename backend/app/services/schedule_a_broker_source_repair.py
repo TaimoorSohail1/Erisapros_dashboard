@@ -4,7 +4,7 @@ from collections import Counter
 
 from app.models import NormalizedExtractionField, ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_broker_roster import _money, _key
-from app.services.schedule_a_native_brokers import provider_supports_labelled_payments, recipient_sets_corroborate, SECTION_TOTALS, PAYMENT_COLUMNS
+from app.services.schedule_a_native_brokers import provider_supports_labelled_payments, recipient_sets_corroborate, SECTION_TOTALS, PAYMENT_COLUMNS, CLOSED_ROSTER
 
 
 def repair_source_rows(result, independent_rows):
@@ -41,12 +41,9 @@ def repair_source_rows(result, independent_rows):
         and len(pages) == coverage['page_count']
         and {p.get('page') for p in pages} == set(range(1, coverage['page_count']+1))
         and all(p.get('readable') is True for p in pages))
-    exact_detail_and_final_totals = exact_classified_detail
-    for prefix, attr in (('3b.', 'commission_total'), ('3c.', 'fee_total')):
-        totals = {_money(f.value) for f in result.fields if f.field_name.startswith(prefix)}
-        exact_detail_and_final_totals &= (len(totals) == 1 and None not in totals
-            and Decimal(next(iter(totals))) == sum(Decimal(_money(getattr(r, attr))) for r in independent_rows))
-    if provider_supports_labelled_payments(result, independent_rows) or exact_rows_and_printed_totals or exact_detail_and_final_totals or (exact_classified_detail and full_coverage):
+    closed_detail = (exact_classified_detail and full_coverage
+        and all(any(v.validator == CLOSED_ROSTER and v.status == 'PASS' for v in r.validation_results) for r in independent_rows))
+    if provider_supports_labelled_payments(result, independent_rows) or exact_rows_and_printed_totals or closed_detail:
         set_corroborated_totals(result, independent_rows,
             corroboration='complete original provider recipient payments and independently labelled source category columns')
     raw['broker_source_mapping_recovery'] = {'previous_rows': before,
