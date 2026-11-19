@@ -70,3 +70,9 @@ pending new record requires matching carrier and contract identity before using
 an existing record. An unsubmitted automatic proposal gets a new unique label
 if another policy has taken its generated description. Manual descriptions and
 uncertain prior send attempts remain reviewable; they do not create duplicates.
+
+Calculated Schedule A values retain their page and source evidence when saved,
+including evidence-only repairs to older derived values. Their original extracted
+value remains unchanged. Automation uses the saved evidence after refresh rather
+than requesting another review. Explicit reviewer values are preserved, and a
+concurrent field edit stops automatic verification until the review is refreshed.

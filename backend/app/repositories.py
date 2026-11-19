@@ -298,6 +298,7 @@ class Repository:
         expected_unproposed_value: str | None = None,
         expected_status_reason: str | None = None,
         verified_evidence: SourceEvidence | None = None,
+        expected_field: ExtractedField | None = None,
     ) -> ExtractedField | None: ...
     async def correct_extracted_value(self, field: ExtractedField, value: str, evidence: SourceEvidence, reason: str) -> ExtractedField | None: ...
     async def add_event(self, event: ReviewEvent) -> ReviewEvent: ...
@@ -867,6 +868,7 @@ class MongoRepository(Repository):
         expected_unproposed_value: str | None = None,
         expected_status_reason: str | None = None,
         verified_evidence: SourceEvidence | None = None,
+        expected_field: ExtractedField | None = None,
     ) -> ExtractedField | None:
         if not ObjectId.is_valid(field_id):
             return None
@@ -883,6 +885,12 @@ class MongoRepository(Repository):
         if verified_evidence is not None:
             updates.update(page=verified_evidence.page, source_text=verified_evidence.source_text)
         query = {"_id": ObjectId(field_id), "filing_id": filing_id}
+        if expected_field is not None:
+            if expected_field.id != field_id or expected_field.filing_id != filing_id:
+                return None
+            query.update(value=expected_field.value, proposed_value=expected_field.proposed_value,
+                         status=expected_field.status.value, page=expected_field.page, source_text=expected_field.source_text,
+                         updated_at={"$in": [expected_field.updated_at, expected_field.model_dump(mode="json")["updated_at"]]})
         if expected_unproposed_value is not None:
             query.update(value=expected_unproposed_value, proposed_value="", status=ExtractedFieldStatus.LOW_CONFIDENCE.value)
         if expected_status_reason is not None:
@@ -2015,9 +2023,16 @@ class MemoryRepository(Repository):
         expected_unproposed_value: str | None = None,
         expected_status_reason: str | None = None,
         verified_evidence: SourceEvidence | None = None,
+        expected_field: ExtractedField | None = None,
     ) -> ExtractedField | None:
         field = self.fields.get(field_id)
         if not field or field.filing_id != filing_id:
+            return None
+        if expected_field is not None and (
+            expected_field.id != field_id or expected_field.filing_id != filing_id
+            or any(getattr(field, key) != getattr(expected_field, key)
+                   for key in ('updated_at','value','proposed_value','status','page','source_text'))
+        ):
             return None
         if expected_unproposed_value is not None and (
             field.value != expected_unproposed_value or field.proposed_value or field.status != ExtractedFieldStatus.LOW_CONFIDENCE

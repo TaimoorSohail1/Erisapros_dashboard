@@ -49,6 +49,7 @@ from app.models import (
     FTWilliamsReviewStatus,
     FTWilliamsUpdateReceipt,
     ScheduleAContractType,
+    SourceEvidence,
     ScheduleABrokerMatch,
     ScheduleABrokerRow,
     ScheduleABrokerRosterReview,
@@ -494,6 +495,7 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
+        fields = [field.model_copy(deep=True) for field in fields]
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         if apply_automatic_derivations:
@@ -1193,6 +1195,7 @@ class FTWilliamsReviewService:
             error_message = "; ".join(filter(None, [error_message, form_5500_block_reason]))
         if schedule_a_block_reason:
             error_message = "; ".join(filter(None, [error_message, schedule_a_block_reason]))
+        fields = [field.model_copy(deep=True) for field in fields]
         candidate_form_5500_fields = self._safe_update_fields(fields, FormType.FORM_5500, form_5500_current)
         safe_form_5500_fields = [] if form_5500_block_reason else candidate_form_5500_fields
         computed_contract_classification = apply_schedule_a_classification(
@@ -2073,9 +2076,9 @@ class FTWilliamsReviewService:
         }
 
     @staticmethod
-    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, tuple[str, ExtractedFieldStatus, str | None, float]]:
+    def _automatic_field_state(fields: list[ExtractedField]) -> dict[str, ExtractedField]:
         return {
-            field.id: (field.proposed_value, field.status, field.status_reason, float(field.confidence or 0))
+            field.id: field.model_copy(deep=True)
             for field in fields
             if field.id
         }
@@ -2084,28 +2087,29 @@ class FTWilliamsReviewService:
     async def _persist_automatic_field_changes(
         repo,
         filing_id: str,
-        before: dict[str, tuple[str, ExtractedFieldStatus, str | None, float]],
+        before: dict[str, ExtractedField],
         fields: list[ExtractedField],
     ) -> None:
         for field in fields:
-            if not field.id:
+            original = before.get(field.id)
+            if not original or original.status == ExtractedFieldStatus.EDITED:
                 continue
-            current = (
-                field.proposed_value,
-                field.status,
-                field.status_reason,
-                float(field.confidence or 0),
-            )
-            if before.get(field.id) == current:
+            state_keys = {"proposed_value", "status", "status_reason", "confidence", "page", "source_text"}
+            if original.model_dump(include=state_keys) == field.model_dump(include=state_keys):
                 continue
-            await repo.update_field(
+            saved = await repo.update_field(
                 filing_id,
                 field.id,
                 field.proposed_value,
                 status=field.status,
                 status_reason=field.status_reason,
                 confidence=field.confidence,
+                verified_evidence=SourceEvidence(page=field.page, source_text=field.source_text),
+                expected_field=original,
             )
+            if saved is None:
+                raise ValueError("An extracted field changed during automatic verification. Refresh the review before continuing.")
+            field.updated_at = saved.updated_at
 
     async def send_approved_update(self, filing_id: str, payload: FTWilliamsSendUpdateRequest) -> FTWilliamsReview | None:
         repo = get_repository()

@@ -22,3 +22,12 @@ full frozen-source and production-image gates, deploy, refresh the existing
 inventory without uploads, then verify the blocked second policy through the
 normal executor and vendor readback. Keep source and destination decisions,
 broker readiness and actual completed sends separate in the evidence report.
+
+The full-policy check also found that calculated values acquired source page/text
+in the review process but persisted only the value/status/confidence. Later policy
+evaluation read the old evidence and requested review again. Persist the value
+and evidence atomically, including evidence-only legacy repairs, while retaining
+the original extracted value. Compare the original field state before saving;
+concurrent reviewer edits abort rather than being overwritten. Classification and
+calculation must preserve explicit reviewer values. Four failing regressions and
+an end-to-end classification/save/reload/policy regression cover this second bug.
