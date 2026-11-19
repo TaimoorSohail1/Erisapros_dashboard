@@ -128,23 +128,10 @@ def filing_package_key(filing: Filing) -> str | None:
 
 
 def _stage_schedule_a_update(field: FTWilliamsComparisonField) -> FTWilliamsComparisonField:
-    if (
-        field.form_type != FormType.SCHEDULE_A
-        or field.ftw_tag not in {"WlfrTotChargesPaidAmt", "InsPrsnCoveredEoyCnt"}
-        or field.decision != FTWFieldDecision.BLOCKED
-        or field.validation_status != "REVIEW_REQUIRED"
-        or not field.validation_blocking
-        or field.current_value.strip()
-        or field.proposed_value.strip()
-    ):
-        return field
-    value = field.extracted_value.strip()
-    try:
-        if normalize_ftw_update_value(FormType.SCHEDULE_A, field.ftw_tag, value):
-            return field.model_copy(update={"staged_value": value})
-    except FTWPayloadValidationError:
-        pass
-    return field
+    # Comparison is authoritative: valid single values are real WILL_UPDATE
+    # proposals, while actual blocked conflicts belong in Decisions Needed.
+    # Retain this adapter for old callers, but never create display-only sends.
+    return field.model_copy(update={"staged_value": None}) if field.staged_value else field
 
 
 @router.get("/{filing_id}", response_model=FilingDetail)
