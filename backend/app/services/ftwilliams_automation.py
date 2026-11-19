@@ -222,6 +222,8 @@ class FTWAutomationPolicy:
                 extracted and extracted.status == ExtractedFieldStatus.EDITED
             )
             field_decision = comparison.decision
+            if field_decision == FTWFieldDecision.WILL_UPDATE and not extracted:
+                reasons.append(f'{comparison.label} has no extracted field record.')
             if comparison.validation_blocking or (
                 field_decision == FTWFieldDecision.BLOCKED
                 and comparison.update_included
@@ -235,9 +237,9 @@ class FTWAutomationPolicy:
                 and not reviewer_confirmed
             ):
                 reasons.append(f"{comparison.label} is not mapped to a supported FT Williams field.")
-            if field_decision == FTWFieldDecision.WILL_UPDATE and not reviewer_confirmed:
-                if not extracted or not (str(extracted.source_text or "").strip() or extracted.page is not None):
-                    reasons.append(f"{comparison.label} has no source evidence.")
+            # Missing page/text alone is informational under the shared scalar
+            # policy. Comparison/payload validation still enforces conflicts,
+            # mappings, formats and destination identity; broker proof is separate.
 
         changed_fields = [
             field

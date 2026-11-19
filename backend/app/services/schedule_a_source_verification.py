@@ -37,6 +37,13 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
     if not filing.package_documents and str(filing.document_type) in {'SCHEDULE_A', 'DocumentType.SCHEDULE_A'}:
         documents = [{'document_type': 'SCHEDULE_A', 'file_name': filing.file_name,
             's3_key': filing.s3_key, 's3_bucket': filing.s3_bucket, 'storage_path': filing.storage_path}]
+    if len(documents) == 1 and str(documents[0].get('file_name','')).lower().endswith('.xlsx'):
+        from app.services.schedule_a_workbook_source import verify_stored_workbook_source
+        try:
+            return await verify_stored_workbook_source(repo,filing,fields,documents[0])
+        except Exception as exc:
+            logger.warning('Stored workbook verification unavailable for %s (%s)',filing.id,type(exc).__name__)
+            return filing,fields
     if len(documents) != 1 or not str(documents[0].get('file_name', '')).lower().endswith('.pdf'):
         return filing, fields
     document = documents[0]
@@ -60,6 +67,20 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
         from app.services.extractor import extract_pdf_layout_text_pages, extract_schedule_a_broker_rows_from_document, extract_schedule_a_acroform
         from app.services.schedule_a_statement_evidence import statement_identity_fields
         pages = await asyncio.to_thread(extract_pdf_layout_text_pages, content)
+        if (not getattr(filing.schedule_a_broker_roster,'reviewer_confirmation',None)
+                and not any(v.validator.startswith('reviewer_') and v.status=='PASS' for r in filing.schedule_a_broker_rows for v in r.validation_results)
+                and any(re.search(r'entire\s+account.*not\s+at\s+the\s+group\s+level',text,re.I) for _,text in pages)):
+            from app.services.extractor import extract_bcbsma_commission_breakdown_broker_rows
+            scoped=[row for page,text in pages for row in extract_bcbsma_commission_breakdown_broker_rows(text,page)]
+            if scoped:
+                # Repair the category role, but explicitly preserve the source's
+                # unresolved allocation. This never attests a replacement list.
+                from app.services.schedule_a_broker_roster import note_incomplete_source_roster
+                scoped_result=NormalizedExtractionResult(provider='Stored labelled commission source',fields=[],schedule_a_broker_rows=scoped)
+                note_incomplete_source_roster(scoped_result,'Account-wide commission allocation requires confirmation; it is not a fee.')
+                scoped_result.schedule_a_broker_roster=source_roster_review(scoped,scoped_result.schedule_a_broker_roster)
+                saved=await repo.save_source_verification(filing,[],{'schedule_a_broker_rows':scoped,'schedule_a_broker_roster':scoped_result.schedule_a_broker_roster})
+                return (saved or filing),fields
         coverage, native_proof, independent, unbound_payment_mismatch = {}, None, None, False
         if not evidence:
             # Old traces without a hash cannot act as a corroborating read.

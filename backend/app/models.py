@@ -611,6 +611,7 @@ class ExtractedField(BaseModel):
     keep_current_context: str | None = None
     status: ExtractedFieldStatus = ExtractedFieldStatus.MATCHED
     status_reason: str | None = None
+    validation_results: list[ExtractionValidationResult] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -1032,6 +1033,7 @@ class FTWilliamsComparisonField(BaseModel):
     # grouping fallback until the next review refresh computes a decision.
     decision: FTWFieldDecision | None = None
     decision_reason: str | None = None
+    processing_warnings: list[str] = Field(default_factory=list)
 
 
 class ClientRejectedField(BaseModel):

@@ -3,6 +3,7 @@ import re
 from app.config import get_settings
 from app.models import DocumentType, ExtractedField, ExtractedFieldStatus, FieldPriority, FieldRule, FieldRuleMappingMode, FilingStatus, FormType, NormalizedExtractionField
 from app.services.field_rules import find_rule_for_field, form_type_for_rule, is_retired_field, normalize_name, rules_for_form_type
+from app.services.single_value_policy import informational_validation
 
 
 def map_extraction_to_rules(
@@ -24,10 +25,10 @@ def map_extraction_to_rules(
             continue
         field_rule = find_rule_for_field(field.field_name, field_rules)
         confidence = normalize_confidence(field.confidence)
-        review_required = (
-            str(field.decision).upper() == "REVIEW_REQUIRED"
-            or any(str(item.status).upper() == "ERROR" for item in field.validation_results)
-        )
+        blocking_results = [item for item in field.validation_results
+                            if item.status == 'ERROR' and not informational_validation(item)]
+        review_required = bool(blocking_results or (
+            str(field.decision).upper() == 'REVIEW_REQUIRED' and not field.validation_results))
         status = ExtractedFieldStatus.MATCHED
         extraction_only = bool(field_rule and field_rule.mapping_mode == FieldRuleMappingMode.EXTRACTION_ONLY)
         status_reason = (
@@ -80,6 +81,7 @@ def map_extraction_to_rules(
             form_type=form_type or (form_type_for_rule(field_rule) if field_rule else None),
             status=status,
             status_reason=status_reason,
+            validation_results=field.validation_results,
             created_at=now,
             updated_at=now,
         )

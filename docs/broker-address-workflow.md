@@ -1,5 +1,33 @@
 # Broker addresses
 
+## Scalar fields and evidence warnings
+
+For supported fields, a valid extracted value fills a blank FT Williams field
+automatically. Missing source page/text or low confidence alone is informational;
+it does not require approval or create a staged review step. Warnings remain
+visible, and the value is not described as source-verified. An explicit extracted
+zero counts as a value; a known parser default does not.
+
+If only FT Williams has a value, it is kept without a redundant update. Equal
+normalized values need no decision. Different values or conflicting extracted
+candidates require a decision. Invalid formats, unsupported mappings, ambiguous
+policy identity and real source contradictions still require correction.
+
+Opening an existing filing reapplies these shared rules without uploading it or
+submitting a new EyeLevel request. Manual edits and Keep Current choices survive.
+
+## Automatic broker processing
+
+Scalar evidence warnings do not authorize replacing a broker list. A broker list
+must still have confirmed recipients, classified payments and reconciled totals.
+Stored, explicitly totalled single-recipient workbook grids can now be verified
+from complete OOXML and independent workbook-reader agreement, including every
+sheet. A partial, conflicting or unsupported grid preserves existing brokers.
+
+Account-wide Other Commission and non-monetary compensation are not fees. If a
+source does not allocate those amounts to the selected policy, the allocation
+remains in review. Do not assign an unnamed payment to another recipient.
+
 Broker address fields are optional for every carrier.
 
 - **No address provided:** the system sends the address blank. No address review or separate approval is needed.

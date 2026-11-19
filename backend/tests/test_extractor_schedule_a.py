@@ -3611,9 +3611,11 @@ AD&D 592 | Base Commissions
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].name, "R S C INS BKGE DBA RISK STRATAGIES CO.")
-        self.assertEqual(rows[0].commission_total, "126,803")
-        self.assertEqual(rows[0].fee_total, "209")
-        self.assertEqual(rows[0].fee_rows[0].purpose, "Non-Monetary Compensation")
+        self.assertEqual(rows[0].commission_total, "126,803.06")
+        self.assertEqual(rows[0].fee_total, "0")
+        self.assertEqual(rows[0].fee_rows, [])
+        self.assertIn("209.15", rows[0].evidence[0].source_text)
+        self.assertEqual(rows[0].decision, "REVIEW_REQUIRED")
 
     def test_schedule_a_parser_extracts_bcbs_michigan_experience_addendum_without_10a_leak(self):
         pages = [

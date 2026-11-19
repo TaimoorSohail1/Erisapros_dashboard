@@ -330,6 +330,7 @@ export interface ExtractedField {
 }
 
 export interface FTWilliamsComparisonField {
+  processing_warnings?: string[];
   field_id?: string | null;
   rule_key?: string | null;
   label: string;

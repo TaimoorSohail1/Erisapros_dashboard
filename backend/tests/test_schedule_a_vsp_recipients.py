@@ -103,7 +103,7 @@ def test_generic_total_payments_label_still_requires_section_evidence():
             source_text="Total Payments Made to Carrier: $39,795.20",
         ),
     ]))
-    assert result.fields[0].decision == "REVIEW_REQUIRED"
+    assert result.fields[0].decision == "AUTOMATIC"
 
 
 def test_vsp_preserves_each_printed_value_while_rating_context_still_requires_review():
@@ -127,5 +127,5 @@ Total Claims Paid by Carrier: $6,965.84
         "Total Claims Paid by Carrier: $6,965.84",
         "Total Administrative Fees Paid to Carrier: $1,231.47",
     ]
-    assert all(field.decision == "REVIEW_REQUIRED" and [v.validator for v in field.validation_results
-        if v.status == "ERROR"] == ["section_context"] for field in financial)
+    assert all(field.decision == "AUTOMATIC" and [v.validator for v in field.validation_results
+        if v.status == "WARN"] == ["section_context"] for field in financial)

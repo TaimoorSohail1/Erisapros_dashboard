@@ -133,6 +133,10 @@ def _is_source_less_zero_default(field: ExtractedField) -> bool:
         return False
     if str(field.source_text or "").strip() or field.page is not None:
         return False
+    if not re.search(r'\bdefault\b', str(field.status_reason or ''), re.I):
+        # An explicit extracted zero is a value. Missing provenance alone does
+        # not establish that the parser invented it.
+        return False
     text = re.sub(r"[$,\s]", "", str(field.proposed_value or field.value or ""))
     if text.startswith("(") and text.endswith(")"):
         text = f"-{text[1:-1]}"
@@ -5493,6 +5497,9 @@ class FTWilliamsReviewService:
         schedule_a_contract_type: ScheduleAContractType | None = None,
         worksheet_summaries: list | None = None,
     ) -> list[FTWilliamsComparisonField]:
+        from app.services.single_value_policy import restore_single_value_proposal, scalar_issues
+        for field in fields:
+            restore_single_value_proposal(field)
         comparison: list[FTWilliamsComparisonField] = []
         update_field_ids = {id(field) for field in update_fields} if update_fields is not None else None
         corroborated_dates = self._corroborated_month_only_policy_tags(fields, schedule_a_current, worksheet_summaries)
@@ -5506,6 +5513,7 @@ class FTWilliamsReviewService:
             "schedule_a_part_i_3e_organizational_code",
         }
         for field in sorted(fields, key=lambda item: (str(item.form_type or ""), item.mapped_label or item.source_field_name)):
+            scalar_blockers, scalar_warnings = scalar_issues(field)
             if field.priority == FieldPriority.IGNORE or is_retired_field(field):
                 continue
             tag = resolve_ftw_current_tag(field)
@@ -5576,6 +5584,10 @@ class FTWilliamsReviewService:
                 ))
                 and not values_meaningfully_different(current_value, field.value, tag=tag)
             )
+            if scalar_blockers and field.status == ExtractedFieldStatus.LOW_CONFIDENCE and not retains_matching_current:
+                validation_status = 'REVIEW_REQUIRED'
+                validation_message = '; '.join(scalar_blockers)
+                validation_blocking = True
             if (
                 field.status == ExtractedFieldStatus.LOW_CONFIDENCE
                 and not retains_matching_current
@@ -5628,6 +5640,8 @@ class FTWilliamsReviewService:
                 and extracted_proposed_value.strip()
                 and update_allowed
                 and contract_type_allowed
+                and not validation_blocking
+                and changed
             )
             if validation_blocking:
                 decision = FTWFieldDecision.BLOCKED
@@ -5717,6 +5731,7 @@ class FTWilliamsReviewService:
                     validation_blocking=validation_blocking,
                     decision=decision,
                     decision_reason=decision_reason,
+                    processing_warnings=scalar_warnings,
                 )
             )
         return comparison
@@ -5731,7 +5746,11 @@ class FTWilliamsReviewService:
         has_structured_schedule_a_brokers: bool = False,
     ) -> list[ExtractedField]:
         safe_fields: list[ExtractedField] = []
+        from app.services.single_value_policy import restore_single_value_proposal, scalar_issues
         for field in fields:
+            restore_single_value_proposal(field)
+            if field.status == ExtractedFieldStatus.LOW_CONFIDENCE and scalar_issues(field)[0]:
+                continue
             if field.form_type != form_type:
                 continue
             if not resolve_ftw_update_tag(field):

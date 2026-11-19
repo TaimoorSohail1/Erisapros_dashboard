@@ -160,7 +160,7 @@ class ScheduleACustomerRulesTests(unittest.TestCase):
             NormalizedExtractionField(field_name="1e. Persons Covered", value="3", confidence=1,
                 source_text=DEFAULT_CODE_REASON,
                 evidence=[SourceEvidence(provider="Customer configured default", source_text=DEFAULT_CODE_REASON)])]))
-        self.assertEqual(result.fields[0].decision, "REVIEW_REQUIRED")
+        self.assertEqual(result.fields[0].decision, "AUTOMATIC")
 
     def test_wrapped_lives_column_selects_maximum_not_currency_or_ids(self):
         text = ("Policy Number  Type of Benefit  Premium Applied  Approximate # of Lives\n"

@@ -276,6 +276,21 @@ def attach_final_field_evidence(result, page_texts):
         report = {}
     for field in result.fields:
         code=field.field_name.split('.',1)[0]
+        # A single differently labelled identity is a competing candidate.
+        # Multiple entities elsewhere in a document must not manufacture a
+        # conflict when the selected identity itself is explicitly present.
+        alternatives=set()
+        for _,text in page_texts:
+            if code=='1b':
+                alternatives.update(re.findall(r'\b(?:F?EIN|TAX\s*ID)\s*[:#]?\s*(\d{2}-?\d{7})(?!\d)',text,re.I))
+            elif code=='1c':
+                alternatives.update(re.findall(r'\bNAIC\s*(?:CODE)?\s*[:#]?\s*(\d{5})(?!\d)',text,re.I))
+                if re.search(r'\bEIN\b',text,re.I) and re.search(r'\bNAIC\b',text,re.I):
+                    alternatives.update(r['naic'] for r in _IDENTITY_ROW.finditer(text))
+        by_normal={_normal(v):v for v in alternatives}
+        if len(by_normal)==1 and _normal(field.value) not in by_normal:
+            alternative=next(iter(by_normal.values()))
+            if alternative not in field.candidate_values:field.candidate_values.append(alternative)
         label=_LABELS.get(code)
         candidates=[]
         expected=re.sub(r'[^a-z0-9]','',str(field.value or '').casefold())
@@ -286,6 +301,13 @@ def attach_final_field_evidence(result, page_texts):
             matches = _money(field.value) == _money(printed) if code in {'1e', '10a'} else _normal(field.value) == _normal(printed)
             if matches:
                 candidates.append((page, source))
+            elif printed not in field.candidate_values:
+                field.candidate_values.append(printed)
+        if code in {'1e','10a'} and any('vision insurance information for form 5500' in text.lower()
+                and len(set(re.findall(r'\b\d{11}\b',text)))>1 for _,text in page_texts):
+            from app.models import ExtractionValidationResult
+            field.validation_results.append(ExtractionValidationResult(validator='business_rule_confirmation',status='ERROR',
+                reason='Several source contracts compete for the covered-person count. Confirm the selected policy.'))
         if code=='10a':
             review=(result.raw or {}).get('source_review',{})
             for check in review.get('reconciliations',[]):

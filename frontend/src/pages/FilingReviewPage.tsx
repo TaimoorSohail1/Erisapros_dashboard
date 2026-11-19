@@ -4722,7 +4722,7 @@ function issueForComparison(comparison: FTWilliamsComparisonField, field: Extrac
     return "Reviewed successfully. This field is not supported for FT Williams updates.";
   }
   if (field?.status === "EDITED" && group === "SAME") return "Reviewer confirmed the current FT Williams value.";
-  if (comparison.decision_reason) return comparison.decision_reason;
+  if (comparison.decision_reason) return [comparison.decision_reason, ...(comparison.processing_warnings || []).map((warning) => `Information: ${warning}`)].join(" ");
   if (field?.status_reason) return field.status_reason;
   if (group === "MISSING") return "Required source value was not found.";
   if (group === "LOW_CONFIDENCE") return `Confidence ${percent(comparison.confidence)} needs review.`;
