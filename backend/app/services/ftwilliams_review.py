@@ -233,6 +233,8 @@ class FTWilliamsReviewService:
             if not filing or filing.id != filing_id:
                 raise ValueError("Filing not found")
 
+        from app.services.schedule_a_source_verification import verify_stored_schedule_a_source
+        filing, fields = await verify_stored_schedule_a_source(repo, filing, fields)
         existing_review = self._discard_unsubmitted_auto_new_target_after_source_change(
             existing_review, fields,
         )

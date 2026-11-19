@@ -47,6 +47,20 @@ def _saved_extraction_stages(raw: object) -> list[dict]:
     return [stage for stage in stages if isinstance(stage, dict)] if isinstance(stages, list) else []
 
 
+def _source_evidence(raw: object, file_name: str, source_sha256: str) -> dict | None:
+    if not isinstance(raw, dict) or raw.get('file_name') != file_name or raw.get('document_type') != 'SCHEDULE_A':
+        return None
+    nested = raw.get('raw') or {}
+    if not isinstance(nested, dict) or (nested.get('independent_source_page_coverage') or {}).get('source_sha256') != source_sha256:
+        return None
+    return {key: nested[key] for key in ('extraction_stages', 'semantic_resolution',
+        'service_provider_disclosure_pages', 'local_ocr_source_reads') if key in nested}
+
+
+class SourceVerificationConflict(Exception):
+    """Abort a source recovery when the filing or a field changed concurrently."""
+
+
 def _saved_schedule_a_ocr_reads(raw: object) -> list[dict]:
     nested = raw.get("raw") if isinstance(raw, dict) else None
     reads = nested.get("local_ocr_source_reads") if isinstance(nested, dict) else None
@@ -254,6 +268,8 @@ class Repository:
     async def get_filings_by_ids(self, filing_ids: set[str]) -> list[Filing]: ...
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None: ...
     async def save_broker_review(self, filing_id: str, expected_updated_at: datetime, values: dict) -> Filing | None: ...
+    async def source_verification_evidence(self, filing_id: str, file_name: str, source_sha256: str) -> dict | None: ...
+    async def save_source_verification(self, filing: Filing, fields: list[tuple[ExtractedField, ExtractedField]], values: dict) -> Filing | None: ...
     async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool: ...
     async def release_automation_lease(self, filing_id: str, lease_id: str) -> None: ...
     async def try_acquire_ftw_plan_lease(self, plan_key: str, lease_id: str, seconds: int) -> bool: ...
@@ -705,6 +721,43 @@ class MongoRepository(Repository):
             {'_id': ObjectId(filing_id), 'updated_at': _mongo_update_value(expected_updated_at)},
             {'$set': values}, return_document=ReturnDocument.AFTER)
         return from_mongo(doc, Filing) if doc else None
+
+    async def source_verification_evidence(self, filing_id: str, file_name: str, source_sha256: str) -> dict | None:
+        doc = await self.db.raw_extractions.find_one({'filing_id': filing_id,
+            'raw.file_name': file_name, 'raw.document_type': 'SCHEDULE_A',
+            'raw.raw.independent_source_page_coverage.source_sha256': source_sha256},
+            {'raw.raw.extraction_stages': 1, 'raw.raw.semantic_resolution': 1,
+             'raw.raw.service_provider_disclosure_pages': 1, 'raw.raw.local_ocr_source_reads': 1,
+             'raw.raw.independent_source_page_coverage': 1, 'raw.file_name': 1, 'raw.document_type': 1},
+            sort=[('created_at', -1)])
+        return _source_evidence(doc.get('raw'), file_name, source_sha256) if doc else None
+
+    async def save_source_verification(self, filing: Filing, fields: list[tuple[ExtractedField, ExtractedField]], values: dict) -> Filing | None:
+        if not ObjectId.is_valid(filing.id):
+            return None
+        expected = {'_id': ObjectId(filing.id), 'updated_at': {'$in': [filing.updated_at,
+            filing.model_dump(mode='json')['updated_at']]}, 's3_key': filing.s3_key,
+            'package_documents': _mongo_update_value(filing.package_documents)}
+        try:
+            async with await self.client.start_session() as session:
+                async with session.start_transaction(read_preference=ReadPreference.PRIMARY):
+                    update = {**{k: _mongo_update_value(v) for k,v in values.items()}, 'updated_at': datetime.utcnow()}
+                    doc = await self.db.filings.find_one_and_update(expected, {'$set': update},
+                        session=session, return_document=ReturnDocument.AFTER)
+                    if not doc:
+                        raise SourceVerificationConflict()
+                    for before, after in fields:
+                        previous = to_mongo(before)
+                        field_filter = {'_id': ObjectId(before.id), 'filing_id': filing.id,
+                            'value': before.value, 'proposed_value': before.proposed_value,
+                            'status': before.status.value, 'updated_at': {'$in': [before.updated_at, previous['updated_at']]}}
+                        result = await self.db.extracted_fields.update_one(field_filter,
+                            {'$set': to_mongo(after)}, session=session)
+                        if result.matched_count != 1:
+                            raise SourceVerificationConflict()
+            return from_mongo(doc, Filing)
+        except SourceVerificationConflict:
+            return None
 
     async def try_acquire_automation_lease(self, filing_id: str, lease_id: str, seconds: int) -> bool:
         if not ObjectId.is_valid(filing_id):
@@ -1860,6 +1913,24 @@ class MemoryRepository(Repository):
             setattr(filing, key, value)
         filing.updated_at = datetime.utcnow()
         return filing
+
+    async def source_verification_evidence(self, filing_id: str, file_name: str, source_sha256: str) -> dict | None:
+        records = sorted((item for item in self.raw_extractions.values() if item.filing_id == filing_id),
+            key=lambda item: item.created_at, reverse=True)
+        return next((evidence for item in records if (evidence := _source_evidence(item.raw, file_name, source_sha256)) is not None), None)
+
+    async def save_source_verification(self, filing: Filing, fields: list[tuple[ExtractedField, ExtractedField]], values: dict) -> Filing | None:
+        current = self.filings.get(filing.id)
+        if not current or current.updated_at != filing.updated_at or current.s3_key != filing.s3_key or current.package_documents != filing.package_documents:
+            return None
+        if any(self.fields.get(before.id) != before for before, after in fields):
+            return None
+        # All preimages are checked before any write, without yielding.
+        for before, after in fields:
+            self.fields[before.id] = after.model_copy(deep=True)
+        updated = current.model_copy(update={**values, 'updated_at': datetime.utcnow()}, deep=True)
+        self.filings[filing.id] = updated
+        return updated
 
     async def update_filing(self, filing_id: str, values: dict) -> Filing | None:
         filing = self.filings.get(filing_id)

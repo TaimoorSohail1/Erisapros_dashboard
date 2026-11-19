@@ -4862,7 +4862,7 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
     if omaha_rows:
         return omaha_rows
     full_text = "\n\n".join(text for _, text in page_texts)
-    return dedupe_schedule_a_broker_rows(
+    generic_rows = dedupe_schedule_a_broker_rows(
         [
             *extract_schedule_a_broker_rows(full_text),
             *extract_columnar_broker_compensation_rows(page_texts),
@@ -4870,6 +4870,19 @@ def extract_schedule_a_broker_rows_from_document(file_bytes: bytes, file_name: s
             *extract_tabular_broker_rows(page_texts),
         ]
     )
+    if generic_rows or not str(file_name or '').lower().endswith('.pdf'):
+        return generic_rows
+    # Some native PDFs concatenate physical columns in their plain text stream.
+    # Read the same document's layout without reusing provider-produced answers.
+    from app.services.schedule_a_statement_evidence import statement_broker_rows
+    layout_pages = extract_pdf_layout_text_pages(file_bytes)
+    rows = statement_broker_rows(layout_pages)
+    if rows and page_coverage is not None:
+        native_coverage = {p['page']: p for p in page_coverage.get('pages', [])}
+        page_coverage['pages'] = [native_coverage.get(p['page'], p)
+            if native_coverage.get(p['page'], {}).get('readable') else p
+            for p in _broker_page_coverage(layout_pages)]
+    return rows
 
 
 def _broker_page_coverage(pages: list[tuple[int, str]]) -> list[dict]:
@@ -4962,6 +4975,7 @@ def extract_tabular_broker_rows(page_texts: list[tuple[int, str]]) -> list[Sched
 def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[NormalizedExtractionField]:
     plain_pages = extract_pdf_text_pages(file_bytes)
     layout_pages = extract_pdf_layout_text_pages(file_bytes)
+    from app.services.schedule_a_statement_evidence import statement_identity_fields
     positioned_brokers = extract_position_aware_schedule_a_broker_rows(layout_pages)
     specialized_brokers = [
         *extract_cigna_schedule_a_broker_rows(plain_pages),
@@ -4976,6 +4990,7 @@ def extract_fields_from_pdf_text(file_bytes: bytes, *, rules=None) -> list[Norma
     ]
     fields = [
         *_extract_fields_from_pages(plain_pages, rules=rules),
+        *statement_identity_fields(layout_pages),
         *extract_layout_aware_schedule_a_fields(file_bytes),
         *extract_position_aware_schedule_a_fields(layout_pages),
         *extract_aetna_schedule_a_support_statement_fields(layout_pages),
