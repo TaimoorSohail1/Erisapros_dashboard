@@ -10,6 +10,15 @@ from app.services.schedule_a_broker_source_repair import repair_source_rows
 from broker_source_fixture import source_pdf,ruled_source_pdf
 
 class ClosedSourceTests(unittest.TestCase):
+ def test_incomplete_vendor_query_cannot_be_reported_as_a_different_policy(self):
+  from app.models import FTWilliamsReview
+  from app.services.ftwilliams_review import FTWilliamsReviewService
+  service=FTWilliamsReviewService()
+  review=FTWilliamsReview(filing_id='qa',current_query_success=True,current_query_complete=False,
+    ftw_editable=True,schedule_a_records=[{'ftw_seq_no':'1','query_results':{'InsContractNum':'OTHER'}}])
+  with patch.object(service,'_top_schedule_a_matches',side_effect=AssertionError('Partial records must not be ranked')):
+   self.assertIn('Refresh',service._broker_review_destination_error(review,[object()]))
+
  def test_ruled_cells_and_pdfium_corroborate_without_double_counting_grand_total(self):
   content=ruled_source_pdf();coverage={}
   rows=extract_schedule_a_broker_rows_from_document(content,'carrier.pdf',page_coverage=coverage)

@@ -1702,6 +1702,8 @@ class FTWilliamsReviewService:
         return None
 
     def _broker_review_destination_error(self, review, fields=None):
+        if not review.current_query_success or review.current_query_complete is False or review.ftw_editable is False:
+            return 'Refresh the current editable FTWilliam plan before approving brokers.'
         if (review.current_query_success and not review.ftw_seq_no and review.schedule_a_records
                 and not (review.schedule_a_match or {}).get('create_new') and fields):
             statuses = [FTWilliamsStatusItem(type='ScheduleA', error_code='0', ftw_seq_no=str(record.get('ftw_seq_no') or ''),
@@ -1712,8 +1714,6 @@ class FTWilliamsReviewService:
             if not winners:
                 return ('The current FT Williams Schedule A list is loaded, but this source policy has no eligible existing match. '
                         'Select a matching destination or confirm a new Schedule A; a different policy number cannot be overwritten automatically.')
-        if not review.current_query_success or review.current_query_complete is False or review.ftw_editable is False:
-            return 'Refresh the current editable FTWilliam plan before approving brokers.'
         if (review.schedule_a_match or {}).get('create_new'):
             return self._new_broker_destination_error(review, fields)
         if (not review.ftw_seq_no or not review.schedule_a_match
