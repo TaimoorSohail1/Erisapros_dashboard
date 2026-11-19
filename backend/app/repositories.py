@@ -53,8 +53,13 @@ def _source_evidence(raw: object, file_name: str, source_sha256: str) -> dict | 
     nested = raw.get('raw') or {}
     if not isinstance(nested, dict) or (nested.get('independent_source_page_coverage') or {}).get('source_sha256') != source_sha256:
         return None
-    return {key: nested[key] for key in ('extraction_stages', 'semantic_resolution',
+    evidence = {key: nested[key] for key in ('extraction_stages', 'semantic_resolution',
         'service_provider_disclosure_pages', 'local_ocr_source_reads') if key in nested}
+    # Package worksheets describe sibling carriers. Only this hash-bound source
+    # document's own summaries may constrain its independent roster proof.
+    if isinstance(raw.get('schedule_a_worksheet_summaries'), list):
+        evidence['document_worksheet_summaries'] = raw['schedule_a_worksheet_summaries']
+    return evidence
 
 
 class SourceVerificationConflict(Exception):
@@ -728,7 +733,8 @@ class MongoRepository(Repository):
             'raw.raw.independent_source_page_coverage.source_sha256': source_sha256},
             {'raw.raw.extraction_stages': 1, 'raw.raw.semantic_resolution': 1,
              'raw.raw.service_provider_disclosure_pages': 1, 'raw.raw.local_ocr_source_reads': 1,
-             'raw.raw.independent_source_page_coverage': 1, 'raw.file_name': 1, 'raw.document_type': 1},
+             'raw.raw.independent_source_page_coverage': 1, 'raw.file_name': 1, 'raw.document_type': 1,
+             'raw.schedule_a_worksheet_summaries': 1},
             sort=[('created_at', -1)])
         return _source_evidence(doc.get('raw'), file_name, source_sha256) if doc else None
 

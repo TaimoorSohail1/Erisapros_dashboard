@@ -89,7 +89,7 @@ class StoredSourceVerificationTests(unittest.IsolatedAsyncioTestCase):
             for key,label in [('schedule_a_part_i_1a_name_of_insurance_company','1a. Name of Insurance Company'),
                               ('schedule_a_part_i_1b_insurance_carrier_ein','1b. Insurance Carrier EIN')]])
         self.raw = await self.repo.add_raw_extraction(RawExtraction(filing_id=self.filing.id, provider='vendor',
-            raw={'file_name':'statement.pdf','document_type':'SCHEDULE_A','raw':{
+            raw={'file_name':'statement.pdf','document_type':'SCHEDULE_A','schedule_a_worksheet_summaries':[],'raw':{
                 'independent_source_page_coverage':{'source_sha256':self.sha},
                 'extraction_stages':[
                     {'stage':'structured_provider_normalized','broker_rows':[r.model_dump(mode='json') for r in self.rows]},
@@ -153,6 +153,25 @@ class StoredSourceVerificationTests(unittest.IsolatedAsyncioTestCase):
         filing, fields = await self.recover()
         self.assertIsNone(filing.schedule_a_broker_roster)
         self.assertTrue(all(not f.value for f in fields))
+
+    async def test_package_worksheet_siblings_do_not_mean_multiple_contracts_in_this_pdf(self):
+        from app.models import ScheduleAWorksheetSummary
+        self.filing.schedule_a_worksheet_summaries = [ScheduleAWorksheetSummary(source='Plan Worksheet fully-insured benefit table',
+            carrier_name=name, account_number=number) for name,number in [('Example Health','123'),('Sibling Carrier','456')]]
+        filing, fields = await self.recover()
+        self.assertEqual(filing.schedule_a_broker_roster.mode,'REPLACE')
+        self.assertIsNone(filing.schedule_a_broker_roster.reviewer_confirmation)
+        self.assertEqual(len(filing.schedule_a_worksheet_summaries),2)
+
+    async def test_multiple_source_contracts_or_missing_document_scope_stay_in_review(self):
+        from app.models import ScheduleAWorksheetSummary
+        self.raw.raw['schedule_a_worksheet_summaries'] = [ScheduleAWorksheetSummary(source='Source PDF',account_number=n).model_dump(mode='json')
+            for n in ('123','456')]
+        filing, fields = await self.recover()
+        self.assertIsNone(filing.schedule_a_broker_roster)
+        del self.raw.raw['schedule_a_worksheet_summaries']
+        filing, fields = await self.recover()
+        self.assertIsNone(filing.schedule_a_broker_roster)
 
     async def test_partial_address_and_disagreeing_provider_do_not_approve(self):
         self.filing.schedule_a_broker_rows[0].city = ''

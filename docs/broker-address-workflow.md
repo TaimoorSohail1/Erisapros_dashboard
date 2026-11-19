@@ -14,3 +14,5 @@ If the source or FT Williams data changes while editing, refresh and review the 
 The review also rechecks eligible stored PDFs without requiring a new upload. Explicit carrier name and EIN labels can recover missing identity fields before matching the existing Schedule A. A unique eligible match is selected automatically; tied matches still need a decision. A query is complete only when the required current FT Williams data has actually loaded.
 
 Broker lists continue without approval when an independent read of the complete PDF agrees with the saved provider extraction, recipients, payment categories and section totals. Missing proof, conflicting amounts, partial addresses and incomplete destination queries remain visible for review. This verification uses the exact stored PDF hash and preserves manual edits.
+
+For packages containing a plan worksheet with several carriers, broker-list verification uses the summaries belonging to the selected source PDF. Sibling carriers in the worksheet do not make that PDF a multi-contract document. Multiple contracts within the PDF itself still require separate verification.
