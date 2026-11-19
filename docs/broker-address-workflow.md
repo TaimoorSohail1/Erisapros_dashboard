@@ -55,3 +55,12 @@ and every recipient payment reconcile; an unassigned payment remains in review.
 Explicit payee/producer identifiers are not organization codes. The default of 3
 applies after a complete source read confirms that identifier-role mapping error;
 explicit organization codes and reviewer corrections are preserved.
+
+If automatic page or payment-column verification is missing, a reviewer can
+check the complete source PDF or confirmed client instructions, correct the
+list, and select the source-verification checkbox. This is recorded as reviewer
+verification, not successful automatic extraction. It does not bypass payment
+totals, identity decisions, destination checks or changed-source protection.
+Changing an input resets the checkbox. A valid explicit organization-code
+correction also resolves its old mapping warning; an unchanged invalid code
+remains blocked.

@@ -4,11 +4,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
+import re
 from app.models import SourceEvidence
 from app.services.schedule_a_broker_roster import _fingerprint, _money
 from app.services.schedule_a_customer_rules import canonical_broker_payment_purpose
 from app.services.xml_builder import schedule_a_broker_update_values
 from app.services.broker_address_policy import ADDRESS_REVIEW, address_state, acknowledge_partial_address
+from app.services.broker_payment_reconciliation import PAYMENT_REVIEW_VALIDATORS
+
+MANUAL_SOURCE_VALIDATORS={'source_evidence',*(PAYMENT_REVIEW_VALIDATORS-{'broker_total_reconciliation'})}
 
 
 def digest(value):
@@ -68,7 +72,7 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     used_disclosures = set()
     verified = []
     requires_reconciliation = any(
-        issue.validator == 'broker_total_reconciliation' and issue.status == 'ERROR'
+        issue.validator in PAYMENT_REVIEW_VALIDATORS and issue.status == 'ERROR'
         for row in original_rows for issue in row.validation_results
     )
     from app.services.schedule_a_native_brokers import printed_payment_totals
@@ -100,7 +104,23 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
                     'complete_source_broker_roster', 'payment_classification_ambiguity',
                     'business_rule_confirmation', 'source_section_ambiguity', 'broker_total_reconciliation', ADDRESS_REVIEW,
                     'source_zip_shape', 'printed_recipient_address_unreadable', 'broker_address_semantics'}]
+            proposed_code=str(row.organization_code or '').strip() or '3'
+            org_corrected=bool(re.fullmatch(r'0?\d',proposed_code) and proposed_code!=str(original.organization_code or '').strip())
+            acknowledged=[];remaining=[]
+            for issue in row.validation_results:
+                if ((issue.validator in MANUAL_SOURCE_VALIDATORS and request.source_verified)
+                        or (issue.validator=='source_organization_code_shape' and org_corrected)):
+                    issue.status='WARN';issue.reason+=' Resolved by explicit source-bound reviewer confirmation.'
+                    acknowledged.append(issue)
+                else:remaining.append(issue)
+            row.validation_results=remaining
             if row.validation_results: raise ValueError('Unresolved source issues require correction before roster confirmation.')
+            row.validation_results=acknowledged
+            if acknowledged:
+                from app.models import ExtractionValidationResult
+                row.validation_results.append(ExtractionValidationResult(validator='reviewer_source_confirmation',status='PASS',
+                    reason=request.reason.strip(),normalized_value=source_context))
+                row.evidence.append(SourceEvidence(provider='Reviewer verification',page=original.source_page,source_text=request.reason.strip()))
         elif source.startswith('DISCLOSURE:'):
             key = source[11:]; disclosure = disclosures.get(key)
             if disclosure is None or decisions.get(key) != 'INCLUDED':
@@ -146,6 +166,7 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
     reviewed = status.model_copy(deep=True)
     reviewed.reviewer_confirmation = {'actor': actor, 'at': datetime.now(timezone.utc).isoformat(),
         'reason': request.reason.strip(), 'complete_list_confirmed': True,
+        'source_verified': request.source_verified,
         'partial_addresses_accepted': request.accept_partial_addresses,
         'empty_list_evidence': request.empty_list_evidence.strip(), 'source_context_sha256': source_context,
         'snapshot_sha256': snapshot, 'roster_sha256': _fingerprint(verified),

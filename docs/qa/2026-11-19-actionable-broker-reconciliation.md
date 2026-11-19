@@ -45,3 +45,9 @@ and destination decisions before making a completion claim.
 The screenshot's fee discrepancy is real source data, while its unclear
 resolution and save behavior are workflow defects. Removing the reconciliation
 check would overwrite valid FT Williams data with an incomplete payment list.
+
+Further regression testing reproduced a save-loop defect: the original
+source-evidence or organization-role warning survived valid reviewer corrections.
+The follow-up adds an explicit, source/destination-bound reviewer verification
+for source-read gaps and requires unchanged financial reconciliation. It preserves
+the original warning as reviewed evidence, never an automatic extraction proof.

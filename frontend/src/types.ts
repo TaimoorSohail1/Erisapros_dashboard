@@ -189,6 +189,7 @@ export interface BrokerIdentityReviewRequest {
 
 export interface BrokerRosterReviewRequest {
   expected_context: string;
+  source_verified?: boolean;
   accept_partial_addresses?: boolean;
   complete_list_confirmed: boolean;
   reason: string;

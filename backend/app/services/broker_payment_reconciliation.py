@@ -3,9 +3,12 @@ from decimal import Decimal
 from app.models import BrokerPaymentReconciliation
 from app.services.schedule_a_native_brokers import printed_payment_totals
 
+PAYMENT_REVIEW_VALIDATORS={'broker_total_reconciliation','broker_column_semantics','broker_commission_components',
+    'source_component_total','incomplete_source_compensation_table'}
+
 
 def payment_reconciliation(rows, fields):
-    required=any(v.validator=='broker_total_reconciliation' and v.status=='ERROR'
+    required=any(v.validator in PAYMENT_REVIEW_VALIDATORS and v.status=='ERROR'
                  for row in rows for v in row.validation_results)
     try:
         totals=printed_payment_totals(rows)

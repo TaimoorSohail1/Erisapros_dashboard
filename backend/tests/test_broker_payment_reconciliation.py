@@ -46,3 +46,15 @@ class BrokerPaymentReconciliationTests(unittest.TestCase):
             [row],status,request,actor='qa',source_context='a',snapshot='b')
         self.assertEqual(sum(Decimal(r.fee_total) for r in rows),Decimal('25'))
         self.assertEqual(confirmed.reviewer_confirmation['row_sources'],['SOURCE:0','NEW','NEW'])
+
+    def test_manual_source_confirmation_does_not_bypass_reconciliation(self):
+        row=self.original();row.validation_results.append(ExtractionValidationResult(validator='broker_column_semantics',status='ERROR'))
+        status=ScheduleABrokerRosterReview()
+        request=BrokerRosterReviewRequest(expected_context=review_token([row],status,'a','b'),complete_list_confirmed=True,
+            source_verified=True,reason='Checked printed categories and complete recipients',row_sources=['SOURCE:0'])
+        with self.assertRaisesRegex(ValueError,'both Schedule A'):
+            confirm_broker_review([row],[row],status,request,actor='qa',source_context='a',snapshot='b')
+        corrected=row.model_copy(update={'fee_total':'25'})
+        verified,_=confirm_broker_review([corrected],[row],status,request,actor='qa',source_context='a',snapshot='b')
+        self.assertEqual(verified[0].fee_total,'25')
+        self.assertTrue(any(v.validator=='broker_column_semantics' and v.status=='WARN' for v in verified[0].validation_results))

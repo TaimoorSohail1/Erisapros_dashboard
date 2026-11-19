@@ -230,5 +230,21 @@ await set(input('Commission'),'0');await set(input('Fees'),'15');await submit();
 assert.equal(reconciliationSaves.length,1);assert.equal(reconciliationSaves[0].rows.length,3);
 assert.deepEqual(Array.from(reconciliationSaves[0].review.row_sources),['SOURCE:0','NEW','NEW']);
 assert.match(document.body.textContent,/Sending continues automatically/);
+// A valid correction must not be trapped by the immutable original warning.
+let manualSourceSaves=[];
+await render({...sourceProps,rows:[{...row,organization_code:'PAYEE-123',validation_results:[{validator:'source_organization_code_shape',status:'ERROR'}]}],
+  onSaveReview:async(rows,review)=>{manualSourceSaves.push({rows,review});return true;}});
+await click('Edit');await set(input('Organization code'),'3');await submit();
+assert.equal(manualSourceSaves.length,1);
+await render({...sourceProps,rows:[{...row,validation_results:[{validator:'source_evidence',status:'ERROR',reason:'Original source page evidence is missing.'}]}],
+  onSaveReview:async(rows,review)=>{manualSourceSaves.push({rows,review});return true;}});
+await click('Edit');await submit();assert.equal(manualSourceSaves.length,1);
+const sourceAck=document.querySelector('input[aria-label="Source verification"]');assert.ok(sourceAck);
+await act(async()=>sourceAck.click());await set(input('Commission'),'101');
+assert.equal(document.querySelector('input[aria-label="Source verification"]').checked,false);
+await submit();assert.equal(manualSourceSaves.length,1);
+await act(async()=>document.querySelector('input[aria-label="Source verification"]').click());
+await submit();assert.equal(manualSourceSaves.length,2);
+assert.equal(manualSourceSaves[1].review.source_verified,true);
 await act(async()=>root.unmount());
 console.log('Broker UI: automatic readiness, optional addresses, source holds, exact allocation, staged multi-row reconciliation, stale refresh and failed-save preservation passed.');

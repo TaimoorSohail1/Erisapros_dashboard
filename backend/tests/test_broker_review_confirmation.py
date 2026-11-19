@@ -7,6 +7,27 @@ from app.services.schedule_a_broker_roster import source_roster_review
 
 
 class BrokerReviewConfirmationTests(unittest.TestCase):
+    def test_source_gap_can_be_explicitly_verified_by_reviewer_without_automatic_proof(self):
+        from app.models import ExtractionValidationResult
+        row=self.row();row.validation_results=[ExtractionValidationResult(validator='source_evidence',status='ERROR',reason='Source page evidence unavailable')]
+        status=ScheduleABrokerRosterReview()
+        request=BrokerRosterReviewRequest(expected_context=review_token([row],status,self.context,self.snapshot),
+            complete_list_confirmed=True,source_verified=True,reason='Checked the complete source PDF and recipient payments',row_sources=['SOURCE:0'])
+        verified,confirmed=confirm_broker_review([row],[row],status,request,actor='reviewer',source_context=self.context,snapshot=self.snapshot)
+        self.assertEqual(source_roster_review(verified,confirmed).mode,'REPLACE')
+        self.assertTrue(confirmed.reviewer_confirmation['source_verified'])
+        self.assertFalse(any(v.validator=='complete_source_broker_roster' for v in verified[0].validation_results))
+
+    def test_explicit_valid_org_correction_resolves_old_role_error_but_unchanged_invalid_code_does_not(self):
+        from app.models import ExtractionValidationResult
+        row=self.row();row.organization_code='PAYEE-123';row.validation_results=[ExtractionValidationResult(validator='source_organization_code_shape',status='ERROR')]
+        status=ScheduleABrokerRosterReview()
+        request=BrokerRosterReviewRequest(expected_context=review_token([row],status,self.context,self.snapshot),
+            complete_list_confirmed=True,reason='Confirmed organization code against source instructions',row_sources=['SOURCE:0'])
+        with self.assertRaises(ValueError):confirm_broker_review([row],[row],status,request,actor='reviewer',source_context=self.context,snapshot=self.snapshot)
+        corrected=row.model_copy(update={'organization_code':'3'})
+        verified,_=confirm_broker_review([corrected],[row],status,request,actor='reviewer',source_context=self.context,snapshot=self.snapshot)
+        self.assertEqual(verified[0].organization_code,'3')
     def setUp(self):
         self.status = ScheduleABrokerRosterReview(other_disclosures=[{
             'name': 'Mercer Health & Benefits LLC', 'address': '4565 PAYSPHERE CIRCLE CHICAGO IL 60674',

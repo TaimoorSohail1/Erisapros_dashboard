@@ -1270,6 +1270,7 @@ class BrokerDisclosureDecision(BaseModel):
 
 class BrokerRosterReviewRequest(BaseModel):
     expected_context: str
+    source_verified: bool = False
     accept_partial_addresses: bool = False
     complete_list_confirmed: bool = False
     reason: str = Field(default="", max_length=2000)

@@ -81,11 +81,17 @@ function blockingSourceIssues(item: Item, view: Draft) {
   // Whole-list confirmation resolves these four checks on the server. Other
   // source errors survive a draft edit and must remain visible here too.
   const reviewable = new Set(['complete_source_broker_roster', 'payment_classification_ambiguity',
-    'business_rule_confirmation', 'source_section_ambiguity', 'broker_partial_address']);
+    'business_rule_confirmation', 'source_section_ambiguity', 'broker_partial_address',
+    'source_zip_shape', 'printed_recipient_address_unreadable', 'broker_address_semantics']);
+  const code=String(item.row.organization_code ?? '').trim() || '3';
+  const orgCorrected=/^0?\d$/.test(code) && code !== String(original?.organization_code ?? '').trim();
   return (original?.validation_results ?? []).filter(issue => issue.status === 'ERROR' && !reviewable.has(issue.validator)
+    && !(issue.validator === 'source_organization_code_shape' && orgCorrected)
     && !(issue.validator === 'recipient_identity_ambiguity' && identityChoiceApplies(item, view)));
 }
-const needsReconciliation = (issue: { validator: string }) => issue.validator === 'broker_total_reconciliation';
+const paymentValidators=new Set(['broker_total_reconciliation','broker_column_semantics','broker_commission_components','source_component_total','incomplete_source_compensation_table']);
+const manualSourceValidators=new Set(['source_evidence',...paymentValidators].filter(value=>value!=='broker_total_reconciliation'));
+const needsReconciliation = (issue: { validator: string }) => paymentValidators.has(issue.validator);
 function paymentAllocation(view: Draft) {
   const source = view.roster?.payment_reconciliation;
   if (!source?.required && !view.sourceRows.some(row => row.validation_results?.some(v => v.status === 'ERROR' && needsReconciliation(v)))) return null;
@@ -120,6 +126,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [sourceVerified, setSourceVerified] = useState(false);
   const [approvedContext, setApprovedContext] = useState('');
   const [identityEditing, setIdentityEditing] = useState<{ groupId: string; choice: '' | 'SAME' | 'SEPARATE'; addressIndex: string; verified: boolean } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -151,6 +158,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     return draft?.dirty ? { ...draft, roster: next.roster, sourceRows: next.sourceRows } : next;
   }
   async function beginEdit(event: React.MouseEvent<HTMLButtonElement>, index: number) {
+    setSourceVerified(false);
     returnFocus.current = event.currentTarget; setPending(true); setError(''); setMessage('');
     try {
       const next = await refreshedDraft(); setDraft(next);
@@ -197,6 +205,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   }
   function closeEdit() { setEditing(null); setError(''); returnFocus.current?.focus(); }
   function editRow(field: keyof ScheduleABrokerRow, value: string) {
+    setSourceVerified(false);
     setEditing(previous => previous?.item ? { ...previous, item: { ...previous.item, row: { ...previous.item.row, [field]: value,
       validation_results: (previous.item.row.validation_results ?? []).filter(v => v.validator !== 'reviewer_partial_address_confirmation') } } } : previous);
   }
@@ -209,13 +218,17 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     if (editing.item && (editing.index < items.length || editing.item.included)) items[editing.index] = editing.item;
     const next = { ...draft, dirty: true, emptyEvidence: editing.emptyEvidence, items };
     setDraft(next);
-    const sourceIssue = next.items.flatMap(item => blockingSourceIssues(item, next)).find(issue => !needsReconciliation(issue));
+    const issues = next.items.flatMap(item => blockingSourceIssues(item, next));
+    const sourceIssue = issues.find(issue => !needsReconciliation(issue) && !manualSourceValidators.has(issue.validator));
     if (sourceIssue) { setError(sourceIssueMessage(sourceIssue)); return; }
     const allocation = paymentAllocation(next);
     if (allocation && !allocation.balanced) {
       setEditing(null); setError('');
       setMessage('Changes staged in this review. Add or correct the recipients until both remaining category totals are zero, then save the complete list. No FT Williams update was sent. Leaving this filing discards these staged changes.');
       return;
+    }
+    if (issues.some(issue => manualSourceValidators.has(issue.validator)) && !sourceVerified) {
+      setError('Confirm that you checked the complete source recipient list and payments before saving.'); return;
     }
     approvalInFlight.current = true; setPending(true); setError(''); setMessage('');
     try {
@@ -226,8 +239,9 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
       const included = next.items.filter(item => item.included);
       const saved = await onSaveReview(included.map(item => ({ ...item.row, purpose: purpose(item.row) })), {
         expected_context: context, complete_list_confirmed: true,
+        source_verified: sourceVerified,
         accept_partial_addresses: included.some(item => partialAddress(item.row)),
-        reason: 'Reviewer saved the displayed broker list and payment classifications; incomplete addresses, if any, are accepted as shown.',
+        reason: sourceVerified ? 'Reviewer verified the complete recipient list, payments and organization choices against the source PDF or confirmed client instructions; incomplete addresses are accepted as shown.' : 'Reviewer saved the displayed broker list, payment classifications and organization choices; incomplete addresses, if any, are accepted as shown.',
         empty_list_evidence: next.emptyEvidence.trim(), row_sources: included.map(item => item.source),
         excluded_source_indexes: next.sourceRows.map((_, index) => index).filter(index => !included.some(item => item.source === `SOURCE:${index}`)),
         disclosure_decisions: next.items.filter(item => item.disclosure).map(item => ({ disclosure_id: item.disclosure!.id!, treatment: item.treatment! })),
@@ -280,6 +294,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const editedItems = [...view.items];
   if (editing?.item && editing.index >= 0) editedItems[editing.index] = editing.item;
   const allocation = paymentAllocation({...view,items:editedItems});
+  const manualSourceRequired = editedItems.some(item => blockingSourceIssues(item,view).some(issue => manualSourceValidators.has(issue.validator)));
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
   const identityGroup = view.roster?.identity_groups?.find(g => g.id === identityEditing?.groupId);
   return <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
@@ -354,6 +369,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
         {emptyAfterEdit ? <label className="broker-empty-evidence">Evidence of no reportable Schedule A brokers<textarea maxLength={2000} disabled={disabled} value={editing.emptyEvidence} onChange={event => setEditing(previous => previous ? { ...previous, emptyEvidence: event.target.value } : previous)} /><small>Required before approving an empty replacement, which removes current brokers. A blank table alone is not evidence.</small></label> : null}
         <details><summary>View evidence</summary>{(view.roster?.reasons ?? []).map((text,index) => <p key={index}>{text}</p>)}{editItem?.disclosure ? <pre>{editItem.disclosure.source_text}</pre> : null}{(view.roster?.evidence ?? []).map((item,index) => <p key={index}>Page {item.page}: {item.source_text}</p>)}</details>
         <details><summary>Current brokers ({currentRows.length})</summary><ul>{currentRows.map((row,index) => <li key={index}>{['Name','AddressLine1','AddressLine2','City','State','ZipCode'].map(key => currentValue(row,key)).filter(Boolean).join(', ')}{` — Commission ${currentValue(row,'CommPdAmt') || 'Blank'}; Fees ${currentValue(row,'FeesPdAmt') || 'Blank'}`}</li>)}</ul></details>
+        {manualSourceRequired ? <label className="broker-source-verification"><input type="checkbox" aria-label="Source verification" checked={sourceVerified} onChange={event => setSourceVerified(event.target.checked)} />I checked the complete recipient list, payments and organization choices against this source PDF or confirmed client instructions.</label> : null}
         <div className="broker-simple-actions"><button className="button primary" type="submit" disabled={disabled}>{allocation && !allocation.balanced ? 'Stage correction' : editedItems.some(item => item.included && partialAddress(item.row)) ? 'Save and send as-is' : 'Save and continue'}</button><small>{allocation && !allocation.balanced ? 'Keeps this correction in the current review without approving or sending an incomplete payment list.' : 'Saves the displayed broker list and accepts incomplete addresses as shown. Sending continues when other filing checks pass.'}</small></div>
       </form>
     </section> : null}
