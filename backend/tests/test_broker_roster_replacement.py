@@ -117,7 +117,7 @@ class BrokerRosterReplacementTests(unittest.TestCase):
             if v.validator=='complete_source_broker_roster': v.normalized_value=':'.join(v.normalized_value.split(':')[:2])
         self.assertEqual(source_roster_review(result.schedule_a_broker_rows).mode,'PRESERVE')
 
-    def test_document_page_coverage_records_unreadable_pages_without_losing_their_count(self):
+    def test_document_page_coverage_distinguishes_physically_blank_pages(self):
         from io import BytesIO
         from pypdf import PdfWriter
         from unittest.mock import patch
@@ -127,7 +127,8 @@ class BrokerRosterReplacementTests(unittest.TestCase):
         with patch('app.services.extractor.extract_document_text_pages',return_value=[(1,'readable '*40),(2,'')]):
             extract_schedule_a_broker_rows_from_document(stream.getvalue(),'qa.pdf',page_coverage=coverage)
         self.assertEqual(coverage['page_count'],2)
-        self.assertEqual([p['readable'] for p in coverage['pages']],[True,False])
+        self.assertEqual([p['readable'] for p in coverage['pages']],[True,True])
+        self.assertTrue(coverage['pages'][1]['blank_page'])
 
     def test_missing_continuation_page_cannot_authorize_roster_deletion(self):
         result=self.verified()

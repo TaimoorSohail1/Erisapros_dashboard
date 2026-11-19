@@ -51,7 +51,10 @@ def _source_evidence(raw: object, file_name: str, source_sha256: str) -> dict | 
     if not isinstance(raw, dict) or raw.get('file_name') != file_name or raw.get('document_type') != 'SCHEDULE_A':
         return None
     nested = raw.get('raw') or {}
-    if not isinstance(nested, dict) or (nested.get('independent_source_page_coverage') or {}).get('source_sha256') != source_sha256:
+    if not isinstance(nested, dict) or not (
+            (nested.get('independent_source_page_coverage') or {}).get('source_sha256') == source_sha256
+            or any(isinstance(read, dict) and read.get('source_sha256') == source_sha256
+                   for read in nested.get('local_ocr_source_reads', []))):
         return None
     evidence = {key: nested[key] for key in ('extraction_stages', 'semantic_resolution',
         'service_provider_disclosure_pages', 'local_ocr_source_reads') if key in nested}
@@ -730,7 +733,8 @@ class MongoRepository(Repository):
     async def source_verification_evidence(self, filing_id: str, file_name: str, source_sha256: str) -> dict | None:
         doc = await self.db.raw_extractions.find_one({'filing_id': filing_id,
             'raw.file_name': file_name, 'raw.document_type': 'SCHEDULE_A',
-            'raw.raw.independent_source_page_coverage.source_sha256': source_sha256},
+            '$or': [{'raw.raw.independent_source_page_coverage.source_sha256': source_sha256},
+                    {'raw.raw.local_ocr_source_reads.source_sha256': source_sha256}]},
             {'raw.raw.extraction_stages': 1, 'raw.raw.semantic_resolution': 1,
              'raw.raw.service_provider_disclosure_pages': 1, 'raw.raw.local_ocr_source_reads': 1,
              'raw.raw.independent_source_page_coverage': 1, 'raw.file_name': 1, 'raw.document_type': 1,
