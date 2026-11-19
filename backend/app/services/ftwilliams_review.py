@@ -1939,6 +1939,8 @@ class FTWilliamsReviewService:
         all_fields: list[ExtractedField],
         relevant_fields: list[ExtractedField],
     ) -> dict:
+        all_fields = [field for field in all_fields if not is_retired_field(field)]
+        relevant_fields = [field for field in relevant_fields if not is_retired_field(field)]
         review_fields = [field for field in relevant_fields if field.priority != FieldPriority.IGNORE]
         found_fields = [
             field
@@ -2012,11 +2014,12 @@ class FTWilliamsReviewService:
 
     @staticmethod
     def _review_decision_count_updates(review: FTWilliamsReview) -> dict:
+        fields = [field for field in review.fields if not is_retired_field(field)]
         field_conflicts = sum(
-            1 for field in review.fields if field.decision == FTWFieldDecision.CONFLICT
+            1 for field in fields if field.decision == FTWFieldDecision.CONFLICT
         )
         blocked_fields = sum(
-            1 for field in review.fields if field.decision == FTWFieldDecision.BLOCKED
+            1 for field in fields if field.decision == FTWFieldDecision.BLOCKED
         )
         unresolved_brokers = len(
             {
@@ -2037,16 +2040,16 @@ class FTWilliamsReviewService:
             "decision_required_count": field_conflicts + unresolved_brokers + unresolved_plan_year,
             "blocked_field_count": blocked_fields,
             "will_update_count": sum(
-                1 for field in review.fields if field.decision == FTWFieldDecision.WILL_UPDATE
+                1 for field in fields if field.decision == FTWFieldDecision.WILL_UPDATE
             ),
             "kept_current_count": sum(
-                1 for field in review.fields if field.decision == FTWFieldDecision.KEEP_CURRENT
+                1 for field in fields if field.decision == FTWFieldDecision.KEEP_CURRENT
             ),
             "skipped_empty_count": sum(
-                1 for field in review.fields if field.decision == FTWFieldDecision.SKIP_EMPTY
+                1 for field in fields if field.decision == FTWFieldDecision.SKIP_EMPTY
             ),
             "unchanged_count": sum(
-                1 for field in review.fields if field.decision == FTWFieldDecision.NO_CHANGE
+                1 for field in fields if field.decision == FTWFieldDecision.NO_CHANGE
             ),
         }
 
@@ -5450,7 +5453,7 @@ class FTWilliamsReviewService:
             "schedule_a_part_i_3e_organizational_code",
         }
         for field in sorted(fields, key=lambda item: (str(item.form_type or ""), item.mapped_label or item.source_field_name)):
-            if field.priority == FieldPriority.IGNORE:
+            if field.priority == FieldPriority.IGNORE or is_retired_field(field):
                 continue
             tag = resolve_ftw_current_tag(field)
             update_tag = resolve_ftw_update_tag(field)

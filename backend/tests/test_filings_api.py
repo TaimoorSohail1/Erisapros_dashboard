@@ -48,6 +48,41 @@ class FilingsApiTests(unittest.TestCase):
     def tearDown(self):
         repositories._repository = None
 
+    def test_existing_welfare_question_is_hidden_with_correct_counts_and_preserved_payloads(self):
+        async def scenario():
+            repo = repositories.get_repository()
+            filing = await repo.create_filing(Filing(
+                file_name="Existing Schedule A.pdf", content_type="application/pdf", file_size=1,
+                s3_key="existing", blocked_field_count=2, decision_required_count=2,
+            ))
+            await repo.add_fields([ExtractedField(
+                filing_id=filing.id, source_field_name="6. Plan is a welfare plan?",
+                normalized_field_name="welfare_plan", value="Yes", proposed_value="Yes",
+                status=ExtractedFieldStatus.UNMAPPED,
+            )])
+            review = await repo.upsert_ftwilliams_review(FTWilliamsReview(
+                filing_id=filing.id, blocked_field_count=2, decision_required_count=2,
+                update_xml_5500="<unchanged5500 />", update_xml_schedule_a="<unchangedScheduleA />",
+                fields=[
+                    FTWilliamsComparisonField(label="6. Plan is a welfare plan?", decision="BLOCKED"),
+                    FTWilliamsComparisonField(label="Plan is a welfare plan?", decision="CONFLICT"),
+                    FTWilliamsComparisonField(label="Real invalid value", decision="BLOCKED"),
+                    FTWilliamsComparisonField(label="Real conflict", decision="CONFLICT"),
+                ],
+            ))
+            return await get_filing(filing.id), review, await repo.list_fields(filing.id)
+
+        detail, original, raw = run_async(scenario())
+        self.assertEqual(detail.fields, [])
+        self.assertEqual(len(raw), 1)
+        self.assertEqual([field.label for field in detail.ftw_review.fields], ["Real invalid value", "Real conflict"])
+        self.assertEqual(detail.blocked_field_count, 1)
+        self.assertEqual(detail.decision_required_count, 1)
+        self.assertEqual(detail.ftw_review.blocked_field_count, 1)
+        self.assertEqual(detail.ftw_review.decision_required_count, 1)
+        self.assertEqual(detail.ftw_review.update_xml_5500, original.update_xml_5500)
+        self.assertEqual(detail.ftw_review.update_xml_schedule_a, original.update_xml_schedule_a)
+
     def test_delete_filing_from_dashboard_soft_deletes_with_audit_trail(self):
         async def scenario():
             repo = repositories.get_repository()

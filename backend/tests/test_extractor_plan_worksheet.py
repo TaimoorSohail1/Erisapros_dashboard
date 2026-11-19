@@ -20,6 +20,15 @@ from app.services.extractor import (
 
 
 class PlanWorksheetExtractionTests(unittest.TestCase):
+    def test_welfare_plan_label_does_not_create_review_only_question(self):
+        fields = parse_plan_worksheet_text(
+            "Plan name(s) EXAMPLE WELFARE BENEFIT PLAN "
+            "If the plan provides welfare benefits, enter the applicable codes: 4A 4B 4D"
+        )
+        values = {field.field_name: field.value for field in fields}
+        self.assertNotIn("6. Plan is a welfare plan?", values)
+        self.assertEqual(values["8c. Welfare Benefit Features"], "4A 4B 4D")
+
     def test_beginning_counts_do_not_require_optional_instruction_notes(self):
         for note in ("", "[use previous year's count from 6(a)(2)] "):
             for count in ("135", "1,839", "0"):

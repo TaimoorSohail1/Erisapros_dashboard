@@ -126,6 +126,7 @@ const STRUCTURED_BROKER_SUMMARY_RULES = new Set([
 ]);
 const RETIRED_REVIEW_RULE_KEYS = new Set([
   "form_5500_part_i_2a_plan_administrator_name",
+  "form_5500_part_ii_6_plan_is_a_welfare_plan",
   "form_5500_part_ii_9_plan_funding_arrangement",
   "form_5500_part_ii_10a_plan_benefit_arrangement",
   "form_5500_part_ii_10b_schedules_attached",
@@ -4596,7 +4597,10 @@ function isRetiredReviewField(field: ExtractedField | FTWilliamsComparisonField)
   const labels = "source_field_name" in field
     ? [field.source_field_name, field.mapped_label]
     : [field.label];
-  return labels.some((label) => /^\s*(?:2a\.\s*)?Plan Administrator Name\s*$/i.test(String(label || "")));
+  return labels.some((label) =>
+    /^\s*(?:2a\.\s*)?Plan Administrator Name\s*$/i.test(String(label || ""))
+    || /^\s*(?:6\.\s*)?Plan is a welfare plan\??\s*$/i.test(String(label || "")),
+  );
 }
 
 function mergeFieldDecisionReview(

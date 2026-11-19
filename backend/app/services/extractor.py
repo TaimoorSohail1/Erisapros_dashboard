@@ -3156,8 +3156,6 @@ def parse_plan_worksheet_text(
                 )],
             ))
 
-    if re.search(r"\bwelfare benefit plan\b|\bemployee welfare benefit\b", compact, flags=re.IGNORECASE):
-        add("6. Plan is a welfare plan?", "Yes", 0.86)
     welfare_codes = regex_first(
         compact,
         [

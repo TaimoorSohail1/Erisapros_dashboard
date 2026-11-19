@@ -8,6 +8,7 @@ from app.models import FieldRule, FormType
 RETIRED_FIELD_RULE_KEYS = frozenset(
     {
         "form_5500_part_i_2a_plan_administrator_name",
+        "form_5500_part_ii_6_plan_is_a_welfare_plan",
         "form_5500_part_ii_9_plan_funding_arrangement",
         "form_5500_part_ii_10a_plan_benefit_arrangement",
         "form_5500_part_ii_10b_schedules_attached",
@@ -20,6 +21,8 @@ RETIRED_FIELD_NAMES = frozenset(
     {
         "2a. Plan Administrator Name",
         "Plan Administrator Name",
+        "6. Plan is a welfare plan?",
+        "Plan is a welfare plan?",
         "9. Plan funding arrangement",
         "Plan funding arrangement",
         "10a. Plan benefit arrangement",
