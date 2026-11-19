@@ -44,7 +44,17 @@ def scalar_issues(field):
             elif part and not validations:
                 blockers.append(part)
         if not parts and not validations and not str(getattr(field, 'proposed_value', '') or '').strip():
-            blockers.append('The source interpretation has not been classified.')
+            if reason == prefix:
+                warnings.append('Legacy review flag has no specific issue recorded; accepted under the single-value policy, not source-verified.')
+            else:
+                blockers.append('The source interpretation has not been classified.')
+        # Old mappings sometimes retained a payment-column caption as a name
+        # without retaining its validation metadata. A caption is not a valid
+        # single value, even when the legacy review reason is generic.
+        value = str(getattr(field, 'value', '') or '').strip()
+        if (re.search(r'_name(?:_|$)', str(getattr(field, 'mapped_rule_key', '') or ''))
+                and re.fullmatch(r'\$?\s*(?:commissions?|fees?)(?:\s+(?:and|&)\s+(?:commissions?|fees?))?\s+paid', value, re.I)):
+            blockers.append('Payment column header was extracted as a name; confirm the source recipient.')
     if float(getattr(field, 'confidence', 1) or 0) < .8:
         warnings.append('Extraction confidence is low; confidence alone does not require approval.')
     return list(dict.fromkeys(blockers)), list(dict.fromkeys(warnings))

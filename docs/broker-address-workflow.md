@@ -15,6 +15,10 @@ policy identity and real source contradictions still require correction.
 
 Opening an existing filing reapplies these shared rules without uploading it or
 submitting a new EyeLevel request. Manual edits and Keep Current choices survive.
+An older generic review flag with no specific issue recorded is informational;
+it does not withhold an otherwise valid single value. Explicit interpretation
+issues, conflicting candidates and invalid values still require correction.
+Payment-column captions are not accepted as recipient names.
 
 ## Automatic broker processing
 
