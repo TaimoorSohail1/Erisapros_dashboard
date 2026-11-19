@@ -40,6 +40,61 @@ def test_unknown_legacy_hold_is_not_silently_cleared():
     result=FTWilliamsReviewService()._comparison_fields([field],{}, {})[0]
     assert result.validation_blocking
 
+
+@pytest.mark.parametrize('key,value', [
+    (KEY, '46'),
+    ('schedule_a_part_iii_10a_total_premiums_or_subscription_charges_paid_to_carrier', '14,352.00'),
+    ('schedule_a_part_i_1b_insurance_carrier_ein', '04-1045815'),
+])
+def test_generic_legacy_review_flag_alone_does_not_withhold_a_single_value(key, value):
+    field = source()
+    field.mapped_rule_key = key
+    field.value = value
+    field.status_reason = 'Extraction requires review; automatic proposal withheld.'
+    service = FTWilliamsReviewService()
+    safe = service._safe_update_fields([field], FormType.SCHEDULE_A, {})
+    result = service._comparison_fields([field], {}, {}, safe)[0]
+    assert result.decision == FTWFieldDecision.WILL_UPDATE
+    assert not result.validation_blocking
+    assert result.proposed_value == value
+    assert result.processing_warnings
+    assert field in safe
+
+
+def test_generic_legacy_name_hold_does_not_restore_a_payment_column_header():
+    from app.services.single_value_policy import scalar_issues
+    field = source()
+    field.mapped_rule_key = 'schedule_a_part_i_3a_name_of_agent_broker_person'
+    field.value = '$Commissions Paid'
+    field.status_reason = 'Extraction requires review; automatic proposal withheld.'
+    service = FTWilliamsReviewService()
+    safe = service._safe_update_fields([field], FormType.SCHEDULE_A, {})
+    result = service._comparison_fields([field], {}, {}, safe)[0]
+    assert result.validation_blocking
+    assert not safe
+    assert any('column header' in reason for reason in scalar_issues(field)[0])
+
+
+def test_generic_legacy_flag_preserves_explicit_candidate_validation():
+    field = source()
+    field.status_reason = 'Extraction requires review; automatic proposal withheld.'
+    field.validation_results = [ExtractionValidationResult(
+        validator='candidate_conflict', status='ERROR', reason='Multiple source candidates disagree for this field.')]
+    result = FTWilliamsReviewService()._comparison_fields([field], {}, {})[0]
+    assert result.validation_blocking
+    assert not field.proposed_value
+
+
+def test_generic_legacy_flag_does_not_bypass_target_format_validation():
+    field = source()
+    field.value = '-1'
+    field.status_reason = 'Extraction requires review; automatic proposal withheld.'
+    service = FTWilliamsReviewService()
+    safe = service._safe_update_fields([field], FormType.SCHEDULE_A, {})
+    result = service._comparison_fields([field], {}, {}, safe)[0]
+    assert result.validation_blocking
+    assert not safe
+
 def test_no_evidence_value_is_sendable_under_normal_automation_policy():
     from test_ftwilliams_automation import FTWAutomationPolicyTests
     from app.services.ftwilliams_automation import FTWAutomationPolicy
