@@ -146,7 +146,7 @@ def labelled_payee_rows(pages):
             if re.search(r'commissions\s+or\s+fees', text[:match.start()], re.I):
                 row.decision = 'REVIEW_REQUIRED'
                 row.validation_results = [v for v in row.validation_results if v.validator != PAYMENT_COLUMNS]
-                row.validation_results.append(ExtractionValidationResult(validator='broker_payment_category', status='ERROR',
+                row.validation_results.append(ExtractionValidationResult(validator='payment_classification_ambiguity', status='ERROR',
                     reason='The source labels one combined commissions-or-fees amount; its payment category needs confirmation.'))
             packet.append(row)
         if not packet or sum(Decimal(r.commission_total) for r in packet) != Decimal(_amount(total[1])):

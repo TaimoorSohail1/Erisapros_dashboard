@@ -13,7 +13,7 @@ Total: $756.37''')])
   self.assertEqual((rows[0].address_line_1,rows[0].city),('15400 Main Dr. Ste. 125','Rockville'))
   self.assertEqual(rows[1].city,'Glendale')
   self.assertEqual(rows[0].decision,'REVIEW_REQUIRED')
-  self.assertTrue(any(v.validator=='broker_payment_category' and v.status=='ERROR' for v in rows[0].validation_results))
+  self.assertTrue(any(v.validator=='payment_classification_ambiguity' and v.status=='ERROR' for v in rows[0].validation_results))
  def test_signed_subtotals_preserve_refunds_and_fee_categories(self):
   from app.services.extractor import _extract_metlife_standard_broker_block
   text='''Name: Example Benefit Services
