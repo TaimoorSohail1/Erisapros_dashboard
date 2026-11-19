@@ -70,14 +70,15 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
                     'status_reason': 'Recovered from explicit carrier identity labels in the hash-verified stored Schedule A PDF.'}, deep=True)
                 updates.append((field, after))
         values = {}
-        if needs_roster:
+        source_summaries = evidence.get('document_worksheet_summaries')
+        if needs_roster and isinstance(source_summaries, list):
             final = next((stage for stage in reversed(evidence.get('extraction_stages', []))
                 if stage.get('stage') == 'final_normalized'), {})
             result = NormalizedExtractionResult(provider='Stored source verification',
                 fields=[NormalizedExtractionField.model_validate(f) for f in final.get('fields', [])],
                 schedule_a_broker_rows=[r.model_copy(deep=True) for r in filing.schedule_a_broker_rows],
                 schedule_a_broker_roster=roster.model_copy(deep=True) if roster else None,
-                schedule_a_worksheet_summaries=filing.schedule_a_worksheet_summaries,
+                schedule_a_worksheet_summaries=source_summaries,
                 raw=dict(evidence))
             coverage = {}
             independent = extract_schedule_a_broker_rows_from_document(content, document['file_name'],
