@@ -64,3 +64,9 @@ totals, identity decisions, destination checks or changed-source protection.
 Changing an input resets the checkbox. A valid explicit organization-code
 correction also resolves its old mapping warning; an unchanged invalid code
 remains blocked.
+
+New Schedule A descriptions are labels, not policy identifiers. Refreshing a
+pending new record requires matching carrier and contract identity before using
+an existing record. An unsubmitted automatic proposal gets a new unique label
+if another policy has taken its generated description. Manual descriptions and
+uncertain prior send attempts remain reviewable; they do not create duplicates.

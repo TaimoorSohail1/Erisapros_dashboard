@@ -6571,7 +6571,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
         self.assertEqual(xml.count("<DOLScheduleAData>"), 1)
         self.assertIn("<InsCarrierName>NEW CARRIER</InsCarrierName>", xml)
 
-    def test_create_new_reconciliation_uses_the_exact_generated_schedule_description(self):
+    def test_create_new_reconciliation_cannot_use_description_without_policy_identity(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
         carrier = self._schedule_identity_field(
             "schedule_a_part_i_1a_name_of_insurance_company",
@@ -6595,7 +6595,7 @@ class FTWilliamsReviewFlowTests(unittest.TestCase):
             expected_schedule_desc="ALLONEH2",
         )
 
-        self.assertEqual(matched["ftw_seq_no"], "9")
+        self.assertIsNone(matched)
 
     def test_complete_unmatched_ein_and_contract_automatically_select_new_schedule_a(self):
         service = FTWilliamsReviewService(FakeFTWilliamsService())
