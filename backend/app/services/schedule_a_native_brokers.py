@@ -126,6 +126,65 @@ def printed_payment_totals(rows):
     return next(iter(totals)) if totals else None
 
 
+def close_numbered_compensation_sections(pages, rows, *, corroborated_totals=None):
+    """Account for every currency cell between labelled sections 2 and 3.
+
+    Used only after a caller has reconciled every physical recipient subtotal.
+    Independent OCR packets must each pass this accounting before corroboration.
+    A readable header alone cannot prove that an unassigned fee is absent.
+    """
+    from collections import Counter
+    cash=re.compile(r'\$\s*([\d,]+(?:\.\d+)?)')
+    decimal_cell=re.compile(r'(?<![\d.])[\d,]*\.\d{2}(?![\d.])')
+    subtotal=re.compile(r'(?im)^[ \t]*Totals?\s*:\s*\$\s*[\d,]+(?:[ \t]*\.[ \t]*\d{2})?[ \t]+\$\s*[\d,]+(?:[ \t]*\.[ \t]*\d{2})?[ \t]*$')
+    headers=[];observed=[];evidence=[]
+    for page,text in pages:
+        start=re.search(r'\b2[.)]\s*Insurance\s+fee\s+and\s+commission\s+information',text,re.I)
+        section=re.search(r'\b3[.)]\s*Insurance\s+fees\s+and\s+commissions\s+paid',text,re.I)
+        if not start or not section or start.end()>=section.start():
+            if '$' in text:return False
+            continue
+        header=text[start.end():section.start()]
+        values=[_amount(m[1]) for m in cash.finditer(header)]
+        if not values and '$' not in header and corroborated_totals is not None:
+            # Another complete packet read both header cells. This packet
+            # must still account for every recipient currency cell and its
+            # physical subtotals. A present conflicting number never falls back.
+            values=[_amount(v) for v in corroborated_totals]
+            partial=[_amount(m[0]) for m in decimal_cell.finditer(header)]
+            if None in partial or Counter(partial)-Counter(values):return False
+        elif header.count('$')!=2:return False
+        if len(values)!=2 or None in values:return False
+        headers.append(tuple(values))
+        evidence.append(SourceEvidence(provider='Closed numbered compensation section',page=page,source_text=header.strip()))
+        body=re.split(r'\bPart\s+[I1l|]{2,3}\b',text[section.end():],maxsplit=1,flags=re.I)[0]
+        body=subtotal.sub('',body)
+        currencies=list(cash.finditer(body))
+        values=[_amount(m[1]) for m in currencies]
+        if None in values or len(values)!=body.count('$'):return False
+        # OCR can drop a dollar sign. Bare decimal cells in the payment
+        # section still need a recipient role; they cannot disappear.
+        values.extend(_amount(m[0]) for m in decimal_cell.finditer(body)
+            if not any(c.start()<=m.start() and m.end()<=c.end() for c in currencies))
+        if None in values:return False
+        observed.extend(v for v in values if Decimal(v)!=0)
+    if not headers or len(set(headers))!=1:return False
+    expected=[]
+    for row in rows:
+        for key,total in (('commission_rows',row.commission_total),('fee_rows',row.fee_total)):
+            components=getattr(row,key)
+            values=[_amount(v.amount) for v in components] if components else [_amount(total)]
+            if None in values:return False
+            expected.extend(v for v in values if Decimal(v)!=0)
+    if Counter(observed)!=Counter(expected):return False
+    commission,fees=headers[0]
+    if (sum(Decimal(_amount(r.commission_total)) for r in rows)!=Decimal(commission)
+            or sum(Decimal(_amount(r.fee_total)) for r in rows)!=Decimal(fees)):return False
+    mark_section_totals(rows,commission,fees,evidence)
+    mark_closed_roster(rows,'Every currency cell in both numbered compensation sections is assigned and reconciles to printed category totals.')
+    return True
+
+
 def _row(name, address, commission, fees, page, source, *, provider):
     from app.services.extractor import _compensation_address, is_probable_person_or_entity_name
     if not is_probable_person_or_entity_name(name) or not name.strip():

@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.services.extractor import ExtractionService
 
 
-@pytest.mark.parametrize("scenario", ["complete", "wrong_source", "missing_page", "conflicting_reads"])
+@pytest.mark.parametrize("scenario", ["complete", "roman_ocr_heading", "one_unreadable_header", "wrong_source", "missing_page", "conflicting_reads", "conflicting_header", "unreadable_but_conflicting_header", "unassigned_payment", "unassigned_bare_payment"])
 def test_independent_scan_roster_uses_complete_source_bound_labeled_ocr(scenario):
     from app.services.extractor import extract_schedule_a_broker_rows_from_document
 
@@ -44,6 +44,7 @@ SYNTHETIC BENEFITS LLC $ 125.25 6
 BOSTON, MA 02110
 Totals: $ 125.25 $ 0.00
 Part III - Welfare Benefit Contract Information
+10. Nonexperience-rated contracts: Total premiums paid $1,234.56
 """,
     }
     reads = [
@@ -57,13 +58,22 @@ Part III - Welfare Benefit Contract Information
         reads = [row for row in reads if row["page"] == 2]
     elif scenario == "conflicting_reads":
         reads[-1]["text"] = reads[-1]["text"].replace("INVENTED CIR", "DIFFERENT RD")
+    elif scenario in {"unassigned_payment","unassigned_bare_payment"}:
+        for read in reads:
+            read['text']=read['text'].replace('Totals:', ('Unassigned fee $25.00' if scenario=='unassigned_payment' else 'Unassigned fee 25.00')+'\nTotals:')
+    elif scenario == "roman_ocr_heading":
+        for read in reads:
+            read['text']=read['text'].replace('Part III','Part Ill')
+    elif scenario in {'one_unreadable_header','conflicting_header','unreadable_but_conflicting_header'}:
+        reads[-1]['text']=reads[-1]['text'].replace('$ 125.25 $ 0.00',
+            'S125.25 unreadable' if scenario=='one_unreadable_header' else 'S999.00 unreadable' if scenario=='unreadable_but_conflicting_header' else '$ 999.00 $ 0.00',1)
     coverage = {}
 
     rows = extract_schedule_a_broker_rows_from_document(
         content, "image-only.pdf", page_coverage=coverage, retained_ocr_source_reads=reads,
     )
 
-    if scenario != "complete":
+    if scenario not in {"complete","roman_ocr_heading","one_unreadable_header"}:
         assert not rows
         assert not any(page["readable"] for page in coverage["pages"])
         return
@@ -73,6 +83,14 @@ Part III - Welfare Benefit Contract Information
     assert rows[0].source_page == 2
     assert rows[0].commission_total == "125.25"
     assert rows[0].fee_total == "0"
+    assert any(v.validator=='native_printed_broker_section_totals' and v.status=='PASS' for v in rows[0].validation_results)
+    from app.models import NormalizedExtractionResult,NormalizedExtractionField
+    from app.services.schedule_a_broker_source_repair import repair_source_rows
+    result=NormalizedExtractionResult(provider='test',fields=[NormalizedExtractionField(field_name='3c. Amount of Fees',value='125.25')],
+        schedule_a_broker_rows=rows,raw={'extraction_stages':[{'stage':'structured_provider_normalized',
+        'broker_rows':[r.model_dump(mode='json') for r in rows]}],'independent_source_page_coverage':coverage})
+    repair_source_rows(result,rows)
+    assert next(f.value for f in result.fields if f.field_name.startswith('3c.'))=='0'
 
 
 def _extract_packet(monkeypatch, table_state, broker_name):

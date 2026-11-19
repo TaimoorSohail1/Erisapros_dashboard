@@ -5142,6 +5142,11 @@ def _read_scanned_lincoln_broker_roster(
         probe = NormalizedExtractionResult(provider="Independent local OCR", fields=[])
         if not reconcile_lincoln_part_i_compensation(probe, rows, pages):
             return [], []
+        from app.services.schedule_a_native_brokers import close_numbered_compensation_sections
+        corroborated_totals = (tuple(str(sum(Decimal(str(getattr(row,key)).replace(',','')) for row in packets[0][1]))
+            for key in ('commission_total','fee_total')) if packets else None)
+        if not close_numbered_compensation_sections(pages,rows,corroborated_totals=corroborated_totals):
+            return [], []
         packets.append((pages, rows))
         fingerprints.add(_fingerprint(rows))
     return packets[0] if len(fingerprints) == 1 else ([], [])

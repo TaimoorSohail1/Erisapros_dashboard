@@ -112,7 +112,7 @@ class StoredSourceVerificationTests(unittest.IsolatedAsyncioTestCase):
         return await verify_stored_schedule_a_source(self.repo, self.filing.model_copy(deep=True),
             [f.model_copy(deep=True) for f in self.fields])
 
-    async def test_missing_identity_causes_incomplete_query_then_source_recovery_selects_unique_record(self):
+    async def test_complete_query_remains_distinct_from_missing_identity_and_tied_matching(self):
         from app.models import FTWilliamsStatusItem
         from app.services.ftwilliams_review import FTWilliamsReviewService
         service = FTWilliamsReviewService()
@@ -123,7 +123,8 @@ class StoredSourceVerificationTests(unittest.IsolatedAsyncioTestCase):
             'schedule_a_error':None,'schedule_a_query_failed':False}
         with patch.object(service, '_current_data_snapshot', AsyncMock(return_value=snapshot)):
             before = await service._run_current_queries_for_year(self.fields,{},None)
-            self.assertFalse(before['current_query_complete'])
+            self.assertTrue(before['current_query_complete'])
+            self.assertIsNone(before['matched_schedule_a'])
             filing, fields = await self.recover()
             after = await service._run_current_queries_for_year(fields,{},None)
             self.assertTrue(after['current_query_complete'])
@@ -134,7 +135,9 @@ class StoredSourceVerificationTests(unittest.IsolatedAsyncioTestCase):
             # Equal strong matches still require a decision, and transport failure stays incomplete.
             snapshot['schedule_statuses'].append(match.model_copy(update={'ftw_seq_no':'7'}))
             tied = await service._run_current_queries_for_year(fields,{},None)
-            self.assertFalse(tied['current_query_complete'])
+            self.assertTrue(tied['current_query_complete'])
+            self.assertIsNone(tied['matched_schedule_a'])
+            self.assertIn('highest match score', tied['error_message'])
             snapshot['schedule_statuses'].pop()
             snapshot['schedule_a_query_failed'] = True
             failed = await service._run_current_queries_for_year(fields,{},None)

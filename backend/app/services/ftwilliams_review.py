@@ -1723,6 +1723,8 @@ class FTWilliamsReviewService:
 
     def _mark_broker_review_destination(self, review, fields):
         if review.schedule_a_broker_roster:
+            from app.services.broker_payment_reconciliation import payment_reconciliation
+            review.schedule_a_broker_roster.payment_reconciliation = payment_reconciliation(review.schedule_a_broker_rows, fields)
             reason = self._broker_review_destination_error(review, fields)
             review.schedule_a_broker_roster.destination_ready = reason is None
             review.schedule_a_broker_roster.destination_reason = reason
@@ -3088,8 +3090,12 @@ class FTWilliamsReviewService:
         expects_schedule_a = any(field.form_type == FormType.SCHEDULE_A for field in fields)
         has_preserved_schedule_set = bool(existing_create_new and schedule_statuses)
         has_any_current = bool(form_5500_current or schedule_a_current or has_preserved_schedule_set)
+        # Query coverage and target selection are separate checks. A complete
+        # returned Schedule A set is still complete when its records tie or no
+        # policy is eligible. Keep the matching decision, rather than telling
+        # the reviewer to refresh the same successfully loaded records forever.
         has_required_current = (not expects_form_5500 or bool(form_5500_current)) and (
-            not expects_schedule_a or bool(schedule_a_current) or has_preserved_schedule_set
+            not expects_schedule_a or bool(schedule_statuses)
         )
         current_query_failed = bool(
             ((expects_form_5500 or (expects_schedule_a and not schedule_a_candidates))

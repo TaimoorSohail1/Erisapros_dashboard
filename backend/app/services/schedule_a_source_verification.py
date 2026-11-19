@@ -125,6 +125,21 @@ async def verify_stored_schedule_a_source(repo, filing, fields):
                 repaired = not protected_rows
             else:
                 repaired = repair_source_rows(result, independent) or unbound_payment_mismatch
+            # A payee/producer identifier accidentally mapped into org code is
+            # a role error, not an explicit unsupported organization code.
+            # Confirm the role across complete reads of these exact source bytes.
+            from app.services.extractor import _broker_page_coverage
+            from app.services.schedule_a_broker_source_repair import repair_identifier_organization_codes
+            count=coverage.get('page_count');packets=[]
+            if count and len(pages)==count and all(p['readable'] for p in _broker_page_coverage(pages)):
+                packets.append(pages)
+            retained=evidence.get('local_ocr_source_reads') or []
+            for mode in {read.get('psm') for read in retained}:
+                packet=sorted((read['page'],read['text']) for read in retained if read.get('psm')==mode
+                    and read.get('source_sha256')==source_sha and type(read.get('page')) is int and isinstance(read.get('text'),str))
+                if count and [p for p,_ in packet]==list(range(1,count+1)) and all(p['readable'] for p in _broker_page_coverage(packet)):
+                    packets.append(packet)
+            repaired=repair_identifier_organization_codes(result.schedule_a_broker_rows,packets) or repaired
             from app.services.schedule_a_broker_validation import hold_invalid_source_organization_codes, hold_invalid_source_zip_codes
             for rows in (result.schedule_a_broker_rows, independent):
                 hold_invalid_source_organization_codes(rows)

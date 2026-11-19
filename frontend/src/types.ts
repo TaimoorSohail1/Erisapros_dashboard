@@ -146,6 +146,7 @@ export interface ScheduleABrokerRow {
 }
 
 export interface ScheduleABrokerRosterReview {
+  payment_reconciliation?: { required: boolean; source: 'PRINTED_SOURCE' | 'EXTRACTED_SOURCE' | 'UNAVAILABLE' | 'CONFLICTING_SOURCE'; expected_commission?: string | null; expected_fees?: string | null } | null;
   state: "VERIFIED" | "VERIFIED_EMPTY" | "NEEDS_REVIEW";
   mode: "REPLACE" | "PRESERVE";
   source_sha256?: string | null;
@@ -188,6 +189,7 @@ export interface BrokerIdentityReviewRequest {
 
 export interface BrokerRosterReviewRequest {
   expected_context: string;
+  source_verified?: boolean;
   accept_partial_addresses?: boolean;
   complete_list_confirmed: boolean;
   reason: string;

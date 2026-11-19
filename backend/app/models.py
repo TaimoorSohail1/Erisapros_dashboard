@@ -522,6 +522,13 @@ class ScheduleABrokerMatch(BaseModel):
     current_row: ScheduleABrokerRow | None = None
 
 
+class BrokerPaymentReconciliation(BaseModel):
+    required: bool = False
+    source: Literal['PRINTED_SOURCE', 'EXTRACTED_SOURCE', 'UNAVAILABLE', 'CONFLICTING_SOURCE'] = 'UNAVAILABLE'
+    expected_commission: str | None = None
+    expected_fees: str | None = None
+
+
 class ScheduleABrokerRosterReview(BaseModel):
     state: Literal["VERIFIED", "VERIFIED_EMPTY", "NEEDS_REVIEW"] = "NEEDS_REVIEW"
     mode: Literal["REPLACE", "PRESERVE"] = "PRESERVE"
@@ -540,6 +547,7 @@ class ScheduleABrokerRosterReview(BaseModel):
     identity_reviews: list[dict] = Field(default_factory=list)
     identity_groups: list[dict] = Field(default_factory=list)
     verified_update: dict | None = None
+    payment_reconciliation: BrokerPaymentReconciliation | None = None
 
 
 class ScheduleAWorksheetValue(BaseModel):
@@ -1262,6 +1270,7 @@ class BrokerDisclosureDecision(BaseModel):
 
 class BrokerRosterReviewRequest(BaseModel):
     expected_context: str
+    source_verified: bool = False
     accept_partial_addresses: bool = False
     complete_list_confirmed: bool = False
     reason: str = Field(default="", max_length=2000)
