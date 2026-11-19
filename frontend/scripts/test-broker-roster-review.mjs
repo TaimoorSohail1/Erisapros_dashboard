@@ -210,5 +210,25 @@ if(process.env.BROKER_UI_REPLAY_FILE){
   assert.equal(document.querySelectorAll('tbody tr').length,captured.source_rows.length);
   if(process.env.BROKER_UI_EVIDENCE_FILE)await writeFile(process.env.BROKER_UI_EVIDENCE_FILE,document.documentElement.outerHTML,'utf8');
 }
+// Reconcile several missing recipients without submitting a knowingly incomplete list.
+const reconciliationRow={...row,commission_total:'100',fee_total:'0',validation_results:[{
+  validator:'broker_total_reconciliation',status:'ERROR',normalized_value:'source_totals:100:25',reason:'Printed source totals do not reconcile.'}]};
+const reconciliationRoster={...sourceProps.roster,payment_reconciliation:{required:true,source:'PRINTED_SOURCE',expected_commission:'100.00',expected_fees:'25.00'}};
+let reconciliationSaves=[];
+await render({rows:[reconciliationRow],roster:reconciliationRoster,onSaveReview:async(rows,review)=>{reconciliationSaves.push({rows,review});return true;}});
+assert.match(document.body.textContent,/Source fees.*\$25\.00/);
+assert.match(document.body.textContent,/Remaining fees.*\$25\.00/);
+await click('Edit');await submit();
+assert.equal(reconciliationSaves.length,0);assert.equal(document.querySelector('form'),null);
+assert.match(document.body.textContent,/staged in this review/);
+await click('Add broker');await set(input('Broker name'),'First confirmed fee recipient');
+await set(input('Commission'),'0');await set(input('Fees'),'10');await submit();
+assert.equal(reconciliationSaves.length,0);assert.equal(document.querySelector('form'),null);
+assert.match(document.body.textContent,/Remaining fees.*\$15\.00/);
+await click('Add broker');await set(input('Broker name'),'Second confirmed fee recipient');
+await set(input('Commission'),'0');await set(input('Fees'),'15');await submit();
+assert.equal(reconciliationSaves.length,1);assert.equal(reconciliationSaves[0].rows.length,3);
+assert.deepEqual(Array.from(reconciliationSaves[0].review.row_sources),['SOURCE:0','NEW','NEW']);
+assert.match(document.body.textContent,/Sending continues automatically/);
 await act(async()=>root.unmount());
-console.log('Simple broker UI: Edit/Approve, source-error visibility and approval gating, no Add broker, drafts/cancel, exact classification, complete-list approval, exclusions/empty evidence, stale refresh, failed save, duplicate prevention and verified-list compatibility passed.');
+console.log('Broker UI: automatic readiness, optional addresses, source holds, exact allocation, staged multi-row reconciliation, stale refresh and failed-save preservation passed.');

@@ -137,7 +137,11 @@ def confirm_broker_review(rows, original_rows, status, request, *, actor, source
         actual_totals = tuple(sum((Decimal(_money(getattr(row, field))) for row in verified), Decimal(0))
                               for field in ('commission_total', 'fee_total'))
         if actual_totals != expected_payment_totals:
-            raise ValueError('The complete broker list must match both Schedule A commission and fee totals before approval.')
+            detail = (' Source commission and fee totals are unavailable; verify the source totals before approval.'
+                if expected_payment_totals is None or any(v is None for v in expected_payment_totals) else
+                ' '+ ' '.join(f'{label}: source {expected:.2f}, allocated {actual:.2f}, remaining {expected-actual:.2f}.'
+                    for label,expected,actual in zip(('Commission','Fees'),expected_payment_totals,actual_totals)))
+            raise ValueError('The complete broker list must match both Schedule A commission and fee totals before approval.'+detail)
     schedule_a_broker_update_values(verified, require_complete=True)
     reviewed = status.model_copy(deep=True)
     reviewed.reviewer_confirmation = {'actor': actor, 'at': datetime.now(timezone.utc).isoformat(),

@@ -1,10 +1,42 @@
 """Reconcile typed source rows without changing provider history or reviewer edits."""
 from decimal import Decimal
 from collections import Counter
+import re
 
 from app.models import NormalizedExtractionField, ScheduleABrokerRow, SourceEvidence
 from app.services.schedule_a_broker_roster import _money, _key
 from app.services.schedule_a_native_brokers import provider_supports_labelled_payments, recipient_sets_corroborate, SECTION_TOTALS, PAYMENT_COLUMNS, CLOSED_ROSTER
+
+
+def repair_identifier_organization_codes(rows, packets):
+    """Correct a proven identifier-role mapping, without approving the roster.
+
+    Caller supplies only complete native or content-hash-bound source packets.
+    An explicit organization-code label, missing recipient evidence, valid code
+    or reviewer correction prevents this recovery.
+    """
+    if not packets:return False
+    texts=['\n'.join(text for _,text in packet) for packet in packets]
+    if any(re.search(r'\borg(?:anizational|anization)?\.?\s+code\b',text,re.I) for text in texts):return False
+    other_labels=[re.sub(r'\b(?:(?:Payee|Agent|Producer|Broker)\s+(?:Code|Number|ID)|ZIP\s+Code)\b','',text,flags=re.I) for text in texts]
+    if any(re.search(r'\bCode\b',text,re.I) for text in other_labels):return False
+    normalize=lambda text:re.sub(r'[^A-Z0-9]','',text.upper())
+    changed=False
+    for row in rows:
+        code=str(row.organization_code or '').strip()
+        if not code or re.fullmatch(r'0?\d',code) or any(v.validator.startswith('reviewer_') and v.status=='PASS' for v in row.validation_results):continue
+        role=re.compile(r'\b(?:Payee|Agent|Producer|Broker)\s+(?:Code|Number|ID)\s*:?\s*'+re.escape(code)+r'(?![A-Za-z0-9])',re.I)
+        if not row.name or not all(role.search(text) and normalize(row.name) in normalize(text) for text in texts):continue
+        row.organization_code='3';row.organization_code_defaulted=True
+        row.validation_results=[v for v in row.validation_results if v.validator!='source_organization_code_shape']
+        from app.models import ExtractionValidationResult
+        row.validation_results.append(ExtractionValidationResult(validator='source_identifier_not_organization_code',status='PASS',
+            reason='The source labels this value as a recipient identifier, not an organization code. The blank-code default is 3.',normalized_value=code))
+        page,text=next((page,text) for page,text in packets[0] if role.search(text))
+        row.evidence.append(SourceEvidence(provider='Stored source identifier-role recovery',page=page,source_text=role.search(text)[0]))
+        if row.decision=='REVIEW_REQUIRED' and not any(v.status=='ERROR' for v in row.validation_results):row.decision='UNASSESSED'
+        changed=True
+    return changed
 
 
 def repair_source_rows(result, independent_rows):

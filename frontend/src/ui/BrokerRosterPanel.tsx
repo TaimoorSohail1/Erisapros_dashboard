@@ -86,6 +86,19 @@ function blockingSourceIssues(item: Item, view: Draft) {
     && !(issue.validator === 'recipient_identity_ambiguity' && identityChoiceApplies(item, view)));
 }
 const needsReconciliation = (issue: { validator: string }) => issue.validator === 'broker_total_reconciliation';
+function paymentAllocation(view: Draft) {
+  const source = view.roster?.payment_reconciliation;
+  if (!source?.required && !view.sourceRows.some(row => row.validation_results?.some(v => v.status === 'ERROR' && needsReconciliation(v)))) return null;
+  const expected = [cents(source?.expected_commission), cents(source?.expected_fees)];
+  const allocated = (['commission_total','fee_total'] as const).map(key => {
+    const amounts = view.items.filter(item => item.included).map(item => cents(item.row[key]));
+    return amounts.some(value => value === null) ? null : amounts.reduce<bigint>((sum,value) => sum + value!,0n);
+  });
+  const available = expected.every(value => value !== null) && allocated.every(value => value !== null);
+  return {source, expected, allocated, balanced: available && expected.every((value,index) => value === allocated[index]),
+    remaining: expected.map((value,index) => value !== null && allocated[index] !== null ? value - allocated[index]! : null)};
+}
+const moneyCents = (value: bigint | null) => value === null ? 'Unconfirmed' : formatMoney(`${value < 0n ? '-' : ''}${(value < 0n ? -value : value) / 100n}.${String((value < 0n ? -value : value) % 100n).padStart(2,'0')}`);
 function sourceIssueMessage(issue: { validator: string; reason?: string }) {
   if (issue.validator === 'recipient_identity_ambiguity') return 'Confirm whether these entries belong to one broker or separate recipients. Their addresses differ.';
   return issue.reason || 'A source check needs correction before this broker can be approved.';
@@ -119,7 +132,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const destinationProblem = view.roster?.destination_ready === false ? view.roster.destination_reason || 'Select and refresh the correct Schedule A before approving brokers.' : null;
   const reconciliationIndex = view.items.findIndex(item => blockingSourceIssues(item, view).some(needsReconciliation));
   const canOpenReconciliation = !stale && !destinationProblem && reconciliationIndex >= 0;
-  const canSubmitReconciliation = canOpenReconciliation && view.dirty
+  const canSubmitReconciliation = canOpenReconciliation && view.dirty && paymentAllocation(view)?.balanced
     && !view.items.some(item => itemProblem(item) || blockingSourceIssues(item, view).some(issue => !needsReconciliation(issue)));
   const rowProblemIndex = view.items.findIndex(item => itemProblem(item) || blockingSourceIssues(item, view)
     .some(issue => !needsReconciliation(issue) || !canSubmitReconciliation));
@@ -198,6 +211,12 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
     setDraft(next);
     const sourceIssue = next.items.flatMap(item => blockingSourceIssues(item, next)).find(issue => !needsReconciliation(issue));
     if (sourceIssue) { setError(sourceIssueMessage(sourceIssue)); return; }
+    const allocation = paymentAllocation(next);
+    if (allocation && !allocation.balanced) {
+      setEditing(null); setError('');
+      setMessage('Changes staged in this review. Add or correct the recipients until both remaining category totals are zero, then save the complete list. No FT Williams update was sent. Leaving this filing discards these staged changes.');
+      return;
+    }
     approvalInFlight.current = true; setPending(true); setError(''); setMessage('');
     try {
       const fresh = onRefreshReview ? await onRefreshReview() : null;
@@ -258,12 +277,23 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
   const approveButton = approved ? <span role="status">Ready for automatic sending</span> : <button type="button" className="button primary" aria-describedby="broker-approval-scope broker-source-status"
     disabled={disabled || approved || stale || Boolean(destinationProblem && !onReviewDestination) || Boolean(editing) || Boolean(identityEditing)} onClick={approve}>{pending ? 'Please wait…' : approved ? 'Approved' : 'Approve'}</button>;
   const editItem = editing?.item;
-  const editedItems = view.items.map((item,index) => index === editing?.index && editing.item ? editing.item : item);
+  const editedItems = [...view.items];
+  if (editing?.item && editing.index >= 0) editedItems[editing.index] = editing.item;
+  const allocation = paymentAllocation({...view,items:editedItems});
   const emptyAfterEdit = editing && editedItems.every(item => !item.included && (!item.disclosure || item.treatment === 'SUPPORTING_ONLY'));
   const identityGroup = view.roster?.identity_groups?.find(g => g.id === identityEditing?.groupId);
   return <section className="schedule-a-broker-panel card" id="schedule-a-broker-rows">
     <div className="schedule-a-broker-panel-head"><h3>Schedule A brokers</h3><span>{view.items.length} item{view.items.length === 1 ? '' : 's'}</span></div>
     <p id="broker-source-status" role="status" className="broker-short-status">{approved ? 'Broker list approved. Normal automatic-update controls apply.' : problem ? `Paused: ${problem}` : 'Ready for approval.'}</p>
+    {allocation ? <section className="broker-payment-summary" aria-label="Payment reconciliation">
+      <h4>Reconcile commission and fee totals</h4>
+      <p>Keep each payment with its source-supported recipient. Do not assign an unnamed fee to another broker.</p>
+      {allocation.source?.source === 'UNAVAILABLE' || allocation.source?.source === 'CONFLICTING_SOURCE' || !allocation.source ? <p role="alert">Source totals are unavailable or conflicting. Verify the commission and fee section totals before saving the complete list.</p> : null}
+      <table><thead><tr><th>Category</th><th>Source total</th><th>Allocated to recipients</th><th>Remaining to reconcile</th></tr></thead><tbody>
+        {(['Commission','Fees'] as const).map((label,index) => <tr key={label}><th>{label}</th><td aria-label={`Source ${label.toLowerCase()}`}>{`Source ${label.toLowerCase()}: ${moneyCents(allocation.expected[index])}`}</td><td>{moneyCents(allocation.allocated[index])}</td><td aria-label={`Remaining ${label.toLowerCase()}`}>{`Remaining ${label.toLowerCase()}: ${moneyCents(allocation.remaining[index])}`}</td></tr>)}
+      </tbody></table>
+      <p>{allocation.balanced ? 'Both categories reconcile. Save the complete list to continue.' : 'Edit the existing entries or add a confirmed recipient. Stage each correction until both categories reconcile.'}</p>
+    </section> : null}
     {destinationProblem && onReviewDestination ? <button type="button" className="button secondary" disabled={disabled} onClick={onReviewDestination}>Review Schedule A</button> : null}
     {!view.roster?.identity_groups?.length && view.items.some(item => blockingSourceIssues(item,view).some(issue => issue.validator === 'recipient_identity_ambiguity')) ?
       <button type="button" className="button secondary" disabled={disabled || Boolean(editing) || Boolean(identityEditing) || Boolean(draft?.dirty) || !onRefreshReview} onClick={event => beginIdentityReview(event)}>Confirm identity</button> : null}
@@ -324,7 +354,7 @@ export function BrokerRosterPanel({ busy, currentRows, roster, rows, onSaveRevie
         {emptyAfterEdit ? <label className="broker-empty-evidence">Evidence of no reportable Schedule A brokers<textarea maxLength={2000} disabled={disabled} value={editing.emptyEvidence} onChange={event => setEditing(previous => previous ? { ...previous, emptyEvidence: event.target.value } : previous)} /><small>Required before approving an empty replacement, which removes current brokers. A blank table alone is not evidence.</small></label> : null}
         <details><summary>View evidence</summary>{(view.roster?.reasons ?? []).map((text,index) => <p key={index}>{text}</p>)}{editItem?.disclosure ? <pre>{editItem.disclosure.source_text}</pre> : null}{(view.roster?.evidence ?? []).map((item,index) => <p key={index}>Page {item.page}: {item.source_text}</p>)}</details>
         <details><summary>Current brokers ({currentRows.length})</summary><ul>{currentRows.map((row,index) => <li key={index}>{['Name','AddressLine1','AddressLine2','City','State','ZipCode'].map(key => currentValue(row,key)).filter(Boolean).join(', ')}{` — Commission ${currentValue(row,'CommPdAmt') || 'Blank'}; Fees ${currentValue(row,'FeesPdAmt') || 'Blank'}`}</li>)}</ul></details>
-        <div className="broker-simple-actions"><button className="button primary" type="submit" disabled={disabled}>{editedItems.some(item => item.included && partialAddress(item.row)) ? 'Save and send as-is' : 'Save and continue'}</button><small>Saves the displayed broker list and accepts incomplete addresses as shown. Sending continues when other filing checks pass.</small></div>
+        <div className="broker-simple-actions"><button className="button primary" type="submit" disabled={disabled}>{allocation && !allocation.balanced ? 'Stage correction' : editedItems.some(item => item.included && partialAddress(item.row)) ? 'Save and send as-is' : 'Save and continue'}</button><small>{allocation && !allocation.balanced ? 'Keeps this correction in the current review without approving or sending an incomplete payment list.' : 'Saves the displayed broker list and accepts incomplete addresses as shown. Sending continues when other filing checks pass.'}</small></div>
       </form>
     </section> : null}
   </section>;
